@@ -81,9 +81,13 @@ pub enum Unusable {
     /// `rc == 0`: the rule LOADED, which means audit netlink is live and the
     /// capture just mutated the HOST ruleset. The capture must abort with rc 2.
     Loaded,
-    /// rc 1 with both streams empty, for a line whose flag is not on the
-    /// `silence_is_conclusive` denylist. Indistinguishable from a silent parse
-    /// refusal, so no verdict is possible.
+    /// rc 1 with both streams empty, for a line whose LEADING flag IS on the
+    /// [`SILENT_SUCCESS_LEADING_FLAGS`] list (i.e. [`silence_is_conclusive`]
+    /// returns `false` for it): a control op (`-D`, `-b`, ...) whose SUCCESS
+    /// path is just as silent as a genuine parse refusal, so this rc-1-silent
+    /// capture cannot be attributed to either outcome. This is the historical
+    /// bug this module exists to fix: a first draft treated every silent `-D`
+    /// as REJECT, which is exactly the case this variant refuses to guess at.
     SilentNonAddLine,
     /// A diagnostic that reports a container limitation rather than a property
     /// of the rule (for example a kernel feature bitmap read over the same
@@ -115,7 +119,16 @@ pub fn product_verdict(line: &str) -> Verdict {
 /// "")` is produced identically by `-D` (parsed, then the netlink send failed
 /// silently inside `setopt()`) and by a genuinely refused rule. No pure function
 /// of `(rc, stdout, stderr)` can separate those two, so the flag is consulted
-/// through [`silence_is_conclusive`].
+/// through [`silence_is_conclusive`]: silence is conclusive evidence of a parse
+/// REFUSAL only for an add-shaped line (`-w`/`-a`), because a successfully
+/// PARSED add-shaped line is always LOUD under this sandbox (it reaches the
+/// `audit_add_rule_data` netlink call and prints `Error sending add rule data
+/// request`, caught by the accept probe below before this ever runs). A
+/// control-shaped line (`-D`/`-b`/...) is silent on EITHER outcome, so its
+/// silence proves nothing and must fall through to
+/// [`Unusable::SilentNonAddLine`] instead of being called a refusal. Getting
+/// this backwards is exactly the historical bug this module exists to fix: a
+/// first draft treated every silent `-D` as REJECT.
 ///
 /// The evaluation order is load-bearing. In particular, the accept probe must
 /// precede the parse-complaint probe, because an accepted line's stderr ALSO
@@ -127,19 +140,132 @@ pub fn classify_capture(line: &str, rc: i32, stdout: &str, stderr: &str) -> Capt
     todo!("session 9k-1 Lane A: raw-facts classifier, truth table in the session plan")
 }
 
+/// Leading `auditctl` flags whose SUCCESS path performs its netlink round trip
+/// directly inside `setopt()`'s own `case` arm, with no distinct print on
+/// failure - unlike the shared add-rule path (`-w`/`-a`) that always prints
+/// `Error sending add rule data request` when its netlink send fails. For a
+/// line whose leading flag is on this list, an observed `(rc=1, "", "")`
+/// capture is therefore AMBIGUOUS: it is produced identically by a successful
+/// parse whose netlink send was silently refused (EPERM, under this sandbox)
+/// and by a genuine parse refusal, so [`silence_is_conclusive`] returns `false`
+/// for these and the row becomes [`Unusable::SilentNonAddLine`] rather than a
+/// guessed verdict.
+///
+/// Source-grounded against `audit-userspace` `src/auditctl.c` `setopt()`,
+/// confirmed byte-identical in shape across the three RHEL8/9/10-shipped tags
+/// v3.1.2 / v3.1.5 / v4.0.3 (session 2026-07-26 read of
+/// <https://github.com/linux-audit/audit-userspace>):
+///
+/// - `-D` (`case 'D':`, v3.1.2 L982 / v3.1.5 L1000 / v4.0.3 L1005): an
+///   unconditional field-count mismatch IS loud (`audit_msg(LOG_ERR, "Wrong
+///   number of options for Delete all request")`); the success path
+///   (`retval = delete_all_rules(fd);`) prints nothing on failure. Matches this
+///   crate's own `-D` grounding in `parser.rs`'s `delete_all_with_extra_token`.
+/// - `-e` (v3.1.2 L636 / v3.1.5 L654 / v4.0.3 L659), `-f` (L650/L668/L673),
+///   `-r` (L664/L682/L687), `-b` (L683/L701/L706): each calls its
+///   `audit_set_*(fd, ...)` setter and, on a `<= 0` return, does `retval = -1;`
+///   (or `return -1;`) with NO `audit_msg` call - silent on failure. A malformed
+///   OPTARG (non-numeric) is the only loud path for these four, and is not
+///   silent, so it is not part of this ambiguity.
+/// - `--loginuid-immutable` (`case 1:`, L1109/L1127/L1132) and
+///   `--backlog_wait_time` (`case 2:`, L1116/L1134/L1139): same shape, silent
+///   on a `<= 0` / negative return.
+/// - `--reset-lost` (`case 3:`, L1144/L1162/L1167) is the WEAKEST-grounded
+///   entry: its failure path calls `audit_number_to_errmsg(rc, ...)`, which
+///   CAN print if `rc` matches a table entry in `err_msgtab` (defined outside
+///   the files read this session, so whether `-EPERM` specifically is a key
+///   was not confirmed). Kept on this list per the frozen session-plan design
+///   (a generic permission errno is unlikely to be one of the protocol-level
+///   codes that table exists for), but flagged here rather than asserted with
+///   the same confidence as the other seven.
+///
+/// A denylist rather than an allowlist on purpose: an unenumerated new control
+/// flag then defaults to `true` (silence IS conclusive), which produces a LOUD
+/// wrong label the test's `UNOBSERVABLE`/`XFAIL` bookkeeping will visibly
+/// triage, instead of silently defaulting to `Unusable` and being dropped from
+/// comparison where nothing would ever triage it.
+const SILENT_SUCCESS_LEADING_FLAGS: &[&str] = &[
+    "-D",
+    "-b",
+    "-e",
+    "-f",
+    "-r",
+    "--backlog_wait_time",
+    "--loginuid-immutable",
+    "--reset-lost",
+];
+
 /// Whether silence (rc 1, both streams empty) is conclusive evidence of a parse
-/// refusal for this line.
+/// REFUSAL for this line.
 ///
-/// Backed by a DENYLIST of leading flags whose success path performs netlink
-/// inside `setopt()` and therefore fails silently: `-D`, `-b`, `-e`, `-f`, `-r`,
-/// `--backlog_wait_time`, `--loginuid-immutable`, `--reset-lost`. Each entry
-/// carries an `auditctl.c` citation.
+/// Returns `false` (NOT conclusive - fall through to
+/// [`Unusable::SilentNonAddLine`]) when `line`'s leading flag is on
+/// [`SILENT_SUCCESS_LEADING_FLAGS`], because that flag's own SUCCESS path is
+/// silent too, so observed silence cannot be attributed to either outcome.
+/// Returns `true` for everything else (in particular the add-shaped `-w`/`-a`
+/// flags this corpus mostly consists of): a successful parse of one of those is
+/// always LOUD (`Error sending add rule data request`, caught by
+/// [`classify_capture`]'s accept probe before this function is ever consulted),
+/// so silence surviving to this point can only mean the line never reached that
+/// netlink call at all, i.e. it was refused during parsing.
 ///
-/// A denylist rather than an allowlist on purpose: an unenumerated flag then
-/// gets a loud wrong label that the test triages, instead of being quietly
-/// dropped from comparison, which nothing would triage.
+/// The leading flag is taken as the first whitespace-separated token, matching
+/// `audit_strsplit`'s own dispatch (see the images README): a leading flag is
+/// always the option `getopt_long` dispatches on regardless of what follows it
+/// on the line, so trailing tokens (`-D extra`, `-D -k mykey`) do not change
+/// which arm of `setopt()` handles the line.
 #[must_use]
 pub fn silence_is_conclusive(line: &str) -> bool {
-    let _ = line;
-    todo!("session 9k-1 Lane A: auditctl.c-cited denylist of silently-failing control flags")
+    let leading = line.split_whitespace().next().unwrap_or("");
+    !SILENT_SUCCESS_LEADING_FLAGS.contains(&leading)
+}
+
+#[cfg(test)]
+mod silence_is_conclusive_tests {
+    use super::silence_is_conclusive;
+
+    /// The bug this whole module exists to fix: a bare `-D` is NOT conclusive
+    /// silence-as-refusal (its own success path is just as silent). Asserting
+    /// ONLY this side would not catch the function being wired to always
+    /// return `false`, hence the companion `add_shaped_line_is_conclusive`
+    /// test right below it - the pair together fails under EITHER polarity
+    /// inversion or a constant-return stub.
+    #[test]
+    fn control_flag_leading_line_is_not_conclusive() {
+        assert!(
+            !silence_is_conclusive("-D"),
+            "-D's success path is silent (delete_all_rules on EPERM), so its \
+             silence must NOT be treated as a conclusive parse refusal"
+        );
+        assert!(
+            !silence_is_conclusive("-D -k mykey"),
+            "the leading flag governs, not the trailing tokens"
+        );
+        assert!(!silence_is_conclusive("-b 8192"));
+        assert!(!silence_is_conclusive("-e 1"));
+        assert!(!silence_is_conclusive("-f 1"));
+        assert!(!silence_is_conclusive("-r 100"));
+        assert!(!silence_is_conclusive("--backlog_wait_time 60"));
+        assert!(!silence_is_conclusive("--loginuid-immutable"));
+        assert!(!silence_is_conclusive("--reset-lost"));
+    }
+
+    /// The other half of the pair above: an add-shaped line's silence IS
+    /// conclusive, because a successful parse of `-w`/`-a` is always loud
+    /// (`Error sending add rule data request`) and would have been caught by
+    /// `classify_capture`'s accept probe before `silence_is_conclusive` is ever
+    /// consulted; surviving silence for one of these can only be a refusal.
+    #[test]
+    fn add_shaped_line_is_conclusive() {
+        assert!(
+            silence_is_conclusive("-w /etc/passwd -p zz -k c"),
+            "an add-shaped line's silence is conclusive evidence of refusal"
+        );
+        assert!(silence_is_conclusive("-a always,exit -F perm=zz -S execve"));
+        assert!(
+            silence_is_conclusive("garbage-not-a-flag"),
+            "an unrecognised leading token is not on the denylist, so its \
+             (also observed) silence is conclusive too"
+        );
+    }
 }

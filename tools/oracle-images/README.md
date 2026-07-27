@@ -88,7 +88,22 @@ Within `rc 1`:
   the add was attempted -> **ACCEPT**.
 - stderr contains a parse complaint (`-F unknown field:`,
   `Permission can only contain`, ...) -> **REJECT**.
-- stderr and stdout both empty -> **REJECT**, but silently. See below.
+- stderr and stdout both empty -> **AMBIGUOUS, not automatically REJECT.**
+  AMENDMENT (session 9k-1 Lane A, post-barrier): this line originally read
+  "REJECT, but silently", and that wording is what seeded a real bug - the
+  first draft's capture script treated every silent line, including a bare
+  `-D`, as a parse reject. `-D`/`-b`/`-e`/`-f`/`-r`/`--backlog_wait_time`/
+  `--loginuid-immutable`/`--reset-lost` each send their OWN netlink message
+  from inside `setopt()`'s own `case` arm and print nothing when THAT fails
+  under this sandbox's EPERM - so silence for one of these flags is produced
+  identically by a successful parse and by a genuine refusal. Silence is
+  conclusive REJECT evidence only for an add-shaped line (`-w`/`-a`), because
+  a successful parse of one of those is always LOUD (`Error sending add rule
+  data request`) under this sandbox. See
+  `crates/rulesteward-auditd/src/oracle.rs`'s `silence_is_conclusive` and
+  `crates/rulesteward-auditd/tests/corpus/auditd-oracle/PROVENANCE.md`'s "The
+  silent-rc1 blind spot" for the full reasoning and the `-D`-under-`-R`
+  finding this correction is grounded in.
 
 ### `auditctl -R` swallows many parse diagnostics
 
@@ -111,14 +126,23 @@ literal space byte and treats quotes as literal bytes. That raw reader IS the
 subject of #584. Direct argv invocation would exercise shell tokenization, which
 is the wrong tokenizer for the flagship issue this lane exists to ground.
 
-So a silent `rc 1` is a real REJECT. The risk that it is instead a broken harness
-is closed at BATCH level, per the CONTRIBUTING positive-control rule:
+So a silent `rc 1` on an add-shaped line (`-w`/`-a`) is a real REJECT (see the
+qualified bullet above for why this does NOT generalize to control-shaped
+lines like `-D`/`-b`). The risk that even an add-shaped silent line is instead
+a broken harness is closed at BATCH level, per the CONTRIBUTING positive-control
+rule:
 
 - every capture batch includes a known-ACCEPT rule that MUST produce
   `Error sending add rule data request`;
-- and a known-REJECT rule with positive evidence
-  (`-F perm=zz` -> `Permission can only contain  'rwxa'`), NOT `-p zz`, which is
-  silent under `-R`;
+- and a known-REJECT rule with positive (non-silent) evidence. AMENDMENT:
+  this used to be `-F perm=zz` -> `Permission can only contain  'rwxa'`, but
+  that rule is ALSO a RuleSteward parser divergence (no letter-set validation
+  on `-F perm=` values), so a positive control would double as a product XFAIL.
+  The control is now `-F nosuchfield=1` -> `-F unknown field: nosuchfield`,
+  which both sides agree is a reject. `-p zz` (not `-F perm=zz`) is still the
+  one to avoid entirely for this purpose: it is silent under `-R` (see the
+  measured table above), so it cannot serve as a non-silent reject control at
+  all;
 - if the accept control does not fire, the entire capture is a tool error
   (rc 2), never 0 and never 1.
 
