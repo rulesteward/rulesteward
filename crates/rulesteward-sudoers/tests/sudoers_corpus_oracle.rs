@@ -190,6 +190,17 @@
 //! resolution must trim ANY whitespace immediately after the bang-run before
 //! taking the remainder as the base value, matching the real tool.
 //!
+//! **`resolve_bang_run` is EXACT, not an approximation (confirmed 2026-07-27,
+//! round 4):** `alice ALL = ! !/usr/bin/su` and `alice ALL = ! !`
+//! (whitespace-SEPARATED bangs) are both SYNTAX ERRORS on all three images,
+//! while the glued `!!` form parses fine. Real sudo's lexer therefore matches
+//! the bang-run as a single CONTIGUOUS token (no embedded whitespace between
+//! `!`s) before applying parity - which is exactly what a contiguous
+//! `take_while` (stopping at the first non-`!` byte, including a space)
+//! followed by `trim_start` on the remainder already does. There is no wider
+//! "any whitespace-tolerant bang sequence" case this implementation is
+//! missing.
+//!
 //! This REVERSES `project_cvtsudoers_json_ignores_negated_companion_flag`'s
 //! prior assertion (that a `"negated": true` companion must NOT change the
 //! extracted value) - that assertion pinned the exact symmetric-erasure bug
@@ -197,8 +208,21 @@
 //! frozen-tests rule (correcting a test that encoded WRONG behavior), never
 //! a weakening. Both existing negation corpus rows (`accept-negated-command`,
 //! `accept-negated-all`) already have `"negated": true` on BOTH sides of the
-//! captured JSON, so this needs ZERO corpus churn - no new scenario, no floor
+//! captured JSON, so this needed ZERO corpus churn - no new scenario, no floor
 //! change.
+//!
+//! **First end-to-end coverage (round 4, 2026-07-27):** every negation test
+//! above builds its `SudoersFile` BY HAND, so it proves the PROJECTOR handles
+//! a negated token but never that the PARSER can actually PRODUCE one - a
+//! hand-built AST supplies its own input, so a parser-side gap underneath is
+//! invisible to it (this is exactly how `accept-negated-uid-subject`, a real
+//! parser bug, survived three rounds of hand-built unit tests; see
+//! `L1_XFAIL`). `accept-negated-user` (`!alice ALL = ALL`) and
+//! `accept-negated-host` (`alice !ALL = /bin/ls`) close that gap for the
+//! user/host mark specifically: both are real, `parser::parse`-produced,
+//! live-captured scenarios, confirmed to project cleanly (no xfail needed)
+//! through the REAL parser and the REAL oracle - the negation mark's first
+//! parser-to-captured-oracle coverage.
 //!
 //! ## uid/gid canonicalization (added 2026-07-27)
 //!
@@ -234,8 +258,17 @@
 //!    `INTERCEPT:` and a regex `Cmnd_Alias` `^...$` both syntax-error on el8 but
 //!    parse clean on el9/el10) - this corpus deliberately avoids such
 //!    version-gated constructs (a THIRD, newly-discovered divergence class
-//!    outside #538's two documented gaps; see PROVENANCE.md), so L1 is a clean
-//!    regression layer with an EMPTY xfail table.
+//!    outside #538's two documented gaps; see PROVENANCE.md). L1 was a clean
+//!    regression layer with an EMPTY xfail table through round 3; round 4
+//!    (2026-07-27) gave it its FIRST entry, `accept-negated-uid-subject`
+//!    (`!#1000 ALL = ALL`) - real `visudo` accepts it, but
+//!    `rulesteward_sudoers::parser::parse` classifies the whole line
+//!    `Malformed`. This is a `rulesteward-core` parser gap (`comment_index`'s
+//!    `prev_allows_uid` byte-set omits `b'!'`), not a sudoers-lane defect -
+//!    see `L1_XFAIL`'s doc comment and `PROVENANCE.md` for the full root
+//!    cause, why the byte-set cannot simply add `b'!'` (it also serves the
+//!    UNRELATED `Defaults!<cmnd>` scope-binding `!`, where the exclusion is
+//!    correct), and the drafted (not filed) tracking issue.
 //! 2. **L2 (the strict gate)**: does `visudo -c -s -f -` agree with `visudo -c
 //!    -f -`? It does NOT always: `man 8 visudo` documents `-s`'s real value -
 //!    "If an alias is referenced but not actually defined or if there is a
@@ -310,29 +343,27 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// (`accept-negated-command`, `accept-negated-all`, `accept-host-netgroup`,
 /// `accept-host-networkaddr`, `accept-gid-subject`,
 /// `accept-uid-leading-zero`) added 2026-07-27 to ground the "Type tags" /
-/// "uid/gid canonicalization" findings in the module doc - see there.
-const SCENARIO_FLOOR: usize = 38;
+/// "uid/gid canonicalization" findings in the module doc - see there; 3
+/// more `accept-*` scenarios (`accept-negated-uid-subject`,
+/// `accept-negated-user`, `accept-negated-host`) added 2026-07-27 (round 4),
+/// where the first two give the round-3 negation MARK its first end-to-end
+/// (parser -> captured-oracle) coverage, and the third is L1's first-ever
+/// xfail (see the module doc's "L1" section and `L1_XFAIL`).
+const SCENARIO_FLOOR: usize = 41;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
-/// comparisons, once `project_ast` / `project_cvtsudoers_json` correctly
-/// implement the frozen contract above (type tags, `!`-stripped commands,
-/// uid/gid canonicalization, and the widened `Host_List`/`User_List` key
-/// sets) - NOT reachable by the implementation this floor was written
-/// against, which is the point: this session's finding is that six
-/// additional real scenarios were silently uncovered by L3 (either passing
-/// vacuously via the type-tag erasure, or never reaching L3 at all due to an
-/// unrecognized key / an unstripped command negation), and the floor states
-/// what a correct implementation must reach, not what today's does.
+/// comparisons.
 ///
-/// Measured: 30 accept scenarios x 3 targets = 90 candidate pairs; minus 1
-/// scoped-out (el8 `SELinux` invalid JSON) = 89 attempted; minus 11 xfail
-/// hits (4 scenarios x 3 targets, minus the 1 el8 scope-out/xfail overlap -
-/// see `L3_XFAIL`, unchanged by this session's 6 new scenarios, none of
-/// which are xfailed) = 78 clean structural matches. (72 -> 90 candidates is
-/// exactly the 6 new scenarios x 3 targets = 18 added, all landing in the
-/// "clean" bucket once fixed, hence 60 -> 78 with no other arithmetic
-/// changing.)
-const L3_CLEAN_FLOOR: usize = 78;
+/// Measured: 33 accept scenarios x 3 targets = 99 candidate pairs; minus 1
+/// scoped-out (el8 `SELinux` invalid JSON) = 98 attempted; minus 14 xfail
+/// hits (5 scenarios x 3 targets = 15, minus the 1 el8 scope-out/xfail
+/// overlap - see `L3_XFAIL`) = 84 clean structural matches. (90 -> 99
+/// candidates is exactly the 3 round-4 scenarios x 3 targets = 9 added; of
+/// those, `accept-negated-user` / `accept-negated-host` land in the "clean"
+/// bucket (+6) and `accept-negated-uid-subject` is a NEW `L3_XFAIL` entry
+/// (+3 candidates, but also +3 xfail hits, netting 0 new "clean"), hence 78
+/// -> 84.)
+const L3_CLEAN_FLOOR: usize = 84;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -360,14 +391,29 @@ const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
     ("accept-multi-user-list", 1),
 ];
 
-/// Grounded EMPTY: see the module doc's L1 section. L1 has its OWN xfail
-/// table, deliberately separate from [`L2_XFAIL`]: L1 compares our parser's
-/// F01 verdict against visudo's DEFAULT gate, while L2 compares visudo's
-/// default gate against its STRICT gate - two different comparisons, so an L2
-/// divergence is not evidence of an L1 divergence. Reusing `L2_XFAIL` for L1
-/// would silently exempt an L1 comparison the moment an L2 entry is added,
-/// even though nothing about L1 itself changed.
-const L1_XFAIL: &[&str] = &[];
+/// L1's OWN xfail table, deliberately separate from [`L2_XFAIL`]: L1
+/// compares our parser's F01 verdict against visudo's DEFAULT gate, while L2
+/// compares visudo's default gate against its STRICT gate - two different
+/// comparisons, so an L2 divergence is not evidence of an L1 divergence.
+/// Reusing `L2_XFAIL` for L1 would silently exempt an L1 comparison the
+/// moment an L2 entry is added, even though nothing about L1 itself changed.
+///
+/// First entry added 2026-07-27 (round 4): `accept-negated-uid-subject`
+/// (`!#1000 ALL = ALL`). Real `visudo` accepts it (`{"userid": 1000,
+/// "negated": true}`), but `rulesteward_sudoers::parser::parse` classifies
+/// the WHOLE LINE `Malformed`. Root cause is NOT in this lane -
+/// `rulesteward_core::comment::comment_index`'s `prev_allows_uid` byte-set
+/// (`crates/rulesteward-core/src/comment.rs:149-155`) omits `b'!'`, so in
+/// `!#1000` the `#` reads as a comment start, the rest of the line is
+/// stripped, and the lone `!` has no `=` to complete a `UserSpec`. This is
+/// NOT the same `!` `lints/tokens/mod.rs:384-388` deliberately excludes -
+/// that one is `Defaults!<cmnd>` scope-binding, where `Defaults!#1000` really
+/// IS rc 1 and stripping really is correct; one byte-set serves two
+/// meanings of `!` with opposite right answers, so the fix is
+/// context-sensitive and belongs in `rulesteward-core`, not here. Drafted as
+/// a tracked issue (not filed) in `PROVENANCE.md`; do NOT fold this into
+/// #538 (unrelated defect, different crate).
+const L1_XFAIL: &[&str] = &["accept-negated-uid-subject"];
 
 /// Known `-s`-vs-default divergences: see the module doc's L2 section and
 /// `PROVENANCE.md` section 5. Grounded in `man 8 visudo`'s own description of
@@ -376,8 +422,11 @@ const L1_XFAIL: &[&str] = &[];
 /// being added here.
 const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 
-/// L3 structural-projection divergences: `(scenario_id, issue_number)`. All
-/// four ground #538; do NOT fix #538 in this lane.
+/// L3 structural-projection divergences: `(scenario_id, issue_number)`. The
+/// first four ground #538; do NOT fix #538 in this lane. The issue number is
+/// `None` for a divergence whose issue is DRAFTED but not yet filed (see
+/// `PROVENANCE.md`) - `Option<u32>` rather than a placeholder number, so a
+/// reader can never mistake a drafted issue for a real, filed one.
 ///
 /// `accept-notbefore` and `accept-timeout-option` were found in review
 /// (2026-07-26): `parser::parse_cmnd_spec`'s tag loop recognizes only `TAG:`
@@ -391,11 +440,21 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// previously in the corpus with their VISUDO VERDICT confirmed identical
 /// across targets (PROVENANCE.md section 2), but their STRUCTURAL
 /// projection was never checked before L3's `tuple_count` anchors existed.
-const L3_XFAIL: &[(&str, u32)] = &[
-    ("accept-selinux-role-type", 538),
-    ("accept-user-list-whitespace-bug", 538),
-    ("accept-notbefore", 538),
-    ("accept-timeout-option", 538),
+///
+/// `accept-negated-uid-subject` (round 4, 2026-07-27) is the L3 half of
+/// `L1_XFAIL`'s first entry (see that const's doc comment for the root
+/// cause): since `rulesteward_sudoers::parser::parse` classifies the whole
+/// line `Malformed`, `project_ast` sees no `UserSpec` at all
+/// (`tuple_count=0`, every list empty), while `cvtsudoers` reports one
+/// `User_Specs` entry (`tuple_count=1`, a negated, tagged uid user). This is
+/// a DIFFERENT crate's bug (`rulesteward-core`), not #538, so it gets its
+/// OWN (drafted, unfiled) issue rather than being folded in.
+const L3_XFAIL: &[(&str, Option<u32>)] = &[
+    ("accept-selinux-role-type", Some(538)),
+    ("accept-user-list-whitespace-bug", Some(538)),
+    ("accept-notbefore", Some(538)),
+    ("accept-timeout-option", Some(538)),
+    ("accept-negated-uid-subject", None),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -1566,12 +1625,13 @@ fn l1_f01_matches_visudo_verdict_per_target() {
             let oracle_rejects = oracle_verdict == VisudoVerdict::Reject;
 
             if L1_XFAIL.contains(&id.as_str()) {
-                // L1_XFAIL is its OWN table (currently empty), kept separate
-                // from L2_XFAIL so that an L2 divergence (visudo default vs
-                // strict gate) can never silently exempt an L1 comparison
-                // (our parser vs visudo's default gate) it was never measured
-                // against. This branch is unreachable today only because the
-                // table is empty; it mirrors the selinux-corpus guard shape.
+                // L1_XFAIL is its OWN table, kept separate from L2_XFAIL so
+                // that an L2 divergence (visudo default vs strict gate) can
+                // never silently exempt an L1 comparison (our parser vs
+                // visudo's default gate) it was never measured against. Its
+                // first entry (round 4, 2026-07-27) is a rulesteward-core
+                // parser gap, not a sudoers-lane defect - see L1_XFAIL's doc
+                // comment and PROVENANCE.md.
                 assert_ne!(
                     ours_rejects, oracle_rejects,
                     "L1 {id} ({target}): expected a KNOWN F01-vs-oracle divergence, but they \
@@ -1590,14 +1650,19 @@ fn l1_f01_matches_visudo_verdict_per_target() {
         }
     }
 
-    // Print AFTER the loop, using the real tally: L1's xfail table may not
-    // stay empty forever, and reporting the raw scenario-directory count
-    // would overstate what was actually compared the moment it grows.
+    // Print AFTER the loop, using the real tally: L1's xfail table is no
+    // longer empty, and reporting the raw scenario-directory count would
+    // overstate what was actually compared now that it is not.
     announce(&root, mode, compared);
+    // Every L1_XFAIL entry is a REAL, confirmed divergence (see L1_XFAIL's
+    // doc comment), so those pairs are deliberately excluded from
+    // `compared`; the floor must subtract them rather than assume every pair
+    // agrees. (This formula was latent-wrong before round 4 - it happened to
+    // be correct only because L1_XFAIL was always empty.)
+    let l1_clean_floor = SCENARIO_FLOOR * TARGETS.len() - L1_XFAIL.len() * TARGETS.len();
     assert!(
-        compared >= SCENARIO_FLOOR * TARGETS.len(),
-        "expected >= {} L1 comparisons, got {compared}",
-        SCENARIO_FLOOR * TARGETS.len()
+        compared >= l1_clean_floor,
+        "expected >= {l1_clean_floor} clean L1 comparisons, got {compared}"
     );
     assert_eq!(
         xfail_hit.len(),
@@ -1772,9 +1837,13 @@ fn l3_structure_projection_matches_cvtsudoers() {
                 && sorted_eq(&ast_proj.commands, &cvt_proj.commands);
 
             if let Some((_, issue)) = L3_XFAIL.iter().find(|(sid, _)| *sid == id.as_str()) {
+                let issue_label = issue.map_or_else(
+                    || "a drafted, not-yet-filed issue (see PROVENANCE.md)".to_string(),
+                    |n| format!("#{n}"),
+                );
                 assert!(
                     !matches,
-                    "L3 {id} ({target}): expected the KNOWN #{issue} divergence, but the \
+                    "L3 {id} ({target}): expected the KNOWN {issue_label} divergence, but the \
                      projections matched; update L3_XFAIL"
                 );
                 // Pin the SPECIFIC shape of each known divergence, not merely
@@ -1868,6 +1937,43 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             "L3 {id} ({target}): our AST's garbage command token must contain \
                              the swallowed TIMEOUT= text; got {:?}",
                             ast_proj.commands
+                        );
+                    }
+                    "accept-negated-uid-subject" => {
+                        // `!#1000 ALL = ALL`: the WHOLE LINE is `Malformed`
+                        // to our parser (a `rulesteward-core` comment-index
+                        // bug - see `L1_XFAIL`'s doc comment), so `project_ast`
+                        // sees no `UserSpec` at all: zero tuples, every list
+                        // empty. `cvtsudoers` sees a real, negated, tagged
+                        // uid subject.
+                        assert_eq!(
+                            ast_proj.tuple_count, 0,
+                            "L3 {id} ({target}): our AST must see NO UserSpec at all \
+                             (the whole line is Malformed), got tuple_count={}",
+                            ast_proj.tuple_count
+                        );
+                        assert!(
+                            ast_proj.users.is_empty()
+                                && ast_proj.hosts.is_empty()
+                                && ast_proj.commands.is_empty(),
+                            "L3 {id} ({target}): our AST's projection must be entirely empty, \
+                             got users={:?} hosts={:?} commands={:?}",
+                            ast_proj.users,
+                            ast_proj.hosts,
+                            ast_proj.commands
+                        );
+                        assert_eq!(
+                            cvt_proj.tuple_count, 1,
+                            "L3 {id} ({target}): the oracle must show exactly one UserSpec, \
+                             got tuple_count={}",
+                            cvt_proj.tuple_count
+                        );
+                        assert_eq!(
+                            cvt_proj.users,
+                            vec!["!userid:1000".to_string()],
+                            "L3 {id} ({target}): the oracle must show a negated, tagged uid \
+                             user, got {:?}",
+                            cvt_proj.users
                         );
                     }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),

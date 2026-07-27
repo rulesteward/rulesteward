@@ -6,12 +6,14 @@ re-derivation - there is no second, separately-maintained capture path).
 
 ## What is captured
 
-38 scenario directories (30 `accept-*`, 8 `reject-*`) - 30 captured
+41 scenario directories (33 `accept-*`, 8 `reject-*`) - 30 captured
 2026-07-25, plus 2 more `accept-*` scenarios added 2026-07-26 (review found
 L2's original xfail table was empty for the wrong reason; see section 5),
 plus 6 more `accept-*` scenarios added 2026-07-27 (review found the users/
 hosts type tag, command negation, and uid/gid canonicalization findings;
-see section 10), each holding:
+see section 10), plus 3 more `accept-*` scenarios added 2026-07-27, round 4
+(the negation mark's first parser-to-oracle coverage, plus L1's first-ever
+xfail; see section 16), each holding:
 
 - `input.sudoers` - the raw sudoers source, fed unchanged over stdin.
 - `el8.json` / `el9.json` / `el10.json` - one JSON document per target,
@@ -486,6 +488,103 @@ parked scopes, not silent gaps.
   not acted on (no corpus row exercises it; would need backslash-unescaping
   in the parser to even reach the comparison meaningfully).
 
+### 16. Round 4: the compensating-error class is CLOSED; one parser-level miss remains, tracked outside this lane
+
+The round-4 adversarial review answered the structural question directly:
+what information is present on both sides of a `cvtsudoers` member and
+discarded by both? At the member level, after rounds 1-3 (value, type key,
+negation), the answer is NOTHING - it enumerated every JSON path in the
+committed corpus and every member key the real tool emits, and could not
+construct an input where both projectors agree while RuleSteward is wrong.
+**The compensating-error class that regenerated in rounds 1 and 2 (see
+sections 10 and 14) did NOT regenerate in round 4.** `oracle.rs` needed no
+further change this round - only three new corpus scenarios and two xfail
+entries.
+
+**The one miss found is a `rulesteward-core` parser bug, not an `oracle.rs`
+one:** `!#1000 ALL = ALL` is accepted by real `visudo` (`parsed OK`,
+`{"userid": 1000, "negated": true}`), but
+`rulesteward_sudoers::parser::parse` classifies the WHOLE LINE `Malformed` -
+confirmed directly. `oracle.rs`'s `tag_member` is RIGHT
+(`tag_member("!#1000", User)` yields `"!userid:1000"`); it is simply never
+handed that token, because the line never becomes a `UserSpec` at all
+(`project_ast` sees `tuple_count=0`, every list empty).
+
+**Why it survived three rounds of unit tests:** every round-3 negation and
+type-tag unit test builds its `SudoersFile` BY HAND
+(`file_for("!%wheel")`, `users: vec!["!alice"]`, `Cmnd("!ALL")`). These prove
+the PROJECTOR handles a negated/tagged token; they never ask whether the
+PARSER can actually PRODUCE that token from real sudoers text. A hand-built
+AST supplies its own input, so a parser-level gap underneath is invisible to
+it. New scenarios `accept-negated-user` (`!alice ALL = ALL`) and
+`accept-negated-host` (`alice !ALL = /bin/ls`) close this gap for the
+user/host negation mark specifically - both are real, parser-produced,
+live-captured, and confirmed to project cleanly (no xfail) - giving that
+mark its first end-to-end (parser -> captured-oracle) coverage, which was
+previously zero. `accept-negated-uid-subject` (`!#1000 ALL = ALL`) is the
+scenario that actually HITS the parser gap; it is L1's first-ever xfail
+entry (see `L1_XFAIL` in the Tier-1 test) plus a new `L3_XFAIL` entry (0
+tuples vs 1).
+
+**`! !` (whitespace-separated bangs) is a syntax error; glued `!!` is not -
+confirmed live, all three images** (`alice ALL = ! !/usr/bin/su` and
+`alice ALL = ! !` both rc 1; `alice ALL = !!/usr/bin/su` rc 0). Real sudo's
+lexer therefore matches the bang-run as a single CONTIGUOUS token before
+applying parity. This upgrades the Tier-1 test's `resolve_bang_run` (a
+contiguous `take_while` + `trim_start`) from an approximation to an EXACT
+model of the grammar - there is no wider "whitespace-tolerant bang sequence"
+case it is missing. See the Tier-1 test's module doc "Negation" section.
+
+**Root cause of the parser bug, drafted here as a tracked issue (not
+filed):**
+
+- `rulesteward_core::comment::comment_index`'s `prev_allows_uid` byte-set
+  (`crates/rulesteward-core/src/comment.rs:149-155`) does not include `b'!'`.
+  In `!#1000`, the byte immediately before `#` is `!`, which is not in the
+  set, so `#` is read as a comment start; the rest of the line is stripped,
+  and the lone `!` has nothing after it to complete a `user host = command`
+  spec, so the whole line becomes `Malformed`.
+- **The byte-set cannot simply add `b'!'`.** `crates/rulesteward-sudoers/src/lints/tokens/mod.rs:384-388`
+  records the EXISTING exclusion of `!` as deliberate and verified, but for a
+  DIFFERENT `!`: `Defaults!<cmnd>` scope-binding syntax, where
+  `Defaults!#1000` really IS rc 1 in real `visudo`, and treating that `#` as
+  a comment start (hence stripping it and rejecting the line) really is
+  correct. One byte-set, two INDEPENDENT meanings of the character `!`
+  (negation-operator prefix vs. `Defaults` scope-bind operator), with
+  OPPOSITE right answers for whether the following `#` starts a comment.
+  Blindly adding `b'!'` to the set would fix `!#1000` but regress the pinned
+  `f02_defaults_cmnd_scope_hash_*` non-regression tests for `Defaults!#1000`.
+- **The correct fix is CONTEXT-SENSITIVE**: `comment_index` (or its caller)
+  needs to know WHICH grammatical position it is scanning (a `User_List`/
+  `Host_List` subject vs. a `Defaults` scope-bind target) before deciding
+  whether a preceding `!` permits a following `#` to be a UID rather than a
+  comment start. This is a `rulesteward-core` change (the byte-set lives in
+  a shared crate used by multiple lint passes), not a `rulesteward-sudoers`
+  or `oracle.rs` one - out of this lane's claim, same as sections 11 and 15.
+- **`%#1000` already works** (confirmed: the byte before `#` is `%`, which
+  IS in `prev_allows_uid`), so even a NEGATED-gid row (`!%#1000 ALL = ALL`)
+  would have missed this specific bug - the byte immediately before `#` is
+  what matters, and `!%` ends in `%`, not `!`. This is why
+  `accept-negated-uid-subject` uses a bare `#uid` form, not a `%#gid` one, to
+  isolate the exact byte sequence that trips the exclusion.
+
+Floors recomputed from the corpus (not adjusted to fit): `SCENARIO_FLOOR`
+38 -> 41 (33 accept + 8 reject). `L3_CLEAN_FLOOR` 78 -> 84 (99 candidates -
+1 el8 scope-out - 14 xfail hits [5 scenarios x 3 targets, minus the 1
+scope-out/xfail overlap]). L1's floor formula had a LATENT bug - it never
+subtracted `L1_XFAIL` contributions, correct only because the table had
+always been empty - fixed in the same commit that gave it its first entry.
+Sentinels with the fix landed and all three new scenarios captured: L1=120,
+L2=117, L3=84 (all match their floors exactly), 27/27 tests green.
+
+Self-verified (per this project's audit-subagent discipline): re-captured
+with the committed `capture_sudoers.sh` and diffed all 38 pre-existing
+scenarios' files against the fresh run - 0 differences (unaffected by adding
+the 3 new ones). The 3 new scenarios' own captured JSON (`visudo`/
+`cvtsudoers` rc and stdout, all three targets) matches the live probes this
+section's findings are grounded on, confirmed directly before being
+committed.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -501,7 +600,11 @@ added 2026-07-26 - see section 5), `alias-cycle` (L2 xfail, added
 2026-07-26 - see section 5), `negated-command`, `negated-all`,
 `host-netgroup`, `host-networkaddr`, `gid-subject`, `uid-leading-zero` (all
 six added 2026-07-27, none xfailed - bugs to fix, not accepted divergences -
-see section 10).
+see section 10), `negated-user`, `negated-host` (added 2026-07-27, round 4,
+none xfailed - project cleanly, first end-to-end negation-mark coverage -
+see section 16), `negated-uid-subject` (added 2026-07-27, round 4; L1 xfail
+- a tracked `rulesteward-core` parser bug, drafted but not filed - AND L3
+xfail; see section 16).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
