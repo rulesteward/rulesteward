@@ -38,10 +38,16 @@
 //!   commands.
 //! - `project_ast(file: &rulesteward_sudoers::ast::SudoersFile) ->
 //!   StructureProjection`: `CmndItem::All` projects to the literal string
-//!   `"ALL"`; a subject/host token's sigil (`%group`, `+netgroup`, `#uid`, a
-//!   leading `!` negation) must be STRIPPED to its bare value (a single optional
-//!   leading `!`, then a single optional leading sigil among `%+#`) so it is
-//!   comparable to `cvtsudoers`' bare values below.
+//!   `"ALL"`. Every subject/host/COMMAND token's leading `!` negation is
+//!   stripped first (widened 2026-07-27: the original contract stripped `!`
+//!   from subjects/hosts only, so a negated command like `!/usr/bin/su` kept
+//!   its `!` on the AST side while `cvtsudoers` reports `{"command":
+//!   "/usr/bin/su", "negated": true}` - an unxfailed divergence that panics
+//!   the instant a corpus row exercises it; `accept-negated-command` /
+//!   `accept-negated-all` are two such rows). After the `!` strip, a
+//!   subject/host token ALSO gets the type tag described in "Type tags"
+//!   below; a command token does not (commands are not implicated in the
+//!   type-tag finding - see that section).
 //! - `project_cvtsudoers_json(json: &serde_json::Value) ->
 //!   Result<StructureProjection, CvtsudoersProjectionError>`: fail-closed on any
 //!   `User_Specs[]` element whose `User_List`/`Host_List`/`Cmnd_Specs->Commands`
@@ -50,14 +56,91 @@
 //!   aliases, matching this crate's own un-expanded AST):
 //!     - `User_List[]`: `{"username": S}` / `{"useralias": S}` (an unexpanded
 //!       `User_Alias`/`Cmnd_Alias` reference keeps the alias NAME here) /
-//!       `{"usergroup": S}` (bare, no `%`) / `{"netgroup": S}` (bare, no `+`) /
-//!       `{"userid": N}` (a JSON NUMBER, no `#` - stringify it).
-//!     - `Host_List[]`: `{"hostname": S}` / `{"hostalias": S}`.
+//!       `{"usergroup": S}` (bare, no `%`) / `{"usergid": N}` (a JSON NUMBER;
+//!       widened 2026-07-27, `%#gid` subjects - `accept-gid-subject`) /
+//!       `{"netgroup": S}` (bare, no `+`) / `{"userid": N}` (a JSON NUMBER,
+//!       no `#` - canonical decimal, see "uid/gid canonicalization" below).
+//!     - `Host_List[]`: `{"hostname": S}` / `{"hostalias": S}` /
+//!       `{"netgroup": S}` (widened 2026-07-27, `+netgroup` HOSTS -
+//!       `accept-host-netgroup`) / `{"networkaddr": S}` (widened 2026-07-27,
+//!       an IP/CIDR host - `accept-host-networkaddr`). `print_member_json_int`
+//!       (the real `cvtsudoers` source) keys `typestr` on member TYPE, not on
+//!       which list it appears in, so `netgroup` legitimately appears in BOTH
+//!       `User_List` and `Host_List`.
 //!     - `Cmnd_Specs[].Commands[]`: `{"command": S}` / `{"cmndalias": S}`.
 //!
-//!   Extract the bare string value regardless of which key is present (ignore
-//!   any companion `"negated": true`, which mirrors this test's own sigil-strip
-//!   normalization on the AST side - see `project_ast` above).
+//!   Extract the bare string value regardless of which key is present, then
+//!   apply the SAME type tag described below (ignore any companion
+//!   `"negated": true`, which mirrors this test's own `!`-strip normalization
+//!   on the AST side - see `project_ast` above).
+//!
+//! ## Type tags (added 2026-07-27)
+//!
+//! Both projectors previously reduced every subject/host to its bare value
+//! ONLY, discarding which of `cvtsudoers`' distinct member-type keys (or, on
+//! the AST side, which sigil) produced it. That erasure is SYMMETRIC -
+//! present on both sides, thrown away by both projectors - so it cancels
+//! exactly: a `project_ast` that dropped a sigil ENTIRELY (e.g. read `%wheel`
+//! as if it were the plain user `wheel`) would still MATCH `cvtsudoers`'
+//! `{"usergroup": "wheel"}` once both sides reduce to the bare string
+//! `"wheel"`. Measured against the real corpus: this made
+//! `accept-group-subject` (`%wheel`), `accept-uid-subject` (`#1000`), and
+//! `accept-netgroup-subject` (`+admins`) prove nothing about sigil handling -
+//! a `project_ast` that dropped any of the three sigils entirely would still
+//! have passed L3.
+//!
+//! Fix: a subject/host value derived from a sigil carries a `"<type>:"`
+//! prefix; a bare (no-sigil) value does not:
+//!   - `%group` (users only) -> `"usergroup:<group>"`.
+//!   - `%#gid` (users only) -> `"usergid:<gid>"` - BOTH sigils stripped, not
+//!     just the first (see "uid/gid canonicalization" below; the original
+//!     one-sigil `strip_sigil` left a stray `#` in place).
+//!   - `+netgroup` (users AND hosts) -> `"netgroup:<name>"`.
+//!   - `#uid` (users only) -> `"userid:<uid>"`.
+//!   - a bare token (a plain username/hostname, the `ALL` keyword, an
+//!     unexpanded `User_Alias`/`Host_Alias` reference, or a `networkaddr`
+//!     host) -> UNTAGGED, the bare value itself.
+//!
+//! Deliberately narrower than a full fix: distinguishing a plain name from an
+//! alias reference requires cross-referencing the file's OWN alias
+//! definitions (`ast.rs`: "an alias reference is an uppercase token equal to
+//! a defined alias name"), which neither projector does today and which this
+//! session does not add - `accept-user-alias-basic` (`ADMINS`, a `User_Alias`
+//! reference) therefore remains exercised only by the SAME erasure risk this
+//! fix does not close for aliases, and is NOT required to gain a tag. On the
+//! `cvtsudoers` side this means `username` AND `useralias` collapse to the
+//! SAME untagged form (never `"username:"` / `"useralias:"`), matching the
+//! AST side's inability to tell them apart. `networkaddr` similarly stays
+//! untagged: it has no leading sigil, so distinguishing it from a plain
+//! hostname needs shape analysis (does the token look like an IP/CIDR?) that
+//! this session does not add either.
+//!
+//! The minimum-viable proof this closes: a `project_ast` that reads `%wheel`
+//! as `"wheel"` (dropping the sigil) now MISMATCHES a correct `project_ast`
+//! reading it as `"usergroup:wheel"` - `assert_ne!` on the two, unit-tested
+//! below.
+//!
+//! Tags/runas are a related, NARROWER erasure this session does NOT close:
+//! `CmndSpec::runas` / `CmndSpec::tags` are read by NEITHER projector, nor are
+//! their oracle counterparts (`runasusers`/`runasgroups`, `Options`), so
+//! `alice ALL = NOPASSWD: /bin/ls` projects identically to `alice ALL =
+//! /bin/ls`, and `carol ALL = (OPS) /bin/ls` identically to `carol ALL =
+//! /bin/ls`. Three corpus scenarios exist to exercise tags/runas
+//! (`accept-nopasswd-specific`, `accept-runas-alias`, `accept-runas-noexec`)
+//! and none is a real regression test for that axis. Noted, not fixed: unlike
+//! the users/hosts type tag above, closing this needs a THIRD
+//! `StructureProjection` axis (not a same-shape widening of `users`/`hosts`),
+//! which is a bigger surface than this dispatch's scope; left for a follow-up.
+//!
+//! ## uid/gid canonicalization (added 2026-07-27)
+//!
+//! `sudo_strtoid` parses a `#uid`/`%#gid` subject in BASE 10, so `#0100` means
+//! uid 100, and `cvtsudoers` reports the canonical decimal as a JSON NUMBER
+//! (`{"userid": 100}`, no leading zero - `accept-uid-leading-zero`). A textual
+//! sigil-strip alone (the original contract) produces `"0100"` - matching
+//! neither the canonical value nor, once type tags exist, the right type.
+//! Both projectors must CANONICALIZE (parse as an integer, re-render in
+//! decimal) rather than only strip the sigil text.
 //!
 //! # Three layers
 //!
@@ -137,22 +220,36 @@ use serde_json::Value;
 const SENTINEL: &str = "RS-DIFF-SUDOERS";
 
 /// Named floor, derived from the corpus actually captured: 22 `accept-*` + 8
-/// `reject-*` scenario directories captured 2026-07-25, plus 2 more
-/// `accept-*` scenarios (`accept-undefined-alias-ref`, `accept-alias-cycle`)
-/// added 2026-07-26 to give L2 a real (non-vacuous) divergence - see the
-/// module doc's L2 section.
-const SCENARIO_FLOOR: usize = 32;
+/// `reject-*` scenario directories captured 2026-07-25; 2 more `accept-*`
+/// scenarios (`accept-undefined-alias-ref`, `accept-alias-cycle`) added
+/// 2026-07-26 to give L2 a real (non-vacuous) divergence - see the module
+/// doc's L2 section; 6 more `accept-*` scenarios
+/// (`accept-negated-command`, `accept-negated-all`, `accept-host-netgroup`,
+/// `accept-host-networkaddr`, `accept-gid-subject`,
+/// `accept-uid-leading-zero`) added 2026-07-27 to ground the "Type tags" /
+/// "uid/gid canonicalization" findings in the module doc - see there.
+const SCENARIO_FLOOR: usize = 38;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
-/// comparisons. Measured: 24 accept scenarios x 3 targets = 72 candidate
-/// pairs; minus 1 scoped-out (el8 `SELinux` invalid JSON) = 71 attempted;
-/// minus 11 xfail hits (4 scenarios x 3 targets, minus the 1 el8
-/// scope-out/xfail overlap - see `L3_XFAIL`) = 60 clean structural matches.
-/// (The 2 scenarios added 2026-07-26 for L2 also flow through L3 as ordinary
-/// clean matches - confirmed directly against `parser::parse`: neither
-/// produces a `Malformed` line, and neither token shape collides with any
-/// known L3 divergence.)
-const L3_CLEAN_FLOOR: usize = 60;
+/// comparisons, once `project_ast` / `project_cvtsudoers_json` correctly
+/// implement the frozen contract above (type tags, `!`-stripped commands,
+/// uid/gid canonicalization, and the widened `Host_List`/`User_List` key
+/// sets) - NOT reachable by the implementation this floor was written
+/// against, which is the point: this session's finding is that six
+/// additional real scenarios were silently uncovered by L3 (either passing
+/// vacuously via the type-tag erasure, or never reaching L3 at all due to an
+/// unrecognized key / an unstripped command negation), and the floor states
+/// what a correct implementation must reach, not what today's does.
+///
+/// Measured: 30 accept scenarios x 3 targets = 90 candidate pairs; minus 1
+/// scoped-out (el8 `SELinux` invalid JSON) = 89 attempted; minus 11 xfail
+/// hits (4 scenarios x 3 targets, minus the 1 el8 scope-out/xfail overlap -
+/// see `L3_XFAIL`, unchanged by this session's 6 new scenarios, none of
+/// which are xfailed) = 78 clean structural matches. (72 -> 90 candidates is
+/// exactly the 6 new scenarios x 3 targets = 18 added, all landing in the
+/// "clean" bucket once fixed, hence 60 -> 78 with no other arithmetic
+/// changing.)
+const L3_CLEAN_FLOOR: usize = 78;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -440,12 +537,15 @@ fn classify_visudo_is_fail_closed_on_an_unknown_rc() {
 
 // ---------------------------------------------------------------------------
 // Direct unit coverage of `project_ast` / `project_cvtsudoers_json` -
-// independent of the corpus. The corpus itself never exercises the fail-closed
-// `Err` arm of `project_cvtsudoers_json` (every captured document uses one of
-// the 9 measured key shapes) or the `!`-negation clause of either projector
-// (no corpus row contains a `!`-negated subject outside a `Defaults` line), so
-// an implementation that never constructs `CvtsudoersProjectionError`, or that
-// strips only `%+#` and never `!`, would pass the whole corpus-driven suite.
+// independent of the corpus (though six new 2026-07-27 corpus scenarios
+// reinforce several of these; see module doc). Neither the fail-closed `Err`
+// arm of `project_cvtsudoers_json`, the `!`-negation clause on any token
+// kind, the users/hosts type tag, nor uid/gid canonicalization was ever
+// exercised by unit test before 2026-07-27, so an implementation that never
+// constructs `CvtsudoersProjectionError`, that strips only `%+#` and never
+// `!`, that never tags a sigil'd subject/host, or that textually strips a
+// uid/gid sigil instead of canonicalizing it, would still have passed the
+// whole corpus-driven suite as it stood then.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -475,19 +575,250 @@ fn project_ast_strips_negation_and_sigil_from_users_and_hosts() {
     };
 
     let proj = project_ast(&file);
+    // "!alice" has no sigil after the `!` strip, so it stays untagged;
+    // "!%wheel" has the `%` sigil, so it now carries the `usergroup:` type
+    // tag (updated 2026-07-27 - see the module doc's "Type tags" section;
+    // this is a STRENGTHENING of this same test, not a new one, since the
+    // old bare "wheel" expectation is no longer the correct contract).
     assert!(
-        sorted_eq(&proj.users, &["alice".to_string(), "wheel".to_string()]),
+        sorted_eq(
+            &proj.users,
+            &["alice".to_string(), "usergroup:wheel".to_string()]
+        ),
         "a leading `!` negation must be stripped from USERS (in addition to \
-         the `%` sigil already stripped), got {:?}",
+         the `%` sigil, which now yields a `usergroup:` type tag rather than \
+         a bare value), got {:?}",
         proj.users
     );
     // A projector with two independent strip helpers (one for users, one for
     // hosts) could strip `!` on the user side and forget it on the host
-    // side; the users assertion above cannot see that.
+    // side; the users assertion above cannot see that. "!web1" has no
+    // recognized host sigil, so it stays untagged.
     assert!(
         sorted_eq(&proj.hosts, &["web1".to_string()]),
         "a leading `!` negation must ALSO be stripped from HOSTS, got {:?}",
         proj.hosts
+    );
+}
+
+#[test]
+fn project_ast_strips_negation_from_commands() {
+    // MISS (review, 2026-07-27): `!`-negation was stripped from subjects and
+    // hosts but NOT from commands, even though real sudoers allows negating a
+    // command (`alice ALL = !/usr/bin/su`) and `cvtsudoers` reports it as
+    // `{"command": "/usr/bin/su", "negated": true}` - confirmed live against
+    // all three images. `accept-negated-command` / `accept-negated-all` are
+    // now committed corpus rows for this; both unit-pinned here too since the
+    // corpus alone (a single, possibly-panic-aborted L3 run) cannot cleanly
+    // attribute a failure to this ONE cause among several new ones.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file_for = |cmnd: CmndItem| rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: "alice ALL = X\n".to_string(),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..13,
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec!["alice".to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd,
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    let negated_path = project_ast(&file_for(CmndItem::Cmnd("!/usr/bin/su".to_string())));
+    assert_eq!(
+        negated_path.commands,
+        vec!["/usr/bin/su".to_string()],
+        "a leading `!` on a COMMAND token must be stripped like it already is \
+         for subjects/hosts, got {:?}",
+        negated_path.commands
+    );
+
+    // `parser.rs:936` compares the raw token literally against `ALL`, so
+    // `!ALL` parses as `CmndItem::Cmnd("!ALL")`, never `CmndItem::All` -
+    // confirmed directly against `parser::parse`. The `!` strip must still
+    // recover the bare `"ALL"` from that raw `Cmnd` token.
+    let negated_all = project_ast(&file_for(CmndItem::Cmnd("!ALL".to_string())));
+    assert_eq!(
+        negated_all.commands,
+        vec!["ALL".to_string()],
+        "a leading `!` on the literal `Cmnd(\"!ALL\")` token must be \
+         stripped to recover the bare ALL, got {:?}",
+        negated_all.commands
+    );
+}
+
+#[test]
+fn project_ast_tags_typed_user_subjects_but_not_plain_names() {
+    // The minimum-viable proof from the module doc's "Type tags" section: a
+    // sigil'd subject must project to something a plain name does NOT, or a
+    // `project_ast` that drops the sigil entirely passes L3 vacuously against
+    // `cvtsudoers`' own type-carrying JSON key. See `accept-group-subject`
+    // (`%wheel`), `accept-netgroup-subject` (`+admins`),
+    // `accept-uid-subject` (`#1000`) - all REAL, already-committed corpus
+    // rows this finding applies to.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file_for = |user: &str| rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: format!("{user} ALL = ALL\n"),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..(user.len() + 11),
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec![user.to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::All,
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    let group = project_ast(&file_for("%wheel"));
+    assert_eq!(group.users, vec!["usergroup:wheel".to_string()]);
+
+    let netgroup = project_ast(&file_for("+admins"));
+    assert_eq!(netgroup.users, vec!["netgroup:admins".to_string()]);
+
+    let userid = project_ast(&file_for("#1000"));
+    assert_eq!(userid.users, vec!["userid:1000".to_string()]);
+
+    let plain = project_ast(&file_for("wheel"));
+    assert_eq!(
+        plain.users,
+        vec!["wheel".to_string()],
+        "a PLAIN username token must stay untagged"
+    );
+
+    // The exact inequality the module doc names as the minimum-viable
+    // killing assertion: a project_ast that silently dropped the `%` sigil
+    // would make these two calls indistinguishable.
+    assert_ne!(
+        group.users, plain.users,
+        "%wheel (a group subject) must project to something a plain user \
+         named \"wheel\" does not - got group={:?} plain={:?}",
+        group.users, plain.users
+    );
+}
+
+#[test]
+fn project_ast_canonicalizes_and_tags_uid_and_gid_subjects() {
+    // MISS (review, 2026-07-27), sharper than the plain userid case above:
+    // `#0100` (leading zero) and `%#1000` (a compound sigil - group-by-gid)
+    // both need canonicalization AND (for the gid case) full sigil-stripping
+    // in addition to tagging. `accept-uid-leading-zero` / `accept-gid-subject`
+    // are the corresponding committed corpus rows.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file_for = |user: &str| rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: format!("{user} ALL = ALL\n"),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..(user.len() + 11),
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec![user.to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec!["ALL".to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::All,
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    // sudo_strtoid parses base 10: `#0100` means uid 100, matching
+    // cvtsudoers' `{"userid": 100}` (a JSON number, no leading zero) - NOT
+    // the textual "0100" a naive strip produces.
+    let leading_zero = project_ast(&file_for("#0100"));
+    assert_eq!(
+        leading_zero.users,
+        vec!["userid:100".to_string()],
+        "a leading-zero uid must be canonicalized to its decimal value, got {:?}",
+        leading_zero.users
+    );
+
+    // `%#1000`: BOTH sigils (`%` then `#`) must be stripped, not just the
+    // first - the original `strip_sigil` stopped after one and would leave a
+    // stray `#` in place (`"#1000"`), which is wrong under BOTH the old
+    // bare-value contract and the new tagged one.
+    let gid = project_ast(&file_for("%#1000"));
+    assert_eq!(
+        gid.users,
+        vec!["usergid:1000".to_string()],
+        "a %#gid subject must have BOTH sigils stripped and be tagged \
+         usergid, got {:?}",
+        gid.users
+    );
+}
+
+#[test]
+fn project_ast_tags_host_netgroup_but_not_networkaddr() {
+    // `+netgroup` is a valid HOST token too (not just a subject), and is
+    // symmetric with the user-side netgroup finding above: a `project_ast`
+    // that dropped the `+` would pass vacuously against `cvtsudoers`'
+    // `{"netgroup": S}` Host_List shape - added ALONGSIDE the `Host_List` key
+    // widening below (this session's OWN new `accept-host-netgroup` corpus
+    // row would otherwise reintroduce the exact erasure this dispatch closes
+    // for the user side). `192.168.0.0/24`-style network addresses have no
+    // leading sigil, so they are NOT tagged (see module doc) -
+    // `accept-host-networkaddr` stays untagged on both sides.
+    use rulesteward_sudoers::ast::{
+        CmndItem, CmndSpec, HostGroup, LineKind, LogicalLine, UserSpec,
+    };
+
+    let file_for = |host: &str| rulesteward_sudoers::ast::SudoersFile {
+        path: PathBuf::from("/etc/sudoers"),
+        source: format!("alice {host} = ALL\n"),
+        lines: vec![LogicalLine {
+            line: 1,
+            span: 0..(host.len() + 12),
+            kind: LineKind::UserSpec(UserSpec {
+                users: vec!["alice".to_string()],
+                host_groups: vec![HostGroup {
+                    hosts: vec![host.to_string()],
+                    cmnd_specs: vec![CmndSpec {
+                        runas: None,
+                        tags: vec![],
+                        cmnd: CmndItem::All,
+                    }],
+                }],
+            }),
+        }],
+    };
+
+    let netgroup = project_ast(&file_for("+webservers"));
+    assert_eq!(netgroup.hosts, vec!["netgroup:webservers".to_string()]);
+
+    let networkaddr = project_ast(&file_for("192.168.0.0/24"));
+    assert_eq!(
+        networkaddr.hosts,
+        vec!["192.168.0.0/24".to_string()],
+        "a network-address host must stay UNTAGGED (no leading sigil to \
+         derive a type from), got {:?}",
+        networkaddr.hosts
     );
 }
 
@@ -507,6 +838,107 @@ fn project_cvtsudoers_json_ignores_negated_companion_flag() {
         proj.users,
         vec!["alice".to_string()],
         "a companion \"negated\": true must not change the extracted bare value"
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_tags_typed_user_list_shapes_but_not_username_or_useralias() {
+    // The cvt-side half of the module doc's "Type tags" finding: `usergroup`
+    // / `netgroup` / `userid` must carry their type in the extracted value,
+    // while `username` and `useralias` COLLAPSE to the same untagged form
+    // (the AST side cannot tell a plain name from an alias reference without
+    // cross-referencing the file's own alias definitions, which this session
+    // does not add - see the module doc for the full reasoning).
+    let value_for = |elem: serde_json::Value| {
+        let doc = serde_json::json!({
+            "User_Specs": [{
+                "User_List": [elem],
+                "Host_List": [{ "hostname": "ALL" }],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+            }]
+        });
+        project_cvtsudoers_json(&doc)
+            .expect("known key shapes must not error")
+            .users
+    };
+
+    assert_eq!(
+        value_for(serde_json::json!({ "usergroup": "wheel" })),
+        vec!["usergroup:wheel".to_string()]
+    );
+    assert_eq!(
+        value_for(serde_json::json!({ "netgroup": "admins" })),
+        vec!["netgroup:admins".to_string()]
+    );
+    assert_eq!(
+        value_for(serde_json::json!({ "userid": 100 })),
+        vec!["userid:100".to_string()]
+    );
+    assert_eq!(
+        value_for(serde_json::json!({ "username": "alice" })),
+        vec!["alice".to_string()],
+        "a plain username must stay untagged"
+    );
+    assert_eq!(
+        value_for(serde_json::json!({ "useralias": "ADMINS" })),
+        vec!["ADMINS".to_string()],
+        "an unexpanded alias reference must collapse to the SAME untagged \
+         form as a plain username, not gain its own \"useralias:\" tag - \
+         the AST side cannot tell the two apart without alias resolution, \
+         which is out of this session's scope (see module doc)"
+    );
+}
+
+#[test]
+fn project_cvtsudoers_json_recognizes_usergid_key() {
+    // `%#gid` subjects (a group-by-gid, e.g. `%#1000`) are reported by
+    // `cvtsudoers` as `{"usergid": N}` - confirmed live against all three
+    // images - which the original User_List key set did not recognize at
+    // all. `accept-gid-subject` is the corresponding committed corpus row.
+    let doc = serde_json::json!({
+        "User_Specs": [{
+            "User_List": [{ "usergid": 1000 }],
+            "Host_List": [{ "hostname": "ALL" }],
+            "Cmnd_Specs": [{ "Commands": [{ "command": "ALL" }] }]
+        }]
+    });
+    let proj = project_cvtsudoers_json(&doc).expect("usergid must be a recognized User_List key");
+    assert_eq!(proj.users, vec!["usergid:1000".to_string()]);
+}
+
+#[test]
+fn project_cvtsudoers_json_recognizes_host_netgroup_and_networkaddr_shapes() {
+    // `+netgroup` and IP/CIDR host tokens are reported by `cvtsudoers` as
+    // `{"netgroup": S}` / `{"networkaddr": S}` in Host_List - confirmed live
+    // against all three images - which the original Host_List key set (just
+    // `hostname` / `hostalias`) did not recognize at all.
+    // `print_member_json_int` (the real `cvtsudoers` source) keys `typestr`
+    // on member TYPE, not on which list it appears in, so `netgroup`
+    // legitimately appears in BOTH `User_List` (already recognized) and
+    // `Host_List` (widened here). `accept-host-netgroup` /
+    // `accept-host-networkaddr` are the corresponding committed corpus rows.
+    let host_value_for = |elem: serde_json::Value| {
+        let doc = serde_json::json!({
+            "User_Specs": [{
+                "User_List": [{ "username": "alice" }],
+                "Host_List": [elem],
+                "Cmnd_Specs": [{ "Commands": [{ "command": "/bin/ls" }] }]
+            }]
+        });
+        project_cvtsudoers_json(&doc)
+            .expect("netgroup/networkaddr must be recognized Host_List keys")
+            .hosts
+    };
+
+    assert_eq!(
+        host_value_for(serde_json::json!({ "netgroup": "webservers" })),
+        vec!["netgroup:webservers".to_string()],
+        "a HOST netgroup must be tagged the same way a USER netgroup is"
+    );
+    assert_eq!(
+        host_value_for(serde_json::json!({ "networkaddr": "192.168.0.0/24" })),
+        vec!["192.168.0.0/24".to_string()],
+        "a network-address host must stay UNTAGGED (see module doc)"
     );
 }
 

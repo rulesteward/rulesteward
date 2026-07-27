@@ -6,10 +6,12 @@ re-derivation - there is no second, separately-maintained capture path).
 
 ## What is captured
 
-32 scenario directories (24 `accept-*`, 8 `reject-*`) - 30 captured
+38 scenario directories (30 `accept-*`, 8 `reject-*`) - 30 captured
 2026-07-25, plus 2 more `accept-*` scenarios added 2026-07-26 (review found
 L2's original xfail table was empty for the wrong reason; see section 5),
-each holding:
+plus 6 more `accept-*` scenarios added 2026-07-27 (review found the users/
+hosts type tag, command negation, and uid/gid canonicalization findings;
+see section 10), each holding:
 
 - `input.sudoers` - the raw sudoers source, fed unchanged over stdin.
 - `el8.json` / `el9.json` / `el10.json` - one JSON document per target,
@@ -280,6 +282,107 @@ against the committed corpus. **128 of 128 byte-identical.** This confirms
 the corpus is genuinely oracle-derived (not hand-edited after capture) and
 that the `rs-oracle{8,9,10}` images have not drifted since capture.
 
+### 10. Four findings from the impl-aware review (2026-07-27), grounded against real sudo 1.9.17p2 and `cvtsudoers_json.c`
+
+All four probed live against all three images before being acted on; see the
+Tier-1 test's module doc "Type tags" and "uid/gid canonicalization" sections
+for the frozen-contract text these ground.
+
+- **Command negation was never stripped.** `alice ALL = !/usr/bin/su` (rc 0,
+  `parsed OK`): `cvtsudoers` reports `{"command": "/usr/bin/su", "negated":
+  true}`, but the original contract only stripped `!` from subjects/hosts, so
+  `project_ast` kept the literal `"!/usr/bin/su"`. Same for `!ALL`: `parser.rs`
+  compares the raw token literally against `ALL`, so `!ALL` parses as
+  `CmndItem::Cmnd("!ALL")`, never `CmndItem::All`. New scenarios:
+  `accept-negated-command`, `accept-negated-all`.
+- **`Host_List` rejected shapes the tool really emits.** `alice +webservers =
+  /bin/ls` and `alice 192.168.0.0/24 = /bin/ls` both parse (rc 0);
+  `cvtsudoers` emits `{"netgroup": "webservers"}` / `{"networkaddr":
+  "192.168.0.0/24"}` in `Host_List`, neither of which the original two-key set
+  (`hostname`/`hostalias`) recognized.
+  `print_member_json_int` (the real `cvtsudoers` source) keys `typestr` on
+  member TYPE, not on which list it is in, so `netgroup` - already accepted in
+  `User_List` - legitimately appears in `Host_List` too. New scenarios:
+  `accept-host-netgroup`, `accept-host-networkaddr`.
+- **Textual sigil-strip vs sudo's typed parse.** `#0100 ALL = ALL`:
+  `cvtsudoers` reports `{"userid": 100}` (`sudo_strtoid` parses base 10, JSON
+  number, no leading zero), but a textual strip of the corpus's original
+  contract produced `"0100"`. `%#1000 ALL = ALL` (a compound sigil, group-by-
+  gid) compounds this: `cvtsudoers` reports `{"usergid": 1000}` (a key the
+  original User_List set did not recognize at all), and even with that
+  widened, the original `strip_sigil` stopped after ONE sigil, leaving a
+  stray `#` (`"#1000"`, not `"1000"`). New scenarios: `accept-uid-leading-
+  zero`, `accept-gid-subject`.
+- **Symmetric erasure: the compensating-error class.** The member TYPE is
+  present on BOTH sides - as the sigil in the AST, as the JSON KEY NAME in
+  `cvtsudoers` - and both projectors threw it away, reducing everything to a
+  bare value. A `project_ast` that dropped a sigil ENTIRELY (e.g. read
+  `%wheel` as the plain user `wheel`) would still match `cvtsudoers`'
+  `{"usergroup": "wheel"}`, since both sides reduce to `"wheel"`. This made
+  `accept-group-subject`, `accept-uid-subject`, and `accept-netgroup-subject`
+  (all THREE pre-existing corpus rows) prove nothing about sigil handling.
+  Fixed by requiring a `"<type>:"` prefix on any sigil-derived subject/host
+  value (`usergroup:` / `usergid:` / `netgroup:` / `userid:`), while a bare
+  (no-sigil) value - including an unexpanded alias reference, which cannot be
+  told apart from a plain name without cross-referencing the file's own alias
+  definitions - stays untagged. `accept-user-alias-basic` (the alias case) is
+  therefore DELIBERATELY left exercised only by the same residual erasure;
+  see the module doc for the full reasoning on why alias resolution and
+  `networkaddr` shape-detection are out of this session's scope. A related,
+  narrower erasure - `CmndSpec::runas` / `CmndSpec::tags` are read by NEITHER
+  projector, so `accept-nopasswd-specific` / `accept-runas-alias` /
+  `accept-runas-noexec` currently prove nothing about tags/runas either - is
+  noted in the module doc but NOT fixed this session (a third
+  `StructureProjection` axis, not a same-shape widening of `users`/`hosts`).
+
+`L3_CLEAN_FLOOR` corrected 60 -> 78 (90 candidates - 1 el8 scope-out - 11
+xfail hits [unchanged - none of the 6 new scenarios are xfailed; they are
+bugs to fix, not accepted divergences] = 78). This floor is NOT reachable by
+the implementation this session's corpus was checked against - the six new
+scenarios are deliberately either unrecognized (Err, aborting the L3 test
+with a panic) or produce a wrong bare/untagged value (a clean assertion
+mismatch) until `project_ast` / `project_cvtsudoers_json` are updated to the
+widened contract.
+
+### 11. Two leads for the corpus backlog, not fixed (parser-side, not `oracle.rs`)
+
+- **`@include` expansion.** `cvtsudoers` follows includes and lands the
+  included user-specs in the SAME top-level `User_Specs` array, while
+  RuleSteward's AST records a `LineKind::Include` and projects nothing for it
+  - a loud L3 mismatch when it occurs, but no corpus row exercises it today.
+- **`%:nonunixgrp ALL = ALL`** (a non-Unix group subject) is classified
+  `Malformed` by `rulesteward_sudoers::parser::parse` ("user specification
+  segment is missing its `= command` part") while real `visudo` accepts it
+  (rc 0, `parsed OK`) and `cvtsudoers` reports `{"nonunixgroup": "nonunixgrp"}`
+  - confirmed directly against both. A genuine RuleSteward PARSER gap (not an
+  `oracle.rs` one) that L1 would catch immediately if a corpus row existed;
+  not added here because fixing or xfailing a parser-level Malformed
+  misclassification is outside this lane's `oracle.rs` claim.
+
+### 12. Confirmed clean by the 2026-07-27 review - recorded so it is not re-audited
+
+Not findings; recorded so a future session does not re-derive them. The
+`cvtsudoers_rc == 0` gate genuinely runs and gates (positive-controlled by
+setting one row's rc to 3 and watching L3 fail at the intended assertion,
+corpus then restored). Zero scenario-id-keyed logic exists in `oracle.rs`
+itself - the four `L3_XFAIL` entries pass on faithfully-projected buggy
+parser output, not a lookup table keyed on the scenario name.
+`classify_visudo` cannot be spoofed by a multi-file `@include`. Commands
+with arguments remain one string on both sides. `tuple_count` counting is
+correct and `TUPLE_COUNT_ANCHORS` does break the `users.len()` coincidence.
+`userid` via `to_string()` is right for canonical decimals and negatives.
+An absent `User_Specs` key correctly projects to 0 tuples.
+
+### 13. Six new 2026-07-27 scenarios re-derived live and diffed byte-for-byte
+
+Self-verified (not just taken on report, per this project's audit-subagent
+discipline): captured a fresh corpus with the committed `capture_sudoers.sh`
+and diffed all 32 pre-existing scenarios' 128 files against it - **128 of 128
+byte-identical** (unaffected by adding the 6 new ones). The 6 new scenarios'
+own captured JSON matches the live probes this section's findings are
+grounded on, verified directly (rc, stdout, and the exact `cvtsudoers` JSON
+shape) for all three targets before being committed.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -292,7 +395,10 @@ see section 8), `defaults-global`, `defaults-negated`, `defaults-scoped-host`,
 `user-list-whitespace-bug` (L3 xfail #538), `uid-subject`, `group-subject`,
 `continuation-line`, `netgroup-subject`, `undefined-alias-ref` (L2 xfail,
 added 2026-07-26 - see section 5), `alias-cycle` (L2 xfail, added
-2026-07-26 - see section 5).
+2026-07-26 - see section 5), `negated-command`, `negated-all`,
+`host-netgroup`, `host-networkaddr`, `gid-subject`, `uid-leading-zero` (all
+six added 2026-07-27, none xfailed - bugs to fix, not accepted divergences -
+see section 10).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
