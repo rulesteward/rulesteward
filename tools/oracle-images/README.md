@@ -93,13 +93,17 @@ Within `rc 1`:
   "REJECT, but silently", and that wording is what seeded a real bug - the
   first draft's capture script treated every silent line, including a bare
   `-D`, as a parse reject. `-D`/`-b`/`-e`/`-f`/`-r`/`--backlog_wait_time`/
-  `--loginuid-immutable`/`--reset-lost` each send their OWN netlink message
-  from inside `setopt()`'s own `case` arm and print nothing when THAT fails
-  under this sandbox's EPERM - so silence for one of these flags is produced
-  identically by a successful parse and by a genuine refusal. Silence is
-  conclusive REJECT evidence only for an add-shaped line (`-w`/`-a`), because
-  a successful parse of one of those is always LOUD (`Error sending add rule
-  data request`) under this sandbox. See
+  `--loginuid-immutable` each send their OWN netlink message from inside
+  `setopt()`'s own `case` arm and print nothing when THAT fails under this
+  sandbox's EPERM - so silence for one of these flags is produced identically
+  by a successful parse and by a genuine refusal. Silence is conclusive REJECT
+  evidence only for an add-shaped line (`-w`/`-a`), because a successful parse
+  of one of those is always LOUD (`Error sending add rule data request`)
+  under this sandbox. `--reset-lost` is NOT on this list (round-2 finding,
+  measured via a live `reset-lost-probe` capture): it checks a feature bitmap
+  BEFORE any netlink send and is always LOUD here (`Field option not
+  supported by kernel: reset-lost`), the same sandbox-limited mechanism as
+  the fstype finding below, never actually silent. See
   `crates/rulesteward-auditd/src/oracle.rs`'s `silence_is_conclusive` and
   `crates/rulesteward-auditd/tests/corpus/auditd-oracle/PROVENANCE.md`'s "The
   silent-rc1 blind spot" for the full reasoning and the `-D`-under-`-R`

@@ -170,14 +170,27 @@ pub fn classify_capture(line: &str, rc: i32, stdout: &str, stderr: &str) -> Capt
 /// - `--loginuid-immutable` (`case 1:`, L1109/L1127/L1132) and
 ///   `--backlog_wait_time` (`case 2:`, L1116/L1134/L1139): same shape, silent
 ///   on a `<= 0` / negative return.
-/// - `--reset-lost` (`case 3:`, L1144/L1162/L1167) is the WEAKEST-grounded
-///   entry: its failure path calls `audit_number_to_errmsg(rc, ...)`, which
-///   CAN print if `rc` matches a table entry in `err_msgtab` (defined outside
-///   the files read this session, so whether `-EPERM` specifically is a key
-///   was not confirmed). Kept on this list per the frozen session-plan design
-///   (a generic permission errno is unlikely to be one of the protocol-level
-///   codes that table exists for), but flagged here rather than asserted with
-///   the same confidence as the other seven.
+///
+/// `--reset-lost` is DELIBERATELY ABSENT (round-2 adversarial review, session
+/// 2026-07-26): the first draft of this list included it on the strength of
+/// `case 3:`'s shape alone (calls `audit_number_to_errmsg(rc, ...)` on
+/// failure, same as the other entries here), flagged at the time as the
+/// weakest-grounded entry because whether `err_msgtab` even has an `-EPERM`
+/// key was unconfirmed. A live capture (`reset-lost-probe` in the corpus)
+/// settled it: `audit_reset_lost` (`libaudit.c` `audit_get_features() &
+/// AUDIT_FEATURE_BITMAP_LOST_RESET == 0` check, before any netlink send)
+/// returns `-EAU_FIELDNOSUPPORT` in THIS sandbox (the same blocked
+/// `AUDIT_GET` status call the `-s` canary exercises also blocks the
+/// feature-bitmap load, so the bit always reads unset here), and that error
+/// code IS an `err_msgtab` key (`errormsg.h:108`,
+/// `{ -EAU_FIELDNOSUPPORT, 2, "Field option not supported by kernel:" }`),
+/// printed via `audit_number_to_errmsg`'s direct `fprintf(stderr, ...)` -
+/// bypassing `-R`'s `MSG_SYSLOG` mode entirely. Measured: `--reset-lost` is
+/// LOUD (`Field option not supported by kernel: reset-lost`), not silent, on
+/// all three EL majors. It is `Unusable::SandboxLimited` (the same
+/// feature-bitmap-gated mechanism as `rocky9-filesystem-list`'s `fstype`
+/// finding), never reaching this denylist's ambiguity at all. Re-adding it
+/// here would be a regression: verify against the corpus first.
 ///
 /// A denylist rather than an allowlist on purpose: an unenumerated new control
 /// flag then defaults to `true` (silence IS conclusive), which produces a LOUD
@@ -192,7 +205,6 @@ const SILENT_SUCCESS_LEADING_FLAGS: &[&str] = &[
     "-r",
     "--backlog_wait_time",
     "--loginuid-immutable",
-    "--reset-lost",
 ];
 
 /// Whether silence (rc 1, both streams empty) is conclusive evidence of a parse
@@ -247,7 +259,24 @@ mod silence_is_conclusive_tests {
         assert!(!silence_is_conclusive("-r 100"));
         assert!(!silence_is_conclusive("--backlog_wait_time 60"));
         assert!(!silence_is_conclusive("--loginuid-immutable"));
-        assert!(!silence_is_conclusive("--reset-lost"));
+    }
+
+    /// `--reset-lost` is deliberately NOT on the denylist (round-2 review):
+    /// the live `reset-lost-probe` corpus row shows it is always LOUD in this
+    /// sandbox (`Field option not supported by kernel: reset-lost`, a
+    /// `Unusable::SandboxLimited` case, not the silent-success-path ambiguity
+    /// the denylist exists for), so its silence would in fact be conclusive -
+    /// it just never happens to BE silent here. Pinned as its own test so a
+    /// future edit that re-adds it to the denylist (undoing the round-2
+    /// finding) fails visibly instead of silently.
+    #[test]
+    fn reset_lost_is_not_on_the_denylist_after_empirical_settlement() {
+        assert!(
+            silence_is_conclusive("--reset-lost"),
+            "--reset-lost was removed from SILENT_SUCCESS_LEADING_FLAGS after the \
+             reset-lost-probe corpus row showed it is always LOUD here, not silent; \
+             re-adding it to the denylist would be an unverified regression"
+        );
     }
 
     /// The other half of the pair above: an add-shaped line's silence IS
@@ -266,6 +295,140 @@ mod silence_is_conclusive_tests {
             silence_is_conclusive("garbage-not-a-flag"),
             "an unrecognised leading token is not on the denylist, so its \
              (also observed) silence is conclusive too"
+        );
+    }
+}
+
+/// Synthetic (no corpus row needed - pure function calls) pins on
+/// `classify_capture`'s contract, added at the round-2 adversarial review
+/// (session 2026-07-26) after the reviewer POSITIVE-CONTROLLED its own
+/// instrument (reproduced the round-1 bug, confirmed a constant-`Accept`
+/// stub, both `silence_is_conclusive` polarity inversions, an accept/complaint
+/// probe reorder, and treating the fstype message as `Reject` all pass the
+/// CORPUS-based comparison alone) and found that every one of the 213
+/// corpus rows has `rc == 1`, so nothing in the corpus-driven test forces
+/// `classify_capture` to inspect `rc` at all - `Unusable::Loaded`,
+/// `NoCapability`, `UnexpectedRc` and `UnrecognisedDiagnostic` were reachable
+/// in the TYPE but dead in the TEST SUITE. These tests close that gap
+/// directly: they construct the raw facts by hand rather than reading them
+/// from a captured row.
+#[cfg(test)]
+mod classify_capture_synthetic_tests {
+    use super::{CaptureVerdict, Unusable, classify_capture};
+
+    /// `rc == 0`: the rule LOADED. Regardless of line or output content, this
+    /// must abort as `Unusable::Loaded` - the netlink-safety-net case a
+    /// corpus that is 100% `rc == 1` can never exercise.
+    #[test]
+    fn rc_zero_is_always_unusable_loaded() {
+        assert!(matches!(
+            classify_capture("-D", 0, "", ""),
+            CaptureVerdict::Unusable(Unusable::Loaded)
+        ));
+    }
+
+    /// `rc == 4`: `auditctl` never ran (no `CAP_AUDIT_CONTROL`). A valid and
+    /// an invalid rule are byte-identical here (both
+    /// "You must be root to run this program."), so this must classify
+    /// `Unusable::NoCapability` independent of stderr content.
+    #[test]
+    fn rc_four_is_always_unusable_no_capability() {
+        assert!(matches!(
+            classify_capture(
+                "-w /etc/passwd -p wa",
+                4,
+                "",
+                "You must be root to run this program.\n"
+            ),
+            CaptureVerdict::Unusable(Unusable::NoCapability)
+        ));
+    }
+
+    /// Any `rc` outside `{0, 1, 4}` is unexpected and must not be silently
+    /// folded into a REJECT/ACCEPT guess.
+    #[test]
+    fn unexpected_rc_is_unusable() {
+        assert!(matches!(
+            classify_capture("-a always,exit -S execve", 7, "", ""),
+            CaptureVerdict::Unusable(Unusable::UnexpectedRc)
+        ));
+    }
+
+    /// `rc == 1` with non-empty stderr that matches NO known complaint table
+    /// entry must be a hard failure (`UnrecognisedDiagnostic`), never
+    /// silently absorbed as an ordinary REJECT. This is the case the first
+    /// draft's catch-all `_ => Reject { complaint: "some diagnostic" }` body
+    /// would fail: that body has no complaint table at all, so it can never
+    /// produce this variant.
+    #[test]
+    fn rc_one_unrecognised_nonempty_stderr_is_unusable() {
+        assert!(matches!(
+            classify_capture(
+                "-a always,exit -S execve",
+                1,
+                "",
+                "some brand new complaint nobody has ever seen before"
+            ),
+            CaptureVerdict::Unusable(Unusable::UnrecognisedDiagnostic)
+        ));
+    }
+
+    /// The companion string `There was an error in line N of <file>` is
+    /// printed on EVERY accepted add-shaped line ALONGSIDE
+    /// `Error sending add rule data request` (see
+    /// `handle_request`/`auditctl.c`), but it is not itself proof of
+    /// acceptance - `handle_request` prints it whenever the netlink round
+    /// trip errors for ANY reason, not only the accept case. A discriminator
+    /// that keys off the companion string alone
+    /// (`stderr.contains("There was an error in line")` -> Accept) passes
+    /// every corpus row (the two strings are coextensive across all 213
+    /// rows: measured round-2, el9, 42/42/42), so it takes a stderr carrying
+    /// ONLY the companion, deliberately withholding the add-request string,
+    /// to catch it.
+    #[test]
+    fn companion_string_alone_is_not_an_accept_probe() {
+        let result = classify_capture(
+            "-w /etc/passwd -p wa -k x",
+            1,
+            "",
+            "There was an error in line 1 of /tmp/rs-oracle-line.rules",
+        );
+        assert!(
+            !matches!(result, CaptureVerdict::Accept),
+            "the companion string alone (without 'Error sending add rule data \
+             request') must never be read as an accept probe; got {result:?}"
+        );
+    }
+}
+
+/// Synthetic pins on `product_verdict`'s "exactly one rule" guard (round-2
+/// adversarial review, session 2026-07-26): the corpus itself contains ZERO
+/// comment-only or blank rows (every scenario line is either a real rule or
+/// unparseable), so nothing in the corpus-driven comparison forces
+/// `product_verdict` to handle the `Ok(vec![])` case
+/// [`product_verdict`]'s own doc calls load-bearing. A body that maps
+/// `Ok(_) => Verdict::Accept` regardless of `rules.len()` passes the whole
+/// corpus and only fails here.
+#[cfg(test)]
+mod product_verdict_tests {
+    use super::{Verdict, product_verdict};
+
+    #[test]
+    fn comment_only_line_is_reject_not_accept() {
+        assert_eq!(
+            product_verdict("# comment only"),
+            Verdict::Reject,
+            "a line that vanishes entirely under comment-stripping parses to \
+             Ok(vec![]), which is NOT an accept of the original line"
+        );
+    }
+
+    #[test]
+    fn blank_after_strip_line_is_reject_not_accept() {
+        assert_eq!(
+            product_verdict("   "),
+            Verdict::Reject,
+            "an all-whitespace line vanishes the same way a comment-only line does"
         );
     }
 }

@@ -362,6 +362,39 @@ add_new_grounding_scenarios() {
     add_scenario "lead-garbage" "lead" 'garbage-not-a-flag'
     add_scenario "s-unknown-syscall" "syscall" \
         '-a always,exit -F arch=b64 -S totallynotasyscall -k sunknown'
+
+    # --- Adversarial-review rework (round 2) additions ---
+
+    # Closes a surviving mutation: parser.rs's parse_list_action tries BOTH
+    # `list,action` and `action,list` orderings (auditctl(8) documents them as
+    # commutative). Every other -a/-A row in this corpus is action-first
+    # (always,exit / never,exit / always,exclude / always,task /
+    # always,filesystem), so deleting the list-first try_list_action branch
+    # left the corpus green. This row is list-first ("exit,always") and must
+    # still ACCEPT on both sides.
+    add_scenario "lead-list-first" "lead" \
+        '-a exit,always -S execve -k listfirst'
+
+    # Empirical confirmation of a second SILENT_SUCCESS_LEADING_FLAGS entry
+    # beyond -D/-b (which the existing corpus already grounds via
+    # rocky9-huge-ruleset/-stock-control/rocky10-rulesd-multifile and
+    # rocky9-exclude-msgtype): -e follows the identical setopt() shape
+    # (audit_set_enabled(fd, ...) on success, no audit_msg on failure).
+    add_scenario "lead-e-enable" "lead" '-e 1'
+
+    # Resolves the --reset-lost denylist question EMPIRICALLY rather than by
+    # source argument alone (session 9k-1 round-2 adversarial review,
+    # blocker 5): audit_reset_lost() in libaudit.c checks
+    # audit_get_features() & AUDIT_FEATURE_BITMAP_LOST_RESET BEFORE any
+    # netlink send, and returns -EAU_FIELDNOSUPPORT if that bit is unset -
+    # which this sandbox's feature-bitmap load (itself gated on the same
+    # blocked AUDIT_GET status call the -s canary exercises) always reports.
+    # That error code prints via audit_number_to_errmsg (a direct
+    # fprintf(stderr, ...), bypassing the MSG_SYSLOG mode -R sets), so this
+    # is expected to be LOUD - the same SandboxLimited mechanism as
+    # rocky9-filesystem-list's fstype finding, not the silent-success-path
+    # ambiguity the other denylist entries share.
+    add_scenario "reset-lost-probe" "541" '--reset-lost'
 }
 
 build_scenario_table() {

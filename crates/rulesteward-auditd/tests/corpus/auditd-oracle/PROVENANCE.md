@@ -33,6 +33,63 @@ truth in this file and all WRONG:
 3. `control-reject`'s rule (`-F perm=zz`) doubled as a product-divergence row -
    see "Positive control changed" below.
 
+## ROUND-2 AMENDMENT (2026-07-26): adversarial-review rework
+
+A second, impl-BLIND adversarial review (positive-controlled against its own
+instrument: the round-1 bug, a constant `product_verdict`/`classify_capture`
+stub, both `silence_is_conclusive` polarity inversions, an accept/complaint
+probe reorder, and treating the fstype message as `Reject` were all confirmed
+to pass the corpus-driven test ALONE - a reference-correct implementation was
+confirmed to be the only one of these that passes) found five blockers and a
+promoted concern in the first amendment. Summary of what changed (each
+detailed in its own section below):
+
+- **Blocker 1** (all 213 rows had `rc == 1`, so `classify_capture` was never
+  forced to inspect `rc` at all): added synthetic (corpus-independent) unit
+  tests in `oracle.rs` pinning `rc == 0/4/<other>` and an unrecognised `rc == 1`
+  diagnostic.
+- **Blocker 2** (the companion string `There was an error in line N of <file>`
+  is coextensive with the accept string across every row, so an inverted
+  "companion means accept" discriminator also passes): added a synthetic unit
+  test with a stderr carrying ONLY the companion string.
+- **Blocker 3** (zero corpus rows are comment-only/blank, so the documented
+  "exactly one rule" guard was untested): added synthetic
+  `product_verdict("# comment only")` / `product_verdict("   ")` pins.
+- **Blocker 4** (`UNOBSERVABLE`'s guard checked "id is listed" and "kind is one
+  of the two allowed variants" independently, never that THIS id has ITS
+  declared kind): `UNOBSERVABLE` is now a `(id, Unusable, reason)` triple with
+  the kind checked exactly.
+- **Blocker 5** (`--reset-lost` was on the silent-flags denylist on a
+  source-argument alone, never measured): resolved EMPIRICALLY - see "Blocker
+  5 resolved: `--reset-lost` is LOUD, not silent" below. It is REMOVED from
+  the denylist and reclassified `Unusable::SandboxLimited`.
+- **Group-9 concern, promoted to required** (every `-a`/`-A` row in the corpus
+  was action-first, `always,exit`-shaped; `parser.rs`'s commutative
+  `list,action`/`action,list` branch had a nameable surviving mutation): added
+  `lead-list-first` (`-a exit,always ...`).
+- **Also-fix 1**: the "redirects EVERY `audit_msg()`-routed diagnostic to
+  syslog for the remainder of that invocation" claim over-generalized -
+  `handle_request` restores `MSG_STDERR` unconditionally, which is why the
+  accept probe (also `audit_msg()`-routed) works at all. Corrected to state
+  the `-D`-specific timing (case 'D's `audit_msg()` fires inside `setopt()`,
+  before `handle_request` ever runs).
+- **Also-fix 2**: the fstype message IS in the fetched source
+  (`lib/errormsg.h:113`, `EAU_FILTERNOSUPPORT`), contrary to this file's
+  earlier "was not found" claim - corrected below with the real citation.
+- **Also-fix 3**: `assert_two_sided_positive_control` now also asserts the
+  reported `complaint` actually appears in the row's own captured stderr.
+- **Also-fix 4**: added `KNOWN_PARSE_COMPLAINTS` (test-side, corpus-grounded,
+  runs TODAY independent of `classify_capture`) in `auditd_corpus_oracle.rs`.
+- **Also-fix 5**: `assert_hit_exactly_three` now counts per TARGET, not pooled
+  across all three files.
+- **Also-fix 6**: added a codec positive control - three tests feeding
+  `parse_data_row` deliberately corrupted rows, asserting it panics.
+- **Also-fix 7**: noted `Row.stdout` is dead (always empty) and `Row.class` is
+  panic-string-only, in the `Row` struct's own doc comment.
+
+Corpus grew from 71 to 74 scenario ids (213 -> 222 rows): `lead-list-first`,
+`lead-e-enable`, `reset-lost-probe`.
+
 ### Images and versions (captured 2026-07-25, images unchanged this amendment)
 
 | target file | image | `rpm -q audit` |
@@ -52,7 +109,7 @@ Audit netlink is NOT namespaced: a container that can reach it mutates the HOST
 kernel's ruleset. Every capture in this corpus was taken via
 `docker run --rm -i --network=none --cap-add=AUDIT_CONTROL rs-oracle<N>`, with
 the `auditctl -s` canary run FIRST, before EVERY rule line, inside the same
-container instantiation (this amendment batches all ~71 scenario lines into
+container instantiation (this amendment batches all ~74 scenario lines into
 ONE container per image rather than one container per line - see
 `capture_auditd.sh`'s "Batching" section - which means MORE canary checks per
 capture, not fewer). The canary got
@@ -90,7 +147,7 @@ nondeterminism inside the container is also gone, replaced by the fixed path
 `/tmp/rs-oracle-line.rules`, since the filename is an INPUT we choose rather
 than an observation).
 
-### Scenarios: 71 ids x 3 targets = 213 rows
+### Scenarios: 74 ids x 3 targets = 222 rows
 
 **33 `existing`-class scenarios** re-ground the pre-existing
 `tests/corpus/auditd/*/audit.rules` corpus with a REAL per-line capture: one
@@ -130,26 +187,45 @@ why 18 new ids, not a larger nominal count):
 - `f-perm-invalid-letter` (`-F perm=zz`): moved OFF `control-reject` this
   amendment - see "Positive control changed" below.
 
+**3 round-2 grounding scenarios** (adversarial-review rework, see "ROUND-2
+AMENDMENT" above):
+
+- `lead-list-first` (`-a exit,always -S execve -k listfirst`): closes the
+  group-9 surviving mutation - every OTHER `-a`/`-A` row in the corpus is
+  action-first (`always,exit`-shaped), so deleting `parser.rs`'s
+  `try_list_action` branch (the `list,action` order) left the corpus green.
+  ACCEPTs on both sides.
+- `lead-e-enable` (`-e 1`): empirical confirmation of a second
+  `SILENT_SUCCESS_LEADING_FLAGS` entry beyond `-D`/`-b` (silent, joins
+  `UNOBSERVABLE`).
+- `reset-lost-probe` (`--reset-lost`): resolves blocker 5 - see "Blocker 5
+  resolved" below. LOUD, `Unusable::SandboxLimited`, NOT silent.
+
 ### The silent-rc1 blind spot (supersedes the old "standalone control-only
 line classifies REJECT" claim)
 
-Control-only lines (`-D`, `-b 8192`, and this amendment's `-D extra`/`-D -k`/
-`-D -k mykey extra`) fed via `auditctl -R <file>` are SILENT (rc 1, both
-streams empty). The historical bug treated this silence as a REJECT for every
-line, indiscriminately. The corrected model, grounded against `audit-userspace`
-`src/auditctl.c` `setopt()` (read live this session at the three shipped tags
-v3.1.2/v3.1.5/v4.0.3 - see `oracle.rs`'s `SILENT_SUCCESS_LEADING_FLAGS` doc for
-exact citations): a leading flag's SUCCESS path (`-D`'s `delete_all_rules(fd)`,
-`-b`/`-e`/`-f`/`-r`'s `audit_set_*(fd, ...)`, `--loginuid-immutable`,
-`--backlog_wait_time`) sends its own netlink message and, on failure (EPERM in
-this sandbox), returns without printing anything - so a silent rc-1 for one of
-these flags is **AMBIGUOUS**: it is produced identically by a successful parse
-(silently EPERM'd) and by a genuine parse refusal (if one existed and were also
-silent). No pure function of `(rc, stdout, stderr)` can separate those two, so
-these rows classify `Unusable::SilentNonAddLine` and sit on the test's
+Control-only lines (`-D`, `-b 8192`, `-e 1`, and this amendment's `-D extra`/
+`-D -k`/`-D -k mykey extra`) fed via `auditctl -R <file>` are SILENT (rc 1,
+both streams empty). The historical bug treated this silence as a REJECT for
+every line, indiscriminately. The corrected model, grounded against
+`audit-userspace` `src/auditctl.c` `setopt()` (read live this session at the
+three shipped tags v3.1.2/v3.1.5/v4.0.3 - see `oracle.rs`'s
+`SILENT_SUCCESS_LEADING_FLAGS` doc for exact citations): a leading flag's
+SUCCESS path (`-D`'s `delete_all_rules(fd)`, `-b`/`-e`/`-f`/`-r`'s
+`audit_set_*(fd, ...)`, `--loginuid-immutable`, `--backlog_wait_time`) sends
+its own netlink message and, on failure (EPERM in this sandbox), returns
+without printing anything - so a silent rc-1 for one of these flags is
+**AMBIGUOUS**: it is produced identically by a successful parse (silently
+EPERM'd) and by a genuine parse refusal (if one existed and were also silent).
+No pure function of `(rc, stdout, stderr)` can separate those two, so these
+rows classify `Unusable::SilentNonAddLine` and sit on the test's
 `UNOBSERVABLE` table rather than being called either verdict. This is exactly
 the opposite of the old "classifies REJECT" claim, and is the finding the
 adversarial review's `-D` counterexample forced.
+
+`--reset-lost` is DELIBERATELY NOT on this list - see "Blocker 5 resolved"
+below: it is always LOUD here, never silent, so it never reaches this
+ambiguity at all.
 
 By contrast, an add-shaped line (`-w`/`-a`) that parses is ALWAYS loud under
 this sandbox (`Error sending add rule data request`, from
@@ -168,17 +244,36 @@ any netlink call, so it should be loud regardless of the EPERM sandbox.
 Empirically, on all three EL majors, all three rows are SILENT (rc 1, both
 streams empty) instead. Root cause, found by reading `auditctl.c`'s `main()`:
 the `-R <file>` invocation form (`argc == 3 && strcmp(argv[1], "-R") == 0`)
-calls `set_aumessage_mode(MSG_SYSLOG, DBG_NO)`, which redirects EVERY
-`audit_msg()`-routed diagnostic to syslog instead of stderr for the remainder
-of that invocation - including `case 'D'`'s count check. Field/value validation
-messages (`-F unknown field: ...`, `Permission can only contain 'rwxa'`, `-F
-value should be number for ...`) remain visible because they are printed by
+calls `set_aumessage_mode(MSG_SYSLOG, DBG_NO)` BEFORE the per-line loop starts.
+
+**CORRECTED (round-2 review, also-fix 1): this does NOT mean every
+`audit_msg()`-routed diagnostic is silenced for the rest of the invocation.**
+An earlier draft of this note claimed exactly that, and it is self-contradicted
+by this corpus's own accept probe: `Error sending add rule data request`
+(`auditctl.c:1563`ish) and its companion `There was an error in line %d of %s`
+(`:1417`ish) are BOTH `audit_msg()`-routed, and BOTH appear on every one of the
+42-then-43 accept rows. The reason is `handle_request()` (called once per
+successfully-parsed add-shaped line): it calls
+`set_aumessage_mode(MSG_STDERR, DBG_NO)` UNCONDITIONALLY
+(`auditctl.c:1552-1554`ish) before doing anything else, flipping the mode back
+to stderr. So the real timing is: **`MSG_SYSLOG` holds only from `main()`'s
+`-R` setup until the FIRST add-path `handle_request` call flips it back to
+`MSG_STDERR`.** For a one-line `-R <file>` invocation, `case 'D'`'s
+`audit_msg()` call happens inside `setopt()`, which runs BEFORE
+`handle_request` is ever reached for that line - so the mode is still
+`MSG_SYSLOG` at that exact point, and the original `-D` silent-reject finding
+still holds. But the generalization to "every diagnostic, for the whole
+invocation" was wrong.
+
+Field/value validation messages (`-F unknown field: ...`, `Permission can only
+contain 'rwxa'`, `-F value should be number for ...`) remain visible
+REGARDLESS of this timing question, because they are printed by
 `audit_number_to_errmsg`, a DIRECT `fprintf(stderr, ...)` call in `libaudit.c`
 that bypasses `audit_msg()`/the message-mode system entirely. This explains
-both this new finding and the ORIGINAL silent-`-D` finding under one single
-mechanism, and is why all three new `-D`-shaped rows joined `UNOBSERVABLE`
-(`d-extra-silent`, `d-k-only-silent`, `d-k-extra-silent`) instead of confirming
-a loud pin. `-R` remains the correct oracle shape regardless (see
+both this new finding and the ORIGINAL silent-`-D` finding, and is why all
+three new `-D`-shaped rows joined `UNOBSERVABLE` (`d-extra-silent`,
+`d-k-only-silent`, `d-k-extra-silent`) instead of confirming a loud pin.
+`-R` remains the correct oracle shape regardless (see
 `tools/oracle-images/README.md`); this finding is about which diagnostics `-R`
 can surface, not about which invocation form to use.
 
@@ -187,19 +282,67 @@ can surface, not about which invocation form to use.
 `-a always,filesystem -F fstype=ext4 -F 'auid>=1000' -F 'auid!=unset' -k
 fs_ext4` prints `fstype filter is not supported by the kernel` - identical,
 byte-for-byte, across el8/el9/el10 (three DIFFERENT compiled audit-userspace
-binaries: 3.1.2/3.1.5/4.0.3). Docker containers share the HOST kernel (there is
-no per-image guest kernel), so three different binaries reporting the exact
-same "kernel" fact is consistent with a RUNTIME kernel-feature query (this
-session's sandbox kernel) rather than a per-build compile-time constant - and
-the phrasing itself ("not supported by THE KERNEL", not "unknown fstype value"
-or "filesystem list not supported") names the kernel specifically. Classified
-`Unusable::SandboxLimited`: a property of this capture environment, not of the
-rule. (The exact C call site was not pinned to a specific line in this
-session's source read - the message text was not found in `auditctl.c` or
-`libaudit.c` at the fetched commit, likely a distro-patched or generated
-table - so this conclusion rests on the cross-image byte-identity argument
-above plus the wording, not a line citation. Flagged honestly rather than
-asserted with false precision.)
+binaries: 3.1.2/3.1.5/4.0.3). Classified `Unusable::SandboxLimited`: a property
+of this capture environment, not of the rule.
+
+**CORRECTED (round-2 review, also-fix 2): this file previously claimed the
+message "was not found in `auditctl.c` or `libaudit.c`... likely a
+distro-patched or generated table", resting the conclusion on cross-image
+byte-identity alone. That claim was WRONG - the search only looked in `.c`
+files.** The message IS in the fetched source, in a `.h`:
+`lib/errormsg.h:113`, `{ -EAU_FILTERNOSUPPORT, 1, "filter is not supported by
+the kernel" }` (position 1: printed as `"%s %s\n"` with the field-name operand
+FIRST, giving `"fstype filter is not supported by the kernel"`). It is raised
+in `libaudit.c` (`audit_rule_fieldpair_data`, ~line 1624-1630): when
+`flags == AUDIT_FILTER_FS` (our rule's `always,filesystem` list), it checks
+`audit_get_features() & AUDIT_FEATURE_BITMAP_FILTER_FS`, returning
+`-EAU_FILTERNOSUPPORT` if that bit is unset. `audit_get_features()`
+(`libaudit.c` ~line 670) is a CACHED result of `load_feature_bitmap()`, which
+calls `audit_request_status(fd)` over netlink and, on any failure (including
+the `EPERM` this sandbox's canary already demonstrates), sets
+`features_bitmap = AUDIT_FEATURES_UNSUPPORTED` - so in THIS sandbox the bit is
+ALWAYS unset, regardless of what the real target kernel would report. This is
+now a PROVEN runtime-query artifact, not merely an inference from cross-image
+byte-identity (which remains true and is corroborating evidence, not the
+primary proof).
+
+### Blocker 5 resolved: `--reset-lost` is LOUD, not silent
+
+The first amendment's `SILENT_SUCCESS_LEADING_FLAGS` denylist included
+`--reset-lost` on the strength of `auditctl.c`'s `case 3:` calling
+`audit_number_to_errmsg(rc, ...)` on failure (the same shape as the other
+seven entries), flagged AT THE TIME as the weakest-grounded entry because
+whether `err_msgtab` even had an `-EPERM` key was unconfirmed. Round-2
+resolved this EMPIRICALLY (per the reviewer's own instruction: "resolve it
+empirically, do not argue it") by adding a live `reset-lost-probe` (`--reset-
+lost`) row.
+
+Measured: LOUD on all three EL majors -
+`Field option not supported by kernel: reset-lost`. Root cause, confirmed in
+source: `audit_reset_lost()` (`libaudit.c`, ~line 526-533) checks
+`audit_get_features() & AUDIT_FEATURE_BITMAP_LOST_RESET` BEFORE attempting any
+netlink send at all, returning `-EAU_FIELDNOSUPPORT` immediately if unset -
+which, per "The fstype finding" above, this sandbox's blocked feature-bitmap
+load always reports. `-EAU_FIELDNOSUPPORT` IS an `err_msgtab` key
+(`errormsg.h:108`, `{ -EAU_FIELDNOSUPPORT, 2, "Field option not supported by
+kernel:" }`, position 2: cvalue then the option name), printed via
+`audit_number_to_errmsg` - the SAME direct-`fprintf` path that bypasses
+`MSG_SYSLOG` for the fstype message. (The reviewer's supporting claim that
+`-EPERM` itself is an `err_msgtab` key was not confirmed by this session's
+read of `errormsg.h` - no entry keys `-EPERM` specifically - but this does not
+matter for the conclusion: `audit_reset_lost` never reaches a raw `-EPERM`
+from the netlink layer in this sandbox, because the feature-bitmap check
+short-circuits before any send is attempted.)
+
+**Resolution:** `--reset-lost` is REMOVED from `SILENT_SUCCESS_LEADING_FLAGS`
+in `oracle.rs` (it is never actually silent here, so it never reaches that
+denylist's ambiguity) and `reset-lost-probe` is classified
+`Unusable::SandboxLimited` on `UNOBSERVABLE`, alongside
+`rocky9-filesystem-list` - the SAME feature-bitmap-gated mechanism, just a
+different `EAU_*` code and message text. This is corroborating evidence that
+the fstype finding is a GENERAL pattern (any feature-bitmap-gated check is
+unreliable under this sandbox), not a one-off quirk of the `filesystem` filter
+list.
 
 ### Positive control changed (`control-reject`)
 
@@ -258,7 +401,7 @@ and in the dispatch report.
 
 ### Version divergence (CONTRIBUTING.md's per-version positive control)
 
-Re-confirmed on the expanded 71-id corpus: NONE of the 71 scenarios' captured
+Re-confirmed on the expanded 74-id corpus: NONE of the 74 scenarios' captured
 facts (`rc`/`rule`/`stdout`/`stderr`) differ AT ALL across `el8`/`el9`/`el10`
 (audit-userspace 3.1.2 / 3.1.5 / 4.0.3) - every data field is byte-identical
 across all three captures (`diff` on the three files' data rows, target column
@@ -289,4 +432,4 @@ bash crates/rulesteward-auditd/tests/corpus/auditd-oracle/capture_auditd.sh /tmp
 or via the full drift recipe: `just diff-auditd` (needs `rs-oracle8/9/10` built
 per `tools/oracle-images/README.md`). Measured wall-clock this session: under
 90 seconds for all three images combined (one batched container per image,
-canary run before every one of the ~71 lines).
+canary run before every one of the ~74 lines).

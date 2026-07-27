@@ -1,6 +1,6 @@
 # rs-diff-auditd corpus
 # target=el9 image=rs-oracle9 audit_version=audit-3.1.5-8.el9.x86_64
-# captured=2026-07-27T01:59:55Z
+# captured=2026-07-27T02:39:14Z
 # columns: target id class rc rule_len out_len err_len rule stdout stderr (exact split('\t'), 10 fields)
 # rule/stdout/stderr use '\\'->'\', '\t'->TAB, '\n'->LF, '\r'->CR, '\xHH'->that byte, '\0'->the empty string (see capture_auditd.sh esc_field).
 rs-oracle9	rocky10-cis-benchmark	existing	1	32	0	119	-w /etc/passwd -p wa -k identity	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
@@ -74,3 +74,6 @@ rs-oracle9	f-unknown-field-unquoted	fld	1	52	0	28	-a always,exit -F bogusfield=1
 rs-oracle9	lead-A-prepend	lead	1	48	0	119	-A always,exit -F arch=b64 -S execve -k aprepend	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
 rs-oracle9	lead-garbage	lead	1	18	0	0	garbage-not-a-flag	\0	\0
 rs-oracle9	s-unknown-syscall	syscall	1	60	0	0	-a always,exit -F arch=b64 -S totallynotasyscall -k sunknown	\0	\0
+rs-oracle9	lead-list-first	lead	1	37	0	119	-a exit,always -S execve -k listfirst	\0	Error sending add rule data request (Operation not permitted)\nThere was an error in line 1 of /tmp/rs-oracle-line.rules
+rs-oracle9	lead-e-enable	lead	1	4	0	0	-e 1	\0	\0
+rs-oracle9	reset-lost-probe	541	1	12	0	48	--reset-lost	\0	Field option not supported by kernel: reset-lost

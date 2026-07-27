@@ -92,22 +92,24 @@ use rulesteward_auditd::oracle::{
 };
 use rulesteward_core::oracle_corpus::{resolve_corpus_root, sentinel_banner, sentinel_count};
 
-/// Named floor: 71 scenario ids (52 carried over from the first draft + 18
-/// new grounding scenarios + `f-perm-invalid-letter`, minus zero - the id
+/// Named floor: 74 scenario ids (71 from the first amendment + 3 round-2
+/// additions: `lead-list-first`, `lead-e-enable`, `reset-lost-probe` - the id
 /// count below is the ACTUAL captured count, verified against the corpus
-/// this commit ships), each captured against el8/el9/el10 = 213 rows. Raise
+/// this commit ships), each captured against el8/el9/el10 = 222 rows. Raise
 /// this deliberately, in the same commit, when the corpus grows.
-const FLOOR_ROWS: usize = 213;
+const FLOOR_ROWS: usize = 222;
 
 /// Floor on the number of DISTINCT scenario ids (one per corpus target file).
-const FLOOR_SCENARIO_IDS: usize = 71;
+const FLOOR_SCENARIO_IDS: usize = 74;
 
 /// Floor on rows that actually reach the product-vs-oracle comparison, i.e.
-/// every row EXCEPT the `Unusable` ones on the [`UNOBSERVABLE`] table. This is
-/// the fourth member of the "assert the count" family the first draft was
-/// missing: the `all_rows.len()` floor alone would be satisfied by a corpus
-/// that is entirely `Unusable` and compares nothing at all.
-const FLOOR_COMPARED: usize = 189;
+/// every row EXCEPT the `Unusable` ones on the [`UNOBSERVABLE`] table (10
+/// ids: 8 `SilentNonAddLine` + 2 `SandboxLimited`, x3 targets = 30 rows;
+/// 74 - 10 = 64 comparable ids x3 = 192). This is the fourth member of the
+/// "assert the count" family the first draft was missing: the
+/// `all_rows.len()` floor alone would be satisfied by a corpus that is
+/// entirely `Unusable` and compares nothing at all.
+const FLOOR_COMPARED: usize = 192;
 
 /// The three target files every capture (committed or fresh) must produce.
 const EXPECTED_TARGETS: &[&str] = &["el8", "el9", "el10"];
@@ -283,61 +285,100 @@ const XFAIL: &[(&str, &str)] = &[
 
 /// Rows whose real-oracle verdict is [`Unusable`] rather than Accept/Reject -
 /// the capture cannot support any comparison for this id, and that is
-/// recorded rather than hidden. Permitted ONLY for an id listed here, each hit
-/// EXACTLY 3 times (once per EL major); any [`Unusable`] outside this table,
-/// or an id here hit any other number of times, is an `ORACLE-BROKEN` hard
-/// failure with no allowlist. Refusing to emit these rows at all would
-/// destroy the artifact that proves each blind spot exists and would hide a
-/// future `auditctl` change that starts diagnosing one of them.
-const UNOBSERVABLE: &[(&str, &str)] = &[
+/// recorded rather than hidden. Permitted ONLY for an id listed here, WITH
+/// the declared [`Unusable`] KIND matching exactly (round-2 adversarial
+/// review, blocker 4: a two-part guard of "id is listed" AND "kind is one of
+/// the two allowed variants" - checked independently rather than as a pair -
+/// would let `rocky9-filesystem-list` classify `SilentNonAddLine` instead of
+/// its actual `SandboxLimited` mechanism and still pass, which defeats the
+/// entire point of naming the mechanism per entry). Each entry is hit
+/// EXACTLY 3 times (once per EL major, verified PER TARGET - see
+/// `assert_hit_exactly_three`); any [`Unusable`] outside this table, any kind
+/// mismatch, or an id here hit any other number of times, is an
+/// `ORACLE-BROKEN` hard failure with no allowlist. Refusing to emit these
+/// rows at all would destroy the artifact that proves each blind spot exists
+/// and would hide a future `auditctl` change that starts diagnosing one of
+/// them.
+const UNOBSERVABLE: &[(&str, Unusable, &str)] = &[
     (
         "rocky9-huge-ruleset",
-        "Unusable::SilentNonAddLine: bare -D. Its SUCCESS path (delete_all_rules) \
-         fails silently under EPERM, so silence proves nothing.",
+        Unusable::SilentNonAddLine,
+        "bare -D. Its SUCCESS path (delete_all_rules) fails silently under \
+         EPERM, so silence proves nothing.",
     ),
     (
         "rocky9-stock-control",
-        "Unusable::SilentNonAddLine: bare -D, same as rocky9-huge-ruleset.",
+        Unusable::SilentNonAddLine,
+        "bare -D, same as rocky9-huge-ruleset.",
     ),
     (
         "rocky10-rulesd-multifile",
-        "Unusable::SilentNonAddLine: bare -D, same as rocky9-huge-ruleset.",
+        Unusable::SilentNonAddLine,
+        "bare -D, same as rocky9-huge-ruleset.",
     ),
     (
         "rocky9-exclude-msgtype",
-        "Unusable::SilentNonAddLine: bare -b 8192, same silent-success-path \
-         ambiguity as -D (audit_set_backlog_limit's failure path in \
-         setopt() prints nothing).",
+        Unusable::SilentNonAddLine,
+        "bare -b 8192, same silent-success-path ambiguity as -D \
+         (audit_set_backlog_limit's failure path in setopt() prints nothing).",
+    ),
+    (
+        "lead-e-enable",
+        Unusable::SilentNonAddLine,
+        "-e 1 (round-2 addition): empirical confirmation of a second denylisted \
+         flag beyond -D/-b, same silent-success-path shape \
+         (audit_set_enabled's failure path in setopt() prints nothing).",
     ),
     (
         "d-extra-silent",
-        "Unusable::SilentNonAddLine: -D extra. Originally planned as a LOUD \
-         confirmation of #541's field-count reject (auditctl.c's case 'D' \
-         does call audit_msg() unconditionally on a count mismatch) - but \
-         empirically SILENT under `auditctl -R`: `main()`'s -R dispatch \
-         (argc==3 && argv[1]==\"-R\") sets MSG_SYSLOG, redirecting every \
-         audit_msg()-routed diagnostic to syslog. See PROVENANCE.md \
-         'MSG_SYSLOG under -R'.",
+        Unusable::SilentNonAddLine,
+        "-D extra. Originally planned as a LOUD confirmation of #541's \
+         field-count reject (auditctl.c's case 'D' does call audit_msg() \
+         unconditionally on a count mismatch) - but empirically SILENT under \
+         `auditctl -R`: for a ONE-LINE -R invocation, case 'D's audit_msg() \
+         fires inside setopt(), which runs BEFORE handle_request ever executes \
+         and restores MSG_STDERR (auditctl.c:1552-1554) - so at that point in \
+         the invocation the mode is still the MSG_SYSLOG main() set for -R \
+         (argc==3 && argv[1]==\"-R\"). See PROVENANCE.md 'MSG_SYSLOG under -R' \
+         for the corrected (non-generalized) statement of this mechanism.",
     ),
     (
         "d-k-only-silent",
-        "Unusable::SilentNonAddLine: -D -k (no key value), same MSG_SYSLOG \
-         gating as d-extra-silent.",
+        Unusable::SilentNonAddLine,
+        "-D -k (no key value), same MSG_SYSLOG-before-handle_request timing as \
+         d-extra-silent.",
     ),
     (
         "d-k-extra-silent",
-        "Unusable::SilentNonAddLine: -D -k mykey extra, same MSG_SYSLOG \
-         gating as d-extra-silent.",
+        Unusable::SilentNonAddLine,
+        "-D -k mykey extra, same MSG_SYSLOG-before-handle_request timing as \
+         d-extra-silent.",
     ),
     (
         "rocky9-filesystem-list",
-        "Unusable::SandboxLimited: real auditctl prints 'fstype filter is \
-         not supported by the kernel', identical byte-for-byte across all \
-         three EL majors (3.1.2/3.1.5/4.0.3) despite them being different \
-         compiled binaries - consistent with a RUNTIME kernel-feature query \
-         (Docker containers share the host kernel) rather than a per-build \
-         constant. Confirmed a sandbox artifact, not a property of the rule; \
-         see PROVENANCE.md 'The fstype finding'.",
+        Unusable::SandboxLimited,
+        "real auditctl prints 'fstype filter is not supported by the kernel' \
+         (EAU_FILTERNOSUPPORT, libaudit.c ~1624-1630 gating on \
+         audit_get_features() & AUDIT_FEATURE_BITMAP_FILTER_FS, errormsg.h:113 \
+         for the message text), identical byte-for-byte across all three EL \
+         majors (3.1.2/3.1.5/4.0.3) despite them being different compiled \
+         binaries - consistent with the RUNTIME kernel-feature query (Docker \
+         containers share the host kernel) this sandbox cannot complete. \
+         Confirmed a sandbox artifact, not a property of the rule; see \
+         PROVENANCE.md 'The fstype finding'.",
+    ),
+    (
+        "reset-lost-probe",
+        Unusable::SandboxLimited,
+        "--reset-lost (round-2 addition, resolves blocker 5 empirically): \
+         real auditctl prints 'Field option not supported by kernel: \
+         reset-lost' (EAU_FIELDNOSUPPORT, libaudit.c's audit_reset_lost() \
+         gating on audit_get_features() & AUDIT_FEATURE_BITMAP_LOST_RESET \
+         BEFORE any netlink send, errormsg.h:108 for the message text) - the \
+         SAME feature-bitmap mechanism as rocky9-filesystem-list, not the \
+         silent-success-path ambiguity SILENT_SUCCESS_LEADING_FLAGS exists \
+         for. This is why --reset-lost was removed from that denylist in \
+         oracle.rs: it is never actually silent here.",
     ),
 ];
 
@@ -345,6 +386,18 @@ const UNOBSERVABLE: &[(&str, &str)] = &[
 // Corpus model
 // ---------------------------------------------------------------------------
 
+/// One captured corpus row.
+///
+/// `stdout` is dead across all 213-then-222 rows this corpus has ever
+/// captured (`auditctl -R` never writes to stdout in any scenario this lane
+/// exercises - every row's `out_len` is 0): kept in the schema because a
+/// future scenario COULD populate it and the raw-facts design promises not to
+/// silently drop a column, but no test in this file, and no classification
+/// rule in `oracle.rs`'s truth table, currently depends on its value.
+/// `class` is used only inside panic/diagnostic strings (grouping label for a
+/// human reading a failure), never in any comparison or assertion. Noted here
+/// (round-2 adversarial review, also-fix 7) so a later session does not
+/// mistake either field for load-bearing.
 #[derive(Debug, Clone)]
 struct Row {
     target: String,
@@ -677,7 +730,7 @@ fn auditd_oracle_corpus_matches_real_auditctl() {
     assert_hit_exactly_three(&xfail_hits, XFAIL.iter().map(|(id, _)| *id), "XFAIL");
     assert_hit_exactly_three(
         &unobservable_hits,
-        UNOBSERVABLE.iter().map(|(id, _)| *id),
+        UNOBSERVABLE.iter().map(|(id, _, _)| *id),
         "UNOBSERVABLE",
     );
 }
@@ -724,13 +777,26 @@ fn assert_two_sided_positive_control(all_rows: &[Row], stem: &str) {
         accept_row.rule
     );
     match reject_verdict {
-        CaptureVerdict::Reject { complaint } => assert!(
-            !complaint.is_empty(),
-            "control-reject row for '{stem}' must carry NON-SILENT evidence (this is the \
-             control that proves the harness truly parsed and rejected, not just went \
-             silent); rule={:?}",
-            reject_row.rule
-        ),
+        CaptureVerdict::Reject { complaint } => {
+            assert!(
+                !complaint.is_empty(),
+                "control-reject row for '{stem}' must carry NON-SILENT evidence (this is the \
+                 control that proves the harness truly parsed and rejected, not just went \
+                 silent); rule={:?}",
+                reject_row.rule
+            );
+            // Round-2 adversarial review: `!complaint.is_empty()` alone is
+            // satisfied by ANY non-empty `&'static str`, including one that
+            // was never grounded in the row's actual stderr (e.g. a
+            // hardcoded placeholder). Cross-check the complaint is actually
+            // PRESENT in the row's own captured evidence.
+            assert!(
+                reject_row.stderr.contains(complaint),
+                "control-reject row for '{stem}': classify_capture's reported complaint \
+                 {complaint:?} does not appear in the row's own captured stderr {:?}",
+                reject_row.stderr
+            );
+        }
         other => panic!(
             "control-reject row for '{stem}' must classify Reject with a complaint, got \
              {other:?} (rule={:?})",
@@ -746,17 +812,25 @@ fn assert_two_sided_positive_control(all_rows: &[Row], stem: &str) {
     );
 }
 
+/// `(target, id)` pairs, one per hit - see [`compare_product_to_oracle`]'s
+/// doc for why the target must be tracked alongside the id.
+type TargetIdHits = Vec<(String, String)>;
+
 /// The core comparison this whole file exists for. Every row is first
 /// classified by `classify_capture`; an `Unusable` row is permitted ONLY for
-/// an id on [`UNOBSERVABLE`] (with an allowed `Unusable` kind) and is
-/// excluded from the product comparison entirely - never "matched", never
-/// "xfailed", simply not comparable. An Accept/Reject row is compared against
-/// `product_verdict`, matched directly or via [`XFAIL`].
+/// an id on [`UNOBSERVABLE`] whose declared KIND matches exactly (round-2
+/// review, blocker 4) and is excluded from the product comparison entirely -
+/// never "matched", never "xfailed", simply not comparable. An Accept/Reject
+/// row is compared against `product_verdict`, matched directly or via
+/// [`XFAIL`].
 ///
-/// Returns `(compared, xfail_hit_ids, unobservable_hit_ids)`.
-fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, Vec<String>, Vec<String>) {
-    let mut xfail_hits: Vec<String> = Vec::new();
-    let mut unobservable_hits: Vec<String> = Vec::new();
+/// Returns `(compared, xfail_hits, unobservable_hits)`, each hit list keyed
+/// by `(target, id)` - NOT just `id` - so [`assert_hit_exactly_three`] can
+/// verify the 3 hits for an entry land one PER TARGET rather than merely
+/// three times somewhere in the pooled rows (round-2 review, also-fix 5).
+fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, TargetIdHits, TargetIdHits) {
+    let mut xfail_hits: TargetIdHits = Vec::new();
+    let mut unobservable_hits: TargetIdHits = Vec::new();
     let mut compared = 0usize;
 
     for row in all_rows {
@@ -776,7 +850,7 @@ fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, Vec<String>, Vec<Strin
             continue;
         }
         if XFAIL.iter().any(|(id, _)| *id == row.id) {
-            xfail_hits.push(row.id.clone());
+            xfail_hits.push((row.target.clone(), row.id.clone()));
             compared += 1;
             continue;
         }
@@ -791,45 +865,59 @@ fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, Vec<String>, Vec<Strin
 }
 
 /// Validate one `Unusable` row against [`UNOBSERVABLE`] and record the hit.
-/// Panics (`ORACLE-BROKEN`) on an unlisted id or a disallowed `Unusable`
-/// kind - no allowlist, ever, for `NoCapability`/`Loaded`/`UnexpectedRc`/
-/// `UnrecognisedDiagnostic`.
-fn record_unusable_hit(row: &Row, kind: Unusable, unobservable_hits: &mut Vec<String>) {
-    let allowed = matches!(kind, Unusable::SilentNonAddLine | Unusable::SandboxLimited)
-        && UNOBSERVABLE.iter().any(|(id, _)| *id == row.id);
+/// Panics (`ORACLE-BROKEN`) on an unlisted id, OR an id that IS listed but
+/// whose declared kind does not match this row's actual kind (round-2
+/// review, blocker 4: checking "id is listed" and "kind is one of the two
+/// allowed variants" independently would let `rocky9-filesystem-list`
+/// classify `SilentNonAddLine` instead of its true `SandboxLimited`
+/// mechanism and still pass). No allowlist, ever, for
+/// `NoCapability`/`Loaded`/`UnexpectedRc`/`UnrecognisedDiagnostic`.
+fn record_unusable_hit(row: &Row, kind: Unusable, unobservable_hits: &mut TargetIdHits) {
+    let declared = UNOBSERVABLE.iter().find(|(id, _, _)| *id == row.id);
+    let allowed = declared.is_some_and(|(_, declared_kind, _)| *declared_kind == kind);
     if !allowed {
         eprintln!(
             "RS-DIFF-AUDITD: ORACLE-BROKEN target={} id={} class={} rule={:?} unusable={kind:?} \
-             - not on the UNOBSERVABLE table (or not an allowed kind)",
+             declared={declared:?} - either not on the UNOBSERVABLE table, or the declared kind \
+             does not match this row's actual kind",
             row.target, row.id, row.class, row.rule
         );
         panic!(
             "unexpected Unusable({kind:?}) for id={} (target={}); every Unusable row must be \
-             pre-declared on UNOBSERVABLE with an allowed kind",
+             pre-declared on UNOBSERVABLE with THIS EXACT kind",
             row.id, row.target
         );
     }
-    unobservable_hits.push(row.id.clone());
+    unobservable_hits.push((row.target.clone(), row.id.clone()));
 }
 
-/// Every id on `table` must have been hit EXACTLY 3 times (once per EL
-/// major). An id that stops reproducing (0, 1, or 2 hits) or that somehow
-/// hits MORE than 3 times (a duplicate row, or the same id shared across an
-/// unexpected 4th target) must fail the suite - a divergence or a blind spot
-/// that stops reproducing is itself a finding, not something to go quiet
-/// about.
+/// Every id on `table` must have been hit EXACTLY 3 times, ONE PER TARGET
+/// (`rs-oracle8`/`rs-oracle9`/`rs-oracle10` - round-2 review, also-fix 5: a
+/// version of this check that merely counts occurrences in the POOLED hit
+/// list would pass a corpus where all 3 hits came from a single file and the
+/// other two files dropped the row entirely, which is harmless today only
+/// because the three files are `cmp`-identical modulo the target column, but
+/// does not itself carry the "once per EL major" guarantee the docstring
+/// claims). An id that stops reproducing on some target, or hits the SAME
+/// target more than once, must fail the suite.
 fn assert_hit_exactly_three<'a>(
-    hits: &[String],
+    hits: &TargetIdHits,
     table_ids: impl Iterator<Item = &'a str>,
     label: &str,
 ) {
+    const EXPECTED_TARGET_IMAGES: &[&str] = &["rs-oracle10", "rs-oracle8", "rs-oracle9"];
     for id in table_ids {
-        let count = hits.iter().filter(|h| h.as_str() == id).count();
+        let mut hit_targets: Vec<&str> = hits
+            .iter()
+            .filter(|(_, hit_id)| hit_id == id)
+            .map(|(target, _)| target.as_str())
+            .collect();
+        hit_targets.sort_unstable();
         assert_eq!(
-            count, 3,
-            "{label} entry '{id}' was hit {count} time(s), expected exactly 3 (once per EL \
-             major); an entry that stops reproducing (or over-reproduces) must fail the suite \
-             rather than go quiet"
+            hit_targets, EXPECTED_TARGET_IMAGES,
+            "{label} entry '{id}' was hit on targets {hit_targets:?}, expected exactly one hit \
+             on each of {EXPECTED_TARGET_IMAGES:?}; an entry that stops reproducing on some \
+             target (or hits one target more than once) must fail the suite rather than go quiet"
         );
     }
 }
@@ -870,6 +958,154 @@ fn assert_version_divergence_control(versions: &[(String, String)]) {
                 panic!("version-divergence control collapsed between '{ti}' and '{tj}'");
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test-side (NOT product) grounding for "loud reject" stderr text (round-2
+// adversarial review, also-fix 4): `classify_capture`'s own complaint table
+// is the implementer's to write inside `oracle.rs`, but nothing in this file
+// independently verified that every loud-reject row in the corpus carries a
+// RECOGNISED, cited diagnostic rather than an accidental catch-all - which is
+// exactly the gap the reviewer's constant-catch-all counterexample
+// (`_ => Reject { complaint: "some diagnostic" }`) exploited. This check runs
+// TODAY, independent of `classify_capture` (still `todo!()`), by reading the
+// corpus directly.
+// ---------------------------------------------------------------------------
+
+/// Substrings that must appear in a KNOWN loud-reject row's stderr, each cited
+/// to the emitting `audit-userspace` function (`errormsg.h`'s `err_msgtab`,
+/// printed via the direct-`fprintf` `audit_number_to_errmsg`, so visible even
+/// under `-R`'s `MSG_SYSLOG` mode - see `PROVENANCE.md` "`MSG_SYSLOG` under
+/// -R"). Distinct from the two `Unusable::SandboxLimited` substrings
+/// (`"filter is not supported by the kernel"`, `"Field option not supported
+/// by kernel:"`), which are feature-bitmap artifacts of THIS sandbox rather
+/// than a genuine parse complaint about the rule's content - see
+/// `is_sandbox_limited_stderr`.
+const KNOWN_PARSE_COMPLAINTS: &[(&str, &str)] = &[
+    ("-F unknown field:", "EAU_FIELDUNKNOWN, errormsg.h ~86"),
+    ("-C unknown field:", "EAU_COMPFIELDUNKNOWN, errormsg.h ~103"),
+    (
+        "-F value should be number for",
+        "EAU_FIELDVALNUM, errormsg.h ~98",
+    ),
+    (
+        "Permission can only contain",
+        "EAU_PERMRWXA, errormsg.h ~91",
+    ),
+];
+
+/// A stderr matching either of these is a feature-bitmap query this sandbox's
+/// blocked `AUDIT_GET` cannot complete (`Unusable::SandboxLimited`), NOT a
+/// genuine parse complaint about the rule's own content - see
+/// `rocky9-filesystem-list` / `reset-lost-probe` on [`UNOBSERVABLE`].
+fn is_sandbox_limited_stderr(stderr: &str) -> bool {
+    stderr.contains("filter is not supported by the kernel")
+        || stderr.contains("Field option not supported by kernel:")
+}
+
+/// Independent of `classify_capture` (which remains `todo!()` for the
+/// implementer): reads the corpus directly and asserts every row whose raw
+/// facts have the SHAPE of a loud reject (`rc == 1`, non-empty stderr, not
+/// the add-rule accept string, not a sandbox-limited feature-bitmap message)
+/// carries a stderr matching at least one [`KNOWN_PARSE_COMPLAINTS`] entry,
+/// and that every entry in that table is actually hit by at least one row (no
+/// orphan entries). This is the test's own cross-check that the corpus does
+/// not contain an unrecognised loud-reject diagnostic that a future
+/// `classify_capture` implementation could silently mis-map - complementary
+/// to (not a replacement for) `oracle.rs`'s
+/// `rc_one_unrecognised_nonempty_stderr_is_unusable` synthetic pin.
+#[test]
+fn known_parse_complaints_cover_every_loud_reject_row() {
+    let root = corpus_root();
+    let files = target_files(&root);
+    let mut all_rows: Vec<Row> = Vec::new();
+    for path in &files {
+        let (_version, rows) = parse_target_tsv(path);
+        all_rows.extend(rows);
+    }
+    assert!(!all_rows.is_empty(), "corpus must not be empty");
+
+    let mut entry_hits = vec![0usize; KNOWN_PARSE_COMPLAINTS.len()];
+    let mut loud_reject_rows_seen = 0usize;
+
+    for row in &all_rows {
+        let is_loud_reject_shape = row.rc == 1
+            && !row.stderr.is_empty()
+            && !row.stderr.contains("Error sending add rule data request")
+            && !is_sandbox_limited_stderr(&row.stderr);
+        if !is_loud_reject_shape {
+            continue;
+        }
+        loud_reject_rows_seen += 1;
+
+        let matched = KNOWN_PARSE_COMPLAINTS
+            .iter()
+            .position(|(substr, _)| row.stderr.contains(substr));
+        match matched {
+            Some(idx) => entry_hits[idx] += 1,
+            None => panic!(
+                "target={} id={} rule={:?} has a loud-reject-shaped stderr {:?} that matches \
+                 NO entry in KNOWN_PARSE_COMPLAINTS; either this is a genuinely new diagnostic \
+                 that needs its own cited entry, or it should be reclassified (e.g. as \
+                 sandbox-limited)",
+                row.target, row.id, row.rule, row.stderr
+            ),
+        }
+    }
+
+    assert!(
+        loud_reject_rows_seen > 0,
+        "expected at least one loud-reject-shaped row in the corpus; an instrument that \
+         checked nothing must not report clean"
+    );
+
+    for (idx, (substr, citation)) in KNOWN_PARSE_COMPLAINTS.iter().enumerate() {
+        assert!(
+            entry_hits[idx] > 0,
+            "KNOWN_PARSE_COMPLAINTS entry {substr:?} ({citation}) was never hit by any corpus \
+             row; an orphan entry in a cited table is itself a grounding defect"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Codec positive control (round-2 adversarial review, also-fix 6): the three
+// `assert_eq!(decoded.len(), recorded_len)` checks in `parse_data_row` have
+// only ever run against a corpus where they pass. This project's own rule is
+// that any instrument gets ONE run against known-bad input before a green
+// result from it is trusted (a summarizer that never reports bad must not be
+// trusted to report clean). These tests feed `parse_data_row` a deliberately
+// corrupted row directly (it is a private fn in this same file) and assert it
+// panics, rather than silently accepting the corruption.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod parse_data_row_codec_positive_control {
+    use super::parse_data_row;
+    use std::path::Path;
+
+    #[test]
+    #[should_panic(expected = "disagrees with recorded rule_len")]
+    fn a_truncated_rule_field_is_rejected_fail_closed() {
+        // rule_len claims 20 bytes but the rule field itself is only 5.
+        let line = "rs-oracle8\tfake-id\texisting\t1\t20\t0\t0\thello\t\\0\t\\0";
+        parse_data_row(Path::new("synthetic.tsv"), 1, line);
+    }
+
+    #[test]
+    #[should_panic(expected = "disagrees with recorded err_len")]
+    fn a_dropped_byte_in_stderr_is_rejected_fail_closed() {
+        // err_len claims 30 bytes; the decoded stderr is shorter (a dropped
+        // byte, simulating truncation across the bash/container boundary).
+        let line = "rs-oracle8\tfake-id\texisting\t1\t5\t0\t30\thello\t\\0\tError sending add rule";
+        parse_data_row(Path::new("synthetic.tsv"), 1, line);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected exactly 10 tab-separated fields")]
+    fn a_wrong_field_count_is_rejected_fail_closed() {
+        let line = "rs-oracle8\tfake-id\texisting\t1\t0\t0\t0\t\\0"; // only 8 fields
+        parse_data_row(Path::new("synthetic.tsv"), 1, line);
     }
 }
 
