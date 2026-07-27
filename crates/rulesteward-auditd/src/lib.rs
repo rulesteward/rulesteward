@@ -8,6 +8,12 @@ pub mod bands;
 pub mod cost;
 pub mod from_log;
 pub mod lints;
+// Differential-oracle adapter (session 9k-1). Not a product feature: it is the
+// product side of `tests/auditd_corpus_oracle.rs`, which checks this crate's
+// parser against what the real `auditctl -R` said. It lives in `src/` so the
+// one function that decides "did the daemon accept this line?" is covered by
+// clippy, the coverage floor and the mutation gate.
+pub mod oracle;
 pub mod parser;
 
 // Re-export the primary public surface for convenience.

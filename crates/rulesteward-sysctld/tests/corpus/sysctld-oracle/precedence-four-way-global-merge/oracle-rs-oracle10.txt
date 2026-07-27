@@ -1,0 +1,35 @@
+=== COMPUTED-INVENTORY ===
+d	etc/sysctl.d	
+f	etc/sysctl.d/05-a.conf	
+d	run/sysctl.d	
+f	run/sysctl.d/50-b.conf	
+d	usr/local/lib/sysctl.d	
+f	usr/local/lib/sysctl.d/30-c.conf	
+d	usr/lib/sysctl.d	
+f	usr/lib/sysctl.d/99-d.conf	
+l	lib	usr/lib
+=== CAT-CONFIG ===
+# /etc/sysctl.d/05-a.conf
+kernel.randomize_va_space = 2
+
+# /usr/local/lib/sysctl.d/30-c.conf
+kernel.randomize_va_space = 2
+
+# /run/sysctl.d/50-b.conf
+kernel.randomize_va_space = 2
+
+# /usr/lib/sysctl.d/99-d.conf
+kernel.randomize_va_space = 0
+cat-config RC=0
+=== APPLY-DEBUG ===
+Parsing /etc/sysctl.d/05-a.conf
+Parsing /usr/local/lib/sysctl.d/30-c.conf
+Parsing /run/sysctl.d/50-b.conf
+Parsing /usr/lib/sysctl.d/99-d.conf
+Overwriting earlier assignment of kernel/randomize_va_space at '/usr/lib/sysctl.d/99-d.conf:1'.
+Setting '/proc/sys/kernel/randomize_va_space' to '0'
+Couldn't write '0' to 'kernel/randomize_va_space', ignoring: Read-only file system
+apply RC=0
+=== VERSION ===
+systemd 257 (257-23.el10_2.2.rocky.0.1-gb237c67)
++PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT -QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE

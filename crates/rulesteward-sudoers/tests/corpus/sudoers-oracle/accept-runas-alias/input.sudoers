@@ -1,0 +1,2 @@
+Runas_Alias OPS = alice, bob
+carol ALL = (OPS) /bin/ls

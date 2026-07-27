@@ -1,0 +1,8 @@
+{
+  "target": "el9",
+  "sudo_rpm": "sudo-1.9.17p2-3.el9_8.x86_64",
+  "visudo": {"rc": 1, "stdout": "", "stderr": "stdin:1:7: syntax error\nnot a valid line at all no equals sign here\n      ^~~~~\n"},
+  "visudo_strict": {"rc": 1, "stdout": "", "stderr": "stdin:1:7: syntax error\nnot a valid line at all no equals sign here\n      ^~~~~\n"},
+  "cvtsudoers": {"rc": 1, "stdout": "", "stderr": "stdin:1:7: syntax error\nnot a valid line at all no equals sign here\n      ^~~~~\n"},
+  "cvtsudoers_expanded": {"rc": 1, "stdout": "", "stderr": "stdin:1:7: syntax error\nnot a valid line at all no equals sign here\n      ^~~~~\n"}
+}

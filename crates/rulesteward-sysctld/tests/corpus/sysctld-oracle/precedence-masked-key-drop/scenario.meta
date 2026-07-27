@@ -1,0 +1,7 @@
+id: precedence-masked-key-drop
+category: precedence
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: W03-c: the masked usr/lib/sysctl.d/50-x.conf sets kernel.randomize_va_space, but it is masked by etc/sysctl.d/50-x.conf (which sets an unrelated key) - no surviving file sets kernel.randomize_va_space, so BOTH RuleSteward and the real oracle correctly agree it is unset. Confirming (non-divergent) scenario, distinguishing this from the #593 misdirected-slot bug.

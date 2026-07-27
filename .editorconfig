@@ -16,3 +16,20 @@ indent_size = 2
 
 [*.md]
 trim_trailing_whitespace = false
+
+# (session 9k-1) Differential-oracle corpora and probe fixtures are RECORDED
+# BYTES, not source code. A value captured from a real subsystem may legitimately
+# end in a space, and in a TSV a trailing empty field is a COLUMN: trimming it
+# changes the field count, which the replay test then reads as a corrupt corpus
+# rather than as an editor artifact. See CONTRIBUTING.md "Differential oracle
+# contract".
+#
+# This is defence in depth, not the primary fix. Anything that does not honour
+# .editorconfig - git, sed, a web editor, a future contributor's setup - can
+# still trim, so a corpus format must ALSO encode any empty-or-whitespace field
+# with a non-empty escape rather than relying on this section.
+[*.tsv]
+trim_trailing_whitespace = false
+
+[crates/*/tests/corpus/**]
+trim_trailing_whitespace = false

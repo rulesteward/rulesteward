@@ -1,0 +1,7 @@
+id: precedence-four-way-global-merge
+category: precedence
+images: rs-oracle10
+targets: rhel10
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: all four search directories touch the same key with distinct basenames; alphabetic order 05<30<50<99 decides regardless of directory rank, so usr/lib's 99-d.conf (lowest-precedence dir) wins with the non-compliant value 0.

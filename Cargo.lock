@@ -1174,6 +1174,7 @@ name = "rulesteward-sudoers"
 version = "0.7.0"
 dependencies = [
  "rulesteward-core",
+ "serde_json",
  "tempfile",
 ]
 

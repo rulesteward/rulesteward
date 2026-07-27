@@ -1,0 +1,612 @@
+//! Differential-oracle adapter for the `sudoers` backend (session 9k-1).
+//!
+//! Product side of the Tier-1 replay test described in `CONTRIBUTING.md`
+//! "Differential oracle contract". It lets
+//! `crates/rulesteward-sudoers/tests/sudoers_corpus_oracle.rs` compare
+//! `RuleSteward`'s answer for a sudoers document against what the REAL
+//! `visudo -c -f -` and `cvtsudoers -f json` said about that same document,
+//! recorded in the committed corpus under `tests/corpus/sudoers-oracle/`.
+//!
+//! # Why this lives in `src/` and not in the test
+//!
+//! The model, the fail-closed parse and the compare are the logic whose being
+//! wrong would make the differential report success while checking nothing.
+//! Keeping them here subjects them to `just ci` clippy, the coverage floor and
+//! the mutation gate; a `tests/`-only or feature-gated home would silently drop
+//! all three.
+//!
+//! # Why the capture script records raw facts only
+//!
+//! `tests/corpus/sudoers-oracle/capture_sudoers.sh` writes `(rc, stdout,
+//! stderr)` verbatim per target and makes no verdict. [`classify_visudo`] is
+//! where a verdict is reached, so the decision is unit-tested and mutation-gated
+//! rather than living in an untested `grep` inside bash.
+
+use serde_json::Value;
+
+use crate::ast::{CmndItem, LineKind, SudoersFile};
+
+/// The real `visudo -c -f -` answer for one sudoers document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisudoVerdict {
+    /// `visudo` parsed the document.
+    Accept,
+    /// `visudo` refused the document.
+    Reject,
+}
+
+/// Fail-closed error: the captured exit code and the captured evidence text
+/// disagree, so no verdict may be guessed.
+///
+/// Raised for a captured `rc == 0` with no `parsed OK` in stdout, for a nonzero
+/// `rc` that nonetheless reports `parsed OK`, and for any rc outside `{0, 1}`.
+/// Guessing in any of those cases is how a broken oracle gets recorded as a
+/// clean one.
+///
+/// `Copy` is required by the frozen barrier test, which matches on a
+/// `(accept_verdict, reject_verdict)` tuple and then names both again in the
+/// failure message. Both fields are already `Copy`, so it costs nothing; the
+/// constraint it buys is that a future `reason` must stay a `&'static str`
+/// drawn from a fixed set rather than becoming a formatted `String`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnclassifiedVisudo {
+    /// The exit code as captured.
+    pub rc: i32,
+    /// Why the pair could not be classified.
+    pub reason: &'static str,
+}
+
+/// Structure-only view of a sudoers document, comparable across `RuleSteward`'s
+/// AST and `cvtsudoers -f json`'s output.
+///
+/// Deliberately NOT full-fidelity: full AST-vs-AST comparison is an explicit
+/// follow-up, not this session. `users` / `hosts` / `commands` are flat,
+/// file-wide token lists; the test compares them as multisets, so neither
+/// projector needs to sort internally.
+///
+/// # Why a plain `String`, not a `Member { negated, kind, value }` struct
+///
+/// Considered and settled (2026-07-27, per-task review): keep the string
+/// encoding. Three reasons:
+/// - The `!` mark cannot collide by construction: [`resolve_bang_run`]
+///   consumes the ENTIRE leading bang-run, so its `remainder` provably never
+///   starts with `!`, and the `cvtsudoers` side reports negation via the
+///   companion `"negated"` flag rather than by leaving a `!` in the value.
+///   Injective on both sides - a structural property, not luck.
+/// - The `"<type>:"` tag CAN theoretically collide with a literal value that
+///   happens to contain a colon (see `PROVENANCE.md` section 15's
+///   `usergroup\:wheel` finding), but the recorded outcome is a LOUD
+///   mismatch, not a silent pass - a silent pass would need BOTH projectors
+///   to independently produce the SAME colliding string from DIFFERENT
+///   inputs, which is not what that finding shows.
+/// - Nothing in this codebase ever parses these strings back apart. They are
+///   built once (by exactly these two functions) and compared once (by the
+///   Tier-1 test's `sorted_eq`). That makes this an ENCODING, not a
+///   stringly-typed interface - and an encoding may be a string when the
+///   only operation performed on it is equality.
+///
+/// **Promotion triggers** (any one of these means revisit the encoding, not
+/// a reflexive "strings are always wrong" review comment):
+/// 1. The moment `PROVENANCE.md` section 15's `usergroup\:wheel` backlog item
+///    lands - i.e. the parser starts UNESCAPING `\:` - the `:` collision
+///    stops being loud and becomes SILENT, because both sides would then
+///    produce the identical unescaped literal `"usergroup:wheel"`. See the
+///    note left directly on that backlog entry.
+/// 2. A FOURTH orthogonal bit needs to be carried on a member (e.g. `runas`
+///    or `tags`, see the "Type tags" doc section's closing paragraph on why
+///    those are NOT carried today). Three bits in one string (value, type,
+///    negation) is the ceiling this encoding was sized for.
+/// 3. A failure message ever needs to say WHICH bit differed - a
+///    `Vec<String>` diff cannot distinguish "the negation disagreed" from
+///    "the type tag disagreed" from "the bare value disagreed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureProjection {
+    /// Number of `(User_List, Host_List, Cmnd_Specs)` tuples, one per
+    /// `:`-separated host group, matching `cvtsudoers -f json`'s `User_Specs[]`
+    /// array 1:1.
+    pub tuple_count: usize,
+    /// Every subject token, negation-resolved (see [`project_ast`]'s doc
+    /// comment's "Negation" discussion: a `"!"` prefix, outermost, iff the
+    /// token's leading `!`-run has ODD parity) and, for a sigil'd value,
+    /// tagged with its `"<type>:"` prefix INSIDE the negation mark (see
+    /// "Type tags"); a bare token (plain name, `ALL`, or an unexpanded alias
+    /// reference) is untagged.
+    pub users: Vec<String>,
+    /// Every host token, negation-resolved the same way and, for a sigil'd
+    /// value (only `+netgroup` occurs on the host side - `#`/`%`/`%#` are
+    /// never a host sigil, see [`tag_member`]), tagged the same way as
+    /// `users`; a bare token (hostname, `ALL`, alias reference, network
+    /// address, or a hash-prefixed hostname like `#1000`) is untagged.
+    pub hosts: Vec<String>,
+    /// Every command token, negation-resolved the same way (no type tag:
+    /// commands carry no `%+#` sigil in the sudoers grammar).
+    pub commands: Vec<String>,
+}
+
+/// Fail-closed error: some part of a `cvtsudoers -f json` document did not
+/// match a shape measured against the real tool - an element whose key set
+/// matches no recognized member type, a `User_List` / `Host_List` /
+/// `Cmnd_Specs` / `Commands` value that is present but is not a JSON array,
+/// or a `negated` value that is present but is not a JSON boolean.
+///
+/// Silently accepting an unmeasured shape (skipping the element, treating a
+/// non-array as empty, treating a non-bool `negated` as `false`) would
+/// shrink or reshape the projection and let the comparison pass for the
+/// wrong reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CvtsudoersProjectionError {
+    /// Which array, or other JSON path, the unexpected value was found at.
+    pub location: &'static str,
+    /// The offending value (or its containing element), rendered for the
+    /// failure message.
+    pub element: String,
+}
+
+/// Recovers the real `visudo` verdict from one row of raw captured facts.
+///
+/// `Ok(Accept)` iff `rc == 0` AND stdout contains `parsed OK`; `Ok(Reject)` iff
+/// `rc == 1` AND stdout does NOT contain `parsed OK`; every other combination
+/// (including any `rc` outside `{0, 1}`, per `visudo(8)`'s own exit-code
+/// contract of 0 on success / 1 on error - see [`UnclassifiedVisudo`]) is
+/// `Err(UnclassifiedVisudo)`, never guessed.
+///
+/// `stderr` is accepted so the corpus row is passed whole and a future
+/// diagnostic-level check needs no signature change; today it does not
+/// participate in the decision.
+pub fn classify_visudo(
+    rc: i32,
+    stdout: &str,
+    _stderr: &str,
+) -> Result<VisudoVerdict, UnclassifiedVisudo> {
+    let parsed_ok = stdout.contains("parsed OK");
+    if rc == 0 && parsed_ok {
+        return Ok(VisudoVerdict::Accept);
+    }
+    if rc == 1 && !parsed_ok {
+        return Ok(VisudoVerdict::Reject);
+    }
+    let reason = if rc == 0 || rc == 1 {
+        "rc and parsed-OK evidence disagree"
+    } else {
+        "rc outside the visudo(8) 0/1 exit-code contract"
+    };
+    Err(UnclassifiedVisudo { rc, reason })
+}
+
+/// Projects `RuleSteward`'s parsed sudoers AST into the comparable structure view.
+///
+/// `CmndItem::All` projects to the literal string `ALL`. A subject, host, or
+/// command token's leading `!`-run is resolved by PARITY first (see
+/// "Negation" below), not stripped-and-discarded: a negated command like
+/// `!/usr/bin/su` needs the mark to compare unequal to the un-negated form,
+/// and so does the literal `Cmnd("!ALL")` token `parser.rs` produces for
+/// `!ALL` (it compares the raw text against `ALL` before any negation
+/// resolution, so the resolution must recover the bare `ALL` afterward).
+/// After negation is resolved, a subject/host token also gets a `"<type>:"`
+/// prefix derived from any remaining sigil (see "Type tags" below), INSIDE
+/// the negation mark; a command token does not get a type tag (commands
+/// carry no `%+#` sigil in the sudoers grammar). For every host-group tuple
+/// the SHARED `UserSpec` user list is pushed once, matching `cvtsudoers`'
+/// per-tuple duplication of `User_List`.
+///
+/// # Negation
+///
+/// Both sides of this differential previously stripped a leading `!` and
+/// DISCARDED it rather than marking it - the same symmetric-erasure shape
+/// "Type tags" below closes for sigils, reintroduced on the axis that fix
+/// created: a projector that drops negation entirely still matches
+/// `cvtsudoers`' `{"command": "X", "negated": true}`, since both sides
+/// reduce to the bare `"X"`. `!` is deny-vs-allow, the most security-relevant
+/// axis in sudoers. Fix: a negated value's projection carries a `"!"` prefix
+/// on the WHOLE value, OUTERMOST (applied after any type tag, so a negated
+/// group subject is `"!usergroup:wheel"`, never `"usergroup:!wheel"`); an
+/// un-negated value is unmarked.
+///
+/// Negation is a Kleene star, not a single character (`man 5 sudoers`:
+/// `'!'* command` / `'!'* user` / `'!'* host` - "An odd number of `!`
+/// operators negate the value of the item; an even number just cancel each
+/// other out"). `!!/usr/bin/su` therefore resolves to the unmarked
+/// `"/usr/bin/su"`; only an ODD count marks. Whitespace immediately after the
+/// bang-run is trimmed before taking the remainder as the base value (`alice
+/// ALL = ! /usr/bin/su` still negates and `cvtsudoers` reports the TRIMMED
+/// command, no leading space) - see [`resolve_bang_run`].
+///
+/// # Type tags
+///
+/// Both sides of this differential previously reduced every subject/host to
+/// its bare value only, discarding which sigil (here) or which distinct
+/// `cvtsudoers` JSON key (in [`project_cvtsudoers_json`]) produced it. That
+/// erasure was symmetric - thrown away by both projectors - so it canceled
+/// exactly: a `project_ast` that dropped a sigil entirely (reading `%wheel`
+/// as if it were the plain user `wheel`) still matched `cvtsudoers`'
+/// `{"usergroup": "wheel"}` once both sides reduced to the bare string
+/// `"wheel"`, proving nothing about sigil handling. Fix: after negation is
+/// resolved,
+/// - `%group` (users only) -> `"usergroup:<group>"`.
+/// - `%#gid` (users only) -> `"usergid:<gid>"` - BOTH sigils stripped, and
+///   the digits canonicalized (see below).
+/// - `+netgroup` (users and hosts) -> `"netgroup:<name>"`.
+/// - `#uid` (users only) -> `"userid:<uid>"`, digits canonicalized.
+/// - any other token (a plain username/hostname, the `ALL` keyword, an
+///   unexpanded `User_Alias`/`Host_Alias` reference, or a `networkaddr`
+///   host) -> untagged, the bare value itself. Distinguishing a plain name
+///   from an alias reference would need cross-referencing the file's own
+///   alias definitions, which this projector does not do; a `networkaddr`
+///   host has no leading sigil to derive a tag from. Both are deliberately
+///   left untagged, matching [`project_cvtsudoers_json`]'s inability to tell
+///   `username` from `useralias` either.
+///
+/// `%group` / `%#gid` / `#uid` are USER-ONLY sigils: `man 5 sudoers`'s `Host
+/// ::=` production has no `#user-ID`, `%group`, or `%#gid` alternative, so a
+/// host token starting with `#` (e.g. `#1000`) is a plain, if unusual,
+/// hostname - `cvtsudoers` reports it untagged (`{"hostname": "#1000"}`) -
+/// never the `userid:` tag it would get on the user side. `%` and `%#` are
+/// not reachable host syntax at all (`visudo -c` rejects them). See
+/// [`tag_member`]'s `MemberSide` split.
+///
+/// # uid/gid canonicalization
+///
+/// `sudo_strtoid` parses a `#uid`/`%#gid` subject in base 10, so `#0100`
+/// means uid 100 and `cvtsudoers` reports the canonical decimal as a JSON
+/// number (`{"userid": 100}`, no leading zero). A textual sigil-strip alone
+/// would produce `"0100"`, matching neither the canonical value nor the
+/// right type once tags exist, so the digits are parsed and re-rendered in
+/// decimal rather than only stripped.
+#[must_use]
+pub fn project_ast(file: &SudoersFile) -> StructureProjection {
+    let mut tuple_count = 0usize;
+    let mut users = Vec::new();
+    let mut hosts = Vec::new();
+    let mut commands = Vec::new();
+
+    for line in &file.lines {
+        let LineKind::UserSpec(spec) = &line.kind else {
+            continue;
+        };
+        let stripped_users: Vec<String> = spec
+            .users
+            .iter()
+            .map(|u| tag_member(u, MemberSide::User))
+            .collect();
+        for group in &spec.host_groups {
+            tuple_count += 1;
+            users.extend(stripped_users.iter().cloned());
+            hosts.extend(group.hosts.iter().map(|h| tag_member(h, MemberSide::Host)));
+            for cmnd_spec in &group.cmnd_specs {
+                let cmnd = match &cmnd_spec.cmnd {
+                    CmndItem::All => "ALL".to_string(),
+                    CmndItem::Cmnd(raw) => resolve_command_negation(raw),
+                };
+                commands.push(cmnd);
+            }
+        }
+    }
+
+    StructureProjection {
+        tuple_count,
+        users,
+        hosts,
+        commands,
+    }
+}
+
+/// Resolves a token's leading run of `!` characters by PARITY, per `man 5
+/// sudoers`'s `'!'* command` / `'!'* user` / `'!'* host` grammar: "An odd
+/// number of `!` operators negate the value of the item; an even number just
+/// cancel each other out." Returns `(negated, remainder)`, where `remainder`
+/// has the bang-run AND any whitespace immediately following it trimmed -
+/// `cvtsudoers` reports a negated command trimmed too (`alice ALL = !
+/// /usr/bin/su` -> `{"command": "/usr/bin/su", "negated": true}`, no leading
+/// space). Each `!` is a single ASCII byte, so `bang_count` is always a valid
+/// byte index and slicing `token` at it lands on a char boundary.
+///
+/// `trim_start()` runs unconditionally, even when `bang_count == 0` (a token
+/// with no leading `!` at all). That is a documented ASSUMPTION, not a
+/// verified invariant of this function alone: it relies on every caller's
+/// upstream tokenizer already trimming whitespace before a zero-bang token
+/// can reach here, which is true TODAY (`parser.rs`'s `comma_split` trims
+/// every user/host token, and `rest.trim()` trims every command token before
+/// either reaches this function), so the unconditional trim is currently a
+/// no-op on that path rather than a masking risk. It would stop being a
+/// no-op, and become a real (if still one-sided) normalization, only if a
+/// caller ever stopped pre-trimming its tokens.
+fn resolve_bang_run(token: &str) -> (bool, &str) {
+    let bang_count = token.bytes().take_while(|&b| b == b'!').count();
+    let remainder = token[bang_count..].trim_start();
+    (bang_count % 2 == 1, remainder)
+}
+
+/// Resolves a command token's leading `!`-run by PARITY (see
+/// [`resolve_bang_run`]) and marks a negated result with an outermost `!`
+/// prefix, recovering the bare command (or, for the literal `Cmnd("!ALL")`
+/// token, the bare `ALL` keyword) that `cvtsudoers` reports via
+/// `{"command": ..., "negated": true}` (see [`project_ast`]'s doc comment).
+/// Commands carry no type tag (see [`project_ast`]'s "Type tags" section),
+/// so there is nothing for the mark to sit outside of but the bare command.
+fn resolve_command_negation(raw: &str) -> String {
+    let (negated, remainder) = resolve_bang_run(raw);
+    if negated {
+        format!("!{remainder}")
+    } else {
+        remainder.to_string()
+    }
+}
+
+/// Which side of a `User_Spec` a member token appears on. `man 5 sudoers`'s
+/// `Host ::=` production has no `#user-ID`, `%group`, or `%#gid`
+/// alternative: `+netgroup` is the only sigil valid on the host side, and a
+/// hostname starting with `#` (e.g. `#1000`) is a plain, if unusual,
+/// hostname, never a `userid:` tag. `%` and `%#` are not reachable host
+/// syntax at all (`visudo -c` rejects them), so there is no case to handle
+/// for them here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberSide {
+    User,
+    Host,
+}
+
+/// Resolves a leading `!`-run by PARITY (see [`resolve_bang_run`]), then
+/// derives the `cvtsudoers`-comparable, type-tagged value for a subject/host
+/// token (see [`project_ast`]'s doc comment's "Type tags" and "uid/gid
+/// canonicalization" sections), and finally marks the WHOLE tagged value
+/// with an outermost `!` if the bang-run's parity was odd - matching
+/// [`project_ast`]'s "Negation" ordering (mark outside the type tag).
+fn tag_member(token: &str, side: MemberSide) -> String {
+    let (negated, remainder) = resolve_bang_run(token);
+    let tagged = match side {
+        MemberSide::User => tag_user_sigil(remainder),
+        MemberSide::Host => tag_host_sigil(remainder),
+    };
+    if negated {
+        format!("!{tagged}")
+    } else {
+        tagged
+    }
+}
+
+/// Derives the `"<type>:"` tag for a USER-side member: `%group`, `%#gid`,
+/// `+netgroup`, and `#uid` are all valid user sigils (see [`project_ast`]'s
+/// "Type tags" doc section).
+fn tag_user_sigil(token: &str) -> String {
+    if let Some(digits) = token.strip_prefix("%#") {
+        return format!("usergid:{}", canonicalize_decimal(digits));
+    }
+    if let Some(name) = token.strip_prefix('%') {
+        return format!("usergroup:{name}");
+    }
+    if let Some(name) = token.strip_prefix('+') {
+        return format!("netgroup:{name}");
+    }
+    if let Some(digits) = token.strip_prefix('#') {
+        return format!("userid:{}", canonicalize_decimal(digits));
+    }
+    token.to_string()
+}
+
+/// Derives the `"<type>:"` tag for a HOST-side member: only `+netgroup` is
+/// valid host-side sigil syntax (see [`MemberSide`]'s doc comment); a `#`
+/// prefix is left untouched as part of a plain hostname, never read as the
+/// `userid:` sigil it would be on the user side.
+fn tag_host_sigil(token: &str) -> String {
+    if let Some(name) = token.strip_prefix('+') {
+        return format!("netgroup:{name}");
+    }
+    token.to_string()
+}
+
+/// Parses a uid/gid digit string in base 10, matching `sudo_strtoid`'s
+/// base-10 rule, but NOT its `uid_t` domain bound (see `PROVENANCE.md`
+/// section 14 for that parked divergence: this parses as `u64`, `sudo_strtoid`
+/// as `uid_t`), and re-renders it canonically, so a leading-zero token
+/// (`#0100`) compares equal to `cvtsudoers`' JSON-number report
+/// (`{"userid": 100}`). Falls back to the original digits, unchanged, if they
+/// do not parse as an integer: `project_ast` is infallible today (see its
+/// signature) and must never panic on an unexpected token.
+fn canonicalize_decimal(digits: &str) -> String {
+    digits
+        .parse::<u64>()
+        .map_or_else(|_| digits.to_string(), |n| n.to_string())
+}
+
+/// Projects a `cvtsudoers -f json` document into the comparable structure view.
+///
+/// Fail-closed at two levels, both via [`CvtsudoersProjectionError`]:
+/// - CONTAINER level (see [`get_array`]): `User_Specs`, `User_List`,
+///   `Host_List`, `Cmnd_Specs`, and `Commands` may each be legitimately
+///   ABSENT (e.g. a Defaults-only document omits `User_Specs` entirely), but
+///   a key that IS present must be array-shaped; present-and-not-an-array is
+///   an unmeasured shape, not a second way to spell "absent".
+/// - ELEMENT level: any `User_List` / `Host_List` / `Cmnd_Specs[].Commands`
+///   entries that do not match a key shape measured against the real tool:
+///   `User_List` accepts `username`, `useralias`, `usergroup`, `netgroup`,
+///   `userid` (a JSON number), and `usergid` (a JSON number); `Host_List`
+///   accepts `hostname`, `hostalias`, `netgroup`, and `networkaddr`;
+///   `Cmnd_Specs[].Commands` accepts `command` and `cmndalias`.
+///   `print_member_json_int` (the real `cvtsudoers` source) keys `typestr` on
+///   member TYPE, not on which list a member appears in, so `netgroup`
+///   legitimately appears in both `User_List` and `Host_List`. A companion
+///   `"negated"` key MARKS the extracted value with an outermost `"!"`
+///   prefix (see [`project_ast`]'s "Negation" doc section) - it is no longer
+///   ignored; `project_ast` resolves the same `!` by PARITY on its own AST
+///   side, and the two must agree. `negated` may likewise be legitimately
+///   ABSENT (defaults to un-negated) but must be a JSON boolean if present
+///   (see [`mark_negated`]).
+///
+/// The extracted value carries the same `"<type>:"` prefix `project_ast`
+/// derives from a sigil (see that function's "Type tags" doc section),
+/// INSIDE the negation mark: `usergroup` / `netgroup` ->
+/// `"usergroup:<value>"` / `"netgroup:<value>"`; `userid` / `usergid` (JSON
+/// numbers) -> `"userid:<n>"` / `"usergid:<n>"`; `username`, `useralias`,
+/// `hostname`, `hostalias`, and `networkaddr` all stay untagged (this
+/// projector cannot tell a plain name from an alias reference, nor a
+/// network address from any other bare host token, any more than
+/// [`project_ast`] can).
+pub fn project_cvtsudoers_json(
+    json: &Value,
+) -> Result<StructureProjection, CvtsudoersProjectionError> {
+    let mut tuple_count = 0usize;
+    let mut users = Vec::new();
+    let mut hosts = Vec::new();
+    let mut commands = Vec::new();
+
+    // A file with no `User_Specs` at all (e.g. a Defaults-only document) omits
+    // the key entirely rather than emitting an empty array; that is zero
+    // tuples, not a shape error - see `get_array`'s doc comment for why that
+    // is `Ok(None)` rather than the same `None` a wrong-shaped-but-PRESENT
+    // key would also produce.
+    let specs = get_array(json, "User_Specs")?;
+
+    for spec in specs.into_iter().flatten() {
+        tuple_count += 1;
+
+        let user_list = get_array(spec, "User_List")?;
+        for elem in user_list.into_iter().flatten() {
+            let value = extract_user_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                location: "User_List",
+                element: elem.to_string(),
+            })?;
+            users.push(mark_negated(value, elem)?);
+        }
+
+        let host_list = get_array(spec, "Host_List")?;
+        for elem in host_list.into_iter().flatten() {
+            let value = extract_host_list_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                location: "Host_List",
+                element: elem.to_string(),
+            })?;
+            hosts.push(mark_negated(value, elem)?);
+        }
+
+        let cmnd_specs = get_array(spec, "Cmnd_Specs")?;
+        for cmnd_spec in cmnd_specs.into_iter().flatten() {
+            let cmnd_list = get_array(cmnd_spec, "Commands")?;
+            for elem in cmnd_list.into_iter().flatten() {
+                let value =
+                    extract_command_value(elem).ok_or_else(|| CvtsudoersProjectionError {
+                        location: "Cmnd_Specs[].Commands",
+                        element: elem.to_string(),
+                    })?;
+                commands.push(mark_negated(value, elem)?);
+            }
+        }
+    }
+
+    Ok(StructureProjection {
+        tuple_count,
+        users,
+        hosts,
+        commands,
+    })
+}
+
+/// Reads `json[key]` expected to hold an array, distinguishing the key being
+/// legitimately ABSENT from the key being PRESENT but not an array. `key`
+/// doubles as the [`CvtsudoersProjectionError::location`] label on the
+/// fail-closed path, since the two are the same JSON path in every caller
+/// below.
+///
+/// `Ok(None)` means "absent" (e.g. a Defaults-only document omits
+/// `User_Specs` entirely - that is zero tuples, not a shape error).
+/// `Ok(Some(_))` means present and array-shaped. `Err` means present but not
+/// an array - an unmeasured shape that must fail closed rather than being
+/// silently treated the same as a legitimate absence (which
+/// `.and_then(Value::as_array)` alone cannot distinguish: both a missing key
+/// and a present-non-array value produce `None`).
+fn get_array<'a>(
+    json: &'a Value,
+    key: &'static str,
+) -> Result<Option<&'a [Value]>, CvtsudoersProjectionError> {
+    match json.get(key) {
+        None => Ok(None),
+        Some(v) => Ok(Some(v.as_array().map(Vec::as_slice).ok_or_else(|| {
+            CvtsudoersProjectionError {
+                location: key,
+                element: v.to_string(),
+            }
+        })?)),
+    }
+}
+
+/// Extracts a `User_List[]` element's type-tagged value: `username` /
+/// `useralias` stay untagged (this projector cannot tell them apart);
+/// `usergroup` / `netgroup` gain a `"<type>:"` prefix; `userid` / `usergid`
+/// are read via [`Value::as_u64`] (never rendered through `Value`'s `Display`
+/// impl, which prints the raw JSON text - `1e3` would print as `"1000.0"`,
+/// not matching `canonicalize_decimal`'s `u64`-based `"1000"` on the AST
+/// side) and prefixed the same way as the string-valued keys above. Does NOT
+/// resolve a companion `"negated": true` - the caller applies that mark
+/// afterward, OUTSIDE this type tag (see [`mark_negated`] and
+/// [`project_ast`]'s "Negation" ordering).
+fn extract_user_list_value(elem: &Value) -> Option<String> {
+    for key in ["username", "useralias"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = elem.get("usergroup").and_then(Value::as_str) {
+        return Some(format!("usergroup:{s}"));
+    }
+    if let Some(s) = elem.get("netgroup").and_then(Value::as_str) {
+        return Some(format!("netgroup:{s}"));
+    }
+    if let Some(n) = elem.get("userid").and_then(Value::as_u64) {
+        return Some(format!("userid:{n}"));
+    }
+    if let Some(n) = elem.get("usergid").and_then(Value::as_u64) {
+        return Some(format!("usergid:{n}"));
+    }
+    None
+}
+
+/// Extracts a `Host_List[]` element's type-tagged value: `hostname` /
+/// `hostalias` / `networkaddr` stay untagged (none carries a distinguishing
+/// sigil on the AST side); `netgroup` gains the same `"netgroup:"` prefix a
+/// user-side netgroup does. Does NOT resolve a companion `"negated": true`;
+/// see [`extract_user_list_value`]'s doc comment.
+fn extract_host_list_value(elem: &Value) -> Option<String> {
+    for key in ["hostname", "hostalias", "networkaddr"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(s) = elem.get("netgroup").and_then(Value::as_str) {
+        return Some(format!("netgroup:{s}"));
+    }
+    None
+}
+
+/// Extracts a `Cmnd_Specs[].Commands[]` element's bare value: `command` /
+/// `cmndalias`. Does NOT resolve a companion `"negated": true`; see
+/// [`extract_user_list_value`]'s doc comment.
+fn extract_command_value(elem: &Value) -> Option<String> {
+    for key in ["command", "cmndalias"] {
+        if let Some(s) = elem.get(key).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+/// Applies [`project_ast`]'s "Negation" mark (an outermost `"!"` prefix) to
+/// an already type-tagged value, iff `elem` carried a companion
+/// `"negated": true` - the cvt-side half of the same ordering `project_ast`
+/// applies via [`resolve_bang_run`] on its own AST tokens.
+///
+/// A genuinely absent `negated` key defaults to `false` (a measured fact:
+/// `cvtsudoers` omits the key rather than emitting `"negated": false` for an
+/// un-negated member). A `negated` key that IS present but is not a JSON
+/// boolean is a DIFFERENT, unmeasured shape and fails closed rather than
+/// being read as `false` by the same fallback - negation is the
+/// deny-vs-allow axis, the most security-relevant bit this module carries,
+/// so guessing on its unrecognized shape is exactly the kind of silent
+/// fail-open this module's fail-closed thesis rules out elsewhere.
+fn mark_negated(value: String, elem: &Value) -> Result<String, CvtsudoersProjectionError> {
+    let negated = match elem.get("negated") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| CvtsudoersProjectionError {
+            location: "negated",
+            element: elem.to_string(),
+        })?,
+    };
+    Ok(if negated { format!("!{value}") } else { value })
+}

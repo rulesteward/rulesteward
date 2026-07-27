@@ -1,0 +1,7 @@
+id: precedence-mask-etc-over-usrlib
+category: precedence
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: same-basename directory masking: etc/sysctl.d/50-x.conf (rank 0) masks usr/lib/sysctl.d/50-x.conf (rank 3) entirely by NAME - the masked file's fs.suid_dumpable assignment never applies. Confirmed empirically: real systemd logs 'Skipping overridden file'.

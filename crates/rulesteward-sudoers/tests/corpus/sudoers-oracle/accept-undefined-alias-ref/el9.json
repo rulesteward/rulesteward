@@ -1,0 +1,8 @@
+{
+  "target": "el9",
+  "sudo_rpm": "sudo-1.9.17p2-3.el9_8.x86_64",
+  "visudo": {"rc": 0, "stdout": "stdin: parsed OK", "stderr": "stdin:1:24: Cmnd_Alias \"NOSUCHALIAS\" referenced but not defined\n"},
+  "visudo_strict": {"rc": 1, "stdout": "", "stderr": "stdin:1:24: Cmnd_Alias \"NOSUCHALIAS\" referenced but not defined\n"},
+  "cvtsudoers": {"rc": 0, "stdout": "{\n    \"User_Specs\": [\n        {\n            \"User_List\": [\n                { \"username\": \"alice\" }\n            ],\n            \"Host_List\": [\n                { \"hostname\": \"ALL\" }\n            ],\n            \"Cmnd_Specs\": [\n                {\n                    \"Commands\": [\n                        { \"cmndalias\": \"NOSUCHALIAS\" }\n                    ]\n                }\n            ]\n        }\n    ]\n}", "stderr": "\n"},
+  "cvtsudoers_expanded": {"rc": 0, "stdout": "{\n    \"User_Specs\": [\n        {\n            \"User_List\": [\n                { \"username\": \"alice\" }\n            ],\n            \"Host_List\": [\n                { \"hostname\": \"ALL\" }\n            ],\n            \"Cmnd_Specs\": [\n                {\n                    \"Commands\": [\n                    ]\n                }\n            ]\n        }\n    ]\n}", "stderr": "\n"}
+}

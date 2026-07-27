@@ -1,0 +1,7 @@
+id: key-grammar-dash-prefix-identity
+category: key-grammar
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 
+comment: the ignore-error dash prefix does not change key IDENTITY: a dash-prefixed earlier assignment and a plain later assignment of the same key are recognized as the SAME key by the real oracle (confirmed: 'Overwriting earlier assignment of kernel/randomize_va_space'), matching RuleSteward's dash-stripped canonical form.

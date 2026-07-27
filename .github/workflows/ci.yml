@@ -127,6 +127,53 @@ jobs:
       - name: No-mnt guard (out-of-repo dependency paths)
         run: bash scripts/check-no-mnt-paths.sh
 
+      # (session 9k-1) Capture-write guard: every Tier-2 capture script
+      # (crates/*/tests/corpus/*/capture_*.sh) must route every write through
+      # rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) instead of
+      # a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd, an unwrapped
+      # `cat`/`echo`/`printf` redirect, or a `{ ...; } >>file` group-command
+      # redirect - the class of bug that let a Tier-2 capture continue past
+      # `cp: Disk quota exceeded` and exit 0 having written a truncated
+      # corpus. Cheap static check (bash + awk, no cargo build), so it lives
+      # here in the lint tier alongside the other guards. All three lanes
+      # (auditd/sysctld/sudoers) have merged their capture_*.sh files as of
+      # the 9k-1 integration commit, so the gate's own EXPECTED_CAPTURE_SCRIPTS
+      # floor is 3 - see scripts/check-capture-writes.sh's header.
+      - name: Capture-write guard (bare writes in Tier-2 capture scripts)
+        run: bash scripts/check-capture-writes.sh
+
+      # (session 9k-1) Oracle-harness self-tests: the four INSTRUMENTS behind
+      # the differential recipes and the capture-write guard are themselves
+      # gated here. scripts/rs-oracle-diff.sh maps a mess of exit codes onto
+      # the 0/1/2/3 dev-tooling contract and every wrong branch in it fails
+      # toward "clean", so a green `just diff-<lane>` run proves nothing about
+      # it; the fail-closed RS_REQUIRE_<ORACLE> predicate has already been
+      # shipped wrong once as a `== "1"` comparison; and
+      # scripts/check-capture-writes.sh / scripts/rs-capture-guard.sh share the
+      # same "an unverified instrument can report clean having checked
+      # nothing" risk (see the Capture-write guard step's own comment above).
+      # Each suite proves it can catch a real, deliberately-seeded bad
+      # implementation with NAMED cases, so none of the four can pass having
+      # checked nothing. Pure bash - cargo and docker are stubbed, no
+      # containers, no network - so they belong in the lint tier alongside the
+      # other guards.
+      #
+      # Invoked as four direct `bash` steps rather than via `just
+      # oracle-harness-test` because `just` is not on the GitHub-hosted runner
+      # (see the trustdb-contention job, which installs it); separate steps
+      # also name which instrument failed without reading the log.
+      - name: Oracle-required predicate self-test (fail-closed parsing)
+        run: bash scripts/rs-oracle-required-test.sh
+
+      - name: Differential driver self-test (exit-code contract)
+        run: bash scripts/rs-oracle-diff-test.sh
+
+      - name: Capture-guard helper self-test (rs_checked / rs_checked_write / rs_capture_verify_output)
+        run: bash scripts/rs-capture-guard-test.sh
+
+      - name: Capture-write gate self-test (bare-write detection)
+        run: bash scripts/check-capture-writes-test.sh
+
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
   # matrix, the dnf bootstrap, the bash shell override, and the
@@ -259,11 +306,15 @@ jobs:
         # executed. With it present the matrix also gives a free el8/el9/el10
         # checkmodule version differential: 2.9 / 3.6 / 3.10.
         #
-        # Later corpus lanes (session 9k-1: auditd, sysctld, sudoers) need
-        # `audit`, `systemd-udev` and `sudo` here. They are deliberately NOT
-        # pre-added: unused packages would install in all nine containers on
-        # every run until those lanes land, and that session's own serial
-        # Phase 0 can add them in one line without lane contention.
+        # Session 9k-1 (auditd / sysctld / sudoers differential oracles) landed
+        # WITHOUT adding `audit`, `systemd-udev` or `sudo` here, and that is the
+        # settled posture rather than an omission. Those packages are needed only
+        # by the LIVE capture tier, which runs docker-only in the three scheduled
+        # `*-oracle-drift.yml` workflows against the `rs-oracle{8,9,10}` images
+        # (built from tools/oracle-images/). PR CI runs only the Tier-1 replay
+        # tests, which are pure Rust over a committed corpus: no docker, no root,
+        # nothing on PATH, and therefore no skip path. Adding the packages would
+        # install them in all nine containers on every run to serve nothing.
         #
         # `--setopt=tsflags=nodocs` skips installing documentation files
         # (man pages, /usr/share/doc/*). Saves a small amount of disk

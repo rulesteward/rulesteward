@@ -1,0 +1,131 @@
+name: auditd-oracle-drift
+
+# Weekly nudge for Lane A of the session-9k-1 differential-oracle contract
+# (CONTRIBUTING.md "Differential oracle contract"): rebuild the rs-oracle{8,9,10}
+# images LIVE and re-derive the auditd rule-line ACCEPT/REJECT corpus from a real
+# `auditctl -R`, then replay the SAME Tier-1 test binary
+# (`auditd_corpus_oracle.rs`) against it via `just diff-auditd`. On drift,
+# open/update a tracking issue; it never edits code. The on-demand path is
+# `just diff-auditd` itself (needs the images built locally per
+# tools/oracle-images/README.md).
+#
+# RS_ORACLE_REQUIRED=1: this job DOES install/build the oracle, so a missing
+# prerequisite here (a docker build failure, a missing capability, the
+# `auditctl -s` safety canary unexpectedly succeeding) must be a hard failure,
+# never a silently-honest rc-3 skip - see CONTRIBUTING.md's exit-code table and
+# scripts/rs-oracle-required.sh.
+#
+# Unlike auditd-msgtype-drift.yml / auditd-stig-drift.yml (which diff shipped
+# lookup tables against pinned upstream SOURCE), this job diffs the LINT
+# ENGINE's own parse-gate classification against a live DAEMON - a different
+# failure mode (drift in `rulesteward_auditd::oracle`'s tokenizer/validator, not
+# in a data table).
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Mondays 09:00 UTC (offset from the other Mon-Fri drift runs)
+  workflow_dispatch:
+
+# Least privilege: read the code, and write issues (to open/update the drift tracker).
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RS_ORACLE_REQUIRED: "1"
+
+jobs:
+  drift:
+    name: auditd oracle drift vs live auditctl -R (rs-oracle8/9/10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # `just` is not on the GitHub-hosted runner; install it from the prebuilt
+      # release via taiki-e/install-action (same SHA-pinned action ci.yml's
+      # trustdb-contention job and sudoers-oracle-drift.yml use) so the recipe
+      # stays the single source of truth. Without this step, `just diff-auditd`
+      # below exits 127 (command not found), which the "Fail on tool error" step
+      # then misdiagnoses as a possible netlink-safety canary firing.
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: just
+      - name: Build the rs-oracle{8,9,10} images
+        # A build failure here (e.g. a Rocky repo hiccup) fails the job distinctly
+        # from a drift; capture_auditd.sh's own precondition check would otherwise
+        # turn a missing image into an honest rc-3 skip, which RS_ORACLE_REQUIRED=1
+        # promotes to rc 2 - but failing loudly at the build step gives a clearer
+        # log than waiting for that promotion.
+        run: |
+          set -euo pipefail
+          for v in 8 9 10; do
+            docker build -t "rs-oracle${v}" "tools/oracle-images/dockerfiles/${v}"
+          done
+      - name: Live capture + drift check vs auditctl -R
+        id: check
+        run: |
+          set +e
+          just diff-auditd > drift.txt 2>&1
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat drift.txt
+          # rc: 0 = no drift, 1 = drift (open issue). Any other code (2 = tool/
+          # environment error - including the safety canary firing, or the
+          # oracle required but unusable; 101 = a `cargo test` compile failure if
+          # oracle.rs drifts from this test's frozen API) = fail the job loudly.
+          exit 0
+      - name: Fail on tool error
+        if: steps.check.outputs.rc != '0' && steps.check.outputs.rc != '1'
+        env:
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          echo "just diff-auditd did not exit cleanly (rc=$RC; see logs above): docker may be" \
+               "unavailable, an rs-oracle image may have failed to build, the auditctl -s safety" \
+               "canary may have unexpectedly succeeded (netlink reachable - see" \
+               "tools/oracle-images/README.md), or auditd_corpus_oracle.rs may no longer compile" \
+               "against rulesteward_auditd::oracle's public API. This needs a look; it must NOT" \
+               "be treated as a clean run." >&2
+          exit 1
+      - name: Open or update the drift tracking issue
+        if: steps.check.outputs.rc == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create auditd-oracle-drift --color FBCA04 \
+            --description "auditd rule-line parse-gate drift vs live auditctl -R" 2>/dev/null || true
+          # Build the body in a FILE (cat copies drift.txt verbatim - no shell
+          # expansion of the tool's output) and pass it via --body-file.
+          {
+            echo "The weekly \`just diff-auditd\` run found \`rulesteward_auditd::oracle\`'s"
+            echo "ACCEPT/REJECT classification no longer matches a live \`auditctl -R\` on one or"
+            echo "more of the rs-oracle8/9/10 (RHEL 8/9/10, audit-userspace 3.1.2/3.1.5/4.0.3)"
+            echo "images."
+            echo
+            echo "To investigate: run \`just diff-auditd\` locally (needs the rs-oracle images built"
+            echo "per tools/oracle-images/README.md), read the divergence panic (it names the"
+            echo "target, scenario id, rule text, corpus verdict, and \`classify_capture\` verdict),"
+            echo "reconcile \`crates/rulesteward-auditd/src/oracle.rs\`, and confirm"
+            echo "\`cargo test -p rulesteward-auditd --test auditd_corpus_oracle\` and"
+            echo "\`just diff-auditd\` are both green before closing."
+            echo
+            echo "NOTE: this run captures a FRESH corpus every time (it does not just replay the"
+            echo "committed one) - see \`crates/rulesteward-auditd/tests/corpus/auditd-oracle/"
+            echo "capture_auditd.sh\`. If the committed corpus itself has drifted (e.g. a new RHEL"
+            echo "point release changed auditctl's behavior on an EXISTING scenario), re-run the"
+            echo "capture script and commit the refreshed corpus alongside the oracle.rs fix."
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+          } > issue-body.md
+          existing="$(gh issue list --label auditd-oracle-drift --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "auditd oracle drift: live auditctl -R disagrees with rulesteward_auditd::oracle" \
+              --label auditd-oracle-drift --body-file issue-body.md
+          fi

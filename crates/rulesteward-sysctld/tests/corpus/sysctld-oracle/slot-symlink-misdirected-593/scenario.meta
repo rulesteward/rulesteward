@@ -1,0 +1,7 @@
+id: slot-symlink-misdirected-593
+category: slot-symlink
+images: rs-oracle9
+targets: rhel9
+key: kernel.randomize_va_space
+xfail_issue: 593
+comment: XFAIL #593: 99-sysctl.conf is a symlink pointing NOT at ../sysctl.conf but at another real file (../rs9k1-hidden.conf, outside the sysctl.d search dirs so it is never independently enumerated). The REAL oracle follows the symlink and applies kernel.randomize_va_space=2 (COMPLIANT). RuleSteward's enumerate() treats ANY symlink at exactly the 99 slot path as the distro slot and unconditionally skips it (path equality only, ignoring the actual target), and slot_symlink_ok() also returns false (target != etc/sysctl.conf) - so RuleSteward reports the key as completely UNSET, a false non-compliance finding on an actually-compliant host.

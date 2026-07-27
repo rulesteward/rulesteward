@@ -63,14 +63,28 @@ codes-guard:
 no-mnt-guard:
     bash scripts/check-no-mnt-paths.sh
 
+# (session 9k-1) Capture-write guard: every Tier-2 capture script
+# (crates/*/tests/corpus/*/capture_*.sh) must route every write through
+# rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) rather than
+# performing a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd or an
+# unwrapped `cat >` redirect. This is layer 3 of that defense: a bare write
+# that skips both runtime layers is exactly how a Tier-2 capture continued
+# past `cp: Disk quota exceeded` and exited 0 having written a truncated
+# corpus. Same shape as dac-guard/codes-guard/no-mnt-guard: standalone bash
+# + awk (no cargo build), so it belongs in the lint tier alongside them.
+#
+# Assert every Tier-2 capture script routes its writes through the guard. (session 9k-1)
+capture-guard:
+    bash scripts/check-capture-writes.sh
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + test + cov).
-ci: fmt clippy dac-guard codes-guard no-mnt-guard test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + capture-guard + oracle-harness-test + test + cov).
+ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard oracle-harness-test test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
@@ -641,3 +655,63 @@ sudoers-stig-derive product="all":
     else
         cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
+
+# (session 9k-1) LIVE differential drift checks for the auditd / sysctld / sudoers
+# backends: capture a fresh oracle corpus from the rs-oracle{8,9,10} containers and
+# replay the SAME Tier-1 test binary against it.
+#
+# These three are deliberately NOT in `just ci`. Their OFFLINE tier is an ordinary
+# `cargo test` over the committed corpus, which needs no docker and therefore has no
+# skip path at all, so it is already covered by `just test`. That split is the point:
+# a missing docker daemon degrades the guarantee from "nothing was checked" to "the
+# oracle was not re-derived". See CONTRIBUTING.md "Differential oracle contract".
+#
+# All three delegate to ONE driver, scripts/rs-oracle-diff.sh. The exit-code mapping
+# is the part of this harness whose every wrong branch fails toward "clean"; written
+# out three times it would be wrong in three different ways, which is how
+# `just diff-fapolicyd` came to report success while checking nothing for six weeks
+# (#572). The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
+# re-seeds that bug into a copy of it and requires named cases to catch it.
+#
+# Exit codes: 0 clean (the success line carries a non-zero scenario count), 1 drift,
+# 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane
+# RS_REQUIRE_AUDITCTL / RS_REQUIRE_SYSTEMD_SYSCTL / RS_REQUIRE_VISUDO - promotes every
+# rc-3 skip to a hard rc-2 failure, which is what the weekly drift workflows set.
+
+# LIVE: drift-check auditd rule-line verdicts against auditctl -R. (#584, #601)
+diff-auditd:
+    bash scripts/rs-oracle-diff.sh auditd
+
+# LIVE: drift-check the sysctl.d merge model against systemd-sysctl. (#593)
+diff-sysctld:
+    bash scripts/rs-oracle-diff.sh sysctld
+
+# LIVE: drift-check sudoers parse + AST against visudo / cvtsudoers. (#538)
+diff-sudoers:
+    bash scripts/rs-oracle-diff.sh sudoers
+
+# Self-test of the differential/capture INSTRUMENTS. In `just ci` because an
+# unverified instrument is the exact failure this contract exists to prevent: a
+# harness that reports clean having compared (or scanned) nothing is
+# indistinguishable downstream from a real pass. Pure bash - cargo and docker
+# are stubbed, no containers, no network - so it needs no toolchain and runs in
+# every CI container. Covers both the two rs-oracle-diff.sh instruments and the
+# two rs-capture-guard.sh instruments (session 9k-1's write-discipline layer),
+# since all four share this same "prove you saw something" shape.
+#
+# Self-test the differential + capture-guard instruments (session 9k-1).
+oracle-harness-test:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # Never chain these with && - a short-circuit would hide which one failed,
+    # and rc is the gate here, not the transcript.
+    bash scripts/rs-oracle-required-test.sh
+    req_rc=$?
+    bash scripts/rs-oracle-diff-test.sh
+    diff_rc=$?
+    bash scripts/rs-capture-guard-test.sh
+    guard_rc=$?
+    bash scripts/check-capture-writes-test.sh
+    capwrites_rc=$?
+    echo "oracle-harness-test: rs-oracle-required-test rc=${req_rc}, rs-oracle-diff-test rc=${diff_rc}, rs-capture-guard-test rc=${guard_rc}, check-capture-writes-test rc=${capwrites_rc}"
+    [ "${req_rc}" -eq 0 ] && [ "${diff_rc}" -eq 0 ] && [ "${guard_rc}" -eq 0 ] && [ "${capwrites_rc}" -eq 0 ]

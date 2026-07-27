@@ -1,0 +1,2 @@
+Host_Alias WEBS = web1, web2
+alice WEBS = ALL

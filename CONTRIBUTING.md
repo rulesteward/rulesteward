@@ -137,15 +137,42 @@ them when reading a CI log.
 same condition into a hard failure. Collapsing it into `0` is exactly the bug
 that made `just diff-fapolicyd` report success while checking nothing (#572).
 
-**Status, stated plainly: no shipped recipe implements `3` yet.** The existing
-LIVE recipes (`just diff-sshd`, `just fapolicyd-probe-check`) predate this
-contract and `exit 0` on missing prerequisites. So `diff-sshd` is the model for
-the two-tier SHAPE, not for this rc table - its offline tier is what makes its
-skip survivable, since the assertion still runs without docker. New harnesses
-use `3`; retrofitting the existing recipes is a behavior change to shipped
-tooling, so it was deliberately not done inside the branch that wrote this
-contract. Owner decision (2026-07-25): grandfather them and retrofit under its
-own issue.
+**Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
+`just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a
+new harness, do not copy one of them: add a lane to the frozen table in
+`scripts/rs-oracle-diff.sh`, which all three delegate to.** The older LIVE
+recipes (`just diff-sshd`,
+`just fapolicyd-probe-check`) predate this contract and `exit 0` on missing
+prerequisites, so `diff-sshd` remains the model for the two-tier SHAPE but not
+for this rc table - its offline tier is what makes its skip survivable, since
+the assertion still runs without docker. Retrofitting the older recipes is a
+behavior change to shipped tooling, so it was deliberately not done inside the
+branch that wrote this contract. Owner decision (2026-07-25): grandfather them
+and retrofit under its own issue.
+
+The 9k-1 recipes also demonstrate the shape that keeps the two tiers from
+drifting apart: the drift check is not a second implementation of "does the
+product agree with the oracle", it is the SAME Tier-1 test binary re-pointed at
+a freshly captured corpus through `RS_ORACLE_CORPUS_<LANE>`. The driver owns the
+exit codes; the test owns the comparison. Two consequences worth copying:
+
+- `cargo test` exits `101` for a failed assertion AND for a compile error, and
+  exits `0` when zero tests ran. So the recipe consumes every cargo-level error
+  first with `--no-run` (any failure there is rc 2 by construction), then
+  executes the built test binary DIRECTLY, where `101` can only mean libtest saw
+  a failing test. That is what makes drift-vs-tool-error structural rather than
+  a guess.
+- The test prints a sentinel banner naming the corpus root and mode, and the
+  recipe refuses to classify any exit code until it has grepped for it. That is
+  the only guard that catches a variable-name typo between the recipe and the
+  test, which would otherwise make the "fresh" run silently replay the committed
+  corpus and exit 0. Neither the count floor, nor the positive control, nor the
+  exit code can detect that.
+
+The corpus-root resolution itself lives once in
+`rulesteward_core::oracle_corpus`, not copied per lane: a blank override must be
+an ERROR rather than a silent fall-back to the committed corpus, and that
+failure mode is invisible in a green run.
 
 Each harness declares its own `RS_REQUIRE_<ORACLE>` environment variable for
 this, and **CI must set it** wherever the oracle is actually installed. The one
