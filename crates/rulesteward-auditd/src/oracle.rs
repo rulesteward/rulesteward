@@ -154,8 +154,12 @@ pub fn classify_capture(line: &str, rc: i32, stdout: &str, stderr: &str) -> Capt
     // add-shaped line's stderr also carries the companion
     // "There was an error in line N of <file>" string, which must never be
     // read as a parse complaint on its own (see
-    // `companion_string_alone_is_not_an_accept_probe`).
-    if stderr.contains(ADD_RULE_NETLINK_REFUSED) {
+    // `companion_string_alone_is_not_an_accept_probe`). Covers both halves of
+    // `handle_request()`'s netlink dispatch: the add branch (`-w`/`-a`) and
+    // the delete branch (`-W`/`-d`), which carries the IDENTICAL
+    // `set_aumessage_mode(MSG_QUIET)` -> send -> `set_aumessage_mode(MSG_STDERR)`
+    // sequence, just with its own "delete rule data request" string.
+    if stderr.contains(ADD_RULE_NETLINK_REFUSED) || stderr.contains(DELETE_RULE_NETLINK_REFUSED) {
         return CaptureVerdict::Accept;
     }
 
@@ -201,6 +205,16 @@ pub fn classify_capture(line: &str, rc: i32, stdout: &str, stderr: &str) -> Capt
 /// successfully. Its presence therefore proves the line reached the netlink
 /// call, i.e. parsing succeeded; see [`classify_capture`]'s accept probe.
 const ADD_RULE_NETLINK_REFUSED: &str = "Error sending add rule data request";
+
+/// The substring `handle_request`/`auditctl.c` prints when a delete-shaped
+/// rule's (`-W`/`-d`) netlink send fails for ANY reason - the delete-side
+/// twin of [`ADD_RULE_NETLINK_REFUSED`]. `handle_request`'s
+/// `else if (del != AUDIT_FILTER_UNSET)` branch carries the IDENTICAL
+/// `set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
+/// `set_aumessage_mode(MSG_STDERR)` sequence as the add branch, so its
+/// presence is equally proof the line reached the netlink call, i.e. parsing
+/// succeeded; see [`classify_capture`]'s accept probe.
+const DELETE_RULE_NETLINK_REFUSED: &str = "Error sending delete rule data request";
 
 /// Feature-bitmap-gated diagnostics that report a LIMITATION of this capture
 /// sandbox (a blocked `AUDIT_GET` netlink query, `libaudit.c`'s
@@ -339,7 +353,53 @@ const SILENT_SUCCESS_LEADING_FLAGS: &[&str] = &[
 #[must_use]
 pub fn silence_is_conclusive(line: &str) -> bool {
     let leading = line.split_whitespace().next().unwrap_or("");
-    !SILENT_SUCCESS_LEADING_FLAGS.contains(&leading)
+    !SILENT_SUCCESS_LEADING_FLAGS.contains(&normalise_leading_flag(leading))
+}
+
+/// The four `setopt()` short options that take an argument via `getopt_long`
+/// (optstring `"...e:f:r:b:..."`): `-e`, `-f`, `-r`, `-b`. Each is a single
+/// letter, so `getopt` unambiguously treats any characters glued directly
+/// after the flag as that flag's OPTARG rather than a different option -
+/// there is no other short option these could be confused with.
+const SHORT_OPTS_WITH_ATTACHED_ARG: &[&str] = &["-e", "-f", "-r", "-b"];
+
+/// Normalises a line's leading token to the spelling
+/// [`SILENT_SUCCESS_LEADING_FLAGS`] denylists against, undoing the two
+/// `getopt_long` attached-argument forms that let an enumerated denylist
+/// entry escape its own lookup by spelling (round-2 adversarial finding
+/// `enumerated_flags_with_an_attached_optarg_are_not_conclusive`):
+///
+/// - A short option with a glued optarg (`-b8192` for `-b 8192`,
+///   `-e1`/`-f1`/`-r100`): `getopt_long` dispatches `-b8192` to the same
+///   `case 'b':` arm as `-b 8192` with `optarg == "8192"`, since `-b` is a
+///   single-letter option that takes an argument. Truncated to the bare
+///   two-character flag.
+/// - A long option's `=` form (`--backlog_wait_time=60` for
+///   `--backlog_wait_time 60`): `getopt_long`'s `long_opts[]` entry
+///   `{"backlog_wait_time", 1, NULL, 2}` dispatches both spellings to the
+///   same `case 2:` arm. Truncated at the `=`.
+///
+/// This NORMALISES the token rather than widening the denylist with extra
+/// literal spellings, so a leading flag enumerated exactly once still covers
+/// every `getopt_long`-legal spelling of itself automatically.
+///
+/// Does not (and is not asked to) cover `getopt_long`'s unambiguous
+/// long-option ABBREVIATION feature (`--backlog=60`, `--loginuid-imm`); those
+/// remain a documented residual, not silently mishandled - see the
+/// `enumerated_flags_with_an_attached_optarg_are_not_conclusive` test.
+fn normalise_leading_flag(leading: &str) -> &str {
+    if let Some(long_opt_and_value) = leading.strip_prefix("--") {
+        if let Some((name, _value)) = long_opt_and_value.split_once('=') {
+            return &leading[..2 + name.len()];
+        }
+        return leading;
+    }
+    for &short_opt in SHORT_OPTS_WITH_ATTACHED_ARG {
+        if leading.len() > short_opt.len() && leading.starts_with(short_opt) {
+            return short_opt;
+        }
+    }
+    leading
 }
 
 #[cfg(test)]
