@@ -279,8 +279,8 @@ to `auditctl` first). `rocky8-live-from-log-execve` is excluded (it ships no
 carried over from the first draft (`control-reject`'s RULE changed - see
 below).
 
-**18 new grounding scenarios** (this amendment; see "Fallback scope" below for
-why 18 new ids, not a larger nominal count):
+**19 new grounding scenarios** (this amendment; see "Fallback scope" below for
+why 19 new ids, not a larger nominal count):
 
 - `p-invalid-lower` / `p-invalid-upper` (`-p z` / `-p Z`): closes #601's other
   side - an INVALID (not merely uppercase) permission letter is rejected by
@@ -516,12 +516,14 @@ divergence is still grounded, now under its own id: `f-perm-invalid-letter`
   `d-delete-syscall` (`-d`) - the parser has NO delete-form dispatch arm at
   all, only the add-shaped subset of `auditctl`'s grammar.
 
-None of these 20 are caught by an existing `au-E02`/`E04`/`E05` lint: all three
-validate OPERATOR legality (is an operator valid for a field's TYPE, or a field
-valid for a filter LIST), never VALUE content, and none of today's divergences
-are an operator-legality question.
+None of these 20 are caught by an existing `au-E02`/`E04`/`E05` lint: `au-E02`
+validates operator legality (is an operator valid for a field's TYPE), `au-E05`
+is the KERNEL-side bitmask-operator sibling to that same question, and
+`au-E04` validates field-vs-filter-list legality (is this FIELD legal on the
+specified LIST) - none of the three validate VALUE content, and none of
+today's divergences are an operator- or list-legality question.
 
-### Fallback scope: 18 new ids, not a larger nominal count
+### Fallback scope: 19 new ids, not a larger nominal count
 
 The session plan's groups 3/5/7/8/9 (additional `-F` field-name coverage,
 additional leading-flag coverage beyond `-A`, more #584 tokenization variants,
@@ -534,7 +536,7 @@ and in the dispatch report.
 
 ### Version divergence (CONTRIBUTING.md's per-version positive control)
 
-Re-confirmed on the expanded 74-id corpus: NONE of the 76 scenarios' captured
+Re-confirmed on the expanded 76-id corpus: NONE of the 76 scenarios' captured
 facts (`rc`/`rule`/`stdout`/`stderr`) differ AT ALL across `el8`/`el9`/`el10`
 (audit-userspace 3.1.2 / 3.1.5 / 4.0.3) - every data field is byte-identical
 across all three captures (`diff` on the three files' data rows, target column

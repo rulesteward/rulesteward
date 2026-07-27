@@ -49,9 +49,42 @@ corpus, beyond the original quote-stripping report:**
    the mirror-image gap to (2): here the product needs to become MORE lenient
    (recognize the backslash-space escape), not less.
 
+4. **No delete-form (`-W`/`-d`) dispatch at all (product too STRICT; found by
+   the post-implementation adversarial review, MISS 1)** (`w-delete-watch`
+   `-W /etc/passwd -p wa -k x`; `d-delete-syscall`
+   `-d always,exit -S execve -k x`): real `auditctl -R` ACCEPTs both -
+   `auditctl.c`'s `handle_request()` has an `else if (del != AUDIT_FILTER_UNSET)`
+   branch, reached by `case 'W':` and `case 'd':` in `setopt()`, carrying the
+   IDENTICAL `set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
+   `set_aumessage_mode(MSG_STDERR)` sequence as the add-rule branch, printing
+   `Error sending delete rule data request (%s)` on failure - the delete-side
+   twin of the add probe's `Error sending add rule data request`, and the
+   same evidence that the line parsed. RuleSteward's `parser.rs` `parse_line`
+   dispatch (`match tokens[0].as_str()`) has arms for
+   `-D -b --backlog_wait_time -f -e -r --loginuid-immutable -w -a -A` and
+   nothing else; `-W` and `-d` fall to `other => Err("unknown flag")`. The
+   parser models only the ADD-shaped subset of `auditctl`'s rule grammar and
+   has never had any delete-form support - a genuine, previously-unexamined
+   gap, not a regression. Filed under #584 (rather than as a separate issue)
+   because it is the same underlying territory this issue already tracks -
+   `auditctl`'s rule-line grammar diverging from what `parser.rs` models -
+   though whoever picks it up may want to split it out once scoped, since the
+   root cause (missing dispatch arms, not a tokenization bug) differs from
+   items 1-3 above. Scope question worth flagging rather than prejudging:
+   whether RuleSteward's PRODUCT should ever need to parse delete-form rules
+   at all (a `rules.d/` file that ships to a host is typically ADD-only;
+   delete-form lines are more an interactive `auditctl` idiom) - independent
+   of that question, the DIFFERENTIAL ORACLE needed to recognise the real
+   daemon's ACCEPT for these lines regardless of whether the parser ever
+   grows delete-form support, since misclassifying a real accept as
+   `Unusable::UnrecognisedDiagnostic` was a harness-correctness bug on its
+   own (see `oracle.rs`'s
+   `delete_shaped_netlink_refusal_is_recognised_as_accept`).
+
 Corpus rows: `rocky9-field-compare` (existing scenario, re-grounded),
 `iss584-embedded-tab-glues-flag`, `iss584-all-tabs-separators`,
-`iss584-backslash-escaped-space`, `iss584-quoted-field-expr`.
+`iss584-backslash-escaped-space`, `iss584-quoted-field-expr`,
+`w-delete-watch`, `d-delete-syscall`.
 
 ---
 
@@ -156,46 +189,54 @@ Corpus row: `s-unknown-syscall`.
 
 ---
 
-## New issue: the parser has no delete-form (`-W`/`-d`) support at all
+## Follow-up (non-blocking): `rulesteward_auditd::oracle` structural improvements
 
-**Found by:** post-implementation adversarial review (impl-aware, session
-2026-07-26), MISS 1. Not predicted in any earlier estimate; the corpus had
-zero delete-form scenarios until this finding forced their addition
-(`w-delete-watch`, `d-delete-syscall`).
+**DRAFT ONLY - file nothing.** Parked by the impl-aware adversarial review and
+the per-task idiomatic-Rust review at pre-merge cleanup (the ATL is closed:
+impl-aware review APPROVED with no miss found, mutation gate 17/17 mutants
+caught, idiomatic review APPROVED with zero blockers). Every item below is a
+genuine improvement; none justifies reopening the closed loop or touching
+`src/oracle.rs` in this cleanup pass. Bundle as ONE follow-up issue if/when
+picked up, since they touch overlapping code:
 
-**Rules:**
-- `-W /etc/passwd -p wa -k x` (delete a watch by path - the delete-form twin
-  of `-w`)
-- `-d always,exit -S execve -k x` (delete a syscall rule by
-  `list,action` - the delete-form twin of `-a`/`-A`)
+1. **`normalise_leading_flag`'s slicing.** Currently
+   `&leading[..2 + name.len()]`-shaped byte-index slicing to strip an attached
+   optarg from a short flag; `str::split_once(...).map_or(...)` (or an
+   equivalent combinator chain) would express the same truncation without a
+   hand-computed byte offset, removing a class of off-by-one/panic risk if the
+   flag set ever grows.
 
-**Real `auditctl -R` behavior:** ACCEPT on both. `auditctl.c`'s
-`handle_request()` has an `else if (del != AUDIT_FILTER_UNSET)` branch,
-reached by `case 'W':` and `case 'd':` in `setopt()`, that carries the
-IDENTICAL `set_aumessage_mode(MSG_QUIET)` -> `audit_delete_rule_data` ->
-`set_aumessage_mode(MSG_STDERR)` sequence as the add-rule branch, printing
-`Error sending delete rule data request (%s)` on failure - the delete-side
-twin of the add probe's `Error sending add rule data request`. A refused
-delete-form line is therefore proof it parsed, the same evidence the add
-probe already recognises.
+2. **`SILENT_REFUSAL_COMPLAINT` placeholder.** `CaptureVerdict::Reject`'s
+   `complaint: &'static str` field is populated with a fixed placeholder
+   string when there is no captured diagnostic text (the silence-inferred
+   reject path) - a `Reject { complaint: Option<&'static str> }` shape would
+   make "no diagnostic text" a type-level fact instead of a sentinel string an
+   incidental future `assert_eq!`/`contains` could misread as real evidence.
+   (No reachable wrong output today - `assert_two_sided_positive_control`'s
+   `stderr.contains(complaint)` check is the one place this could ever bite,
+   and only if a recapture ever made `control-reject` silent.)
 
-**RuleSteward's behavior:** REJECT on both. `parser.rs`'s `parse_line`
-dispatch (`match tokens[0].as_str()`) has arms for
-`-D -b --backlog_wait_time -f -e -r --loginuid-immutable -w -a -A` and
-nothing else; `-W` and `-d` fall to `other => Err("unknown flag")`. The
-parser models only the ADD-shaped subset of `auditctl`'s rule grammar and has
-never had any delete-form support - this is a genuine, previously-unexamined
-gap, not a regression.
+3. **A named struct for the `UNOBSERVABLE` triple.** `&[(&str, Unusable,
+   &str)]` (id, kind, reason) works but a `struct UnobservableEntry { id:
+   &'static str, kind: Unusable, reason: &'static str }` would name the
+   fields, making `record_unusable_hit`'s destructuring self-documenting
+   without a positional-tuple lookup.
 
-**Scope note:** whether RuleSteward's PRODUCT should ever need to parse
-delete-form rules is a real design question (a `rules.d/` file that ships to
-a host is typically ADD-only; delete-form lines are more an interactive
-`auditctl` idiom than a rules-file idiom) - flagging that scope question for
-whoever picks this up rather than prejudging it. Either way, the DIFFERENTIAL
-ORACLE needed to recognise the real daemon's ACCEPT for these lines
-regardless of whether the parser ever grows delete-form support, since
-misclassifying a real accept as `Unusable::UnrecognisedDiagnostic` was a
-harness-correctness bug independent of the parser question (see
-`oracle.rs`'s `delete_shaped_netlink_refusal_is_recognised_as_accept`).
+4. **A `CapturedFacts` struct.** `classify_capture(line, rc, stdout, stderr)`
+   and the several call sites that thread `(rule, rc, stdout, stderr)` through
+   in the same order are one accidental argument swap away from silently
+   comparing the wrong stream (`stdout`/`stderr` are both `&str`, so the
+   compiler cannot catch a transposition). Bundling the three raw-fact fields
+   into one small struct would make a transposition a field-name typo instead
+   of a silent swap.
 
-Corpus rows: `w-delete-watch`, `d-delete-syscall`.
+5. **`unescape_field`'s `char`-based decoding.** Ties directly to the `\xHH`
+   doc fix above (this cleanup pass corrected the COMMENT, not the codec):
+   rebuilding `unescape_field` around a `Vec<u8>` with a checked
+   `String::from_utf8` at the end would make the decoder correct for the full
+   byte range (`0x00`-`0xFF`) rather than only for `< 0x80`, closing the gap
+   the corrected comment now documents rather than merely describing it
+   accurately.
+
+None of these affect any current assertion, floor, or corpus row; all are
+parked for a dedicated follow-up pass.

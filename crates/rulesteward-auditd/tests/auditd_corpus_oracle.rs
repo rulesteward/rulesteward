@@ -65,7 +65,11 @@
 //! recorded_len` for each of `rule`/`stdout`/`stderr`, which is what catches a
 //! truncation, a dropped NUL, or an escaping bug with no external tool
 //! needed. Escapes: `\\` -> `\`, `\t` -> TAB, `\n` -> LF, `\r` -> CR, `\xHH`
-//! -> that byte, and the two-character sentinel `\0` meaning "this field is
+//! -> `char::from(that byte)` (exactly 1 UTF-8 byte in the decoded `String`
+//! for `< 0x80`; `unescape_field`'s length assert is what would catch a
+//! future `0x80`-`0xFF` escape decoding to the 2-byte Latin-1 mapping instead
+//! of "that byte" - not exercised today, every escape in this corpus is
+//! `< 0x80`), and the two-character sentinel `\0` meaning "this field is
 //! the empty string" (never a bare empty string, so no column is silently
 //! absent) - paired with `\x20` escaping a leading/trailing space, together
 //! guaranteeing no field is empty-looking or starts/ends in whitespace (the
@@ -135,11 +139,13 @@ const CONTROL_REJECT_ID: &str = "control-reject";
 /// target must fail the suite, not go quiet.
 ///
 /// Every entry states whether it is a genuine blind spot (nothing downstream
-/// catches it) or covered elsewhere; none of these 18 are caught by an
-/// existing `au-E02`/`E04`/`E05` lint, because all three validate OPERATOR
-/// legality (is `>=` allowed for this field's TYPE / this field on this
-/// LIST), never VALUE content - none of today's divergences are an
-/// operator-legality question.
+/// catches it) or covered elsewhere; none of these 20 are caught by an
+/// existing `au-E02`/`E04`/`E05` lint: `au-E02` validates operator legality
+/// (is `>=` allowed for this field's TYPE), `au-E05` is the KERNEL-side
+/// bitmask-operator sibling to that same operator question, and `au-E04`
+/// validates field-vs-filter-list legality (is this FIELD legal on the
+/// specified LIST) - none of the three validate VALUE content, and none of
+/// today's divergences are an operator- or list-legality question.
 const XFAIL: &[(&str, &str)] = &[
     // --- Quote stripping (deliberate leniency, parser.rs:277-287): the
     // parser strips a token's balanced leading+trailing SINGLE quote for
@@ -406,8 +412,8 @@ const UNOBSERVABLE: &[(&str, Unusable, &str)] = &[
 
 /// One captured corpus row.
 ///
-/// `stdout` is dead across all 213-then-222 rows this corpus has ever
-/// captured (`auditctl -R` never writes to stdout in any scenario this lane
+/// `stdout` is dead across all 213-then-222-then-228 rows this corpus has
+/// ever captured (`auditctl -R` never writes to stdout in any scenario this lane
 /// exercises - every row's `out_len` is 0): kept in the schema because a
 /// future scenario COULD populate it and the raw-facts design promises not to
 /// silently drop a column, but no test in this file, and no classification
@@ -428,10 +434,15 @@ struct Row {
 }
 
 /// Reverse [`capture_auditd.sh`'s] `esc_field`: `\\` -> `\`, `\t` -> TAB,
-/// `\n` -> LF, `\r` -> CR, `\xHH` -> that byte, and the whole-field sentinel
-/// `\0` -> the empty string. Panics on an unrecognized escape or a trailing
-/// lone backslash (fail-closed: a corpus row we cannot faithfully decode must
-/// not be silently misread).
+/// `\n` -> LF, `\r` -> CR, `\0` -> the empty string, and `\xHH` ->
+/// `char::from(byte)`. That last one is exactly "that byte" as a decoded
+/// UTF-8 length only for `byte < 0x80`; for `0x80..=0xFF` it is the Latin-1
+/// codepoint, which re-encodes as 2 UTF-8 bytes - not exercised by this
+/// corpus (every `\xHH` escape here is `< 0x80`) and, if it ever were, the
+/// length assert below would flag it as a decode-length mismatch rather than
+/// silently accepting a longer string. Panics on an unrecognized escape or a
+/// trailing lone backslash (fail-closed: a corpus row we cannot faithfully
+/// decode must not be silently misread).
 fn unescape_field(s: &str) -> String {
     if s == r"\0" {
         return String::new();
@@ -719,7 +730,7 @@ fn auditd_oracle_corpus_matches_real_auditctl() {
     // it is the only thing that detects 'all three transcripts are secretly
     // the same file'"). Measured (tools/oracle-images/README.md): no corpus
     // scenario's verdict differs across el8/el9/el10 audit-userspace
-    // 3.1.2/3.1.5/4.0.3 (re-confirmed on the expanded 71-id corpus - every
+    // 3.1.2/3.1.5/4.0.3 (re-confirmed on the expanded 76-id corpus - every
     // data field byte-identical across all three targets), so the divergence
     // this control pins is the audit_version= STRING itself, captured live at
     // capture time (not hardcoded from the README).
@@ -923,6 +934,13 @@ fn assert_hit_exactly_three<'a>(
     table_ids: impl Iterator<Item = &'a str>,
     label: &str,
 ) {
+    // LOAD-BEARING ORDER: this literal is already sorted (correct only
+    // because "1" < "8" < "9" lexicographically - `hit_targets` below is
+    // sorted before the comparison, so this constant must be pre-sorted to
+    // match). Unlike `EXPECTED_TARGETS`'s comparison above, which sorts a
+    // CLONE of the expectation at the call site so its declaration order
+    // never matters, this constant carries the sortedness requirement
+    // implicitly - do not reorder without also fixing the comparison.
     const EXPECTED_TARGET_IMAGES: &[&str] = &["rs-oracle10", "rs-oracle8", "rs-oracle9"];
     for id in table_ids {
         let mut hit_targets: Vec<&str> = hits
@@ -1001,7 +1019,10 @@ fn assert_version_divergence_control(versions: &[(String, String)]) {
 /// than a genuine parse complaint about the rule's content - see
 /// `is_sandbox_limited_stderr`.
 const KNOWN_PARSE_COMPLAINTS: &[(&str, &str)] = &[
-    ("-F unknown field:", "EAU_FIELDUNKNOWN, errormsg.h ~86"),
+    (
+        "-F unknown field:",
+        "EAU_FIELDUNKNOWN, errormsg.h:79 (v3.1.2) / :80 (v3.1.5, v4.0.3)",
+    ),
     ("-C unknown field:", "EAU_COMPFIELDUNKNOWN, errormsg.h ~103"),
     (
         "-F value should be number for",

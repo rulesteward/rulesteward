@@ -55,8 +55,10 @@ mutates the *host* kernel's audit ruleset. The rules below are not stylistic.
   `docker run --rm --network=none --cap-add=AUDIT_CONTROL rs-oracle<N>`.
 - **The `auditctl -s` canary runs first, every time.** It is a status *read* with
   zero blast radius. If it SUCCEEDS, netlink is live and the host ruleset is
-  reachable: refuse to capture and exit rc 3. Only a failing canary permits a
-  capture run.
+  reachable: refuse to capture and exit rc 2. Only a failing canary permits a
+  capture run. (A reachable host netlink is a safety abort, not the
+  `CONTRIBUTING.md` rc-3 "legitimate skip" - see `capture_auditd.sh` and
+  `scripts/rs-capture-guard.sh`, which exit 2 for every capture failure.)
 
 `--cap-add=AUDIT_CONTROL` is required, and this was measured rather than assumed
 (2026-07-25, all three images):

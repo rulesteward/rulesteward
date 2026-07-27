@@ -231,9 +231,9 @@ add_existing_scenarios() {
     done
 }
 
-# 19 pre-existing #584/#601/#489/#491 grounding scenarios plus the two
-# positive controls, carried over from the original capture (control-reject's
-# RULE changed - see below).
+# 19 pre-existing scenarios total (17 #584/#601/#489/#491 grounding scenarios
+# INCLUDING the two positive controls, not 19 plus 2 more), carried over from
+# the original capture (control-reject's RULE changed - see below).
 add_584_601_489_491_scenarios() {
     local key256 key257
     key256="$(head -c 256 /dev/zero | tr '\0' 'k')"
@@ -288,8 +288,11 @@ add_584_601_489_491_scenarios() {
         '-a always,exit -F nosuchfield=1 -S execve'
 }
 
-# New grounding scenarios (session 9k-1 Lane A remediation, fallback set - see
-# PROVENANCE.md "Fallback scope" for why this is 18 ids, not the nominal 42).
+# New grounding scenarios across three review rounds: 19 from the original
+# remediation (fallback set - see PROVENANCE.md "Fallback scope" for why 19,
+# not the nominal 42), 3 from the round-2 adversarial-review rework, and 2
+# from the post-implementation (round-3) adversarial review - 24 total
+# `add_scenario` calls in this function.
 add_new_grounding_scenarios() {
     # Group 1: -p perm letters, including the invalid-letter reject that
     # closes #601's fail-open (an invalid letter, upper or lower, must be
@@ -434,7 +437,7 @@ capture_image() {
     rs_capture_context "${image}"
 
     local audit_version
-    audit_version="$(docker run --rm "${image}" rpm -q audit 2>/dev/null)"
+    audit_version="$(docker run --rm --network=none "${image}" rpm -q audit 2>/dev/null)"
     if [ -z "${audit_version}" ]; then
         rs_capture_die "could not read 'rpm -q audit' from ${image}"
     fi
