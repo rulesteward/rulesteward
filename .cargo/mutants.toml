@@ -394,6 +394,21 @@ exclude_re = [
     # (`< -> >`, `< -> ==`, `&& -> ||`, `== -> !=`) all stay gated.
     'replace < with <= in read_stream_to_string',
     'delete - in clear_nonblock',
+    # human.rs `color_enabled` FALSE-direction only (session 9m, surfaced the
+    # moment output/human.rs entered examine_globs above). The function is
+    # `stdout().is_terminal() && NO_COLOR unset`; under `cargo test` stdout is
+    # never a TTY, so the real function ALREADY returns false and no test can
+    # distinguish "false because not a TTY" from "false always" without a PTY
+    # seam this module does not have.
+    # Measured, not assumed -- the other two mutants on this same line are both
+    # CAUGHT, which is the evidence that the function is genuinely observed and
+    # that only this one direction is unobservable:
+    #   color_enabled -> true   CAUGHT (leaks ANSI escapes into asserted output)
+    #   color_enabled && -> ||  CAUGHT
+    #   color_enabled -> false  MISSED  <-- this entry, and only this entry
+    # Anchored on the replacement value for exactly that reason: a bare
+    # `color_enabled` regex would silently un-gate the two caught siblings.
+    'replace color_enabled -> bool with false',
     # doctor LiveProbe shell-out methods (#76/#77/#78): the real OS access
     # (systemctl/uname/auditctl/fapolicyd-cli/rpm/df/ausearch dispatch) has no
     # unit tests by design -- it is covered by the e2e graceful-degradation test
