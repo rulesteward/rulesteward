@@ -27,19 +27,27 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: ubuntu-latest
-    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~60
+    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~170
     # mutants serially; most are caught fast, a few run the full --test-workspace
-    # suite (~100s) to completion, so a shard finishes well inside 2h (recent
-    # nightlies: 5-10 min/shard). A timed-out shard fails the gate (exit 3) the
-    # same as a survivor, so keep headroom.
+    # suite (~100s) to completion, so a shard finishes well inside 2h (measured
+    # 2026-07-30 on run 30519128558: 40-44 min/shard at 170-171 mutants each).
+    # A timed-out shard fails the gate (exit 3) the same as a survivor, so keep
+    # headroom.
     timeout-minutes: 120
     strategy:
-      # Shard the full mutant suite (~1195 mutants) into 20 shards (the
+      # Shard the full mutant suite (~3425 mutants) into 20 shards (the
       # GitHub-hosted concurrent-job cap, so the whole run starts at once).
       # Why 20 (not fewer): the gate runs --test-workspace (every mutant
       # re-runs the whole workspace suite, slow) and -j1 (below) runs them
-      # serially, so ~60 mutants/shard keeps each JOB well under the 2h
-      # ceiling -- 8 shards x ~150 mutants serial would need ~5-6h.
+      # serially, so ~170 mutants/shard keeps each JOB inside the 2h ceiling
+      # at a measured 40-44 min -- 8 shards x ~430 mutants serial would blow it.
+      # The total is a DERIVED number, not a fixed one: re-run
+      # `cargo mutants --list | wc -l` and update it whenever examine_globs or
+      # exclude_re changes, and re-check the per-shard runtime against the
+      # ceiling above. It read "~1195 / ~60 per shard" until 2026-07-30, when
+      # it was measured at 3425 -- roughly 3x stale, and stale in the direction
+      # that hides a ceiling risk (see the #216 note below for the other way
+      # this denominator bites).
       # The shard count appears in THREE places that must stay in sync: the
       # job `name:` (/20), this matrix list (0..19), and the `--shard k/20`
       # denominator on the cargo-mutants line. A 24->20 edit that missed the

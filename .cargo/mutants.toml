@@ -129,6 +129,14 @@ examine_globs = [
     # dispatch logic (cap vs Shape A threshold, row-order, source label mapping)
     # is real branching logic covered by the 83-scenario oracle tests.
     "crates/rulesteward-cli/src/output/register.rs",
+    # DEFAULT human renderer (#597 slice, session 9m): the byte->char span
+    # conversion, the severity/ReportKind mappings, the control-ref joiner and
+    # the color predicate. This is the surface every operator sees by default
+    # and it sat outside the allowlist since it was written, so its gate had
+    # never run at all -- the same vacuous-allowlist lesson as sarif.rs above,
+    # and the file where #595's inverted-span panic lives. Sized before
+    # enabling: 21 mutants.
+    "crates/rulesteward-cli/src/output/human.rs",
     # auditd logic modules (filled by pipeline P2):
     "crates/rulesteward-auditd/src/parser.rs",
     "crates/rulesteward-auditd/src/cost.rs",
@@ -364,6 +372,28 @@ exclude_re = [
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
     'replace \| with \^ in categorize',
     'replace < with <= in compute_scope',
+    # fsread.rs parked survivors (#583/9j, registered session 9m). These three
+    # were documented as unreachable in the SOURCE comments when the file
+    # landed, but never registered here -- so the nightly `mutants` workflow
+    # went red on 2026-07-26 and stayed red, which means it could no longer
+    # report a NEW survivor. Rationale in full at fsread.rs:264-274 and
+    # fsread.rs:322-332; summarized here because this file is the reviewable
+    # record:
+    #  - `replace < with <=` on the FIFO retry deadline: not semantically
+    #    equivalent, but UNREACHABLE -- distinguishing the two forms needs
+    #    `Instant::now()` to land on `deadline` to the nanosecond, and the
+    #    module has no clock seam to force that.
+    #  - `delete -` on the two `== -1` fcntl sentinels (F_GETFL and F_SETFL):
+    #    fcntl(2) returns a non-negative flags word or exactly -1, never 1, so
+    #    killing these needs the real syscall to fail -- no fault-injection
+    #    seam at this level.
+    # Both regexes are FUNCTION-anchored, and their narrowness is countable
+    # rather than hoped-for: `read_stream_to_string` contains exactly one `<`,
+    # and `clear_nonblock` contains exactly two `-` (the sentinels) and no
+    # other subtraction. So the CAUGHT siblings at the same lines
+    # (`< -> >`, `< -> ==`, `&& -> ||`, `== -> !=`) all stay gated.
+    'replace < with <= in read_stream_to_string',
+    'delete - in clear_nonblock',
     # doctor LiveProbe shell-out methods (#76/#77/#78): the real OS access
     # (systemctl/uname/auditctl/fapolicyd-cli/rpm/df/ausearch dispatch) has no
     # unit tests by design -- it is covered by the e2e graceful-degradation test
