@@ -3250,3 +3250,133 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
          a single -p wa watch and must still satisfy V-230410: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ATL round 4 (issue #601/#600 follow-up): `perm_axis_bits` demands EQUALITY
+// where the kernel is MONOTONE -- a REGRESSION introduced by the round-2 fix
+// (commit d21c7aa) above. Round 2 correctly closed the "different predicates
+// get first-wins-credited" bug by requiring every `-F perm=` predicate to be
+// byte-identical (see `perm_axis_bits`'s doc comment in
+// `stig_required.rs`), but "different" is not the same as "incomparable":
+// `kernel/auditsc.c`'s `audit_match_perm` is monotone non-decreasing in its
+// mask argument (every branch reduces to `mask & <event-determined
+// constant>`), so `m1 subset-of m2` implies `match(m1) implies match(m2)`.
+// A conjunction of two SUBSET-COMPARABLE perm predicates is therefore
+// exactly equivalent to the smaller (stricter) one alone -- `perm=wa AND
+// perm=rwxa` collapses to `perm=wa`, not to "no representable value at
+// all". Before round 2, first-wins happened to get this SPECIFIC case right
+// by accident (it never checked the second predicate); round 2's
+// equality-fold regressed it to "missing" in both field orders, which is
+// why this is fixed as a regression here rather than filed as a follow-up.
+//
+// The correct rule: if the perm masks are TOTALLY ORDERED by subset, the
+// axis value is the MINIMUM of the chain; otherwise -- genuinely
+// incomparable masks, as in the pre-existing
+// `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
+// regardless_of_field_order` test above ({w,a} vs {r}, neither subset of
+// the other) -- the fold correctly declines (`None`) and the row stays
+// "missing". Intersection is NOT the right generalization of "declines":
+// `perm=r AND perm=w` is satisfiable on an `O_RDWR` open (the kernel tests
+// mask-overlap against EACH predicate independently, not a single overlap
+// test against their intersected bits, which is empty and would wrongly
+// treat the pair as "never satisfiable"); an implementation that folds
+// incomparable predicates via bitwise intersection rather than declining
+// is answering a different, ungrounded question. The two tests below pin
+// the SATISFIED side of the corrected boundary with two INDEPENDENT
+// subset chains against two DIFFERENT required rows and BOTH call sites
+// (path-form and dir-form), each in BOTH field orders (the same rigor the
+// round-2 fix itself required of the "does-not-satisfy" tests); the
+// pre-existing incomparable-pair test above pins the declining side and
+// is intentionally left unmodified -- the three tests together are one
+// contract on `perm_axis_bits`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_subset_comparable_perm_predicates_satisfies_v230409_regardless_of_field_order()
+ {
+    // {w,a} (the required V-230409 value) subset-of {r,w,x,a}: the
+    // conjunction `perm=wa AND perm=rwxa` collapses to `perm=wa`, which IS
+    // the required row, in BOTH field orders.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=rwxa are SUBSET-COMPARABLE ({{w,a}} subset-of \
+         {{r,w,x,a}}) -- audit_match_perm is monotone non-decreasing in its \
+         mask, so this conjunction collapses to the smaller mask (perm=wa) \
+         and must satisfy V-230409, not report missing: {diags_wa_first:?}"
+    );
+
+    let rules_rwxa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwxa -F perm=wa -k identity\n",
+    );
+    let diags_rwxa_first = w06(
+        &rules_rwxa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_rwxa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "reversing the field order (the superset predicate FIRST, the \
+         exact required value second) must produce the SAME satisfied \
+         verdict, not flip to missing: {diags_rwxa_first:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_a_different_subset_comparable_perm_chain_satisfies_v230410_regardless_of_field_order()
+ {
+    // A SECOND, independent subset chain against a DIFFERENT required row
+    // (V-230410/RHEL-08-030172, `/etc/sudoers.d`) exercised through the
+    // DIR-flavored call site (`dir_watch_equivalent_axes_match`), so the
+    // fix is pinned as "minimum of a subset chain" in general -- not as a
+    // special case of the {w,a}-subset-of-{r,w,x,a} pair above: {w,a} (the
+    // required value) subset-of {r,w,a} (a superset that adds ONLY 'r',
+    // never 'x' -- a genuinely different chain from V-230409's above).
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "perm=wa AND perm=rwa are SUBSET-COMPARABLE ({{w,a}} subset-of \
+         {{r,w,a}}) -- this conjunction collapses to perm=wa and must \
+         satisfy V-230410, not report missing: {diags_wa_first:?}"
+    );
+
+    let rules_superset_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wa -k identity\n",
+    );
+    let diags_superset_first = w06(
+        &rules_superset_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_superset_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "reversing the field order must produce the SAME satisfied \
+         verdict, not flip to missing: {diags_superset_first:?}"
+    );
+}
