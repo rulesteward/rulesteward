@@ -1909,6 +1909,115 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Syscall-vs-Syscall `-F perm=` identity is a RAW STRING COMPARE (session 9m
+// lane 1, round 2 ATL) -- unlike the Watch-vs-Syscall fold pinned by the two
+// tests just above (which case/order-folds via
+// `perm_axis_bits`/`perm_bits_from_field_value` because the CANDIDATE is a
+// `Watch`), a required row that is ITSELF `Syscall`-shaped (not
+// pure-path-watch-shaped, e.g. because it also restricts `-F auid=`) is
+// compared via `fields_match_excluding_key`, whose per-field value equality
+// is `super::value::canonical_value(ft, ..)` (`stig_required.rs:1985`).
+// `classify.rs` buckets `FieldType::Perm` into `FieldValue::Opaque`, and
+// `canonical_value`'s `Opaque` arm is `Cow::Borrowed(raw.trim())`
+// (`canonical.rs:57`) -- a raw string compare, so `-F perm=X` vs
+// `-F perm=x` (case) and `-F perm=xa` vs `-F perm=ax` (order) wrongly
+// compare as DIFFERENT.
+//
+// Grounding: `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
+// `-F perm=` character before OR-ing it into a bitmask (`case AUDIT_PERM:
+// switch (tolower((unsigned char)v[i])) { case 'r': val |= AUDIT_PERM_READ;
+// ... }`, so BOTH case and letter order are semantically irrelevant at the
+// kernel: `x`/`X` -> 4, `xa`/`ax`/`XA` -> 12), and the kernel's own
+// `audit_compare_rule` (`kernel/auditfilter.c`) has NO `AUDIT_PERM` special
+// case, falling to the generic `default: if (a->fields[i].val !=
+// b->fields[i].val) return 1;` -- it compares the BITMASK, never the
+// spelling.
+//
+// V-230412/RHEL-08-030190 is a REAL shipped RHEL8 baseline row
+// (`stig_required.rs:186-189`), deliberately `Syscall`-only (the `-F auid=`
+// restriction takes it outside `is_pure_path_watch_shaped`, per this file's
+// existing `dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_
+// watch_shaped` doc comment) -- so it exercises the broken
+// Syscall-vs-Syscall arm, not the already-fixed Watch-vs-Syscall fold two
+// tests above.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_perm_case_flip_wrongly_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=X -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=X (uppercase) must satisfy a required \
+         perm=x row -- libaudit case-folds every -F perm= letter before \
+         building the bitmask, so the two are the SAME kernel rule: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_recognizes_swapped_perm_letter_order_ax() {
+    // Positive-control anchor for the contract the next test pins: the
+    // Watch-vs-Syscall fold (candidate is a `Watch`) already order-folds via
+    // `perm_axis_bits`/`perm_bits_from_field_value` (`PermBits` is four
+    // independent bools, order-free by construction), so a candidate spelled
+    // `-p ax` (letters swapped) satisfies a required `perm=xa` row exactly
+    // like `-p xa` does (`watch_equivalent_recognizes_exec_perm_bit` above).
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-X",
+        "TEST-PERM-X",
+        "-a always,exit -F path=/etc/synthetic-x -F perm=xa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-x -p ax -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a watch with perm 'ax' (order-swapped) must satisfy a required \
+         perm='xa' path-watch row, same as 'xa' -- PermBits is order-free: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
+    // Pinned as ONE contract with `watch_equivalent_recognizes_swapped_perm_
+    // letter_order_ax` immediately above: that test already folds order/case
+    // via `perm_axis_bits`/`perm_bits_from_field_value` because the
+    // CANDIDATE is a `Watch`. Here BOTH sides are `Syscall`-shaped (required
+    // carries the same `-F auid=` restriction as V-230412 above), which
+    // routes through the UNFOLDED `fields_match_excluding_key` arm instead --
+    // the internal inconsistency IS the point: a fix that folds perm
+    // identity in one arm and not the other leaves this pair disagreeing
+    // with the Watch-vs-Syscall pair above despite both asserting the exact
+    // same kernel-level claim (perm='xa' with the letters swapped).
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=xa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=ax -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=ax (letters swapped) must satisfy a \
+         required perm=xa row, exactly like a `-w path -p ax` watch already \
+         satisfies a perm=xa row in the sibling test above: {diags:?}"
+    );
+}
+
 #[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and

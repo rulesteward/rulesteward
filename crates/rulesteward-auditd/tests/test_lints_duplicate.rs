@@ -195,6 +195,84 @@ fn repeated_syscall_duplicate_fires_e03() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 2c / 2d: `-F perm=` letter ORDER and CASE flip -- au-E03 (load-aborting)
+//
+// Session 9m lane 1, round 2 ATL. `canonical_key` (`normalize.rs:70`) folds a
+// `Syscall` rule's field VALUES through `super::value::canonical_value`, and
+// `classify.rs` buckets `FieldType::Perm` into `FieldValue::Opaque`, whose
+// `canonical_value` arm is `Cow::Borrowed(raw.trim())` (`canonical.rs:57`) --
+// a raw string compare. So `-F perm=wa` and `-F perm=aw` (order-swapped), or
+// `-F perm=wa` and `-F perm=WA` (case-flipped), get DIFFERENT canonical keys
+// even though `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
+// `-F perm=` character (`tolower((unsigned char)v[i])`) and ORs the letters
+// into one bitmask (`wa`/`aw`/`WA` all produce `AUDIT_PERM_WRITE|
+// AUDIT_PERM_ATTR`), so the kernel's `audit_compare_rule`
+// (`kernel/auditfilter.c`) sees byte-identical fields, `audit_add_rule`
+// returns `-EEXIST`, and `auditctl -R` aborts the file exactly as this
+// module's own au-E03 message already describes ("every later rule silently
+// fails to load"). The miss is UPSTREAM of `rules_eexist_equal`
+// (`duplicate.rs:47`): the two rules never even reach it, because they get
+// different `canonical_key`s and so are never grouped as "the same rule" by
+// `w01`'s `first_seen` map in the first place -- today this pair produces
+// ZERO findings, not a misclassified severity.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn perm_letter_order_flip_duplicate_fires_e03() {
+    let input = concat!(
+        "-a always,exit -F path=/usr/bin/su -F perm=wa -k k\n",
+        "-a always,exit -F path=/usr/bin/su -F perm=aw -k k\n",
+    );
+    let rules =
+        parse_rules_str_located(input, Path::new("10-perm-order.rules")).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w01(&rules, LintOptions::default());
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "-F perm=wa and -F perm=aw are the SAME kernel bitmask (order-free) \
+         and must fire exactly one au-E03, got {diags:?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Error,
+        "an order-swapped -F perm= duplicate is load-aborting -> au-E03"
+    );
+    assert_eq!(diags[0].code, "au-E03");
+    assert_eq!(diags[0].line, 2, "anchored at the later (line 2) rule");
+}
+
+#[test]
+fn perm_letter_case_flip_duplicate_fires_e03() {
+    let input = concat!(
+        "-a always,exit -F path=/usr/bin/su -F perm=wa -k k\n",
+        "-a always,exit -F path=/usr/bin/su -F perm=WA -k k\n",
+    );
+    let rules =
+        parse_rules_str_located(input, Path::new("10-perm-case.rules")).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w01(&rules, LintOptions::default());
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "-F perm=wa and -F perm=WA are the SAME kernel bitmask (libaudit \
+         case-folds every -F perm= letter) and must fire exactly one \
+         au-E03, got {diags:?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Error,
+        "a case-flipped -F perm= duplicate is load-aborting -> au-E03"
+    );
+    assert_eq!(diags[0].code, "au-E03");
+    assert_eq!(diags[0].line, 2, "anchored at the later (line 2) rule");
+}
+
+// ---------------------------------------------------------------------------
 // Test 3: -a vs -A (append vs prepend) pair fires -- au-W01
 //
 // 10-append.rules  line 5: -a always,exit -S execve -F auid>=1000 -k exec

@@ -1298,8 +1298,19 @@ fn field_filter_perm_operator_gating_pin() {
 }
 
 /// `-F perm=` (empty value, zero letters) parses today, mirroring
-/// `parse_perms("")`. No corpus row or oracle evidence exists for the empty
-/// case, so this pins today's behavior rather than inventing a rule.
+/// `parse_perms("")`.
+///
+/// This is a KNOWN, FILED divergence, not an ungrounded pin: real
+/// `auditctl`'s `audit_rule_fieldpair_data` (`lib/libaudit.c`) rejects an
+/// EMPTY value for every `-F` field before the field-specific switch is ever
+/// reached (`if (*v == 0) return -EAU_FIELDVALMISSING;`, message "-F missing
+/// value after operation for", `lib/errormsg.h`), so `auditctl -R` aborts the
+/// file on this line. `RuleSteward`'s parser currently accepts it. USER RULING
+/// (session 9m lane 1, round 2 ATL): the behavior stays UNCHANGED in this
+/// lane; the divergence is tracked as issue #613, which explicitly asks
+/// whoever picks it up to INVERT this test (to `parse_err`) rather than
+/// delete it. See #613 for the full grounding and the emptiness/whitespace
+/// boundary scoping.
 #[test]
 fn field_filter_perm_empty_value_unchanged() {
     parse_ok("-a always,exit -S openat -F perm=");

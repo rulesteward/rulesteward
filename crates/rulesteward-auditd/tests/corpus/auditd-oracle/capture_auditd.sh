@@ -314,9 +314,11 @@ add_new_grounding_scenarios() {
     # letter: this is the row the OLD control-reject scenario used to carry
     # ('-F perm=zz'), which is why that rule had to move off the positive
     # control (a control must never double as a product-divergence row). Kept
-    # here as its own grounding id: RuleSteward's parser stores any -F perm=
-    # VALUE as an unvalidated string (no rwxa letter-set check), so it is
-    # expected to ACCEPT where the real oracle REJECTS.
+    # here as its own grounding id: RuleSteward's parser now validates -F
+    # perm= values against the rwxa letter set (issue #601's other half,
+    # closed in a later round), so this row is expected to REJECT on BOTH
+    # sides -- no longer a product/oracle divergence, but still worth
+    # capturing under its own id for the corpus's own regression coverage.
     add_scenario "f-perm-invalid-letter" "601" \
         '-a always,exit -F perm=zz -S execve -k fpermbad'
 
