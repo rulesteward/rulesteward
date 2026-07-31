@@ -122,6 +122,14 @@ fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
 /// directory that exists but cannot be read. A MISSING directory is skipped
 /// silently (a system need not have all of them).
 ///
+/// `symlink_ok` is [`slot_symlink_ok`]'s whole-prefix verdict for THIS `prefix`:
+/// whether `<prefix>/etc/sysctl.d/99-sysctl.conf` actually resolves to
+/// `<prefix>/etc/sysctl.conf`. It gates whether an entry AT that exact path is
+/// recognised as the distro applier slot (see the content-decision comment below);
+/// when it is `false` (no slot, a dangling link, or a symlink to anything else),
+/// that entry is no longer special-cased and is enumerated like any other
+/// `.conf`-named entry.
+///
 /// Masking is by directory ENTRY NAME (design section 2 point 1, man sysctl.d(5)),
 /// separate from the content decision. EVERY `.conf`-named regular file or symlink
 /// claims its basename at its directory's rank; a same-basename entry in a lower
@@ -130,7 +138,10 @@ fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
 /// content: the distro `99-sysctl.conf -> ../sysctl.conf` slot (its content flows
 /// via the `/etc/sysctl.conf` applier model) and the man sysctl.d(5) `-> /dev/null`
 /// disable idiom (which masks a vendor file without applying anything).
-fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
+fn enumerate(
+    prefix: &Path,
+    symlink_ok: bool,
+) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
     let mut surviving = Vec::new();
     let mut masked = Vec::new();
@@ -190,10 +201,15 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
             }
             seen.insert(basename.clone(), path.clone());
             // Content contribution, decided AFTER the basename claim above.
-            if ftype.is_symlink() && path == link_99 {
-                // The distro `99-sysctl.conf -> ../sysctl.conf` slot: claims its
-                // basename, but its content flows via the `/etc/sysctl.conf` applier
-                // model (W03-b), not as a parsed drop-in.
+            if ftype.is_symlink() && path == link_99 && symlink_ok {
+                // The distro `99-sysctl.conf -> ../sysctl.conf` slot, recognized
+                // ONLY when the symlink actually resolves to
+                // `<prefix>/etc/sysctl.conf` (`symlink_ok`): claims its basename,
+                // but its content flows via the `/etc/sysctl.conf` applier model
+                // (W03-b), not as a parsed drop-in. A symlink at this exact path
+                // that resolves to anything else (or does not resolve at all) is
+                // NOT the distro slot - it falls through to the ordinary
+                // `is_file()` content check below like any other drop-in (#593).
                 continue;
             }
             if path.is_file() {
@@ -502,7 +518,10 @@ pub fn lint_system(
 ) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
     let prefix = root.unwrap_or_else(|| Path::new("/"));
 
-    let (mut surviving, mut masked, mut diags) = enumerate(prefix);
+    // Computed once per call (rather than once per directory entry inside
+    // `enumerate`) since it is a whole-prefix property, not a per-entry one.
+    let symlink_ok = slot_symlink_ok(prefix);
+    let (mut surviving, mut masked, mut diags) = enumerate(prefix, symlink_ok);
     // Global merge order is BYTEWISE by basename across all directories.
     surviving.sort_by(|a, b| a.basename.cmp(&b.basename));
     masked.sort_by(|a, b| a.path.cmp(&b.path));
@@ -511,7 +530,6 @@ pub fn lint_system(
     let (surviving_asgns, surviving_ranks) = parse_surviving(&surviving, &mut diags, &mut sources);
     let etc_conf_asgns = parse_etc_conf(prefix, &mut diags, &mut sources);
 
-    let symlink_ok = slot_symlink_ok(prefix);
     // W03-b needs the pre-merge handles, so compute it before the two are moved.
     let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok);
 
