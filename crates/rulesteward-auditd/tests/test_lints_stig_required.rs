@@ -3475,3 +3475,285 @@ fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_requi
          {diags_wxa_first:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ATL round 5 (issue #601 follow-up, adversarial MISS-1): `perm_axis_bits`
+// demands a TOTAL ORDER (every pair pairwise subset-comparable) where the
+// kernel conjunction only requires the predicate set to have a MINIMUM (one
+// element that is a subset of every other element). The two conditions
+// coincide at |S| == 2 -- exactly why every round-4 test above, all
+// two-predicate, missed this -- but diverge at |S| >= 3: a set can have a
+// minimum while also containing an incomparable PAIR that never touches the
+// minimum. `{w,a}, {r,w,a}, {w,x,a}` has minimum `{w,a}` (a subset of both
+// other elements), yet `{r,w,a}` and `{w,x,a}` are themselves incomparable
+// ('r' only in the first, 'x' only in the second). The current pairwise loop
+// finds that one incomparable pair and declines the WHOLE conjunction --
+// a bogus "missing" finding on a genuinely compliant ruleset, reproduced
+// end-to-end against the real shipped RHEL8_REQUIRED V-230409/V-230410 rows,
+// through both `watch_equivalent_axes_match` and
+// `dir_watch_equivalent_axes_match`, and both field orders.
+//
+// The correct rule: fold to a CANDIDATE minimum first, then verify that
+// candidate really is a subset of EVERY element in the set; only then is the
+// fold licensed. "Total order" is a strictly stronger, unnecessary condition.
+//
+// The tests below also fence the fix against a tempting-but-wrong repair:
+// deleting the pairwise loop and keeping only the running min-fold (with no
+// final re-verification) returns a LOCALLY minimal element, not a true
+// minimum, whenever the set has no minimum at all --
+// `path_syscall_form_with_wa_and_rw_does_not_satisfy_v230409` below is the
+// case that catches it.
+//
+// Framing note: every `does_not_satisfy` assertion below documents the
+// CURRENT posture (decline when no minimum exists), not a claim that
+// declining is provably correct -- `audit_match_perm`'s monotonicity is
+// silent on an incomparable set; declining is the conservative choice.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_a_perm_chain_that_has_a_minimum_but_is_not_a_total_order_satisfies_v230409_regardless_of_field_order()
+ {
+    // {w,a}, {r,w,a}, {w,x,a}: {w,a} (the required V-230409 value) is a
+    // subset of BOTH other elements, so the conjunction has a MINIMUM and
+    // collapses to it -- even though {r,w,a} and {w,x,a} are themselves
+    // INCOMPARABLE ('r' only in the first, 'x' only in the second), so this
+    // three-element set is NOT totally ordered. RED today for BOTH orders
+    // (the pairwise loop scans every pair regardless of which element the
+    // source text lists first, so it finds the incomparable {r,w,a}/{w,x,a}
+    // pair and declines either way); must go GREEN once the fold checks for
+    // a minimum rather than a total order.
+    let rules_min_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_min_first = w06(
+        &rules_min_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=rwa AND perm=wxa: {{w,a}} is a subset of both \
+         {{r,w,a}} and {{w,x,a}}, so the conjunction has a minimum ({{w,a}}) \
+         even though {{r,w,a}} and {{w,x,a}} are themselves incomparable -- \
+         this must satisfy V-230409 (demanding a TOTAL ORDER is a stronger, \
+         wrong condition), not report missing: {diags_min_first:?}"
+    );
+
+    let rules_min_last = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_min_last = w06(
+        &rules_min_last,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_last
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "the SAME three predicates with the minimum ({{w,a}}) listed LAST \
+         (after the two incomparable elements) must produce the SAME \
+         satisfied verdict, not flip to missing: {diags_min_last:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_a_perm_chain_that_has_a_minimum_but_is_not_a_total_order_satisfies_v230410_regardless_of_field_order()
+ {
+    // The Dir-flavored twin of the test above, through
+    // `dir_watch_equivalent_axes_match` against V-230410/RHEL-08-030172
+    // (`/etc/sudoers.d`): the same three-predicate, minimum-exists-but-not-
+    // totally-ordered set, exercised through the OTHER call site so the fix
+    // cannot be a special case of the path arm alone.
+    let rules_min_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_min_first = w06(
+        &rules_min_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "perm=wa AND perm=rwa AND perm=wxa via the dir-form call site: the \
+         same minimum-exists-but-not-totally-ordered set as V-230409 above, \
+         must satisfy V-230410, not report missing: {diags_min_first:?}"
+    );
+
+    let rules_min_last = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_min_last = w06(
+        &rules_min_last,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_last
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "the minimum listed LAST must produce the SAME satisfied verdict \
+         through the dir-form call site too: {diags_min_last:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_rw_does_not_satisfy_v230409() {
+    // {w,a} and {r,w} are INCOMPARABLE (neither a subset of the other: 'a'
+    // only in the first, 'r' only in the second) -- this set has NO
+    // minimum, so nothing licenses folding the conjunction to a single
+    // mask. Per the framing note above (section doc comment), the current
+    // documented posture is to decline when no minimum exists; V-230409
+    // stays missing under that posture.
+    //
+    // This is the test that separates the CORRECT fix (compute a candidate
+    // minimum, then verify it really is a subset of every element) from a
+    // tempting-but-wrong one (delete the pairwise total-order loop and keep
+    // only the running min-fold, with no final verification pass): a naive
+    // running fold over `[wa, rw]` starts at `wa`, checks whether `rw` is a
+    // subset of `wa` (it is not -- 'r' is only in `rw`), so `wa` is NEVER
+    // challenged again and the fold returns `Some({w,a})` -- wrongly
+    // crediting V-230409 even though `{w,a}` is not a subset of `{r,w}` and
+    // the pair has no real minimum. Only a final verification step (checking
+    // the candidate against every element) catches this.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rw -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rw -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=rw are INCOMPARABLE ({{w,a}} vs {{r,w}}, neither a \
+         subset of the other) so the set has no minimum -- V-230409 must \
+         stay missing under the documented decline-when-no-minimum posture: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_ra_does_not_satisfy_v230409() {
+    // {w,a} and {r,a} are INCOMPARABLE ('w' only in the first, 'r' only in
+    // the second); no minimum exists, so V-230409 stays missing under the
+    // documented decline-when-no-minimum posture.
+    //
+    // This pair isolates the WRITE conjunct of `perm_bits_is_subset`
+    // (`stig_required.rs:1978`, column 29): `{w,a}` has write, `{r,a}` does
+    // not, and every other conjunct already agrees (both lack exec; both
+    // have attr; read is vacuously satisfied since `{w,a}` lacks read).
+    // Deleting the `!` on the write conjunct (a round-5 mutation survivor)
+    // turns `is_subset(wa, ra)` from `false` to `true`, which defeats the
+    // total-order decline and lets the min-fold wrongly settle on `wa` --
+    // flipping this test's verdict from missing to satisfied.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=ra -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=ra -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=ra are INCOMPARABLE ({{w,a}} vs {{r,a}}, neither a \
+         subset of the other) so V-230409 must stay missing: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_wx_does_not_satisfy_v230409() {
+    // {w,a} and {w,x} are INCOMPARABLE ('a' only in the first, 'x' only in
+    // the second); no minimum exists, so V-230409 stays missing under the
+    // documented decline-when-no-minimum posture.
+    //
+    // This pair isolates the ATTR conjunct of `perm_bits_is_subset`
+    // (`stig_required.rs:1978`, column 77): both share write; read and exec
+    // are vacuously satisfied (the deciding side lacks the bit in each
+    // case); only attr disagrees (`{w,a}` has it, `{w,x}` does not).
+    // Deleting the `!` on the attr conjunct (a round-5 mutation survivor)
+    // turns `is_subset(wa, wx)` from `false` to `true`, defeating the
+    // total-order decline and letting the min-fold wrongly settle on `wa`
+    // -- flipping this test's verdict from missing to satisfied.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wx -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wx -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=wx are INCOMPARABLE ({{w,a}} vs {{w,x}}, neither a \
+         subset of the other) so V-230409 must stay missing: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exec_conjunct_order_dependently()
+ {
+    // {w,a} subset-of {w,x,a} (adds only 'x'): the conjunction collapses to
+    // {w,a}, which IS V-230409's required value -- already SATISFIED under
+    // the current (pre-round-5) code, since a two-element chain is trivially
+    // a total order. This test exists to pin FINDING 3: deleting the WHOLE
+    // `&& (!a.exec || b.exec)` conjunct from `perm_bits_is_subset` survives
+    // the entire frozen suite as of round 4 ("remove a conjunct" is not a
+    // `cargo mutants` operator, so no gate run will ever report it).
+    //
+    // The `wa`-FIRST order is the one that actually catches it: the running
+    // min-fold starts at `wa` (min), then considers `wxa` as a candidate --
+    // `is_subset(wxa, wa)` must be `false` (wxa's exec bit is not in wa) to
+    // keep `min` at `wa`. Deleting the exec conjunct makes
+    // `is_subset(wxa, wa)` wrongly evaluate to `true` (read/write/attr all
+    // still agree), so `min` becomes `wxa` instead, and the fold returns
+    // `Some({w,x,a})` -- which does NOT equal the required `{w,a}` --
+    // flipping this test's verdict from satisfied to missing.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wxa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=wxa: {{w,a}} subset-of {{w,x,a}} collapses to \
+         {{w,a}}, which is V-230409's required value: {diags_wa_first:?}"
+    );
+
+    // The REVERSED order (`wxa` first) does NOT, on its own, catch the
+    // dropped-exec-conjunct mutant: the fold starts at `wxa` (min), then
+    // considers `wa` as a candidate -- `is_subset(wa, wxa)` is `true` both
+    // with and without the exec conjunct (`wa`'s exec bit is already false,
+    // so that term is vacuously true either way), so `min` becomes `wa`
+    // regardless of the mutant. This assertion exists only to confirm
+    // order-independence of the CORRECT verdict, not to pin FINDING 3 a
+    // second time.
+    let rules_reversed = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_reversed = w06(
+        &rules_reversed,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_reversed
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "reversing the field order must produce the SAME satisfied verdict: \
+         {diags_reversed:?}"
+    );
+}
