@@ -236,11 +236,29 @@ pub enum Tag {
 /// Chroot_Spec  ::= 'CHROOT=directory'
 /// ```
 ///
-/// so exactly SEVEN keywords. The set must NOT be generalised to "any
-/// `WORD=VALUE` prefix": `alice ALL = /usr/bin/env FOO=bar` is valid sudoers
-/// (live `visudo -c -f -` on this host, rc 0) and `cvtsudoers -f json` reports
-/// it as the SINGLE command `"/usr/bin/env FOO=bar"` with the `=` intact, so a
-/// keyword-free matcher would corrupt a real command line.
+/// That block lists seven keywords, but it is INCOMPLETE as a description of
+/// what the shipping parser ACCEPTS, and the parser is the better primary
+/// source for acceptance. Live `visudo -c -f -` on this host (sudo 1.9.17p2,
+/// `visudo grammar version 50`, probed 2026-07-30) accepts three more, and
+/// `cvtsudoers -f json` reports each as a real `Options` entry rather than as
+/// command text:
+///
+/// ```text
+/// alice ALL = PRIVS=x /bin/ls              rc 0   Options [{"privs":"x"}]
+/// alice ALL = LIMITPRIVS=y /bin/ls         rc 0   Options [{"limitprivs":"y"}]
+/// alice ALL = APPARMOR_PROFILE=p /bin/ls   rc 0   Options [{"apparmor_profile":"p"}]
+/// ```
+///
+/// so the real set is TEN. It is still genuinely CLOSED, not open: on the same
+/// host `alice ALL = BOGUSKEY=z /bin/ls` is rc 1 (`syntax error`), so an
+/// unknown `WORD=VALUE` is not an option. The set must therefore NOT be
+/// generalised to "any `WORD=VALUE` prefix": `alice ALL = /usr/bin/env FOO=bar`
+/// is valid sudoers (rc 0) and `cvtsudoers -f json` reports it as the SINGLE
+/// command `"/usr/bin/env FOO=bar"` with the `=` intact, so a keyword-free
+/// matcher would corrupt a real command line.
+///
+/// Adding an ELEVENTH keyword requires a new cited primary source here, on the
+/// same footing as the probe above; guessing one is forbidden.
 ///
 /// Matching is CASE-SENSITIVE, like [`Tag`]'s: live probes on host sudo
 /// 1.9.17p2 (2026-07-30) show `timeout=30` and `Timeout=30` are BOTH rc 1
@@ -266,6 +284,15 @@ pub enum CmndOptionKey {
     Cwd,
     /// `CHROOT=directory` (`Chroot_Spec`).
     Chroot,
+    /// `PRIVS=privset` (Solaris privileges). Absent from the man page's
+    /// `Option_Spec` block; accepted by the shipping parser (probe above).
+    Privs,
+    /// `LIMITPRIVS=privset` (Solaris limit privileges). Absent from the man
+    /// page's `Option_Spec` block; accepted by the shipping parser.
+    LimitPrivs,
+    /// `APPARMOR_PROFILE=profile`. Absent from the man page's `Option_Spec`
+    /// block; accepted by the shipping parser.
+    AppArmorProfile,
 }
 
 /// One `=`-form `Option_Spec` written on a `Cmnd_Spec`: its keyword plus the
@@ -277,7 +304,7 @@ pub enum CmndOptionKey {
 /// [`RunasSpec`] makes for its raw comma-split members.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmndOption {
-    /// Which of the seven `Option_Spec` keywords was written.
+    /// Which of the ten accepted `Option_Spec` keywords was written.
     pub key: CmndOptionKey,
     /// The raw value text after the `=`, verbatim.
     pub value: String,

@@ -1,10 +1,12 @@
-//! #538 barrier suite: the TWO INDEPENDENT `sudoers` parser gaps.
+//! #538 barrier suite: the THREE INDEPENDENT `sudoers` parser gaps.
 //!
-//! Both are SILENT false negatives - a real sudoers privilege parses into an
-//! AST shape no lint can match, so `RuleSteward` reports a clean file on a line
-//! that grants real power. They share one issue number and one acceptance
-//! signal but they are separate defects in separate functions, so they get
-//! separate tests here and must be positive-controlled by separate reverts.
+//! All three are false negatives on a line real sudo accepts: the privilege
+//! parses into an AST shape no lint can match (A and B) or is discarded
+//! entirely (C), so `RuleSteward` reports nothing useful about a line that
+//! grants real power. They share one issue number and one acceptance signal
+//! but they are separate defects in separate functions, so they get separate
+//! tests here and must be positive-controlled by SEPARATE reverts: reverting
+//! any one gap must redden that gap's tests and no other's.
 //!
 //! * **Gap A** - `parser::parse_cmnd_spec`'s tag loop recognizes only the
 //!   `TAG:` form. An `=`-form `Option_Spec` (`ROLE=`, `TYPE=`, `NOTBEFORE=`,
@@ -18,6 +20,16 @@
 //!   `users = ["bob"]` and `hosts = ["ALL ALL"]`, dropping the reserved `ALL`
 //!   principal and taking `sudo-W06` (the DISA finding for `ALL` in a
 //!   `User_List`) down with it.
+//! * **Gap C** - `parser::split_top_level_segments` resets its preceding-token
+//!   marker on every `=`, so an `Option_Spec`'s own `=` hides a following tag
+//!   keyword and the tag colon is mistaken for a top-level host-group
+//!   separator. `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` is thrown away as
+//!   `Malformed`. Found during this lane's satisfiability run; see the Gap C
+//!   section below for the full mechanism.
+//!
+//! One test is named `gap_ac_` rather than `gap_a_` / `gap_c_`: it is the
+//! deliberate INTEGRATION of A and C and is not separably attributable. Every
+//! other test belongs to exactly one gap.
 //!
 //! # Evidence level
 //!
@@ -195,24 +207,41 @@ fn gap_a_timeout_option_after_a_runas_group_leaves_the_command_clean() {
     );
 }
 
-/// Every one of the SEVEN grammar keywords must be recognized, with its value
+/// Every one of the TEN accepted keywords must be recognized, with its value
 /// captured and the command left clean.
 ///
 /// Without this, an implementation could ship only the four keywords the corpus
 /// happens to contain and no gate would notice: the corpus has no `NOTAFTER=`,
-/// `CWD=` or `CHROOT=` scenario at all.
+/// `CWD=`, `CHROOT=`, `PRIVS=`, `LIMITPRIVS=` or `APPARMOR_PROFILE=` scenario
+/// at all.
 ///
-/// Grounding per row: `ROLE` / `TYPE` / `NOTBEFORE` / `TIMEOUT` are corpus
-/// rows (see the three tests above). `NOTAFTER` / `CWD` / `CHROOT` are man-page
-/// grammar members corroborated by host probes (all rc 0;
-/// `CHROOT=/srv` additionally prints `"CHROOT" is deprecated` on stderr and
-/// still exits 0), and `cvtsudoers -f json` on the same host reports them as
-/// real `Options` entries (`{"notafter":"..."}`, `{"runcwd":"/tmp"}`,
-/// `{"runchroot":"/srv"}`). The parser is deliberately NOT version-aware, so
-/// they are implemented on every target; no el8 measurement is claimed for
-/// `CWD` / `CHROOT`.
+/// TEN, not the seven in the `man 5 sudoers` `Option_Spec` block: that block is
+/// incomplete as a description of what the shipping parser ACCEPTS, and for
+/// acceptance the parser is the better primary source. Probed on this host
+/// (sudo 1.9.17p2, `visudo grammar version 50`, 2026-07-30) with
+/// `printf '%s\n' "<line>" | visudo -c -f -` and the same line through
+/// `cvtsudoers -f json`:
+///
+/// ```text
+/// alice ALL = PRIVS=x /bin/ls              rc 0  Options [{"privs":"x"}]
+/// alice ALL = LIMITPRIVS=y /bin/ls         rc 0  Options [{"limitprivs":"y"}]
+/// alice ALL = APPARMOR_PROFILE=p /bin/ls   rc 0  Options [{"apparmor_profile":"p"}]
+/// alice ALL = NOTAFTER=...Z /bin/ls        rc 0  Options [{"notafter":"...Z"}]
+/// alice ALL = CWD=/tmp /bin/ls             rc 0  Options [{"runcwd":"/tmp"}]
+/// alice ALL = CHROOT=/srv /bin/ls          rc 0  Options [{"runchroot":"/srv"}]
+/// alice ALL = BOGUSKEY=z /bin/ls           rc 1  syntax error
+/// ```
+///
+/// The `BOGUSKEY` row is what makes this a CLOSED ten rather than an open set;
+/// it is pinned by its own negative-control test below. `CHROOT=/srv`
+/// additionally prints `"CHROOT" is deprecated` on stderr and still exits 0.
+///
+/// Grounding per row: `ROLE` / `TYPE` / `NOTBEFORE` / `TIMEOUT` are corpus rows
+/// (see the three tests above); the other six are host probes only. The parser
+/// is deliberately NOT version-aware, so all ten are implemented on every
+/// target; no el8 measurement is claimed for the six probe-only keywords.
 #[test]
-fn gap_a_all_seven_grammar_option_keywords_are_recognized() {
+fn gap_a_all_ten_accepted_option_keywords_are_recognized() {
     let cases: &[(&str, CmndOptionKey, &str)] = &[
         ("ROLE=sysadm_r", CmndOptionKey::Role, "sysadm_r"),
         ("TYPE=sysadm_t", CmndOptionKey::Type, "sysadm_t"),
@@ -229,6 +258,9 @@ fn gap_a_all_seven_grammar_option_keywords_are_recognized() {
         ("TIMEOUT=30", CmndOptionKey::Timeout, "30"),
         ("CWD=/tmp", CmndOptionKey::Cwd, "/tmp"),
         ("CHROOT=/srv", CmndOptionKey::Chroot, "/srv"),
+        ("PRIVS=x", CmndOptionKey::Privs, "x"),
+        ("LIMITPRIVS=y", CmndOptionKey::LimitPrivs, "y"),
+        ("APPARMOR_PROFILE=p", CmndOptionKey::AppArmorProfile, "p"),
     ];
     for (written, key, value) in cases {
         let src = format!("alice ALL = {written} /bin/ls\n");
@@ -249,7 +281,7 @@ fn gap_a_all_seven_grammar_option_keywords_are_recognized() {
 }
 
 /// Negative control (host probe, rc 0): the option keyword set is CLOSED, so a
-/// `WORD=VALUE` that is NOT one of the seven is ordinary command text.
+/// `WORD=VALUE` that is NOT one of the ten is ordinary command text.
 ///
 /// `alice ALL = /usr/bin/env FOO=bar` is valid sudoers and `cvtsudoers -f json`
 /// reports the SINGLE command `"/usr/bin/env FOO=bar"` with the `=` intact. A
@@ -270,6 +302,42 @@ fn gap_a_option_keyword_set_is_closed_so_env_assignment_stays_in_the_command() {
         "no Option_Spec was written; got {:?}",
         specs[0].options
     );
+}
+
+/// Negative control (host probe, rc 1): an UNKNOWN uppercase `WORD=VALUE` at
+/// the option position is not an option.
+///
+/// This is the assertion that keeps the set CLOSED. The other closed-set
+/// control (`/usr/bin/env FOO=bar`) only rules out a matcher that fires
+/// mid-command; a matcher that fired on any `WORD=VALUE` at the SPEC START
+/// would still pass it. `alice ALL = BOGUSKEY=z /bin/ls` is `rc 1`
+/// (`stdin:1:21: syntax error`) on this host (sudo 1.9.17p2,
+/// `visudo grammar version 50`, 2026-07-30), so real sudo does not accept an
+/// arbitrary keyword there and neither may the option table.
+///
+/// `parse_cmnd_spec` is TOTAL and has no reject path, so this pins only that no
+/// option is CAPTURED and that the text is not silently dropped - not any
+/// particular diagnostic.
+#[test]
+fn gap_a_unknown_option_keyword_is_not_captured() {
+    for written in ["BOGUSKEY=z", "SELINUX=x", "NOTAFTERX=1"] {
+        let src = format!("alice ALL = {written} /bin/ls\n");
+        let s = only_spec(&src);
+        let specs = &s.host_groups[0].cmnd_specs;
+        assert!(
+            specs[0].options.is_empty(),
+            "{written:?} is not one of the ten accepted Option_Spec keywords and \
+             must not be captured as an option; got {:?}",
+            specs[0].options
+        );
+        let CmndItem::Cmnd(raw) = &specs[0].cmnd else {
+            panic!("{written:?} must not parse as the reserved ALL");
+        };
+        assert!(
+            raw.contains(written),
+            "{written:?} must not be silently dropped from the command token; got {raw:?}"
+        );
+    }
 }
 
 /// Negative control (host probe): keyword matching is CASE-SENSITIVE, exactly
@@ -316,11 +384,19 @@ fn gap_a_option_keyword_matching_is_case_sensitive() {
 /// shape that pins options-and-tags working together: the corpus has
 /// `(root) NOEXEC: /bin/ls` and `(root) TIMEOUT=30 ...` but no line with both.
 ///
+/// Named `gap_ac_` because it is the INTEGRATION of Gap A and Gap C and is
+/// therefore the one test in this file that is not separably attributable: it
+/// needs the segment splitter to keep the line whole (Gap C) AND the option
+/// loop to capture the value (Gap A), so it reddens under either revert. The
+/// two gaps each also have their own separably-attributable tests; see
+/// `gap_c_option_before_a_tag_does_not_split_the_user_spec` for the Gap C half
+/// on its own.
+///
 /// No assertion is made about the reversed order: `parse_cmnd_spec` is total
 /// and has no reject path, so the grammar's order is a reason not to build an
 /// interleaved matcher, not a verdict this parser can render.
 #[test]
-fn gap_a_options_then_tags_both_parse_on_one_cmnd_spec() {
+fn gap_ac_options_then_tags_both_parse_on_one_cmnd_spec() {
     let s = only_spec("alice ALL = TIMEOUT=30 NOEXEC: /bin/ls\n");
     let specs = &s.host_groups[0].cmnd_specs;
     assert_eq!(specs.len(), 1);
@@ -539,4 +615,126 @@ fn gap_b_w06_fires_on_a_spaced_user_list_granting_all() {
         "the reserved ALL principal is a MEMBER of this User_List regardless of \
          the whitespace after the comma, so W06 must fire on the spaced form too"
     );
+}
+
+// ===========================================================================
+// Gap C: an Option_Spec's own `=` must not desync the top-level `:` splitter
+// ===========================================================================
+//
+// Found during this lane's satisfiability run, and accepted as part of #538
+// (same root cause - the parser has no model of `Option_Spec` - same issue,
+// same file). It is a THIRD independent defect, in `split_top_level_segments`
+// rather than `parse_cmnd_spec`, and it is strictly worse than Gap A: Gap A
+// yields a garbage command token, Gap C throws the WHOLE LINE away as
+// `Malformed`, so `sudo-F01` fires on a line real sudo accepts and every lint
+// that would have read the line never sees it.
+//
+// Mechanism: in `split_top_level_segments` the `'='` arm resets `tok_start`
+// unconditionally, and interior whitespace deliberately does not. So on
+// `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` the option's own `=` moves
+// `tok_start` to just before `30`, the tag-colon check then sees the preceding
+// text as `"30 NOEXEC"`, `parse_tag` rejects it, and the tag colon is treated
+// as a genuine top-level host-group separator. The line splits into
+// `alice ALL = TIMEOUT=30 NOEXEC` and `/bin/ls`; the second segment has no
+// `=`, so the whole logical line is classified `Malformed`.
+//
+// Any `Option_Spec` followed by any `Tag_Spec` triggers it, which is why the
+// tests below use two different keyword/tag pairs.
+
+/// The core Gap C pin, deliberately asserting STRUCTURE ONLY so it is
+/// attributable to Gap C alone.
+///
+/// It does not touch `options` or `tags`, because with Gap C fixed and Gap A
+/// still broken the line parses as a user-spec whose command token is the
+/// garbage `"TIMEOUT=30 NOEXEC: /bin/ls"` - one host group, one `Cmnd_Spec`,
+/// which is exactly what this asserts. So this test reddens under a Gap C
+/// revert and NOT under a Gap A revert. Grounded: `visudo -c -f -` rc 0 on
+/// this host (sudo 1.9.17p2, 2026-07-30).
+#[test]
+fn gap_c_option_before_a_tag_does_not_split_the_user_spec() {
+    let kind = first_kind("alice ALL = TIMEOUT=30 NOEXEC: /bin/ls\n");
+    let LineKind::UserSpec(s) = kind else {
+        panic!(
+            "`alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` is rc 0 to real visudo and must \
+             parse as a user-spec, not be thrown away; got {kind:?}"
+        );
+    };
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "the `NOEXEC:` tag colon is NOT a top-level host-group separator, so this \
+         line has exactly ONE host group; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(
+        s.host_groups[0].cmnd_specs.len(),
+        1,
+        "one Cmnd_Spec; got {:?}",
+        s.host_groups[0].cmnd_specs
+    );
+}
+
+/// The same defect with a different option keyword and a different tag, so an
+/// implementation cannot special-case the `TIMEOUT`/`NOEXEC` pair the other
+/// test uses. `alice ALL = ROLE=sysadm_r NOPASSWD: /bin/ls` is rc 0 on this
+/// host.
+///
+/// `NOPASSWD` also makes the operator cost concrete: this is a passwordless
+/// grant, and today the entire line is discarded as `Malformed` rather than
+/// linted.
+#[test]
+fn gap_c_selinux_option_before_a_tag_does_not_split_the_user_spec() {
+    let kind = first_kind("alice ALL = ROLE=sysadm_r NOPASSWD: /bin/ls\n");
+    let LineKind::UserSpec(s) = kind else {
+        panic!("`ROLE=sysadm_r NOPASSWD: /bin/ls` is rc 0 to real visudo; got {kind:?}");
+    };
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+}
+
+/// Regression control (host probe, rc 0): fixing Gap C must not make the
+/// splitter blind to a GENUINE top-level `:` separator that follows an option.
+///
+/// `alice h1 = TIMEOUT=30 /bin/ls : h2 = /bin/id` really is two host groups
+/// (`cvtsudoers` reports two `User_Specs` entries). This passes today only by
+/// luck - `tok_start` happens to land on `30` and the preceding text
+/// `"30 /bin/ls"` is not a tag either way - so it is a control against an
+/// over-broad Gap C fix that suppressed real separators, not a RED test.
+#[test]
+fn gap_c_option_does_not_swallow_a_genuine_host_group_separator() {
+    let s = only_spec("alice h1 = TIMEOUT=30 /bin/ls : h2 = /bin/id\n");
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "the top-level `:` still separates two host groups; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+    assert_eq!(
+        s.host_groups[1].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/id".to_string())
+    );
+}
+
+/// Regression control: a tag keyword SPACED away from its colon must still be
+/// recognized after the Gap C fix.
+///
+/// `alice h1 = NOPASSWD : ALL` (rc 0) stays ONE host group. This is the
+/// behavior the current `tok_start` design deliberately supports by NOT
+/// resetting on whitespace, and it is exactly what a careless Gap C fix (for
+/// instance, resetting `tok_start` on whitespace) would break. Pinning it here
+/// means the implementer finds that out from this suite rather than from a
+/// surprised reviewer.
+#[test]
+fn gap_c_tag_keyword_spaced_from_its_colon_is_still_a_tag() {
+    let s = only_spec("alice h1 = NOPASSWD : ALL\n");
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "`NOPASSWD :` is a tag colon, not a separator; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
 }

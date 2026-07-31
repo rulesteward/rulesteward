@@ -369,12 +369,25 @@ const SCENARIO_FLOOR: usize = 41;
 /// source.
 ///
 /// Measured 2026-07-30 (session 9m, lane 3) against a throwaway reference
-/// implementation of BOTH #538 gaps, with the four `Some(538)` entries
-/// removed from `L3_XFAIL` - the state this constant is frozen for, since
-/// removing them is #538's acceptance signal. A floor of 999 failed with
+/// implementation of ALL THREE #538 gaps and the full closed TEN-keyword
+/// `Option_Spec` set, with the four `Some(538)` entries removed from
+/// `L3_XFAIL` - the state this constant is frozen for, since removing them
+/// is #538's acceptance signal. A floor of 999 failed with
 /// `expected >= 999 clean L3 comparisons, got 95`, and 95 then passed. That
 /// deliberately-failing run is also this assertion's positive control: a
 /// floor that cannot be made to fail is not measuring anything.
+///
+/// Re-derived a SECOND time after the lane's scope grew (the option set went
+/// from the man page's seven keywords to the ten the shipping parser really
+/// accepts, and Gap C - an option's own `=` desyncing the top-level `:`
+/// splitter - was added). The measurement came back 95 again. That is the
+/// expected result rather than a coincidence: L3's count is a function of
+/// the CORPUS, and neither change adds or removes a corpus scenario - six of
+/// the ten keywords and all of Gap C are grounded by host probes in
+/// `tests/iss538_parser_gaps.rs`, not by corpus rows. If a later change to
+/// the option set or the splitter DOES move this number, that means a corpus
+/// scenario changed classification, and it is worth understanding why before
+/// re-freezing.
 ///
 /// Cross-check, which AGREES with the measurement: 33 accept scenarios x 3
 /// targets = 99 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
