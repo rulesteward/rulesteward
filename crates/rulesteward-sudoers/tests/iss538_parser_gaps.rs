@@ -1181,6 +1181,23 @@ fn no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token() {
         // Same defect across a host-group separator - rc 0, TWO User_Specs,
         // h1's `Commands [{"command":"/bin/ls"}]`.
         "alice h1 = CWD=/a\"b /bin/ls : h2 = ALL\n",
+        // Round 6: an Option_Spec keyword GLUED to a preceding `,` -
+        // `word_immediately_before` (round 5) splits on WHITESPACE ONLY, so it
+        // reads the preceding word as `/bin/true,CWD` rather than `CWD` and the
+        // quote never opens an enclosing span. `visudo -c -f -` rc 0,
+        // `cvtsudoers -f json` reports TWO Cmnd_Specs (`/bin/true`, and
+        // `runcwd=/a,b` + `/bin/ls`); today's code yields THREE, with an empty
+        // `Cmnd("")` in the middle. See
+        // `option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command`
+        // below for the full AST pin.
+        "alice ALL = /bin/true,CWD=\"/a,b\" /bin/ls\n",
+        // Round 6: the same defect glued to a preceding `)` instead of `,`.
+        // `visudo -c -f -` rc 0, `cvtsudoers -f json` reports ONE Cmnd_Spec
+        // (runas root, `runcwd=/a,b`, `/bin/ls`); today's code yields TWO, the
+        // first an empty `Cmnd("")`. See
+        // `option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list`
+        // below for the full AST pin.
+        "alice ALL = (root)CWD=\"/a,b\" /bin/ls\n",
     ];
     for src in cases {
         let file = parse(src, Path::new("/etc/sudoers"));
@@ -2599,4 +2616,275 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
          concatenation of the quoted principal and `h1`"
     );
     assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+// ===========================================================================
+// Round 6 (ATL round 6): a REGRESSION introduced BY round 5.
+// ===========================================================================
+//
+// Round 5 narrowed `is_option_value_quote_opener`'s anchor from "any `=`
+// before the quote" to "an `Option_Spec` keyword's own `=`" (MISS-1's fix),
+// via a NEW helper, `word_immediately_before`, that computes "the word
+// before the `=`". That helper splits on WHITESPACE ONLY
+// (`rsplit(char::is_whitespace)`, `parser.rs`). But the sibling `'='` arm of
+// `split_top_level_segments` computes the SAME concept - the keyword
+// preceding an `Option_Spec`'s own `=` - via `preceding_token`, whose
+// `tok_start` resets not just on whitespace but on `)`, `,` AND `=` too. The
+// two paths now disagree about where a keyword STARTS: `preceding_token`
+// sees `CWD` glued to a preceding `)`/`=`/`,`, while `word_immediately_before`
+// sees the whole glued run (`)CWD`, `=CWD`, `,CWD`) and `parse_option_key`
+// rejects it.
+//
+// Consequence: an `Option_Spec` keyword GLUED to a preceding `)`, `=`, or `,`
+// (no whitespace) no longer opens its own value's quote span, so a colon or
+// comma INSIDE that quoted value is read as a genuine separator again -
+// `is_option_value_quote_opener` regresses to round 5's own MISS-1 failure
+// class for exactly this one spelling. `ALL=(ALL)` (no space before the
+// option keyword) is one of the most common real-world sudoers idioms, so
+// this is a live `sudo-F01` false positive on operator configs.
+//
+// All five inputs below are `visudo -c -f -` rc 0 on this host (sudo
+// 1.9.17p2, `visudo grammar version 50`, re-probed 2026-07-31), with the AST
+// taken from `cvtsudoers -f json` on the same host. The control
+// `%wheel ALL=(ALL) CWD="/a:b" NOPASSWD: /bin/ls` (ONE space added before
+// `CWD`) is already correct today and is NOT re-asserted here - it is
+// covered by the existing round-5 `option_value_space_around_the_equals_*`
+// tests, which exercise the whitespace-preceded spelling this section
+// deliberately does not touch.
+
+/// MISS: an `Option_Spec` keyword glued to a preceding `)` (the single most
+/// common real-world spelling, `ALL=(ALL)CWD=...`) must still open its
+/// quoted value's span.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// %wheel ALL=(ALL)CWD="/a:b" NOPASSWD: /bin/ls
+///     cvtsudoers: runasusers [{"username":"ALL"}]
+///                 Options [{"runcwd":"/a:b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Today: `sudo-F01` fatal (the colon inside `"/a:b"` is misread as a
+/// top-level separator once the quote's opener is rejected, exactly MISS-1's
+/// mechanism, and the whole line is discarded `Malformed`).
+#[test]
+fn option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value() {
+    let src = "%wheel ALL=(ALL)CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(
+        s.users,
+        vec!["%wheel".to_string()],
+        "the `%` group principal must survive intact"
+    );
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    let runas = specs[0]
+        .runas
+        .as_ref()
+        .expect("the `(ALL)` runas group, glued to the structural `=`, must still parse");
+    assert_eq!(runas.users, vec!["ALL".to_string()]);
+    assert!(runas.groups.is_empty(), "no `:group` was written");
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::Cwd, "\"/a:b\""),
+        "the quoted value, glued to the runas close-paren, must survive verbatim"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant on the specific (non-ALL) /bin/ls command must be \
+         visible to sudo-W05"
+    );
+}
+
+/// MISS: the same option keyword glued directly to the STRUCTURAL `=` (no
+/// runas group at all), so the fix cannot special-case a preceding `)`.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// %wheel ALL=CWD="/a:b" NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a:b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// (No `runasusers` key: with no `(...)` written, `word_immediately_before`'s
+/// backward walk from the quote lands on `%wheel ALL=CWD`, whose last
+/// whitespace-delimited word is `ALL=CWD` - not `CWD` - so
+/// `parse_option_key` rejects it exactly as it does the `)`-glued spelling.)
+///
+/// Today: `sudo-F01` fatal, same mechanism as the `)`-glued case above.
+#[test]
+fn option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value() {
+    let src = "%wheel ALL=CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(s.users, vec!["%wheel".to_string()]);
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert!(
+        specs[0].runas.is_none(),
+        "no `(...)` runas group was written on this line; got {:?}",
+        specs[0].runas
+    );
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a:b\""));
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant on the specific (non-ALL) /bin/ls command must be \
+         visible to sudo-W05"
+    );
+}
+
+/// MISS: the `)`-glued spelling again, but with spaces AROUND the structural
+/// `=` (`ALL = (root)CWD=...`) and NO tag at all, so this test is
+/// attributable to the glued-keyword defect alone, independent of both the
+/// round-5 MISS-2 whitespace-around-`=` fix and any tag-colon interaction.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = (root)CWD="/a:b" /bin/ls
+///     cvtsudoers: runasusers [{"username":"root"}]
+///                 Options [{"runcwd":"/a:b"}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Today: `sudo-F01` fatal - the colon inside `"/a:b"` is still misread as a
+/// top-level separator even with no tag keyword anywhere on the line, which
+/// is what makes this the sharpest of the three F01 rows: the defect fires
+/// on the QUOTED VALUE's own interior colon, with no tag involved at all.
+#[test]
+fn option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural_equals() {
+    let src = "alice ALL = (root)CWD=\"/a:b\" /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    let runas = specs[0]
+        .runas
+        .as_ref()
+        .expect("the `(root)` runas group must still parse");
+    assert_eq!(runas.users, vec!["root".to_string()]);
+    assert!(runas.groups.is_empty(), "no `:group` was written");
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a:b\""));
+    assert!(
+        specs[0].tags.is_empty(),
+        "no tag was written on this line; got {:?}",
+        specs[0].tags
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        w05_count(src),
+        0,
+        "no NOPASSWD tag was written anywhere on this line, so sudo-W05 must not fire"
+    );
+}
+
+/// MISS: the glued-`)` spelling combined with an option value whose CONTENT
+/// is a comma, so a wrongly-unopened span mis-splits the `Cmnd_Spec_List`
+/// too (not just the top-level `:`/`,` splitters MISS-1 already covers - this
+/// is `split_cmnd_specs`'s own comma guard, sharing the same
+/// `enclosing_option_value_quote_spans` producer).
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = (root)CWD="/a,b" /bin/ls
+///     cvtsudoers: runasusers [{"username":"root"}]
+///                 Options [{"runcwd":"/a,b"}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Today: TWO `Cmnd_Spec`s (`specs[0]` an empty `Cmnd("")`, `specs[1]` the
+/// garbage `Cmnd("b\" /bin/ls")`) and NO diagnostic at all - this is the
+/// SILENT face of the regression (also pinned by the general empty-command
+/// guard, `no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token`,
+/// which this test's input was added to above; this test additionally pins
+/// the exact expected values that guard does not check).
+#[test]
+fn option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list()
+ {
+    let src = "alice ALL = (root)CWD=\"/a,b\" /bin/ls\n";
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        1,
+        "the comma sits INSIDE the quoted option value, glued to the runas \
+         close-paren, and must not split the Cmnd_Spec_List; got {specs:?}"
+    );
+    let runas = specs[0]
+        .runas
+        .as_ref()
+        .expect("the `(root)` runas group must still parse");
+    assert_eq!(runas.users, vec!["root".to_string()]);
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a,b\""));
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// MISS: the glued-`,` spelling - an `Option_Spec` keyword glued to a
+/// PRECEDING command's trailing comma in a `Cmnd_Spec_List`
+/// (`/bin/true,CWD=...`), whose option value also contains an interior
+/// comma. This is the sharpest of the silent misses: it corrupts not one but
+/// TWO command slots, and it is the one glued spelling `split_cmnd_specs`
+/// itself (not just `split_top_level_segments`) must get right, since the
+/// leading `,` is itself a `Cmnd_Spec_List` separator candidate.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = /bin/true,CWD="/a,b" /bin/ls
+///     cvtsudoers: TWO Cmnd_Specs
+///       [0] Commands [{"command":"/bin/true"}]
+///       [1] Options [{"runcwd":"/a,b"}]  Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Today: THREE `Cmnd_Spec`s (`specs[1]` an empty `Cmnd("")`, `specs[2]` the
+/// garbage `Cmnd("b\" /bin/ls")`) and NO diagnostic at all - also added to
+/// the general empty-command guard above; this test pins the exact expected
+/// two-spec shape that guard does not check.
+#[test]
+fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
+    let src = "alice ALL = /bin/true,CWD=\"/a,b\" /bin/ls\n";
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        2,
+        "two Cmnd_Specs: the leading `/bin/true,` comma is a real \
+         Cmnd_Spec_List separator, and the trailing quoted comma is not; got \
+         {specs:?}"
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/true".to_string()));
+    assert!(
+        specs[0].options.is_empty(),
+        "the first spec carries no option; got {:?}",
+        specs[0].options
+    );
+    assert_eq!(
+        specs[1].options,
+        opt(CmndOptionKey::Cwd, "\"/a,b\""),
+        "the second spec's option must survive verbatim, glued to the \
+         preceding comma"
+    );
+    assert_eq!(
+        specs[1].cmnd,
+        CmndItem::Cmnd("/bin/ls".to_string()),
+        "the second command must not carry the tail of the quoted option value"
+    );
 }
