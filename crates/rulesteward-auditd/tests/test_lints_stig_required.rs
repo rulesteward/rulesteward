@@ -2018,6 +2018,70 @@ fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// ATL round 3 (issues #600/#601 follow-up): PermMask fold DISTINCTNESS on the
+// Syscall-vs-Syscall arm. The two tests immediately above pin only that
+// EQUIVALENT perm spellings (case/order variants of the SAME kernel bitmask)
+// satisfy a required row. Nothing above pins the opposite direction: that a
+// candidate whose perm value is a GENUINELY DIFFERENT AUDIT_PERM bitmask
+// must still report the control MISSING. A `PermMask::to_letters`
+// (`value/classify.rs:107`) that folds every bitmask to a constant string
+// (or whose `&`/`!=` bit tests are flipped to `|`/`^`/`==`) would make
+// `classify.rs`'s `canonical_value` -- and so `fields_match_excluding_key`
+// (`stig_required.rs:1985`) -- treat every perm value as equal, wrongly
+// crediting V-230412/RHEL-08-030190 for a candidate whose perms are simply
+// wrong. The two pairs below each toggle exactly one AUDIT_PERM bit
+// (READ=1, WRITE=2, EXEC=4, ATTR=8, `classify.rs:72-75`) relative to the
+// required row, so a broken single-bit test collapses exactly this pair.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_different_write_vs_read_perm_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=wa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=ra -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=ra (READ+ATTR, bits 1|8 = 9) must NOT \
+         satisfy a required perm=wa (WRITE+ATTR, bits 2|8 = 10) row -- these \
+         are DIFFERENT AUDIT_PERM bitmasks (READ != WRITE), not a case/order \
+         respelling of the same value: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=rw -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=rx (READ+EXEC, bits 1|4 = 5) must NOT \
+         satisfy a required perm=rw (READ+WRITE, bits 1|2 = 3) row -- \
+         different AUDIT_PERM bitmasks (WRITE != EXEC): {diags:?}"
+    );
+}
+
 #[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and

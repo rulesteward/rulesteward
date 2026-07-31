@@ -273,6 +273,242 @@ fn perm_letter_case_flip_duplicate_fires_e03() {
 }
 
 // ---------------------------------------------------------------------------
+// ATL round 3 (issues #600/#601 follow-up, mutation-gate strengthening).
+//
+// Round 2 above (Test 2c/2d) pins only ONE direction of the perm fold: that
+// EQUIVALENT spellings (case/order variants of the SAME kernel bitmask) get
+// grouped together. Nothing above pins the opposite direction: that GENUINELY
+// DIFFERENT perm values stay DISTINCT. A `PermMask::to_letters`
+// (`value/classify.rs:107`) that folds every bitmask to a constant string
+// (e.g. `String::new()`), or whose `&`/`!=` bit tests are flipped to
+// `|`/`^`/`==`, would make EVERY `-F perm=` value canonicalize identically --
+// still passing every round-2 test above, while silently making au-E03/au-W01
+// fire on rule pairs that are NOT duplicates at all: a fail-open in the
+// OPPOSITE direction from the bug round 2 fixed (it would fire au-E03 on
+// `-F perm=r` vs `-F perm=w`, and credit a STIG control with a candidate
+// whose perms are simply wrong -- see the Syscall-vs-Syscall au-W06 tests in
+// `test_lints_stig_required.rs` for that surface).
+//
+// Bit values (`classify.rs:72-75`, `permtab.h:28-31`): READ=1, WRITE=2,
+// EXEC=4, ATTR=8 -- four distinct single bits, so no two of the sixteen
+// possible `rwxa` letter combinations collide under a CORRECT fold.
+//
+// `duplicate.rs`'s `perm_field_bits`/`perm_field_values_eexist_equal` are a
+// DELIBERATE local reimplementation (see both functions' doc comments), so
+// they need their own distinctness pin independent of `classify.rs`'s
+// `PermMask` -- see `perm_predicates_swapped_positions_with_distinct_
+// values_fires_w01_not_e03` below for the one case that reaches it (a
+// single differing `-F perm=` value gets a DIFFERENT `canonical_key` per the
+// (correct) classify.rs fold, so `w01` never even calls `rules_eexist_equal`
+// on that pair at all -- see the doc comment on that test for why TWO `-F
+// perm=` predicates per rule are needed to observe `duplicate.rs`'s own
+// fold).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn perm_single_letter_case_fold_fires_e03_for_every_letter() {
+    // PER-LETTER coverage: round 2's order/case-flip tests above only
+    // exercise the 'w' and 'a' arms of both `PermMask::parse` (classify.rs)
+    // and `duplicate.rs`'s local `perm_field_bits` -- 'r' and 'x' are
+    // entirely unpinned there, so deleting either match arm survives
+    // mutation testing. Looping over all four rwxa letters closes the gap
+    // for BOTH functions at once in the EQUIVALENCE direction: grouping (`r`
+    // and `R` must get the SAME canonical_key) depends on classify.rs's
+    // `PermMask::parse`/`to_letters`; the E03-vs-W01 severity call depends
+    // on `duplicate.rs`'s `perm_field_bits`/`perm_field_values_eexist_equal`.
+    for letter in ['r', 'w', 'x', 'a'] {
+        let upper = letter.to_ascii_uppercase();
+        let input = format!(
+            "-a always,exit -F path=/usr/bin/su -F perm={letter} -k k\n\
+             -a always,exit -F path=/usr/bin/su -F perm={upper} -k k\n",
+        );
+        let rules =
+            parse_rules_str_located(&input, Path::new("10-perm-letter.rules")).expect("must parse");
+        assert_eq!(rules.len(), 2, "letter {letter:?}: expected 2 rules");
+
+        let diags = w01(&rules, LintOptions::default());
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "letter {letter:?}: perm={letter} and perm={upper} are the SAME \
+             kernel bitmask (libaudit case-folds every -F perm= letter) and \
+             must fire exactly one au-E03, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "letter {letter:?}: a case-flipped single-letter -F perm= \
+             duplicate is load-aborting -> au-E03"
+        );
+        assert_eq!(diags[0].code, "au-E03", "letter {letter:?}");
+    }
+}
+
+#[test]
+fn perm_distinct_perm_values_produce_no_duplicate_finding() {
+    // DISTINCTNESS table: each pair below names a GENUINELY DIFFERENT
+    // AUDIT_PERM bitmask, so `w01` must not group the two rules as "the same
+    // rule" at all -- zero findings, not a severity question. The first six
+    // pairs cover every unordered pair of single letters; the next four
+    // toggle exactly ONE bit relative to a base value that lacks it (so a
+    // `to_letters` mutant that forces one specific bit's letter to ALWAYS
+    // appear collides two otherwise-distinct masks, e.g. WRITE=2 and
+    // rw=3 collide if the READ check is broken to always report present);
+    // the last two are the `rw`-vs-`rx` / `wa`-vs-`ra` pairs called out
+    // when this round was scoped.
+    let pairs = [
+        ("r", "w"),
+        ("r", "x"),
+        ("r", "a"),
+        ("w", "x"),
+        ("w", "a"),
+        ("x", "a"),
+        ("w", "rw"),
+        ("x", "wx"),
+        ("a", "xa"),
+        ("r", "ra"),
+        ("rw", "rx"),
+        ("wa", "ra"),
+    ];
+    for (a, b) in pairs {
+        let input = format!(
+            "-a always,exit -F path=/usr/bin/su -F perm={a} -k k\n\
+             -a always,exit -F path=/usr/bin/su -F perm={b} -k k\n",
+        );
+        let rules = parse_rules_str_located(&input, Path::new("10-perm-distinct.rules"))
+            .expect("must parse");
+        assert_eq!(rules.len(), 2, "perm={a:?}/perm={b:?}: expected 2 rules");
+
+        let diags = w01(&rules, LintOptions::default());
+
+        assert!(
+            diags.is_empty(),
+            "perm={a:?} and perm={b:?} are DIFFERENT AUDIT_PERM bitmasks and \
+             must never be treated as the same rule (canonical_key must \
+             differ), got {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn perm_predicates_swapped_positions_with_distinct_values_fires_w01_not_e03() {
+    // The ONLY reachable way to feed `duplicate.rs`'s local
+    // `perm_field_bits`/`perm_field_values_eexist_equal` a GENUINELY
+    // DISTINCT pair while `canonical_key` still groups the two rules
+    // together: a single `-F perm=` value differing (e.g. perm=r vs
+    // perm=w) gets a DIFFERENT canonical_key under the (correct)
+    // classify.rs fold, so `w01` never even calls `rules_eexist_equal` on
+    // that pair -- see the "no finding at all" test above. Two `-F perm=`
+    // predicates per rule, with the SAME two values but SWAPPED positions,
+    // gives `canonical_key` the SAME multiset (`{r, w}` either way, per
+    // `normalize.rs`'s sorted field-list encoding) while `rules_eexist_
+    // equal`'s POSITIONAL compare (`duplicate.rs:110-121`, mirroring the
+    // kernel's own `audit_compare_rule` index-by-index loop) must still
+    // tell "r" and "w" apart AT EACH INDEX.
+    //
+    // Kernel grounding: multiple `-F perm=` predicates CONJOIN
+    // (`kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm`
+    // once PER `AUDIT_PERM` field and ANDs the per-field results), so
+    // "perm=r AND perm=w" (index 0/1) is genuinely a DIFFERENT field list,
+    // positionally, from "perm=w AND perm=r" -- `audit_compare_rule`'s
+    // per-index `!=` sees a real difference at both indices, so the pair
+    // does NOT EEXIST at the kernel: au-W01 (redundant), not au-E03
+    // (load-aborting).
+    //
+    // A `perm_field_bits` that folds every value to a constant (`Some(0)`/
+    // `Some(1)`), or whose `|=` is broken to `&=` (which also collapses
+    // every single-character value to `Some(0)`), or a
+    // `perm_field_values_eexist_equal` hard-coded to `true`, would make
+    // BOTH indices compare "equal" here and wrongly report au-E03.
+    let input = concat!(
+        "-a always,exit -F path=/usr/bin/su -F perm=r -F perm=w -k k\n",
+        "-a always,exit -F path=/usr/bin/su -F perm=w -F perm=r -k k\n",
+    );
+    let rules =
+        parse_rules_str_located(input, Path::new("10-perm-swap.rules")).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w01(&rules, LintOptions::default());
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "both rules name the SAME set of perm values ({{r, w}}), just at \
+         swapped positions, so canonical_key groups them as one pair, got \
+         {diags:?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "positionally index 0 is perm=r vs perm=w (and index 1 is perm=w vs \
+         perm=r) -- genuinely DIFFERENT AUDIT_PERM bitmasks at each index, \
+         so the kernel's audit_compare_rule sees a real difference and the \
+         pair does NOT EEXIST -> au-W01, not au-E03"
+    );
+    assert_eq!(diags[0].code, "au-W01");
+    assert_eq!(diags[0].line, 2, "anchored at the later (line 2) rule");
+}
+
+#[test]
+fn perm_predicates_swapped_positions_with_unparseable_ne_values_fires_w01_not_e03() {
+    // The FALLBACK branch of `perm_field_values_eexist_equal`
+    // (`duplicate.rs:148`, `_ => a.trim() == b.trim()`) is only reached when
+    // EITHER side fails to parse as `rwxa` letters -- the function's own doc
+    // comment calls this a "conservative 'never happens in practice' safety
+    // net", reachable only via a `-F perm!=...`-shaped predicate: the
+    // parser's `rwxa` letter-set validation only runs for the `=` operator,
+    // so a `!=` perm value can carry arbitrary characters that both
+    // `classify.rs`'s `PermMask::parse` and this file's own
+    // `perm_field_bits` fail to parse (confirmed empirically: `-F
+    // path=/usr/bin/su -F perm!=zz -F perm!=qq -k k` parses cleanly with
+    // `value: "zz"` / `value: "qq"` kept verbatim -- the parser does not
+    // reject a `!=` perm value for containing non-rwxa characters).
+    //
+    // Mirrors `perm_predicates_swapped_positions_with_distinct_values_
+    // fires_w01_not_e03` above exactly, but with two NON-rwxa `!=` values
+    // ("zz"/"qq", no rwxa letters at all) instead of valid letters, so BOTH
+    // sides' `perm_field_bits` return `None` and the comparison falls
+    // through to line 148's raw-string `==` rather than line 147's
+    // `Some`/`Some` bitmask `==`. `classify.rs`'s `PermMask::parse` also
+    // fails on "zz"/"qq", so both values stay `FieldValue::Opaque` there
+    // too -- `canonical_key` groups the two rules as the SAME multiset
+    // (`{"qq", "zz"}` either way), exactly as the valid-letter swap test
+    // above does, so the severity question again lands entirely on
+    // `duplicate.rs`'s LOCAL fallback comparison.
+    let input = concat!(
+        "-a always,exit -F path=/usr/bin/su -F perm!=zz -F perm!=qq -k k\n",
+        "-a always,exit -F path=/usr/bin/su -F perm!=qq -F perm!=zz -k k\n",
+    );
+    let rules =
+        parse_rules_str_located(input, Path::new("10-perm-swap-ne.rules")).expect("must parse");
+    assert_eq!(rules.len(), 2);
+
+    let diags = w01(&rules, LintOptions::default());
+
+    assert_eq!(
+        diags.len(),
+        1,
+        "both rules name the SAME set of unparseable perm!= spellings \
+         ({{\"qq\", \"zz\"}}), just at swapped positions, so canonical_key \
+         groups them as one pair, got {diags:?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "positionally index 0 is perm!=zz vs perm!=qq (and index 1 is \
+         perm!=qq vs perm!=zz) -- genuinely DIFFERENT raw spellings at each \
+         index (neither parses as rwxa letters, so the fallback raw-string \
+         compare applies), so the pair does NOT EEXIST -> au-W01, not \
+         au-E03. A fallback compare hard-coded (or inverted) to treat any \
+         two unparseable spellings as equal would wrongly report au-E03 \
+         here"
+    );
+    assert_eq!(diags[0].code, "au-W01");
+    assert_eq!(diags[0].line, 2, "anchored at the later (line 2) rule");
+}
+
+// ---------------------------------------------------------------------------
 // Test 3: -a vs -A (append vs prepend) pair fires -- au-W01
 //
 // 10-append.rules  line 5: -a always,exit -S execve -F auid>=1000 -k exec
