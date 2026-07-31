@@ -258,8 +258,8 @@
 //!    rejects constructs el9/el10 (1.9.17p2, grammar 50) accept (measured:
 //!    `INTERCEPT:` and a regex `Cmnd_Alias` `^...$` both syntax-error on el8 but
 //!    parse clean on el9/el10) - this corpus deliberately avoids such
-//!    version-gated constructs (a THIRD, newly-discovered divergence class
-//!    outside #538's two documented gaps; see PROVENANCE.md). L1 was a clean
+//!    version-gated constructs (a separate, newly-discovered divergence class
+//!    outside #538's documented gaps; see PROVENANCE.md). L1 was a clean
 //!    regression layer with an EMPTY xfail table through round 3; round 4
 //!    (2026-07-27) gave it its FIRST entry, `accept-negated-uid-subject`
 //!    (`!#1000 ALL = ALL`) - real `visudo` accepts it, but
@@ -292,18 +292,36 @@
 //!    full rc/stdout/stderr shape per target.
 //! 3. **L3 (structure-only projection)**: for every scenario where the oracle
 //!    ACCEPTS and `cvtsudoers -f json`'s stdout parses as JSON, does
-//!    `project_ast` agree with `project_cvtsudoers_json`? Two KNOWN, grounded
-//!    divergences (#538, do NOT fix here):
-//!      - `accept-selinux-role-type`: the tag-parsing loop in
-//!        `parser::parse_cmnd_spec` only recognizes `TAG:` syntax; `ROLE=`/
-//!        `TYPE=` use `=`, so the whole remainder (`ROLE=... TYPE=... /usr/bin/vim`)
-//!        becomes ONE garbage `CmndItem::Cmnd` token instead of the real command.
-//!      - `accept-user-list-whitespace-bug`: `classify_user_spec`'s
-//!        `split_first_word` on the first host-group segment assumes the
-//!        `User_List` has no INTERNAL whitespace; `bob, ALL ALL=(ALL) ALL` splits
-//!        at the first whitespace after `bob,`, dropping `ALL` from the user
-//!        list and merging it into the host list as one garbage `"ALL ALL"`
-//!        token.
+//!    `project_ast` agree with `project_cvtsudoers_json`?
+//!
+//!    Through session 9k-1 this layer carried four KNOWN #538 divergences as
+//!    `L3_XFAIL` entries. Session 9m is the lane that FIXES #538, so those
+//!    four entries and their `match` arms are gone: the four scenarios are
+//!    now ordinary compared rows, and #538's three gaps are pinned directly
+//!    by `tests/iss538_parser_gaps.rs` (which drives the public `parse` /
+//!    `lint` entry points rather than this differential). For the record,
+//!    the gaps were:
+//!      - **Gap A** - the tag-parsing loop in `parser::parse_cmnd_spec` only
+//!        recognized `TAG:` syntax; an `=`-form `Option_Spec` (`ROLE=`,
+//!        `TYPE=`, `NOTBEFORE=`, `TIMEOUT=`, ...) has no colon, so the whole
+//!        remainder (`ROLE=... TYPE=... /usr/bin/vim`) became ONE garbage
+//!        `CmndItem::Cmnd` token instead of the real command
+//!        (`accept-selinux-role-type`, `accept-notbefore`,
+//!        `accept-timeout-option`).
+//!      - **Gap B** - `classify_user_spec`'s `split_first_word` on the first
+//!        host-group segment assumed the `User_List` had no INTERNAL
+//!        whitespace; `bob, ALL ALL=(ALL) ALL` split at the first whitespace
+//!        after `bob,`, dropping `ALL` from the user list and merging it into
+//!        the host list as one garbage `"ALL ALL"` token
+//!        (`accept-user-list-whitespace-bug`).
+//!      - **Gap C** - an `Option_Spec`'s own `=` desynced
+//!        `split_top_level_segments`, so a following tag colon was mistaken
+//!        for a top-level host-group separator and the whole line was
+//!        discarded as `Malformed`. No corpus scenario exercised it; it was
+//!        found during 9m's satisfiability run and is covered by host probes.
+//!
+//!    `L3_XFAIL` retains ONE entry, `accept-negated-uid-subject`, which is a
+//!    `rulesteward-core` bug and NOT #538 - see that const's doc comment.
 //!
 //!    `el8`'s `cvtsudoers -f json` emits INVALID JSON for `SELinux_Spec`
 //!    (measured 2026-07-25: a JSON array containing bare `"role": "..."` pairs
@@ -460,23 +478,24 @@ const L1_XFAIL: &[&str] = &["accept-negated-uid-subject"];
 const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 
 /// L3 structural-projection divergences: `(scenario_id, issue_number)`. The
-/// first four ground #538; do NOT fix #538 in this lane. The issue number is
-/// `None` for a divergence whose issue is DRAFTED but not yet filed (see
-/// `PROVENANCE.md`) - `Option<u32>` rather than a placeholder number, so a
-/// reader can never mistake a drafted issue for a real, filed one.
+/// issue number is `None` for a divergence whose issue is DRAFTED but not yet
+/// filed (see `PROVENANCE.md`) - `Option<u32>` rather than a placeholder
+/// number, so a reader can never mistake a drafted issue for a real, filed
+/// one.
 ///
-/// `accept-notbefore` and `accept-timeout-option` were found in review
-/// (2026-07-26): `parser::parse_cmnd_spec`'s tag loop recognizes only `TAG:`
-/// syntax, so an `=`-form option (`NOTBEFORE=`, `TIMEOUT=`, and - the
-/// already-documented case - `ROLE=`/`TYPE=`) is not recognized as a tag at
-/// all and gets glued onto the following text as ONE garbage command token
-/// (`"NOTBEFORE=20260101000000Z /usr/bin/ls"`, `"TIMEOUT=30 /usr/bin/ls"`),
-/// while `cvtsudoers` correctly splits the option into its own `Options`
-/// entry and reports the bare command (`/usr/bin/ls`). This is the SAME
-/// defect class as `accept-selinux-role-type`, not a new one - both were
-/// previously in the corpus with their VISUDO VERDICT confirmed identical
-/// across targets (PROVENANCE.md section 2), but their STRUCTURAL
-/// projection was never checked before L3's `tuple_count` anchors existed.
+/// This table held four `Some(538)` entries through session 9k-1:
+/// `accept-selinux-role-type`, `accept-user-list-whitespace-bug`,
+/// `accept-notbefore` and `accept-timeout-option`. Session 9m FIXED #538, so
+/// they were deleted rather than widened or skipped - deleting the entry that
+/// pins a divergence IS how a fix is demonstrated here, and an xfail
+/// surviving its own fix would mean the fix was never demonstrated. The four
+/// scenarios are ordinary compared rows now, and they are the reason
+/// `L3_CLEAN_FLOOR` went 84 -> 95.
+///
+/// Deletion is also forced rather than stylistic: the xfail branch below
+/// asserts `!matches` ("expected the KNOWN divergence, but the projections
+/// matched"), so a CORRECT parser makes an entry left in place FAIL. There is
+/// no path to green that keeps them.
 ///
 /// `accept-negated-uid-subject` (round 4, 2026-07-27) is the L3 half of
 /// `L1_XFAIL`'s first entry (see that const's doc comment for the root
@@ -486,13 +505,7 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// `User_Specs` entry (`tuple_count=1`, a negated, tagged uid user). This is
 /// a DIFFERENT crate's bug (`rulesteward-core`), not #538, so it gets its
 /// OWN (drafted, unfiled) issue rather than being folded in.
-const L3_XFAIL: &[(&str, Option<u32>)] = &[
-    ("accept-selinux-role-type", Some(538)),
-    ("accept-user-list-whitespace-bug", Some(538)),
-    ("accept-notbefore", Some(538)),
-    ("accept-timeout-option", Some(538)),
-    ("accept-negated-uid-subject", None),
-];
+const L3_XFAIL: &[(&str, Option<u32>)] = &[("accept-negated-uid-subject", None)];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
 /// (and CONFIRMED below, not just assumed) to be invalid JSON, so L3 skips the
@@ -1896,95 +1909,6 @@ fn l3_structure_projection_matches_cvtsudoers() {
                 // "some inequality", so a trivial always-different projection
                 // could not pass this adversarially.
                 match id.as_str() {
-                    "accept-selinux-role-type" => {
-                        assert!(
-                            cvt_proj.commands.iter().any(|c| c == "/usr/bin/vim"),
-                            "L3 {id} ({target}): the oracle must show the real command \
-                             /usr/bin/vim; got {:?}",
-                            cvt_proj.commands
-                        );
-                        assert!(
-                            !ast_proj.commands.iter().any(|c| c == "/usr/bin/vim"),
-                            "L3 {id} ({target}): our AST must NOT show the clean command \
-                             (the ROLE=/TYPE= tag-loop gap swallows it); got {:?}",
-                            ast_proj.commands
-                        );
-                        assert!(
-                            ast_proj
-                                .commands
-                                .iter()
-                                .any(|c| c.contains("ROLE=") && c.contains("TYPE=")),
-                            "L3 {id} ({target}): our AST's garbage command token must contain \
-                             the swallowed ROLE=/TYPE= text; got {:?}",
-                            ast_proj.commands
-                        );
-                    }
-                    "accept-user-list-whitespace-bug" => {
-                        assert!(
-                            cvt_proj.users.iter().any(|u| u == "ALL")
-                                && cvt_proj.users.iter().any(|u| u == "bob"),
-                            "L3 {id} ({target}): the oracle must show both bob and ALL as \
-                             users; got {:?}",
-                            cvt_proj.users
-                        );
-                        assert!(
-                            !ast_proj.users.iter().any(|u| u == "ALL"),
-                            "L3 {id} ({target}): our AST must have DROPPED the second user \
-                             ALL; got {:?}",
-                            ast_proj.users
-                        );
-                        assert_eq!(
-                            cvt_proj.hosts,
-                            vec!["ALL".to_string()],
-                            "L3 {id} ({target}): the oracle's host list must be exactly [ALL]"
-                        );
-                        assert!(
-                            ast_proj.hosts.iter().any(|h| h.contains(' ')),
-                            "L3 {id} ({target}): our AST must have merged two host tokens into \
-                             one garbage whitespace-containing token; got {:?}",
-                            ast_proj.hosts
-                        );
-                    }
-                    "accept-notbefore" => {
-                        assert!(
-                            cvt_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
-                            "L3 {id} ({target}): the oracle must show the real command \
-                             /usr/bin/ls; got {:?}",
-                            cvt_proj.commands
-                        );
-                        assert!(
-                            !ast_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
-                            "L3 {id} ({target}): our AST must NOT show the clean command \
-                             (the NOTBEFORE= tag-loop gap swallows it); got {:?}",
-                            ast_proj.commands
-                        );
-                        assert!(
-                            ast_proj.commands.iter().any(|c| c.contains("NOTBEFORE=")),
-                            "L3 {id} ({target}): our AST's garbage command token must contain \
-                             the swallowed NOTBEFORE= text; got {:?}",
-                            ast_proj.commands
-                        );
-                    }
-                    "accept-timeout-option" => {
-                        assert!(
-                            cvt_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
-                            "L3 {id} ({target}): the oracle must show the real command \
-                             /usr/bin/ls; got {:?}",
-                            cvt_proj.commands
-                        );
-                        assert!(
-                            !ast_proj.commands.iter().any(|c| c == "/usr/bin/ls"),
-                            "L3 {id} ({target}): our AST must NOT show the clean command \
-                             (the TIMEOUT= tag-loop gap swallows it); got {:?}",
-                            ast_proj.commands
-                        );
-                        assert!(
-                            ast_proj.commands.iter().any(|c| c.contains("TIMEOUT=")),
-                            "L3 {id} ({target}): our AST's garbage command token must contain \
-                             the swallowed TIMEOUT= text; got {:?}",
-                            ast_proj.commands
-                        );
-                    }
                     "accept-negated-uid-subject" => {
                         // `!#1000 ALL = ALL`: the WHOLE LINE is `Malformed`
                         // to our parser (a `rulesteward-core` comment-index

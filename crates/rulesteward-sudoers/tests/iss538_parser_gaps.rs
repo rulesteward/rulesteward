@@ -304,6 +304,77 @@ fn gap_a_option_keyword_set_is_closed_so_env_assignment_stays_in_the_command() {
     );
 }
 
+/// The option scan is POSITION-ANCHORED: it consumes a run of options at the
+/// START of the `Cmnd_Spec` and stops at the first token that is not one. A
+/// REAL option keyword appearing AFTER the command word is a command argument,
+/// not an option.
+///
+/// This is the sharpest control in the file, and the only one that kills a
+/// POSITION-BLIND scanner - one that walks every whitespace token, harvests
+/// anything matching the keyword table, and rejoins the rest as the command:
+///
+/// ```text
+/// for w in rest.split_whitespace() {
+///     match parse_option(w) { Some(o) => options.push(o), None => kept.push(w) }
+/// }
+/// let cmnd = kept.join(" ");
+/// ```
+///
+/// Such an implementation passes every OTHER test here and every corpus
+/// scenario, because they all place their options at the leading position and
+/// the only command-side control uses `FOO=bar`, a key outside the ten. It is
+/// invisible to the mutation gate too. What it corrupts is the `commands` axis
+/// L3 actually compares - it would yield `cmnd = "/usr/bin/env"` plus a phantom
+/// `Timeout("30")`, a truncated token matching no `Cmnd_Alias` and no path
+/// check. That is Gap A's own failure class, re-created by the fix.
+///
+/// Grounded (host probes, sudo 1.9.17p2, 2026-07-30, both rc 0):
+///
+/// ```text
+/// alice ALL = /usr/bin/env TIMEOUT=30    cvtsudoers: Commands [{"command":"/usr/bin/env TIMEOUT=30"}], no Options
+/// alice ALL = /usr/bin/env  TIMEOUT=30   cvtsudoers: Commands [{"command":"/usr/bin/env TIMEOUT=30"}], no Options
+/// ```
+///
+/// Real sudo reports ONE command with the keyword intact and NO options in
+/// both spellings.
+///
+/// The double-space case additionally kills the whitespace-collapsing half of
+/// that shortcut (`kept.join(" ")` normalises the run). Our AST keeps the raw
+/// token verbatim, per `ast::CmndItem::Cmnd`, so the two spaces survive here.
+/// Note that `cvtsudoers` NORMALISES the run to one space in its own report;
+/// that difference is real but out of scope - no corpus scenario contains a
+/// doubled space, so L3 never compares it. Do not "fix" it by collapsing
+/// whitespace in the parser, which would defeat this control.
+#[test]
+fn gap_a_option_keyword_after_the_command_word_is_a_command_argument() {
+    for (src, want_cmnd) in [
+        (
+            "alice ALL = /usr/bin/env TIMEOUT=30\n",
+            "/usr/bin/env TIMEOUT=30",
+        ),
+        (
+            "alice ALL = /usr/bin/env  TIMEOUT=30\n",
+            "/usr/bin/env  TIMEOUT=30",
+        ),
+    ] {
+        let s = only_spec(src);
+        let specs = &s.host_groups[0].cmnd_specs;
+        assert_eq!(specs.len(), 1, "one Cmnd_Spec for {src:?}");
+        assert_eq!(
+            specs[0].cmnd,
+            CmndItem::Cmnd(want_cmnd.to_string()),
+            "a real option keyword AFTER the command word is a command argument \
+             and must stay in the command token, verbatim and unnormalised"
+        );
+        assert!(
+            specs[0].options.is_empty(),
+            "{src:?}: nothing is at the option position, so no option may be \
+             captured; got {:?}",
+            specs[0].options
+        );
+    }
+}
+
 /// Negative control (host probe, rc 1): an UNKNOWN uppercase `WORD=VALUE` at
 /// the option position is not an option.
 ///
@@ -491,6 +562,23 @@ fn gap_b_comma_space_user_list_keeps_the_reserved_all_principal() {
 #[test]
 fn gap_b_space_before_the_comma_also_keeps_the_all_principal() {
     let s = only_spec("bob , ALL ALL=(ALL) ALL\n");
+    assert_eq!(s.users, vec!["bob".to_string(), "ALL".to_string()]);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+/// Host probe (rc 0): the third and last comma placement - glued to the NEXT
+/// token.
+///
+/// `bob ,ALL ALL=(ALL) ALL` reports the same
+/// `User_List [{"username":"bob"},{"username":"ALL"}]` /
+/// `Host_List [{"hostname":"ALL"}]` as the other two spellings. With the
+/// trailing form (`bob, ALL`) and the standalone form (`bob , ALL`) already
+/// covered, this completes the set, so no implementation can pass by handling
+/// only the comma placements the corpus happens to contain.
+#[test]
+fn gap_b_leading_comma_continuation_keeps_the_all_principal() {
+    let s = only_spec("bob ,ALL ALL=(ALL) ALL\n");
     assert_eq!(s.users, vec!["bob".to_string(), "ALL".to_string()]);
     assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
     assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
