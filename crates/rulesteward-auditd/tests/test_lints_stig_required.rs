@@ -2792,9 +2792,9 @@ fn dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d() {
 fn path_wrong_operator_path_not_equal_does_not_satisfy_v230409_sudoers() {
     // #600 MISS-1 analog for the path twin (mirrors
     // `dir_wrong_operator_not_equal_does_not_satisfy_v230410_sudoers_d`
-    // above): `lib/libaudit.c`'s `audit_to_watch` rejects any op but `=` on
-    // an `AUDIT_WATCH` (`path`) predicate at the kernel level -- a `-F
-    // path!=` rule never loads either, so it must not satisfy the
+    // above): `kernel/audit_watch.c`'s `audit_to_watch` rejects any op but
+    // `=` on an `AUDIT_WATCH` (`path`) predicate at the kernel level -- a
+    // `-F path!=` rule never loads either, so it must not satisfy the
     // path-shaped requirement V-230409/RHEL-08-030171.
     //
     // TWO operators are driven through the PUBLIC entry point here, not

@@ -2106,9 +2106,9 @@ mod pure_path_watch_shape_tests {
 
     #[test]
     fn path_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
-        // #600 MISS-1 analog: `lib/libaudit.c`'s `audit_to_watch` rejects
-        // any op but `=` on an AUDIT_WATCH (`path`) predicate at the kernel
-        // level (mirroring AUDIT_DIR's -EINVAL) -- ALL non-`=` operators,
+        // #600 MISS-1 analog: `kernel/audit_watch.c`'s `audit_to_watch`
+        // rejects any op but `=` on an AUDIT_WATCH (`path`) predicate at the
+        // kernel level (mirroring AUDIT_DIR's -EINVAL) -- ALL non-`=` operators,
         // not just `!=` (see `NON_EQ_OPS`'s doc comment). This is the ONLY
         // net for the Path axis: `au-E02` deliberately leaves `-F path>=`/
         // `-F path&0x1`/etc. CLEAN
