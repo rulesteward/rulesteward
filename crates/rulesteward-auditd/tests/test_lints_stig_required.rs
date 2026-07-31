@@ -2327,6 +2327,217 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
     );
 }
 
+// ---------------------------------------------------------------------------
+// ATL round 8 (issue #601, regression introduced by commit 64ef6c7): a
+// FAIL-OPEN on the OPERATOR axis, distinct from the VALUE axis the round-7
+// fold section above pins. `perm_axis_bits` (`stig_required.rs:1954`)
+// selects `-F perm=` predicates with `.filter(|f| f.field ==
+// AuditField::Perm)` and never inspects `f.op` at all -- the round-7 fix
+// wired that op-blind selection straight into the Syscall-vs-Syscall arm of
+// `fields_match_excluding_key`. So an ILLEGAL OPERATOR on a `-F perm=`
+// predicate (one the kernel/libaudit would refuse to load at all) becomes
+// INVISIBLE to the matcher: the fold strips it by field NAME only, the same
+// way it strips a legal `-F perm=` predicate, and the candidate is wrongly
+// credited as satisfying the requirement. Direction: FAIL-OPEN --
+// RuleSteward reports a STIG control MET on a host where the audit rule
+// never loaded.
+//
+// Grounding, re-derived THIS round via a fresh userspace-only probe (no
+// netlink -- `audit_rule_fieldpair_data()` per its own doc comment in
+// `libaudit.h` only builds an in-memory `struct audit_rule_data`; the
+// netlink-sending function is the separate, never-called-here
+// `audit_add_rule_data()`), calling `audit_rule_fieldpair_data()` directly
+// against this host's freshly-installed `audit-libs-devel-4.1.4-1.fc44.
+// x86_64` (Fedora Linux 44, Cloud Edition):
+//
+//   perm=x, perm=wa                       -> rc  0   (loads)
+//   perm!=x, perm!=wa, perm>=wa, perm<wa,
+//   perm&wa, perm&=wa                     -> rc -29  (refused: any op but
+//                                                      `=` is illegal on
+//                                                      AUDIT_PERM)
+//   perm=zz     (bad letter set)          -> rc -14
+//   perm=rwxar  (too long)                -> rc -11
+//   perm!=zz                              -> rc -29  (operator is checked
+//                                                      BEFORE the letters)
+//   perm=x then perm!=x on ONE rule       -> rc1 0, rc2 -29, field_count
+//                                             stays 1 (the second pair
+//                                             never gets added)
+//
+// -14/-11 are DIFFERENT codes from -29, which is what makes -29 specifically
+// the operator gate rather than a generic "bad perm value" rejection. This
+// extends -- same host, same installed library, same refusal code -- the
+// identical claim already grounding the two MERGED sibling tests
+// `dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d`
+// (this file, above) and `path_wrong_operator_perm_not_equal_does_not_
+// satisfy_v230409_sudoers` (this file, below), which cite the same rc=-29
+// fact for `!=` alone; this round adds `>=`/`&`/`&=` and the same-rule chain
+// case.
+//
+// No committed EL differential-corpus row covers this axis: none of
+// `tests/corpus/auditd-oracle/el8.tsv`, `el9.tsv`, `el10.tsv`,
+// `XFAIL-ISSUES.md`, or `PROVENANCE.md` has a `perm!=`/`perm>=`/`perm&`/
+// `perm&=` row (checked directly). The corpus's one perm-axis XFAIL entry
+// (`f-perm-invalid-letter`, `XFAIL-ISSUES.md`'s "#601 auditd
+// permission-letter handling" section) is about LETTER-SET validity, a
+// different code path from operator legality. So this section's grounding
+// is the libaudit measurement above, not a corpus citation.
+//
+// V-281128/RHEL-10-500420 (`stig_required.rs:997-1000`, real shipped row:
+// "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
+// -F auid!=-1 -F key=privileged-chage") is used for items 1-4 via the real
+// `w06`/`TargetVersion::Rhel10` entry point, not a synthetic baseline: its
+// `-S all` list takes it outside `is_pure_path_watch_shaped` (which
+// requires an EMPTY `-S` list), so it always routes through the buggy
+// Syscall-vs-Syscall arm, never the already operator-gated Watch-vs-Syscall
+// fold (`is_pure_path_watch_shaped`'s own `AuditField::Path | AuditField::
+// Perm => f.op == CompareOp::Eq` guard, added for #600).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_perm_not_equal_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 1: `-F perm!=x` in place of the required `-F perm=x`. A `!=`
+    // predicate never loads (rc -29 above) and must not satisfy V-281128.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm!=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm!=x rule can never load at the kernel level (audit_rule_ \
+         fieldpair_data refuses any op but `=` on AUDIT_PERM, rc -29) and \
+         must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_relational_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 2: `-F perm>=x`, a relational operator, same refusal code (-29)
+    // as `!=` -- the kernel rejects EVERY non-`=` operator on AUDIT_PERM,
+    // not just `!=`.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm>=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm>=x rule can never load at the kernel level either (rc \
+         -29) and must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_bitmask_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 3: `-F perm&x`, the bitmask operator (`&`/`&=` both measured at
+    // rc -29 above).
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm&x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm&x rule can never load at the kernel level either (rc \
+         -29) and must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_equal_then_not_equal_chain_wrongly_satisfies_v281128_fail_open() {
+    // Item 4: the mixed shape `-F perm=x -F perm!=x` on the SAME rule. The
+    // libaudit chain measurement above shows the SECOND fieldpair call
+    // (perm!=x) returns rc -29 and never gets added (field_count stays at
+    // 1, frozen on the first, legal `perm=x`) -- so this candidate rule
+    // never loads AT ALL, not merely "loads without the perm!=x half". It
+    // must not satisfy V-281128 either.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F perm!=x \
+         -F auid>=1000 -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=x -F perm!=x on one rule never loads \
+         at all -- the illegal second pair aborts the whole rule at the \
+         kernel level (rc -29, field_count frozen at 1) -- and must not \
+         satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_not_equal_reported_missing_on_both_rhel8_and_rhel10_v230409_v281154() {
+    // Item 5, the sharpest assertion: whether a rule LOADS is a kernel/
+    // libaudit fact that cannot depend on how DISA spelled the required
+    // row. The SAME candidate text must be reported MISSING for BOTH
+    // targets:
+    //
+    // - RHEL8's V-230409/RHEL-08-030171 (`stig_required.rs:175-179`,
+    //   "-w /etc/sudoers -p wa -k identity") is Watch-shaped, so this
+    //   Syscall candidate routes through the (Watch, Syscall) arm via
+    //   `is_pure_path_watch_shaped`, which ALREADY guards the perm operator
+    //   (`AuditField::Perm => f.op == CompareOp::Eq`, the #600 fix) --
+    //   this half is a GREEN fence, confirming the round-8 fix must not
+    //   regress the already-correct arm.
+    // - RHEL10's V-281154/RHEL-10-500680 (`stig_required.rs:1138-1146`,
+    //   "-a always,exit -F arch=bXX -F path=/etc/sudoers -F perm=wa -F
+    //   key=logins") is ITSELF Syscall-shaped, so this candidate routes
+    //   through the buggy Syscall-vs-Syscall arm -- this half is RED today.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm!=wa -F key=logins\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm!=wa -F key=logins\n",
+    );
+
+    let diags_rhel8 = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags_rhel8
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F perm!=wa rule can never load at the kernel level and must not \
+         satisfy V-230409 on RHEL8, where the required row is Watch-shaped \
+         and already routes through the operator-gated is_pure_path_watch_ \
+         shaped check: {diags_rhel8:?}"
+    );
+
+    let diags_rhel10 = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags_rhel10
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500680") && d.message.contains("is missing")),
+        "the SAME -F perm!=wa rule must ALSO not satisfy V-281154 on RHEL10, \
+         where the required row is itself Syscall-shaped and routes through \
+         the (previously) unguarded Syscall-vs-Syscall arm -- whether a rule \
+         loads cannot depend on which RHEL major DISA wrote the requirement \
+         for: {diags_rhel10:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_equal_operator_still_satisfies_v281128() {
+    // Positive control: the legal `=` operator must keep satisfying
+    // V-281128 once the operator gate lands -- an exact copy of the
+    // required row's own perm predicate. GREEN today and must STAY green.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-10-500420")),
+        "a -F perm=x candidate (the legal operator) must still satisfy \
+         V-281128 -- the operator gate must reject illegal operators \
+         without breaking the legal one: {diags:?}"
+    );
+}
+
 #[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and
