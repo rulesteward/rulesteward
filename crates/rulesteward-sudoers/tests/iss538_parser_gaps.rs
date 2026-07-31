@@ -2888,3 +2888,281 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
         "the second command must not carry the tail of the quoted option value"
     );
 }
+
+// ===========================================================================
+// Round 6, second brief: the `','` arm of `split_top_level_segments` has
+// neither guard its siblings have.
+// ===========================================================================
+//
+// `split_top_level_segments`'s `')'` arm is guarded `i >= tok_start` (round 2,
+// #538 gap C round 2): a `)` byte sitting INSIDE an `Option_Spec` value the
+// `'='` arm has already skipped past must not drag `tok_start` BACKWARD into
+// the middle of that value. Its `':'` arm is additionally guarded
+// `!inside_a_clean_quoted_region(&quotes, i)`. The `','` arm (`parser.rs`,
+// ~:775) has NEITHER guard, despite identical exposure: a comma inside a
+// legitimately-quoted `Option_Spec` value drags `tok_start` backward into the
+// value exactly as an unguarded `)` would, and re-arms `at_spec_start` when
+// `in_cmnd_list`, corrupting whatever boundary check comes next.
+//
+// This is PRE-EXISTING (not a round-5/round-6 regression): the same defect
+// sits in the very first published cut of `split_top_level_segments`'s `','`
+// arm and was never guarded across any prior round. It ships two distinct
+// failure classes:
+//
+//   * a FALSE FATAL: the comma desyncs `tok_start` so badly that a later tag
+//     colon (`NOPASSWD:`) is misread as a genuine top-level separator, and the
+//     whole line - which real `visudo` accepts rc 0 - is thrown away
+//     `Malformed`, firing `sudo-F01` and losing the grant `sudo-W05` would
+//     otherwise see (`sudo-W05` count 0). Two option keywords are pinned so
+//     the defect cannot be dismissed as CWD-specific: `CWD` (a corpus-grounded
+//     keyword) and `APPARMOR_PROFILE` (a keyword the corpus never exercises).
+//     `TIMEOUT="3,0"` was considered as the second keyword and REJECTED: host
+//     probe (`visudo -c -f -`, sudo 1.9.17p2, 2026-07-31) gives rc 1
+//     `invalid timeout value` - `TIMEOUT`'s value grammar does not accept a
+//     comma at all, quoted or not, so that spelling never reaches this
+//     defect's mechanism and would not be a RED test. `APPARMOR_PROFILE="a,b"`
+//     is rc 0 (`cvtsudoers`: `Options [{"apparmor_profile":"a,b"}]`) and
+//     substitutes cleanly.
+//   * a SILENT swallow, strictly worse: an in-value comma followed (still
+//     inside the same still-open quote) by an in-value `(` reads that `(` as
+//     `at_spec_start`'s runas opener and permanently bumps `depth` to 1 - so
+//     the real top-level `:` that follows (`depth == 0` gated) is masked
+//     entirely, and a WHOLE SECOND HOST GROUP - a whole extra grant - vanishes
+//     into the first group's command string with no diagnostic of any kind.
+//
+// All six inputs below were re-derived on this host (sudo 1.9.17p2, `visudo
+// grammar version 50`) via `visudo -c -f -` and `cvtsudoers -f json`,
+// 2026-07-31 (same day as the round-6 first-brief probes above).
+
+/// FALSE FATAL, `CWD` spelling (corpus-grounded keyword).
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a,b" NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a,b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Today: `sudo-F01` fatal, `sudo-W05` count 0 - the comma inside the quoted
+/// value drags `tok_start` back into the value, so the following `NOPASSWD:`
+/// tag colon is misread as a genuine top-level separator and the whole line
+/// is discarded `Malformed`.
+#[test]
+fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
+    let src = "alice ALL = CWD=\"/a,b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant on the specific (non-ALL) /bin/ls command must be \
+         visible to sudo-W05"
+    );
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::Cwd, "\"/a,b\""),
+        "the quoted value, comma and all, must survive verbatim"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// FALSE FATAL, `APPARMOR_PROFILE` spelling - a keyword the corpus never
+/// exercises, so this cannot pass by special-casing `CWD`.
+///
+/// `TIMEOUT="3,0"` was the brief's original choice for this "not
+/// CWD-specific" control and was REJECTED after a host probe: sudo's
+/// `TIMEOUT` value grammar does not accept a comma in any spelling
+/// (`visudo -c -f -` on this host, sudo 1.9.17p2, 2026-07-31, gives rc 1
+/// `invalid timeout value` on `TIMEOUT="3,0"`), so that input never reaches
+/// the `','`-arm defect at all and would not be a RED test.
+/// `APPARMOR_PROFILE="a,b"` was substituted after confirming it IS `visudo`
+/// rc 0 with a comma-bearing value, which the round-6-first-brief tests above
+/// establish is one of the ten accepted keywords and orthogonal to `CWD`.
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = APPARMOR_PROFILE="a,b" NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"authenticate":false},{"apparmor_profile":"a,b"}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// (`cvtsudoers` lists `authenticate` before `apparmor_profile` here - it
+/// does not preserve source order; the AST assertion below uses SOURCE
+/// order, per `ast::CmndOption`'s documented convention, which is why the
+/// option is asserted first here and not against `cvtsudoers`'s own field
+/// order.)
+#[test]
+fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
+    let src = "alice ALL = APPARMOR_PROFILE=\"a,b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant on the specific (non-ALL) /bin/ls command must be \
+         visible to sudo-W05"
+    );
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::AppArmorProfile, "\"a,b\""),
+        "the quoted value, comma and all, must survive verbatim on a keyword \
+         other than CWD"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// SILENT SWALLOW - the important one. An in-value comma followed, still
+/// inside the same open quote, by an in-value `(` permanently bumps `depth`
+/// to 1, so the real top-level `:` that follows is masked and an entire
+/// SECOND host group vanishes into the first group's command token with NO
+/// diagnostic at all: no `sudo-F01`, no anything.
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a,(b" NOEXEC: /bin/ls : h2 = /bin/cat
+///     cvtsudoers: TWO User_Specs
+///       [0] Host_List [ALL]  Options [{"runcwd":"/a,(b"},{"noexec":true}]
+///           Commands [/bin/ls]
+///       [1] Host_List [h2]   Commands [/bin/cat]
+/// ```
+///
+/// Today: ONE host group, `hosts == ["ALL"]`, one `Cmnd_Spec` whose `cmnd` is
+/// the garbage `"/bin/ls : h2 = /bin/cat"` - the ENTIRE second grant is
+/// swallowed into a command string that matches no `Cmnd_Alias`, no reserved
+/// `ALL` check and no path check, and nothing about `h2` is reported at all.
+#[test]
+fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_the_next_host_group()
+ {
+    let src = "alice ALL = CWD=\"/a,(b\" NOEXEC: /bin/ls : h2 = /bin/cat\n";
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "the top-level `:` after `/bin/ls` still separates two host groups; \
+         got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    let specs0 = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs0.len(),
+        1,
+        "one Cmnd_Spec in the first group; got {specs0:?}"
+    );
+    assert_eq!(
+        specs0[0].options,
+        opt(CmndOptionKey::Cwd, "\"/a,(b\""),
+        "the quoted value, comma-then-paren and all, must survive verbatim"
+    );
+    assert_eq!(specs0[0].tags, vec![Tag::NoExec]);
+    assert_eq!(
+        specs0[0].cmnd,
+        CmndItem::Cmnd("/bin/ls".to_string()),
+        "the first command must not carry the second host group's text"
+    );
+    assert_eq!(
+        s.host_groups[1].hosts,
+        vec!["h2".to_string()],
+        "the second host group must survive as its own group, not vanish \
+         into the first command"
+    );
+    assert_eq!(
+        s.host_groups[1].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/cat".to_string())
+    );
+}
+
+/// Control - already correct today, must STAY green: a HYPHEN in the quoted
+/// value, not a comma. Only the punctuation byte differs from the `CWD` false
+/// fatal above; this is what stops an over-broad fix (e.g. rejecting every
+/// byte inside a quoted value at this position) from breaking a clean line.
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a-b" NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a-b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+#[test]
+fn hyphen_inside_a_quoted_cwd_option_value_is_unaffected_by_the_comma_guard() {
+    let src = "alice ALL = CWD=\"/a-b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a-b\""));
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// Control - already correct today, must STAY green: an ESCAPED comma in an
+/// UNQUOTED value (`CWD=/a\,b`, no double quotes at all). This is the
+/// spelling that stops a fix anchored only on `enclosing_option_value_quote_spans`
+/// (the quoted-value case) from being assumed to cover the unquoted-escape
+/// case too - the two are handled by different code paths
+/// (`option_value_end`'s quote branch vs its `unquoted_value_end` fallback).
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = CWD=/a\,b NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a,b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// (`cvtsudoers` unescapes the backslash in its own report; the AST keeps the
+/// source bytes verbatim, backslash retained, per `ast::CmndOption`'s
+/// documented convention.)
+#[test]
+fn escaped_comma_in_an_unquoted_cwd_option_value_stays_clean() {
+    let src = "alice ALL = CWD=/a\\,b NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1);
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::Cwd, "/a\\,b"),
+        "the backslash-escaped comma must survive verbatim, unquoted"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// Control - already correct today, must STAY green: a quoted COLON rather
+/// than a quoted comma. This is the sibling of the `':'` arm's own guard
+/// (`!inside_a_clean_quoted_region`), already correct, and pins that fixing
+/// the `','` arm's missing guard must not somehow break the `':'` arm's
+/// existing one.
+///
+/// Host probe, rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a:b" NOPASSWD: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a:b"},{"authenticate":false}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+#[test]
+fn colon_inside_a_quoted_cwd_option_value_stays_clean() {
+    let src = "alice ALL = CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a:b\""));
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
