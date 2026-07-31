@@ -2931,3 +2931,149 @@ fn path_well_formed_syscall_pair_still_satisfies_v230409_sudoers() {
          satisfy V-230409/RHEL-08-030171: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ATL round (issue #601 follow-up, MISS-3): duplicate `-F perm=` predicates.
+// Distinct from the two-Path/two-Dir tests above, which `count() == 1`
+// guards on Path/Dir already close -- there is NO analogous multiplicity
+// guard on Perm in EITHER `is_pure_path_watch_shaped` or
+// `is_pure_dir_watch_shaped`, so a field set with two DIFFERENT-valued
+// `-F perm=` predicates still passes the shape test, and
+// `watch_equivalent_axes_match`/`dir_watch_equivalent_axes_match`'s
+// `.find(|f| f.field == AuditField::Perm)` picks whichever ONE happens to
+// come first -- the verdict flips on FIELD ORDER. The kernel loads BOTH perm
+// predicates (`kernel/auditfilter.c`'s `audit_data_to_entry` has no dedup
+// for AUDIT_PERM, only `if (f->val & ~15) return -EINVAL`) and CONJOINS them
+// (`kernel/auditsc.c`'s `audit_filter_rules`: `case AUDIT_PERM: result =
+// audit_match_perm(ctx, f->val);` then `if (!result) return 0;` per field),
+// so the rule means "perm matches {w,a} AND perm matches {r}", not the
+// simple `-p wa` the required row asks for -- it is "missing" in BOTH field
+// orders. This also violates the locked field-order-insensitive decision
+// (`fields_match_excluding_key`'s grounding, Part C.1).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_regardless_of_field_order() {
+    // The correct-value-FIRST order is the one that is RED today:
+    // `watch_equivalent_axes_match`'s `.find()` picks the first Perm
+    // predicate ("wa", matching the required row), so today it wrongly
+    // credits the requirement. The reversed order ("r" first) already
+    // reports missing. Keeping both in one test is what makes a
+    // `.find()`-order-dependent implementation impossible to sneak through.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=r -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=r -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a rule naming the CORRECT perm value FIRST but a second, different \
+         -F perm= predicate must not satisfy V-230409 -- the two predicates \
+         conjoin at the kernel level, they do not mean a simple -p wa watch: \
+         {diags_wa_first:?}"
+    );
+
+    let rules_r_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=r -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=r -F perm=wa -k identity\n",
+    );
+    let diags_r_first = w06(
+        &rules_r_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_r_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order (a different -F perm= predicate FIRST, \
+         the correct one second) must produce the SAME 'missing' verdict, \
+         not flip to satisfied: {diags_r_first:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_two_perm_predicates_does_not_satisfy_v230410_regardless_of_field_order() {
+    // The Dir-flavored twin of the test above: `is_pure_dir_watch_shaped`
+    // has the identical gap (a Dir-count guard, no Perm-count guard), and
+    // `dir_watch_equivalent_axes_match`'s `.find()` on Perm is exactly as
+    // order-dependent as the path arm's.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=r -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=r -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a rule naming the CORRECT perm value FIRST but a second, different \
+         -F perm= predicate must not satisfy V-230410: {diags_wa_first:?}"
+    );
+
+    let rules_r_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=r -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=r -F perm=wa -k identity\n",
+    );
+    let diags_r_first = w06(
+        &rules_r_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_r_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "reversing the field order (a different -F perm= predicate FIRST, \
+         the correct one second) must produce the SAME 'missing' verdict, \
+         not flip to satisfied: {diags_r_first:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v230409_sudoers() {
+    // Positive control for the MISS-3 pair above: two Perm predicates with
+    // the IDENTICAL value are semantically equivalent to a single `-p wa`
+    // watch (`perm=wa AND perm=wa` is just `perm=wa`) and must STAY
+    // CREDITED. Without this, an implementer could satisfy the two tests
+    // above with a blanket "reject any field set naming Perm more than
+    // once", which would ALSO wrongly reject this genuinely-equivalent rule.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "two IDENTICAL -F perm=wa predicates are semantically equivalent to \
+         a single -p wa watch and must still satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v230410_sudoers_d() {
+    // The Dir-flavored twin of the positive control above, for the same
+    // reason: a blanket "reject Perm named more than once" fix applied to
+    // the dir arm must not break a genuinely-equivalent identical-duplicate
+    // rule either.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "two IDENTICAL -F perm=wa predicates are semantically equivalent to \
+         a single -p wa watch and must still satisfy V-230410: {diags:?}"
+    );
+}

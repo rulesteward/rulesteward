@@ -2201,6 +2201,41 @@ mod pure_path_watch_shape_tests {
             "two Path predicates must not be path-watch shaped"
         );
     }
+
+    #[test]
+    fn two_perm_predicates_is_still_path_watch_shaped() {
+        // ATL round (issue #601 follow-up, MISS-3): unlike Path (kernel
+        // `audit_to_watch` returns -EINVAL once a rule's watch pointer is
+        // already set -- one location watch per rule is a hard limit), the
+        // kernel has NO such limit on AUDIT_PERM predicates:
+        // `kernel/auditsc.c`'s `audit_filter_rules` calls
+        // `audit_match_perm(ctx, f->val)` once PER Perm field and ANDs the
+        // results, so a rule naming `-F perm=` twice LOADS FINE at the
+        // kernel level -- it just means something more restrictive than a
+        // single `-p X` watch, not "never loads" the way two `-F path=`
+        // predicates do. This shape test must therefore NOT reject a
+        // multi-Perm field set the way it rejects a multi-Path one: doing
+        // so would also wrongly reject an IDENTICAL duplicate (`perm=wa`
+        // twice), which genuinely IS equivalent to a single `-p wa` watch
+        // and must stay credited (see the integration-level positive
+        // control `path_syscall_form_with_identical_duplicate_perm_
+        // predicates_still_satisfies_v230409_sudoers`,
+        // tests/test_lints_stig_required.rs). Whether two Perm predicates
+        // are actually VALUE-equivalent to the required watch's perms is a
+        // question for `watch_equivalent_axes_match`, not this shape test.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Perm, "r"),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "two Perm predicates (even with DIFFERENT values) must still be \
+             path-watch shaped -- the kernel loads multiple Perm predicates \
+             fine, unlike Path; rejecting them here would also wrongly \
+             reject an identical-duplicate perm pair"
+        );
+    }
 }
 
 /// Direct unit tests for [`is_pure_dir_watch_shaped`]'s OWN return value, the

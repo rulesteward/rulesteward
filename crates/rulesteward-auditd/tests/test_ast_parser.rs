@@ -1172,6 +1172,43 @@ fn watch_perms_invalid_letter_still_rejects_either_case() {
     );
 }
 
+/// ATL round (issue #601 follow-up, MISS-1): a `-p` argument longer than 4
+/// characters must be rejected even when every individual character is a
+/// valid perm letter. Grounded: audit-userspace `src/auditctl.c`'s
+/// `audit_setup_perms` checks LENGTH before it examines any letter --
+/// `len = strlen(opt); if (len > 4) { audit_msg(LOG_ERR, "permission %s is
+/// too long", opt); return -1; }` -- the SAME `return -1` the invalid-letter
+/// arm uses, i.e. the same rc=1 / empty-stdout / empty-stderr silent
+/// add-shaped reject the corpus already pins as `p-invalid-lower`
+/// (`tests/corpus/auditd-oracle/el8.tsv`). `parse_perms`'s case-fold mirrored
+/// `tolower()` from that function but not the `len > 4` guard three lines
+/// above it -- every frozen `-p` test above uses 1-4 letters, so the domain
+/// was narrowed to "case" but never "length". A 5-letter value built
+/// ENTIRELY from valid letters (`rwxar`, `wwaaa` -- every letter individually
+/// legal, some just repeated) parses clean today and `au-W06` credits it as
+/// satisfying V-230409/RHEL-08-030171 -- a fail-open in a compliance
+/// control. The 4-letter boundary is pinned on the OTHER side by
+/// `watch_rwxa_all_perm_bits` (above, in this file) and
+/// `watch_perms_uppercase_all_four_letters` (immediately above), so an
+/// implementer cannot satisfy this test by rejecting every `-p` value.
+#[test]
+fn watch_perms_five_letters_rejected_even_all_valid_letters() {
+    let rwxar = parse_err("-w /etc/passwd -p rwxar -k plong");
+    assert!(
+        !rwxar.is_empty(),
+        "-p rwxar (5 letters, all individually valid) must be rejected -- \
+         real auditctl's audit_setup_perms checks length before letters; \
+         a 4-letter value must still parse (see watch_rwxa_all_perm_bits)"
+    );
+
+    let wwaaa = parse_err("-w /etc/passwd -p wwaaa -k plong2");
+    assert!(
+        !wwaaa.is_empty(),
+        "-p wwaaa (5 letters, all individually valid, some repeated) must \
+         also be rejected"
+    );
+}
+
 // --------------------------------------------------------------------------
 // #601 half B: `-F perm=` letter-set validation
 // --------------------------------------------------------------------------
@@ -1276,4 +1313,59 @@ fn field_filter_perm_empty_value_unchanged() {
 fn field_filter_non_perm_values_are_still_unvalidated() {
     parse_ok("-a always,exit -S openat -F pers=-1");
     parse_ok("-a always,exit -F devminor=-1 -S openat");
+}
+
+/// ATL round (issue #601 follow-up, MISS-2): a `-F perm=` value longer than 4
+/// characters must be rejected even when every individual character is a
+/// valid perm letter. Grounded: libaudit's `audit_rule_fieldpair_data`
+/// (`lib/libaudit.c`, v3.0.7:1689, v3.1.5:1812, v4.0.3:1832) checks LENGTH
+/// before the letter loop `field_filter_perm_invalid_letter_rejects` (above)
+/// already pins: `case AUDIT_PERM: ... else if (op != AUDIT_EQUAL) return
+/// -EAU_OPEQ; else { len = strlen(v); if (len > 4) return -EAU_STRTOOLONG;
+/// ... default: return -EAU_PERMRWXA; }` -- `EAU_STRTOOLONG` ("String value
+/// too long", `lib/errormsg.h:50,89`) is a DISTINCT diagnostic from
+/// `EAU_PERMRWXA` (`:53,92`), the one the letter-set check already covers.
+/// `field_filter_perm_invalid_letter_rejects` only exercises values
+/// containing an invalid LETTER (`zz`, `wz`); a too-long value built
+/// entirely from VALID letters (`rwxar`, `wwaaa`) is a genuinely independent
+/// gap -- letter-set and length are independent assertions in the real
+/// parser, and only the former was pinned. Use all-valid letters that are
+/// merely too long: a `perm=zzzzz`-style reject is over-determined by the
+/// letter check alone and proves nothing about length. `perm=rwxa` (4
+/// letters) stays the positive control, pinned by
+/// `field_filter_perm_valid_letters_still_parse` above.
+#[test]
+fn field_filter_perm_too_long_rejects_even_all_valid_letters() {
+    let rwxar = parse_err("-a always,exit -S execve -F perm=rwxar");
+    assert!(
+        !rwxar.is_empty(),
+        "-F perm=rwxar (5 letters, all individually valid) must be \
+         rejected -- libaudit checks length before letters; a 4-letter \
+         value must still parse (see field_filter_perm_valid_letters_still_parse)"
+    );
+
+    let wwaaa = parse_err("-a always,exit -S execve -F perm=wwaaa");
+    assert!(
+        !wwaaa.is_empty(),
+        "-F perm=wwaaa (5 letters, all individually valid, some repeated) \
+         must also be rejected"
+    );
+}
+
+/// CRITICAL companion to the length check above: it must be gated on the
+/// operator the SAME way the letter-set check already is
+/// (`field_filter_perm_operator_gating_pin` above, pinning the orchestrator
+/// RULING under DECISION 1). libaudit's `AUDIT_PERM` case returns
+/// `-EAU_OPEQ` for any op but `=` BEFORE it ever reaches the length check
+/// (see the case arm quoted above: the `op != AUDIT_EQUAL` branch returns
+/// first), so the length check is UNREACHABLE for a non-`=` operator in the
+/// real daemon. `-F perm!=rwxar` (too long, but op is `!=`) must therefore
+/// still PARSE, so `au-E02` can report the illegal operator -- an
+/// implementer who bolts the length check on unconditionally (ungated on
+/// the operator) would wrongly turn this into a parse error and silence
+/// `au-E02` here, exactly the mistake `field_filter_perm_operator_gating_pin`
+/// already guards against for the letter-set check.
+#[test]
+fn field_filter_perm_too_long_operator_gating_pin() {
+    parse_ok("-a always,exit -S openat -F perm!=rwxar");
 }
