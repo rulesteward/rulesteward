@@ -22,8 +22,11 @@
 //! 2. **Global lexicographic merge.** Every surviving file is merged in bytewise
 //!    basename order REGARDLESS of directory (`9-` beats `10-`), last-wins per key.
 //! 3. **`/etc/sysctl.conf` applier divergence.** procps `sysctl --system` reads it
-//!    dead-last (always wins); systemd-sysctl applies it only at the
-//!    `99-sysctl.conf` symlink slot (or not at all if the symlink is absent).
+//!    dead-last (always wins); systemd-sysctl reaches it only through a search-path
+//!    entry that resolves to it - `RuleSteward` currently MODELS that entry as the
+//!    `99-sysctl.conf` symlink slot specifically (or not at all if the symlink is
+//!    absent), which is the shipped distro layout but not systemd's actual rule
+//!    (any basename works); see the `w03b_divergence` KNOWN LIMITATION doc, #619.
 //!
 //! # `sysctld-W03` (system-only)
 //! * **W03-a** lower-precedence-directory override: the winner sits in a
@@ -108,16 +111,23 @@ fn resolve_reroot_contained(prefix: &Path, link: &Path) -> Option<PathBuf> {
 /// distro symlink - a symlink that resolves (re-root-then-contain) to
 /// `<prefix>/etc/sysctl.conf`.
 ///
-/// This is the ONLY path by which systemd-sysctl applies `/etc/sysctl.conf` (design
-/// section 2 point 3). Per design section 8, anything that is "not the expected
-/// symlink" is treated as ABSENT (systemd does not apply `/etc/sysctl.conf`, so
-/// W03-b fires): a non-symlink, a dangling link, a symlink to any OTHER target, or
-/// (round 2, #593) a symlink whose resolution escapes `prefix` entirely.
+/// This is the ONLY path by which `RuleSteward`'s model applies `/etc/sysctl.conf`
+/// (design section 2 point 3, describing the shipped distro layout - see
+/// [`w03b_divergence`]'s KNOWN LIMITATION doc for where that departs from
+/// systemd's actual rule, #619). Per design section 8, anything that is "not the
+/// expected symlink" is treated as ABSENT (systemd does not apply
+/// `/etc/sysctl.conf` through this slot, so W03-b fires): a non-symlink, a
+/// dangling link, a symlink to any OTHER target, or (round 2, #593) a symlink
+/// whose resolution escapes `prefix` entirely.
 ///
 /// [`resolve_reroot_contained`] already requires `link` to be an actual, resolvable
-/// symlink (`read_link` fails on a non-symlink or a dangling one), so no separate
-/// `is_symlink` guard is needed here; comparing its `Some` result against
-/// `etc/sysctl.conf`'s own canonical path is the "expected distro symlink" check.
+/// symlink: `std::fs::read_link` rejects a NON-symlink (it is `readlink(2)`, which
+/// reads the link's stored target string and never touches the target itself, so it
+/// happily succeeds on a link pointing at nothing), and the `std::fs::canonicalize`
+/// call right after it rejects a DANGLING one (it has to resolve the target to
+/// prove it exists). Between the two, no separate `is_symlink` guard is needed
+/// here; comparing the function's `Some` result against `etc/sysctl.conf`'s own
+/// canonical path is the "expected distro symlink" check.
 fn slot_symlink_ok(prefix: &Path) -> bool {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
     let Some(resolved) = resolve_reroot_contained(prefix, &link_99) else {
@@ -187,10 +197,13 @@ fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
 /// separate from the content decision. EVERY `.conf`-named regular file or symlink
 /// claims its basename at its directory's rank; a same-basename entry in a lower
 /// directory is masked. Content is then contributed only by an entry that resolves
-/// to a readable regular file. Two entries claim a basename WITHOUT contributing
+/// to a readable regular file. Three entries claim a basename WITHOUT contributing
 /// content: the distro `99-sysctl.conf -> ../sysctl.conf` slot (its content flows
-/// via the `/etc/sysctl.conf` applier model) and the man sysctl.d(5) `-> /dev/null`
-/// disable idiom (which masks a vendor file without applying anything).
+/// via the `/etc/sysctl.conf` applier model), the man sysctl.d(5) `-> /dev/null`
+/// disable idiom (which masks a vendor file without applying anything), and a
+/// 99-slot symlink that resolves to a real, readable file OUTSIDE `prefix` (the
+/// containment check in [`resolve_reroot_contained`] rejects it, so it still
+/// claims the basename above but is never followed to read anything).
 fn enumerate(
     prefix: &Path,
     symlink_ok: bool,

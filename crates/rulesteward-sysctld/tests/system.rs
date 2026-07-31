@@ -97,8 +97,8 @@ fn w03s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
 }
 
 /// Build the "genuinely absent" comparison baseline for the W03-b
-/// reason-clause discrimination tests (round 2 Finding 2, src/system.rs:355-361):
-/// ONLY `/etc/sysctl.conf` setting `net.core.somaxconn = 777`, with NOTHING at
+/// reason-clause discrimination tests (round 2 Finding 2, `w03b_verb_and_reason`'s
+/// `None` arm): ONLY `/etc/sysctl.conf` setting `net.core.somaxconn = 777`, with NOTHING at
 /// all at the `/etc/sysctl.d/99-sysctl.conf` slot - no symlink, dangling or
 /// otherwise, truly nothing there. Returns that root's single W03-b message for
 /// `somaxconn`, so a present-but-broken-slot fixture's message can be compared
@@ -126,7 +126,7 @@ fn w03b_message_for_genuinely_absent_99_slot() -> String {
 }
 
 /// Build the round-4 (Adversarial Testing Loop) `else`-arm CONTROL fixture
-/// (src/system.rs:430-436, the `Some(sw)` branch's final `else`): ONLY
+/// (`w03b_verb_and_reason`'s `Some(sw)` branch, final `else`): ONLY
 /// `etc/sysctl.d/zz-other.conf` (`net.core.somaxconn = 2222`) and
 /// `etc/sysctl.conf` (`net.core.somaxconn = 1111`), with NOTHING AT ALL at
 /// the `/etc/sysctl.d/99-sysctl.conf` slot - no symlink, dangling or
@@ -800,11 +800,12 @@ fn w03b_fires_when_the_99_symlink_targets_something_other_than_sysctl_conf() {
     );
 
     // STRENGTHEN (Adversarial Testing Loop round 2, Finding 2): the round-2 fix
-    // (src/system.rs:362-370) only patched the `Some(sw)` arm's self-contradiction
+    // (`w03b_verb_and_reason`'s `Some(sw)` arm, the `slot_is_symlink && sw.file ==
+    // link_99` branch) only patched the `Some(sw)` arm's self-contradiction
     // (see `w03b_reason_does_not_deny_the_misdirected_symlink_it_names_as_applier`
-    // below); the `None` arm (src/system.rs:355-361) is UNCONDITIONALLY hardcoded
-    // to "no /etc/sysctl.d/99-sysctl.conf symlink" regardless of `slot_is_symlink`
-    // (computed at src/system.rs:311-312 but never consulted in that arm). This
+    // below); `w03b_verb_and_reason`'s `None` arm is UNCONDITIONALLY
+    // hardcoded to "no /etc/sysctl.d/99-sysctl.conf symlink" regardless of
+    // `slot_is_symlink` (computed in `w03b_divergence` but never consulted there). This
     // fixture's decoy target sets no keys at all, so `systemd_win` is `None` here
     // and the `None` arm fires - even though a symlink genuinely EXISTS at that
     // path (just misdirected to a resolvable decoy). This is the MORE COMMON real
@@ -1406,7 +1407,7 @@ fn a_conf_named_directory_masks_a_vendor_hardening_file_reopening_the_stig_gap()
 //     ordering guard (FORBIDDEN item 3 / `seen.insert` before the content
 //     decision) still holds for a misdirected symlink specifically - the
 //     existing `the_99_slot_symlink_masks_a_same_basename_file_in_a_lower_dir`
-//     (line 596) covers only the CORRECT distro symlink, where the
+//     test covers only the CORRECT distro symlink, where the
 //     content-skip `continue` still fires.
 // ---------------------------------------------------------------------------
 
@@ -1477,7 +1478,7 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
     // comment-only file that is NOT ../sysctl.conf), so slot_symlink_ok is
     // false and its content is parsed as an ordinary (empty) drop-in after
     // the fix. But the basename CLAIM (seen.insert) must happen for EVERY
-    // .conf-named entry regardless of the content decision (system.rs:191-192's
+    // .conf-named entry regardless of the content decision (`enumerate`'s
     // own comment: "Content contribution, decided AFTER the basename claim
     // above"), so a real /usr/lib/sysctl.d/99-sysctl.conf (same basename,
     // lower dir) must still be MASKED: its unique key fs.protected_hardlinks
@@ -1493,7 +1494,8 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
     // cannot redden this test - verified empirically, see the lane report.
     // This guard instead directly observes that the type-agnostic
     // basename-claim invariant holds for the misdirected case too, which the
-    // pre-existing correct-symlink guard at line 596 does not exercise.)
+    // pre-existing `the_99_slot_symlink_masks_a_same_basename_file_in_a_lower_dir`
+    // correct-symlink guard does not exercise.)
     //
     // The masked file ALSO sets net.core.somaxconn = 999, a key a surviving
     // drop-in (run/sysctl.d/zz-after.conf) ALSO sets, = 111 - "zz-after.conf"
@@ -1564,7 +1566,8 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
 // ---------------------------------------------------------------------------
 // 19. Over-fix guard (rework, impl-blind adversarial review): the LAZIEST
 //     wrong "fix" for #593 is to DELETE the whole 99-slot content-skip block
-//     (system.rs:193-198) instead of adding the `&& symlink_ok` conjunct -
+//     (`enumerate`'s 99-slot `if symlink_ok { ... continue; }` arm) instead of
+//     adding the `&& symlink_ok` conjunct -
 //     six lines removed, no hoist, no signature change. That greens the two
 //     tests above (it happens to follow a MISDIRECTED symlink correctly),
 //     but it is wrong on the MOST COMMON real layout: the CORRECT distro
@@ -1659,24 +1662,24 @@ fn a_correct_99_symlink_does_not_double_parse_etc_sysctl_conf() {
 //     defect class #593 fixes, on a bigger surface.
 //
 //     Why no existing test catches it: `a_symlinked_non_99_dropin_pointing_at_
-//     a_regular_file_is_parsed_normally` (line 1105) is the test that LOOKS
+//     a_regular_file_is_parsed_normally` is the test that LOOKS
 //     like it should - its own comment says it exists to catch a
 //     `path == link_99` -> `!=` mutation, and today (with only `path ==
 //     link_99` in the guard) it does: deleting that conjunct alone leaves
-//     `is_symlink` and reddens it. But :1105's fixture has NO 99 slot and NO
+//     `is_symlink` and reddens it. But that test's fixture has NO 99 slot and NO
 //     `/etc/sysctl.conf`, so `symlink_ok` is FALSE there - under the partial
 //     over-fix `is_symlink && symlink_ok` is `true && false` = false, the
-//     `continue` never fires, and :1105 stays GREEN by COINCIDENCE, not
+//     `continue` never fires, and that test stays GREEN by COINCIDENCE, not
 //     because it exercises the conjunct that was actually deleted. The guard
 //     survives in name only once `&& symlink_ok` lands. The mutation gate does
 //     not cover this either: conjunct DELETION is not a cargo-mutants
-//     operator, and the `&&`->`||` mutants ARE killed by :1105
+//     operator, and the `&&`->`||` mutants ARE killed by that same test
 //     (`is_symlink || (path == link_99 && symlink_ok)` reddens it), so the
 //     gate reports clean while this hole is open.
 //
-//     This test is :1105's fixture PLUS a resolving 99 slot (symlink_99_
+//     This test is that test's fixture PLUS a resolving 99 slot (symlink_99_
 //     sysctl_conf + a present /etc/sysctl.conf), so symlink_ok is TRUE here -
-//     the one condition :1105 cannot provide. Today and post-fix: the
+//     the one condition that other test cannot provide. Today and post-fix: the
 //     50-link.conf symlink's path is not link_99, so `path == link_99` is
 //     false regardless of symlink_ok, the drop-in is parsed normally, and its
 //     compliant kernel.dmesg_restrict = 1 satisfies the baseline -> no W02
@@ -1812,8 +1815,8 @@ fn absolute_99_symlink_target_resolving_inside_root_is_recognized_as_the_distro_
     // /etc/sysctl.conf spliced at the recognized 99-slot) has zz-after.conf
     // win = 4096, diverging from procps's 2048 -> W03-b fires, and per design
     // section 5 the cause must be the RECOGNIZED "99-sysctl.conf slot" wording,
-    // not "no symlink" - mirrors the_99_slot_symlink_is_recognized_as_the_
-    // systemd_slot (line 1146), which pins the shipped RELATIVE target; this
+    // not "no symlink" - mirrors `the_99_slot_symlink_is_recognized_as_the_
+    // systemd_slot`, which pins the shipped RELATIVE target; this
     // pins the same recognition for an ABSOLUTE target requiring re-rooting.
     //
     // This fixture necessarily also exercises the impl's literal
@@ -1928,8 +1931,8 @@ fn ninety_nine_symlink_dotdot_escape_out_of_root_contributes_no_content() {
 //     misdirected slot is to REPOINT it; "no symlink" implies the (no-op)
 //     remedy of creating one.
 //
-//     misdirected_99_symlink_is_followed_and_parsed_as_an_ordinary_dropin
-//     (line 1294) never observes this: its fixture uses a DIFFERENT key
+//     `misdirected_99_symlink_is_followed_and_parsed_as_an_ordinary_dropin`
+//     never observes this: its fixture uses a DIFFERENT key
 //     (kernel.sysrq) than /etc/sysctl.conf's (nothing set there at all in that
 //     fixture), so the misdirected symlink's assignment never becomes the
 //     systemd-side WINNER for a key /etc/sysctl.conf also sets, and no W03-b
@@ -1989,25 +1992,25 @@ fn w03b_reason_does_not_deny_the_misdirected_symlink_it_names_as_applier() {
 // ---------------------------------------------------------------------------
 // 23. STRENGTHEN (Adversarial Testing Loop, round 2 - impl-aware review):
 //     Finding 1 - containment is checked on the RE-ROOTED path
-//     (`resolve_reroot_contained`, src/system.rs:79-95) and used ONLY as a
-//     boolean in `enumerate` (src/system.rs:254); the resolved path is
+//     (`resolve_reroot_contained`) and used ONLY as a
+//     boolean in `enumerate`; the resolved path is
 //     DISCARDED and `SurvivingFile { path, .. }` keeps the ORIGINAL LINK path.
-//     `parse_surviving` (src/system.rs:420) then does
+//     `parse_surviving` then does
 //     `std::fs::read_to_string(&sf.path)` directly on that link, and the
 //     kernel resolves an ABSOLUTE symlink target against the REAL filesystem
 //     root, not `prefix`. So the CONTAINMENT DECISION is made on the
 //     re-rooted path while the READ silently follows the real root - the
 //     locked `--root` semantics ("re-root, then contain": a target that
 //     escapes contributes NOTHING and is NEVER read from the host filesystem)
-//     and the module's own doc comments (src/system.rs:68-72, :249-251) are
+//     and the module's own doc comments (`resolve_reroot_contained`'s and
+//     `SurvivingFile`'s) are
 //     both falsified for a resolvable in-root target reached via an absolute
 //     link whose real-root counterpart differs from (or is absent from) its
 //     re-rooted one.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn absolute_99_symlink_read_follows_the_real_root_not_the_rerooted_path_when_host_counterpart_absent()
- {
+fn absolute_99_symlink_read_uses_the_rerooted_path_when_host_counterpart_absent() {
     // <root>/etc/rs9m-dropin.conf is the RE-ROOTED counterpart of the
     // absolute target "/etc/rs9m-dropin.conf": `resolve_reroot_contained`
     // finds it, canonicalizes to a path under `prefix`, and `enumerate`'s
@@ -2016,12 +2019,14 @@ fn absolute_99_symlink_read_follows_the_real_root_not_the_rerooted_path_when_hos
     // literal "/etc/rs9m-dropin.conf" on the host (a synthetic session-scoped
     // name chosen so it cannot collide with any real host path, matching this
     // file's existing "593-..." / "rs9m.f1..." naming convention - confirmed
-    // absent on the lane host before authoring this fixture), so
-    // `parse_surviving`'s `read_to_string(&sf.path)` - which dereferences the
-    // symlink against the REAL filesystem root, not `prefix` - fails with
-    // ENOENT: a spurious sysctld-F01, and since no assignment is contributed
-    // for kernel.dmesg_restrict and nothing else sets it, a FALSE "unset" W02
-    // even though the correctly re-rooted in-root file DOES set it.
+    // absent on the lane host before authoring this fixture), so a WRONG impl
+    // that reads `sf.path` directly - dereferencing the symlink against the
+    // REAL filesystem root, not `prefix` - would fail with ENOENT: a spurious
+    // sysctld-F01, and since no assignment is contributed for
+    // kernel.dmesg_restrict and nothing else sets it, a FALSE "unset" W02
+    // even though the correctly re-rooted in-root file DOES set it. The fix
+    // threads `sf.read_path` through `parse_surviving` instead, so the read
+    // follows the SAME re-rooted path the containment decision already used.
     let root = tempdir().expect("temp root");
     write_at(
         root.path(),
@@ -2059,18 +2064,19 @@ fn absolute_99_symlink_read_follows_the_real_root_not_the_rerooted_path_when_hos
 }
 
 #[test]
-fn absolute_99_symlink_read_returns_host_bytes_not_reroot_bytes_when_host_counterpart_diverges() {
+fn absolute_99_symlink_read_returns_rerooted_bytes_not_host_bytes_when_they_diverge() {
     // A REAL host directory (a second, independent tempdir - `hostdir`, never
     // nested under `root`) and an IN-ROOT counterpart at the SAME relative
     // path (derived from `hostdir`'s own path, exactly how
     // `resolve_reroot_contained` computes it: strip the target's leading "/"
     // and join onto `prefix`) both exist, with DIFFERENT values for the same
     // key. The boolean containment gate is satisfied by the IN-ROOT
-    // counterpart (so the entry is admitted), but `parse_surviving`'s
-    // `read_to_string(&sf.path)` dereferences the absolute-target symlink
-    // against the REAL root, so it returns the HOST file's bytes - the
-    // in-root file's content, which "re-root, then contain" requires, is
-    // never read at all.
+    // counterpart (so the entry is admitted); a WRONG impl whose
+    // `parse_surviving` reads `sf.path` directly would dereference the
+    // absolute-target symlink against the REAL root and return the HOST
+    // file's bytes instead - the in-root file's content, which "re-root,
+    // then contain" requires, would never be read at all. The fix reads
+    // `sf.read_path` (the re-rooted target) instead.
     let hostdir = tempdir().expect("temp host dir OUTSIDE root - never nested under it");
     write_at(
         hostdir.path(),
@@ -2126,8 +2132,8 @@ fn absolute_99_symlink_read_returns_host_bytes_not_reroot_bytes_when_host_counte
 
 // ---------------------------------------------------------------------------
 // 24. STRENGTHEN (Adversarial Testing Loop, round 2 - impl-aware review):
-//     Finding 2, continued - the same None-arm discrimination gap
-//     (src/system.rs:355-361) exercised for the DANGLING and ESCAPING 99-slot
+//     Finding 2, continued - the same `w03b_verb_and_reason` `None`-arm
+//     discrimination gap exercised for the DANGLING and ESCAPING 99-slot
 //     shapes (the strengthened test above at "7." covers the misdirected
 //     shape). In every one of these three shapes a symlink GENUINELY EXISTS
 //     at `/etc/sysctl.d/99-sysctl.conf` (`slot_is_symlink` is true), yet the
@@ -2142,7 +2148,7 @@ fn w03b_dangling_99_symlink_reason_differs_from_genuinely_absent() {
     // `is_symlink() == true` regardless of whether the target exists (it
     // never follows the link). `resolve_reroot_contained` fails to
     // canonicalize the missing target (`None`), so the entry contributes no
-    // content, and `slot_is_symlink` (src/system.rs:311-312) is `true` while
+    // content, and `w03b_divergence`'s `slot_is_symlink` is `true` while
     // `systemd_win` for the /etc/sysctl.conf key is `None` (no drop-in
     // provides it) - hitting the hardcoded `None` arm, which claims "no
     // 99-sysctl.conf symlink" exactly as it would for a root with nothing
@@ -2191,7 +2197,7 @@ fn w03b_escaping_99_symlink_reason_differs_from_genuinely_absent() {
     // `ninety_nine_symlink_dotdot_escape_out_of_root_contributes_no_content`
     // fixture above) is likewise a real, present symlink: `slot_is_symlink`
     // is true, but `resolve_reroot_contained`'s containment check
-    // (src/system.rs:92-94) rejects the resolved path (canonicalizes fine,
+    // (the CONTAIN step) rejects the resolved path (canonicalizes fine,
     // but does not `starts_with` the canonical prefix), so the entry
     // contributes no content and `systemd_win` is `None` - the SAME hardcoded
     // "no symlink" `None`-arm message as the dangling and genuinely-absent
@@ -2247,7 +2253,7 @@ fn w03b_escaping_99_symlink_reason_differs_from_genuinely_absent() {
 
 // ---------------------------------------------------------------------------
 // 25. STRENGTHEN (Adversarial Testing Loop, round 2 - mutation-adequacy gap):
-//     Finding 3 - `src/system.rs:370`'s `slot_is_symlink && sw.file == link_99`
+//     Finding 3 - `w03b_verb_and_reason`'s `slot_is_symlink && sw.file == link_99`
 //     survives being flipped to `||` (confirmed via a local, uncommitted
 //     `&&`->`||` edit + revert: both tests below went RED against the mutant
 //     and are GREEN against the real `&&` code - not an equivalent mutant).
@@ -2316,24 +2322,26 @@ fn w03b_reason_names_the_actual_winning_dropin_not_the_misdirected_symlink_itsel
 
     // STRENGTHEN (Adversarial Testing Loop, round 4 - impl-aware review):
     // round 3 fixed the identical false claim in the `None` arm
-    // (src/system.rs:397-407, "leaves `{}` unset") but left the BYTE-SAME
-    // claim in the `Some(sw)` arm's final `else` (src/system.rs:430-436)
-    // completely unconditional. This fixture reaches exactly that `else`:
+    // ("leaves `{}` unset") but left the BYTE-SAME claim in the `Some(sw)`
+    // arm's final `else` completely unconditional. This fixture reaches
+    // exactly that `else`:
     // `slot_is_symlink` is true (a real, present symlink), but its second
     // conjunct `sw.file == link_99` is false (the winner is zz-other.conf,
-    // not the 99-slot symlink itself), so the `else if` at :418 is false and
-    // falls through. A 99-sysctl.conf symlink genuinely EXISTS here
-    // (misdirected to decoy.conf, which sets no keys); the message must not
-    // claim there is none. The two `assert!` calls above already pin this
-    // fixture's *positive* content (names zz-other.conf, says "applies
-    // instead", avoids "misdirected") without ever excluding the false "no
-    // symlink" clause coexisting alongside them - exactly the one-conjunct-
-    // too-weak gap `tests/system.rs:1926-1927`'s vacuous conjunction has for
-    // the sibling (already-fixed) `Some(sw)` branch at :418-429.
+    // not the 99-slot symlink itself), so the `slot_is_symlink && sw.file ==
+    // link_99` branch above is false and falls through. A 99-sysctl.conf
+    // symlink genuinely EXISTS here (misdirected to decoy.conf, which sets no
+    // keys); the message must not claim there is none. The two `assert!`
+    // calls above already pin this fixture's *positive* content (names
+    // zz-other.conf, says "applies instead", avoids "misdirected") without
+    // ever excluding the false "no symlink" clause coexisting alongside
+    // them - exactly the one-conjunct-too-weak gap
+    // `w03b_reason_does_not_deny_the_misdirected_symlink_it_names_as_applier`'s
+    // vacuous conjunction has for the sibling (already-fixed) `Some(sw)`
+    // branch (the `slot_is_symlink && sw.file == link_99` arm).
     //
     // Ground truth: `std::fs::symlink_metadata` on the 99 slot reports
     // `is_symlink() == true` here regardless of what the target resolves to
-    // (`src/system.rs:342-343` already computes this correctly and simply
+    // (`w03b_divergence` already computes this correctly and simply
     // never consults it in this arm); operator remedy for a misdirected slot
     // is to REPOINT the existing symlink, which "no symlink" wrongly implies
     // is unnecessary (or worse, suggests creating one, which fails EEXIST).
@@ -2438,13 +2446,13 @@ fn w03b_reason_does_not_call_a_regular_file_at_the_99_path_a_misdirected_symlink
 
 // ---------------------------------------------------------------------------
 // 26. STRENGTHEN (Adversarial Testing Loop, round 4 - impl-aware review):
-//     round 3 fixed the `None` arm's identical false claim
-//     (src/system.rs:397-407) but left the byte-same claim in the
-//     `Some(sw)` arm's final `else` (src/system.rs:430-436) completely
+//     round 3 fixed the `None` arm's identical false claim but left the
+//     byte-same claim in the `Some(sw)` arm's final `else` completely
 //     unconditional - reached whenever `slot_is_symlink` is true (a symlink
 //     genuinely exists at the 99 slot) AND some file OTHER than the 99-slot
-//     symlink itself wins the key (`sw.file != link_99`, so the `else if`
-//     at :418 is false). The misdirected shape is strengthened above (test
+//     symlink itself wins the key (`sw.file != link_99`, so the
+//     `slot_is_symlink && sw.file == link_99` branch is false). The
+//     misdirected shape is strengthened above (test
 //     "22."); these two siblings pin the DANGLING and ESCAPING shapes, the
 //     same two the round-2/3 `None`-arm strengthen ("24.") already covers
 //     for the case where NO OTHER file sets the key. Here a THIRD file,
@@ -2477,8 +2485,8 @@ fn w03b_dangling_99_symlink_else_arm_does_not_deny_the_symlink_when_a_different_
     // NOT `None` (unlike `w03b_dangling_99_symlink_reason_differs_from_
     // genuinely_absent` above, whose fixture has nothing else providing the
     // key). `slot_is_symlink` is true; `sw.file` is zz-other.conf's path,
-    // not `link_99`; the `else if` at src/system.rs:418 is false; the buggy
-    // unconditional `else` at :430-436 fires.
+    // not `link_99`; the `slot_is_symlink && sw.file == link_99` branch is
+    // false; the buggy unconditional final `else` fires.
     let root = tempdir().expect("temp root");
     symlink_at(
         root.path(),
