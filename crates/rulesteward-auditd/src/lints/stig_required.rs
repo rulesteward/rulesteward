@@ -2087,37 +2087,65 @@ mod pure_path_watch_shape_tests {
         );
     }
 
+    /// Every non-`Eq` `CompareOp` variant. `CompareOp` has 8 variants total
+    /// (`Eq Ne Lt Gt Le Ge BitAnd BitAndEq`, `ast.rs`); a guard written as
+    /// `op != CompareOp::Ne` (instead of `op == CompareOp::Eq`) would pass a
+    /// `!=`-only test while wrongly accepting e.g. `>=` or `&=`. Looping
+    /// over all seven here (rather than pinning `Ne` alone) closes that
+    /// whole mutant class in one sweep, for BOTH `path_predicate_with_non_
+    /// equal_operator_is_not_path_watch_shaped` and its Perm-side twin below.
+    const NON_EQ_OPS: [CompareOp; 7] = [
+        CompareOp::Ne,
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
     #[test]
     fn path_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
         // #600 MISS-1 analog: `lib/libaudit.c`'s `audit_to_watch` rejects
         // any op but `=` on an AUDIT_WATCH (`path`) predicate at the kernel
-        // level (mirroring AUDIT_DIR's -EINVAL). A `-F path!=` predicate
-        // never loads, so it must not count as path-watch shaped even
-        // though the value looks right.
-        let fields = vec![
-            field_with_op(AuditField::Path, "/etc/sudoers", CompareOp::Ne),
-            field(AuditField::Perm, "wa"),
-            field(AuditField::Arch, "b32"),
-        ];
-        assert!(
-            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
-            "a Path predicate using != must not be path-watch shaped"
-        );
+        // level (mirroring AUDIT_DIR's -EINVAL) -- ALL non-`=` operators,
+        // not just `!=` (see `NON_EQ_OPS`'s doc comment). This is the ONLY
+        // net for the Path axis: `au-E02` deliberately leaves `-F path>=`/
+        // `-F path&0x1`/etc. CLEAN
+        // (`e02_path_relational_and_bitmask_all_clean`,
+        // `tests/test_lints_operator_validity.rs:717`, grounded at
+        // `libaudit.c:1804-1811` -- userspace has no operator check on
+        // AUDIT_WATCH at all), so unlike Perm there is no downstream lint
+        // to catch a mutant that only rejects `!=`.
+        for op in NON_EQ_OPS {
+            let fields = vec![
+                field_with_op(AuditField::Path, "/etc/sudoers", op.clone()),
+                field(AuditField::Perm, "wa"),
+                field(AuditField::Arch, "b32"),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "a Path predicate using {op:?} must not be path-watch shaped"
+            );
+        }
     }
 
     #[test]
     fn perm_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
         // #600 MISS-3 analog, the Perm side: `lib/libaudit.c`'s AUDIT_PERM
         // case returns -EAU_OPEQ for any op but `=` (verified rc=-29
-        // against the installed audit-4.1.4 libaudit).
-        let fields = vec![
-            field(AuditField::Path, "/etc/sudoers"),
-            field_with_op(AuditField::Perm, "wa", CompareOp::Ne),
-        ];
-        assert!(
-            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
-            "a Perm predicate using != must not be path-watch shaped"
-        );
+        // against the installed audit-4.1.4 libaudit). ALL non-`=` operators
+        // swept, same reasoning as the Path twin above.
+        for op in NON_EQ_OPS {
+            let fields = vec![
+                field(AuditField::Path, "/etc/sudoers"),
+                field_with_op(AuditField::Perm, "wa", op.clone()),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "a Perm predicate using {op:?} must not be path-watch shaped"
+            );
+        }
     }
 
     #[test]

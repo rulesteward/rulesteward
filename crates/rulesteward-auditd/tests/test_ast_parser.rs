@@ -1135,10 +1135,10 @@ fn watch_perms_uppercase_all_four_letters() {
     assert_eq!(rules.len(), 1);
     match &rules[0] {
         AuditRule::Watch { perms, .. } => {
-            assert!(perms.read);
-            assert!(perms.write);
-            assert!(perms.exec);
-            assert!(perms.attr);
+            assert!(perms.read, "R must fold to read");
+            assert!(perms.write, "W must fold to write");
+            assert!(perms.exec, "X must fold to exec");
+            assert!(perms.attr, "A must fold to attr");
         }
         other => panic!("expected Watch, got {other:?}"),
     }
@@ -1192,10 +1192,23 @@ fn watch_perms_invalid_letter_still_rejects_either_case() {
 // ever examines the letters).
 
 /// `-F perm=zz` must be a parse error (the corpus row's exact rule text).
-/// Assert on `RuleSteward`'s OWN message shape (names `perm` and the
-/// offending value `zz`), not the oracle's `Permission can only contain
-/// 'rwxa'` text -- that string belongs to the real `auditctl` diagnostic,
-/// not to `RuleSteward`'s parser.
+/// Also drives a MIXED value (`-F perm=wz`, one valid letter then one
+/// invalid) so an implementation checking only `value.chars().next()` -- and
+/// so accepting `wz` while rejecting `zz` -- cannot pass: every character
+/// must be checked, not just the first.
+///
+/// The message-content assertion below is DECORATIVE, not a message-shape
+/// pin, and its weakness is deliberate rather than an oversight: every `-F`
+/// parse error is wrapped as `` in -F '{spec}': {msg} `` (`src/parser.rs`,
+/// `parse_field_filter`'s `err` closure) and `spec` here is literally
+/// `perm=zz` (or `perm=wz`), so the wrapper ALONE already contains "perm"
+/// and the offending value regardless of what the letter-set check's own
+/// `{msg}` says -- it constrains the implementer's wording not at all. The
+/// assertion doing the real work is `!errors.is_empty()`: that these two
+/// values fail to parse at all. The message check is kept only so a future
+/// implementation that routes this case through some OTHER error path
+/// (e.g. misclassifying it as an unknown-field error) still surfaces a
+/// spec/value-bearing message for whoever reads the failure output.
 #[test]
 fn field_filter_perm_invalid_letter_rejects() {
     let errors = parse_err("-a always,exit -F perm=zz -S execve -k fpermbad");
@@ -1204,6 +1217,13 @@ fn field_filter_perm_invalid_letter_rejects() {
         errors[0].message.contains("perm") && errors[0].message.contains("zz"),
         "error message must name 'perm' and the offending value 'zz'; got: {:?}",
         errors[0].message
+    );
+
+    let mixed = parse_err("-a always,exit -F perm=wz -S execve -k fpermmixed");
+    assert!(
+        !mixed.is_empty(),
+        "-F perm=wz (one valid letter, one invalid) must also produce a \
+         parse error -- guards against a first-character-only check"
     );
 }
 
@@ -1219,13 +1239,25 @@ fn field_filter_perm_valid_letters_still_parse() {
     parse_ok("-a always,exit -F perm=WA -S execve");
 }
 
-/// Pins DECISION 1/the orchestrator RULING: `-F perm!=zz` must PARSE -- the
-/// letter check does not apply to a non-`=` operator. `au-E02` (not this
-/// parser check) is what reports the illegal operator on this line; see
-/// `e02_perm_ne_is_error` (`tests/test_lints_operator_validity.rs:569`).
+/// Pins DECISION 1/the orchestrator RULING: `-F perm` predicates using ANY
+/// operator other than `=` must PARSE -- the letter check does not apply.
+/// `au-E02` (not this parser check) is what reports the illegal operator on
+/// these lines; see `e02_perm_ne_is_error` / `e02_perm_greater_is_error` /
+/// `e02_perm_bitand_eq_is_error` / `e02_perm_bitand_is_error`
+/// (`tests/test_lints_operator_validity.rs:569,575,582,588`). Every non-`=`
+/// operator is driven, not just `!=`: a gate written `op != CompareOp::Ne`
+/// (instead of `op == CompareOp::Eq`) would pass a `!=`-only test while
+/// wrongly rejecting `-F perm>zz` as a parse error -- the "too strict"
+/// direction the ruling explicitly forbids.
 #[test]
 fn field_filter_perm_operator_gating_pin() {
     parse_ok("-a always,exit -S openat -F perm!=zz");
+    parse_ok("-a always,exit -S openat -F perm<zz");
+    parse_ok("-a always,exit -S openat -F perm>zz");
+    parse_ok("-a always,exit -S openat -F perm<=zz");
+    parse_ok("-a always,exit -S openat -F perm>=zz");
+    parse_ok("-a always,exit -S openat -F perm&zz");
+    parse_ok("-a always,exit -S openat -F perm&=zz");
 }
 
 /// `-F perm=` (empty value, zero letters) parses today, mirroring

@@ -2796,17 +2796,49 @@ fn path_wrong_operator_path_not_equal_does_not_satisfy_v230409_sudoers() {
     // an `AUDIT_WATCH` (`path`) predicate at the kernel level -- a `-F
     // path!=` rule never loads either, so it must not satisfy the
     // path-shaped requirement V-230409/RHEL-08-030171.
-    let rules = parse(
+    //
+    // TWO operators are driven through the PUBLIC entry point here, not
+    // just `!=`: `au-E02` deliberately treats `-F path>=`/`-F path>`/etc.
+    // as CLEAN (`e02_path_relational_and_bitmask_all_clean`,
+    // `tests/test_lints_operator_validity.rs:717`, grounded at
+    // `libaudit.c:1804-1811` -- userspace has no operator check on
+    // AUDIT_WATCH at all), so the Path axis has NO downstream lint net the
+    // way Perm partially does. A guard checking only `op != Ne` (instead of
+    // `op == Eq`) would pass the `!=` case below while wrongly accepting
+    // `>=` and reporting V-230409 SATISFIED for a rule that can never load.
+    let rules_bang_eq = parse(
         "-a always,exit -F arch=b32 -F path!=/etc/sudoers -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path!=/etc/sudoers -F perm=wa -k identity\n",
     );
-    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    let diags_bang_eq = w06(
+        &rules_bang_eq,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
     assert!(
-        diags
+        diags_bang_eq
             .iter()
             .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
         "a -F path!= rule can never load at the kernel level (audit_to_watch \
-         rejects any op but `=`) and must not satisfy V-230409: {diags:?}"
+         rejects any op but `=`) and must not satisfy V-230409: {diags_bang_eq:?}"
+    );
+
+    let rules_relational = parse(
+        "-a always,exit -F arch=b32 -F path>=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path>=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags_relational = w06(
+        &rules_relational,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_relational
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path>= rule can never load at the kernel level either -- the \
+         kernel rejects EVERY non-`=` operator, not just `!=` -- and must \
+         not satisfy V-230409: {diags_relational:?}"
     );
 }
 
