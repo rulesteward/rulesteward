@@ -693,10 +693,14 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     than after the `=`, so `TIMEOUT=30 NOEXEC:` still leaves `NOEXEC` alone in
 ///     the span (#538 gap C - see the `'='` arm).
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
-    // Byte positions of every genuinely-CLOSED quoted region in `s` (#538 gap C
-    // round 2): a colon INSIDE an `Option_Spec` value's quotes (`CWD="/a:b"`) is
-    // a value byte, not a tag/separator colon. Computed once; see the `:` arm.
-    let quotes = unescaped_quote_positions(s);
+    // Byte-range PAIRS of every value-ENCLOSING quoted span in `s` (#538 gap C
+    // round 3, `enclosing_option_value_quote_spans`): a colon INSIDE an
+    // `Option_Spec` value's own enclosing quotes (`CWD="/a:b"`) is a value
+    // byte, not a tag/separator colon -- but a colon sitting between two
+    // UNRELATED quotes (e.g. two different host-groups' commands each ending
+    // in their own `"`) is a genuine separator and must still split; see the
+    // `:` arm.
+    let quotes = enclosing_option_value_quote_spans(s);
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
@@ -897,39 +901,144 @@ fn unescaped_quote_positions(s: &str) -> Vec<usize> {
     positions
 }
 
-/// Whether byte index `i` sits strictly inside a CLEAN (both quotes present)
-/// double-quoted region -- an EVEN-numbered pair of `quote_positions` (see
-/// [`unescaped_quote_positions`]).
+/// Whether byte index `i` sits strictly inside one of `spans` -- a set of
+/// pre-computed `(open, close)` quote-pair byte ranges. Two DIFFERENT
+/// producers feed this, per caller (#538 gap A/B/C, round 3 - "quote handling
+/// must be TOKEN-SCOPED, and a quote only quotes when it ENCLOSES the token it
+/// starts"):
+///   * [`enclosing_option_value_quote_spans`] -- an opener must be the byte
+///     immediately after an `Option_Spec`'s own `=` (used by the `:` and `,`
+///     top-level splitters, where a bare command/principal quote must NEVER
+///     mask a real separator - ROOT CAUSE 2).
+///   * [`simple_quote_pairs`] -- ANY unescaped quote may open (used by
+///     [`unquoted_whitespace_runs`], where a `User_List`/`Host_List` principal
+///     may be quoted anywhere in its own right).
 ///
-/// A trailing UNMATCHED `"` (an odd count) opens no region at all: the frozen
+/// Either way, an UNMATCHED trailing `"` opens no span at all: the frozen
 /// `unterminated_quote_does_not_swallow_comma_separator` (on [`split_cmnd_specs`])
 /// and `unterminated_quote_does_not_swallow_the_segment_colon` (on
 /// [`split_top_level_segments`]) regressions already pin that a lone,
 /// never-closed quote must not suppress a real separator, so only a
-/// properly-CLOSED pair may mask one. `chunks_exact(2)` silently drops a
-/// leftover odd element, which is exactly that rule.
-fn inside_a_clean_quoted_region(quote_positions: &[usize], i: usize) -> bool {
-    quote_positions
+/// properly-CLOSED pair may mask one.
+fn inside_a_clean_quoted_region(spans: &[(usize, usize)], i: usize) -> bool {
+    spans.iter().any(|&(open, close)| open < i && i < close)
+}
+
+/// Adjacent PAIRS of [`unescaped_quote_positions`], with NO notion of which
+/// token each quote belongs to: quote 1 pairs with quote 2, quote 3 with quote
+/// 4, and so on (`chunks_exact(2)`, silently dropping a trailing unmatched
+/// quote). Correct only where ANY quote may legitimately open a span
+/// regardless of what precedes it -- a `User_List`/`Host_List` principal may be
+/// quoted anywhere (`man 5 sudoers`, rendered page lines 399-402), so
+/// [`unquoted_whitespace_runs`] and [`split_user_list`]'s glued-quote boundary
+/// check both use this. Contrast [`enclosing_option_value_quote_spans`], which
+/// restricts an opener to immediately after an `Option_Spec`'s `=` -- a bare
+/// command or host-group's own quote has NO such unrestricted pairing power
+/// (#538 gap A/C round 3, ROOT CAUSE 2).
+fn simple_quote_pairs(s: &str) -> Vec<(usize, usize)> {
+    unescaped_quote_positions(s)
         .chunks_exact(2)
-        .any(|pair| pair[0] < i && i < pair[1])
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+/// Byte-range PAIRS `(open, close)` of `Option_Spec` value-ENCLOSING
+/// double-quote spans in `s`.
+///
+/// A `"` is a legitimate opener ONLY when it is the very first byte of an
+/// `Option_Spec` VALUE -- i.e. immediately preceded by `=` (`man 5 sudoers`,
+/// rendered page line 619: a value's special characters "may be enclosed in
+/// double quotes" at BOTH ends; #538 gap A/C round 3, ROOT CAUSE 1 and 2 share
+/// this one rule). Every other quote -- mid-command, a bare principal glued to
+/// a preceding word, a second command's own trailing quote, ... -- has NO
+/// pairing power at all: "sudo never lets a `"` in command or principal
+/// position protect a `,` or a `:`"
+/// (`two_quotes_each_closing_a_different_command_do_not_mask_the_comma_separator`,
+/// `two_quotes_each_closing_a_different_host_groups_command_do_not_mask_the_segment_colon`).
+/// A non-opener quote is simply skipped -- never consumed as either half of a
+/// pair -- so it cannot accidentally pair with a LATER opener either. An
+/// opener with no following unescaped `"` (unterminated) pairs with nothing:
+/// an unmatched quote protects nothing, matching the rule
+/// [`inside_a_clean_quoted_region`] documents.
+fn enclosing_option_value_quote_spans(s: &str) -> Vec<(usize, usize)> {
+    let quotes = unescaped_quote_positions(s);
+    let bytes = s.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < quotes.len() {
+        let open = quotes[i];
+        if open > 0
+            && bytes[open - 1] == b'='
+            && let Some(&close) = quotes.get(i + 1)
+        {
+            spans.push((open, close));
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    spans
 }
 
 /// The end (exclusive byte index, absolute within `s`) of an `Option_Spec`
-/// value starting at `start`: the first double-quote/backslash-escape-aware
-/// whitespace, or `s.len()` if none.
+/// value starting at `start`: the first byte of the value ENCLOSING the whole
+/// value in double quotes, or (otherwise) the first backslash-escape-aware
+/// unquoted whitespace -- or `s.len()` if neither is found.
 ///
-/// `man 5 sudoers` (rendered page line 399, sudo 1.9.17p2): a value's special
+/// `man 5 sudoers` (rendered page line 619, sudo 1.9.17p2): a value's special
 /// characters "may be enclosed in double quotes ... [or] specified in escaped
 /// hex mode"; the shipping parser also accepts a plain backslash-escaped space
-/// (`CWD=/tmp/a\ b`), not just a hex escape. A `"` toggles a quoted span in
-/// which whitespace is part of the value; a `\` consumes exactly the next byte
-/// literally (whitespace or not) without toggling anything. Shared by
+/// (`CWD=/tmp/a\ b`), not just a hex escape. "Enclosed" means at BOTH ends: a
+/// `"` only opens a quoted span when it is `start`'s own first byte, and only
+/// the FIRST unescaped `"` after that closes it (#538 gap A/C round 3, ROOT
+/// CAUSE 1). A `"` anywhere else in the value is a literal byte with NO
+/// toggling power -- the value `/a"b` never re-enters a quoted state, so a
+/// following tag or command is never swallowed
+/// (`interior_quote_in_an_option_value_does_not_swallow_a_following_tag_and_command`).
+/// An OPENING quote with no matching close is likewise not an enclosing pair
+/// (mirrors [`inside_a_clean_quoted_region`]'s "unmatched quote protects
+/// nothing" rule) and falls through to the same literal-byte scan. A `\`
+/// consumes exactly the next byte literally (whitespace or not) without
+/// toggling anything, both inside and outside a quoted span. Shared by
 /// [`split_leading_option`] (the value's own scan) and
 /// [`split_top_level_segments`]'s `=` arm, which needs the SAME end point so
 /// its preceding-token marker lands past the whole value rather than inside it
 /// (#538 gap A/C round 2).
 fn option_value_end(s: &str, start: usize) -> usize {
-    let mut in_quotes = false;
+    if s.as_bytes().get(start) == Some(&b'"')
+        && let Some(close) = find_closing_quote(s, start + 1)
+    {
+        return unquoted_value_end(s, close + 1);
+    }
+    unquoted_value_end(s, start)
+}
+
+/// The byte index of the first UNESCAPED `"` at or after `start` (the single
+/// sudoers backslash-escape model, matching [`unescaped_quote_positions`]), or
+/// `None` if `s[start..]` contains no such quote.
+fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in s[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => return Some(start + i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The end (exclusive byte index, absolute within `s`) of a run of value bytes
+/// starting at `start` in which a `"` is ALWAYS a literal byte (never toggles
+/// anything): the first backslash-escape-aware unquoted whitespace, or
+/// `s.len()` if none. The escape-only half of [`option_value_end`]'s scan,
+/// used both for a value that never opens a quote and for the literal tail
+/// after an enclosing pair's closing quote.
+fn unquoted_value_end(s: &str, start: usize) -> usize {
     let mut escaped = false;
     for (i, c) in s[start..].char_indices() {
         if escaped {
@@ -940,11 +1049,7 @@ fn option_value_end(s: &str, start: usize) -> usize {
             escaped = true;
             continue;
         }
-        if c == '"' {
-            in_quotes = !in_quotes;
-            continue;
-        }
-        if c.is_whitespace() && !in_quotes {
+        if c.is_whitespace() {
             return start + i;
         }
     }
@@ -983,22 +1088,29 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 ///     `(ALL) /bin/echo a(b` is globally unbalanced (2 `(`, 1 `)`) yet `(ALL)` is a real
 ///     runas group, so a leading/runas-position `(` must be told apart from a mid-token `(`.
 ///
-/// A comma inside a genuinely CLOSED pair of unescaped `"` is masked (does not split;
-/// #538 gap A round 2, `inside_a_clean_quoted_region`). Round 1's premise here was
-/// "there is no quote tracking, because in a VALID config a top-level `,` is never inside
-/// a balanced quote" - TRUE for a COMMAND (sudo REJECTS an unescaped quoted comma there:
-/// `visudo -c` / `cvtsudoers` reject `/bin/echo "a, b"`; a literal comma needs `\,`, per
-/// bullet 1) but FALSE for an `Option_Spec` VALUE, where quoting a comma is exactly how
-/// sudo accepts one (`alice ALL = CWD="/a,b" /bin/ls` is `visudo -c -f -` rc 0, host probe
-/// 2026-07-31). So the premise held for the domain round 1 shipped in (commands only) and
-/// broke once options got their own quote-aware value scanner. Masking is scoped to a
-/// CLOSED pair only: an UNTERMINATED quote must still not suppress the split (`cvtsudoers`
-/// still splits `/bin/echo "x, /bin/su` into two commands - a lone `"` pairs into no
-/// region at all, per `inside_a_clean_quoted_region`, so the comma after it is never
-/// masked; see `unterminated_quote_does_not_swallow_comma_separator`). A `"` is otherwise a
-/// literal command byte, and a quoted `(` is mid-command so it never reaches `depth`
-/// anyway. This preserves the #416 fix (which retired the OLD quote tracker that merged
-/// two `Cmnd_Spec`s past an unbalanced quote, hiding a grant).
+/// A comma inside a value-ENCLOSING pair of unescaped `"` is masked (does not split;
+/// #538 gap A round 2, narrowed round 3, `enclosing_option_value_quote_spans`). Round 1's
+/// premise here was "there is no quote tracking, because in a VALID config a top-level `,`
+/// is never inside a balanced quote" - TRUE for a COMMAND (sudo REJECTS an unescaped quoted
+/// comma there: `visudo -c` / `cvtsudoers` reject `/bin/echo "a, b"`; a literal comma needs
+/// `\,`, per bullet 1) but FALSE for an `Option_Spec` VALUE, where quoting a comma is
+/// exactly how sudo accepts one (`alice ALL = CWD="/a,b" /bin/ls` is `visudo -c -f -` rc 0,
+/// host probe 2026-07-31). So the premise held for the domain round 1 shipped in (commands
+/// only) and broke once options got their own quote-aware value scanner.
+///
+/// Masking is scoped to an `Option_Spec` value's OWN enclosing pair only - an opener must
+/// be the byte immediately after that option's `=` (round 3, ROOT CAUSE 2): TWO quotes that
+/// each merely CLOSE a different, unrelated command are NOT a pair, even when they are the
+/// only two quotes in the whole `Cmnd_Spec_List` and would look "closed" under a blind
+/// whole-string scan (`/bin/echo x", NOPASSWD: /bin/ls "y` still splits into two commands -
+/// see `two_quotes_each_closing_a_different_command_do_not_mask_the_comma_separator`). An
+/// UNTERMINATED (or non-`=`-anchored) quote still must not suppress the split (`cvtsudoers`
+/// still splits `/bin/echo "x, /bin/su` into two commands - a lone `"` pairs with nothing,
+/// so the comma after it is never masked; see
+/// `unterminated_quote_does_not_swallow_comma_separator`). A `"` in ordinary command text is
+/// otherwise a literal byte with NO pairing power at all, and a quoted `(` is mid-command so
+/// it never reaches `depth` anyway. This preserves the #416 fix (which retired the OLD
+/// quote tracker that merged two `Cmnd_Spec`s past an unbalanced quote, hiding a grant).
 ///
 /// Unlike [`split_top_level_segments`], this splitter receives ONLY the `Cmnd_Spec_List`
 /// (the `rhs` after the structural `=`), so it has no `=` arm at all: a command-argument
@@ -1011,10 +1123,13 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 /// lints do not inspect argument contents). Segments are trimmed, mirroring
 /// `split_top_level_segments`; empties are dropped by the caller.
 fn split_cmnd_specs(s: &str) -> Vec<&str> {
-    // Byte positions of every genuinely-CLOSED quoted region in `s` (#538 gap A
-    // round 2): a comma INSIDE an `Option_Spec` value's quotes (`CWD="/a,b"`) is
-    // a value byte, not a `Cmnd_Spec` separator. Computed once; see the `,` arm.
-    let quotes = unescaped_quote_positions(s);
+    // Byte-range PAIRS of every value-ENCLOSING quoted span in `s` (#538 gap A
+    // round 3, `enclosing_option_value_quote_spans`): a comma INSIDE an
+    // `Option_Spec` value's OWN enclosing quotes (`CWD="/a,b"`) is a value
+    // byte, not a `Cmnd_Spec` separator - but a comma between two UNRELATED
+    // quotes (each closing a different command) is a genuine separator and
+    // must still split; see the `,` arm.
+    let quotes = enclosing_option_value_quote_spans(s);
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     let mut depth: i32 = 0;
@@ -1147,32 +1262,42 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
 /// If `rest` STARTS with an `=`-form `Option_Spec`, split it off and return it
 /// plus the remaining text; otherwise return `None` so the caller stops scanning.
 ///
-/// `rest` must already be leading-trimmed. The option token runs from `rest`'s
-/// start to [`option_value_end`]'s first UNQUOTED, UNESCAPED whitespace (or the
-/// end of `rest`) - NOT simply "up to the next whitespace": `man 5 sudoers`
-/// (rendered page line 399, sudo 1.9.17p2) lets a value's special characters be
-/// double-quoted or backslash-escaped, and the shipping parser accepts both
-/// spellings (`CWD="/tmp/a b"`, `CWD=/tmp/a\ b`), so a bare whitespace scan would
-/// split INSIDE such a value (#538 gap A round 2). The token is then split at its
-/// FIRST `=`: the keyword before it must be one of the closed [`CmndOptionKey`]
-/// set (case-sensitively), and everything after it is the value, kept VERBATIM -
-/// quotes and backslashes included (a `TIMEOUT=30m` suffix, a path, a timestamp -
-/// none of it is coerced or unescaped; see [`CmndOption`]).
+/// `rest` must already be leading-trimmed. A keyword contains no `=` or `"` of
+/// its own (see [`CmndOptionKey`]), so the FIRST byte-level `=` in `rest`
+/// unambiguously separates it from the value - no quote/escape awareness is
+/// needed for THIS half of the split, only for the value that follows.
+/// `parse_option_key` then requires an EXACT match against the closed set,
+/// which is what keeps this position-anchored: if the true first token has no
+/// `=` before its own terminating whitespace, the slice up to a LATER `=`
+/// (from some unrelated later token) necessarily contains that whitespace and
+/// can never equal a bare keyword, so it safely fails instead of
+/// mis-recognizing anything.
+///
+/// The value itself runs from just after that `=` to [`option_value_end`]'s
+/// boundary (or the end of `rest`) - NOT simply "up to the next whitespace":
+/// `man 5 sudoers` (rendered page line 399, sudo 1.9.17p2) lets a value's
+/// special characters be double-quoted or backslash-escaped, and the shipping
+/// parser accepts both spellings (`CWD="/tmp/a b"`, `CWD=/tmp/a\ b`), so a bare
+/// whitespace scan would split INSIDE such a value (#538 gap A round 2). The
+/// value is kept VERBATIM - quotes and backslashes included (a `TIMEOUT=30m`
+/// suffix, a path, a timestamp - none of it is coerced or unescaped; see
+/// [`CmndOption`]).
 ///
 /// Returning `None` (rather than skipping the token) is what keeps the scan
 /// position-anchored, and returning `None` for an unknown keyword is what keeps
 /// the set CLOSED: `/usr/bin/env FOO=bar` is a single valid command to real sudo,
 /// so a generic `WORD=VALUE` matcher would corrupt it.
 fn split_leading_option(rest: &str) -> Option<(CmndOption, &str)> {
-    let token_end = option_value_end(rest, 0);
-    let (keyword, value) = rest[..token_end].split_once('=')?;
-    let key = parse_option_key(keyword)?;
+    let eq = rest.find('=')?;
+    let key = parse_option_key(&rest[..eq])?;
+    let value_start = eq + 1;
+    let value_end = option_value_end(rest, value_start);
     Some((
         CmndOption {
             key,
-            value: value.to_string(),
+            value: rest[value_start..value_end].to_string(),
         },
-        &rest[token_end..],
+        &rest[value_end..],
     ))
 }
 
@@ -1291,18 +1416,54 @@ fn comma_split(s: &str) -> Vec<String> {
 /// the Gap A/C failure class, on the users axis. [`unquoted_whitespace_runs`]
 /// finds only whitespace OUTSIDE a quoted span and not consumed by a backslash
 /// escape; the comma-continuation logic below is unchanged.
+///
+/// # Round 3: a quote GLUED directly onto a bare word, with no whitespace at all
+///
+/// Real sudo's lexer starts a fresh token at a `"` whether or not whitespace
+/// precedes it (`man 5 sudoers` grants quoting unconditionally, not just after a
+/// separator). `alice" h1"` (no space before the quote) is `visudo -c -f -` rc 0
+/// on this host (2026-07-31) and `cvtsudoers -f json` splits it into `alice` and
+/// `" h1"` -
+/// `a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespace_needed`.
+/// A whitespace-run boundary alone can never place a split there (there is no
+/// whitespace outside the quoted span to find at all - the single space sits
+/// INSIDE the pair), so the loop below also treats the OPEN position of a
+/// [`simple_quote_pairs`] pair as a candidate boundary whenever it is glued to a
+/// preceding non-whitespace, non-`,` byte. A quote at `lhs`'s own start, or one
+/// reached after whitespace or a comma, is not "glued" - it is either the run's
+/// first token or already reachable through the whitespace-run candidates.
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
-    for (ws_start, ws_end) in unquoted_whitespace_runs(lhs) {
-        let after_ws = &lhs[ws_end..];
-        // The run continues across this whitespace if a comma sits on either side
+    let bytes = lhs.as_bytes();
+
+    // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
+    // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
+    // resume after the run; a glued-quote candidate resumes AT the quote itself
+    // (no whitespace to skip).
+    let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
+    for (open, _close) in simple_quote_pairs(lhs) {
+        if open > 0 {
+            let prev = bytes[open - 1];
+            if prev != b',' && !prev.is_ascii_whitespace() {
+                candidates.push((open, open));
+            }
+        }
+    }
+    candidates.sort_unstable();
+
+    for (start, resume) in candidates {
+        let before = &lhs[..start];
+        let after = &lhs[resume..];
+        // The run continues across this boundary if a comma sits on either side
         // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
-        // its own token and both adjacent runs continue).
-        if !lhs[..ws_start].ends_with(',') && !after_ws.starts_with(',') {
-            // `lhs` is trimmed and `after_ws` starts right after the whitespace run
-            // (a non-whitespace char or the string end), so both halves are
-            // already trimmed.
-            return (&lhs[..ws_start], after_ws);
+        // its own token and both adjacent runs continue). A glued-quote candidate
+        // never itself ends with `,` (excluded above) and never starts with `,`
+        // (it starts with `"`), so it always passes this check.
+        if !before.ends_with(',') && !after.starts_with(',') {
+            // `lhs` is trimmed and `after` starts right after the boundary (a
+            // non-whitespace char, a quote, or the string end), so both halves
+            // are already trimmed.
+            return (before, after);
         }
     }
     (lhs, "")
@@ -1315,8 +1476,8 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
 /// A whitespace byte inside a CLOSED quote pair is part of the token, not a
 /// boundary; a `\` consumes exactly the next byte literally, whitespace or not
 /// (same single-backslash escape model as [`option_value_end`] and the two
-/// top-level splitters). Deliberately uses PAIRED quote detection rather than a
-/// live open/close toggle: an unrelated, unpaired `"` elsewhere in the same
+/// top-level splitters). Deliberately uses [`simple_quote_pairs`]'s PAIRED quote
+/// detection rather than a live open/close toggle: an unrelated, unpaired `"` elsewhere in the same
 /// pre-`=` text (e.g. a malformed `%bad"group` principal, `f02_group_name_with_dquote_fires`)
 /// must not swallow every later whitespace boundary as "still inside quotes" -
 /// the same "unterminated quote must not suppress a real boundary" rule the
@@ -1325,7 +1486,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
 /// `User_List`/`Host_List` boundary without splitting inside a quoted or
 /// escaped principal.
 fn unquoted_whitespace_runs(s: &str) -> Vec<(usize, usize)> {
-    let quotes = unescaped_quote_positions(s);
+    let quotes = simple_quote_pairs(s);
     let mut runs = Vec::new();
     let mut escaped = false;
     let mut run_start: Option<usize> = None;
@@ -2336,9 +2497,18 @@ mod tests {
         //   `alice h1 = /bin/sh -c "oops : h2 = ALL`
         // and splits it into TWO host-groups {h1 -> `/bin/sh -c "oops`} and {h2 -> ALL}.
         // Merging them (the old behavior) hid the second grant -- a sudo-W05 FALSE
-        // NEGATIVE. A literal `:` inside a BALANCED quote (`/bin/echo "a:b"`) is
-        // visudo-REJECTED, so valid configs never carry a separator inside a balanced
-        // quote; the fix therefore drops quote-based separator suppression entirely.
+        // NEGATIVE. STALE PREMISE (round 1/2, corrected round 3): this does NOT mean
+        // valid configs never carry a separator inside a "balanced" quote pair, nor
+        // that the fix drops quote-based separator suppression entirely. TWO quotes
+        // that each merely CLOSE a DIFFERENT command or host-group (not an
+        // `Option_Spec` value's own enclosing pair) form no real pair at all and must
+        // not mask a separator between them -- see
+        // `two_quotes_each_closing_a_different_host_groups_command_do_not_mask_the_segment_colon`,
+        // the blind spot a single never-closed quote (this test's input) cannot
+        // exercise. Quote-based suppression still exists, narrowed to protect ONLY an
+        // `Option_Spec` value's own enclosing quotes (`enclosing_option_value_quote_spans`
+        // - an opener must sit immediately after that option's `=`); a bare command or
+        // principal quote never has this protecting power.
         let s = only_spec("alice h1 = /bin/sh -c \"oops : h2 = ALL\n");
         assert_eq!(
             s.host_groups.len(),
