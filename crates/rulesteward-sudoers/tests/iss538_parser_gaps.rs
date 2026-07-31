@@ -342,9 +342,17 @@ fn gap_a_option_keyword_set_is_closed_so_env_assignment_stays_in_the_command() {
 /// that shortcut (`kept.join(" ")` normalises the run). Our AST keeps the raw
 /// token verbatim, per `ast::CmndItem::Cmnd`, so the two spaces survive here.
 /// Note that `cvtsudoers` NORMALISES the run to one space in its own report;
-/// that difference is real but out of scope - no corpus scenario contains a
-/// doubled space, so L3 never compares it. Do not "fix" it by collapsing
-/// whitespace in the parser, which would defeat this control.
+/// that difference is real but out of scope - no corpus scenario's COMPARED
+/// COMMAND TOKEN contains an interior doubled space, so L3 never compares one.
+/// (Scanned all 41 corpus `input.sudoers` files, 2026-07-30: exactly one
+/// contains any doubled space or tab at all - `accept-continuation-line`'s
+/// four-space continuation indent, which sits before the `NOPASSWD:` tag and
+/// is trimmed off well before the command token. Both sides report that
+/// scenario's command as `ALL`, and it is a clean non-xfail L3 row.) Do not
+/// "fix" the divergence by collapsing whitespace in the parser, which would
+/// defeat this control; if a future corpus row ever does carry an interior
+/// doubled space in a command, this frozen test forces that to surface as an
+/// escalation rather than a silent normalisation.
 #[test]
 fn gap_a_option_keyword_after_the_command_word_is_a_command_argument() {
     for (src, want_cmnd) in [
