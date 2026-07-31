@@ -1498,53 +1498,29 @@ fn gap_c_command_argument_tag_keyword_before_a_colon_still_splits_end_to_end() {
     assert_eq!(s.host_groups[1].cmnd_specs[0].cmnd, CmndItem::All);
 }
 
-/// The RED half of that pair: the same line with a `KEY=value` ARGUMENT in
-/// front of the tag keyword.
-///
-/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
-///
-/// ```text
-/// alice h1 = /bin/echo X=NOPASSWD : h2 = ALL
-///     cvtsudoers: TWO User_Specs
-///       h1 -> Commands [{"command":"/bin/echo X=NOPASSWD"}]
-///       h2 -> Commands [{"command":"ALL"}]
-/// ```
-///
-/// Round 1 collapses this into ONE host group whose single command is the
-/// garbage `"/bin/echo X=NOPASSWD : h2 = ALL"`, and the `h2` grant - a bare
-/// `ALL` - disappears entirely.
-///
-/// Mechanism, and why the unit test above does not catch it: the `'='` arm
-/// resets the preceding-token marker on a COMMAND-ARGUMENT `=` as well as on
-/// the structural one. With `X=` present the marker lands just after that `=`,
-/// so the span at the colon is the bare `"NOPASSWD"` - a tag - and the colon is
-/// suppressed. Without `X=` the span is `"/bin/echo NOPASSWD"`, which is not a
-/// tag, so the unit test's input splits correctly and the over-reach it claims
-/// to guard is invisible to it. A command argument's `=` is not a token
-/// boundary for tag-keyword purposes at all.
-#[test]
-fn gap_c_command_argument_assignment_before_a_tag_keyword_colon_still_splits() {
-    let s = only_spec("alice h1 = /bin/echo X=NOPASSWD : h2 = ALL\n");
-    assert_eq!(
-        s.host_groups.len(),
-        2,
-        "a `KEY=value` command ARGUMENT must not turn the following separator \
-         colon into a tag colon and swallow the second host group; got {:?}",
-        s.host_groups
-    );
-    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
-    assert_eq!(
-        s.host_groups[0].cmnd_specs[0].cmnd,
-        CmndItem::Cmnd("/bin/echo X=NOPASSWD".to_string()),
-        "the first command keeps its `KEY=value` argument verbatim"
-    );
-    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
-    assert_eq!(
-        s.host_groups[1].cmnd_specs[0].cmnd,
-        CmndItem::All,
-        "the second host group's `ALL` grant must not disappear"
-    );
-}
+// DESCOPED, NOT FORGOTTEN: the RED half of the pair above lived here and is
+// tracked as issue #612.
+//
+// `alice h1 = /bin/echo X=NOPASSWD : h2 = ALL` is `visudo -c -f -` rc 0 with
+// TWO User_Specs (`h1 -> /bin/echo X=NOPASSWD`, `h2 -> ALL`), but the `'='` arm
+// resets the preceding-token marker on a COMMAND-ARGUMENT `=` as well as on the
+// structural one. With `X=` present, the span at the colon is the bare
+// `"NOPASSWD"` - a tag - so the colon is suppressed, the two host groups
+// collapse into one, and the `h2` grant disappears from the model entirely.
+//
+// The unit test this file's neighbour mirrors,
+// `command_argument_tag_keyword_before_a_colon_still_splits` (in-crate
+// `#[cfg(test)]`, `parser.rs`), claims to guard exactly that property and
+// passes: its input has no `KEY=` before the colon, which is why. The property
+// it names does not hold one level up.
+//
+// The defect is PRE-EXISTING (not introduced by #538) and was descoped from
+// session 9m lane 3 by explicit user ruling, under the standing rule that
+// adjacent findings are filed rather than fixed in flight. The deleted test was
+// verified satisfiable alongside the four in-crate #416 splitter tests and
+// `gap_c_option_does_not_swallow_a_genuine_host_group_separator`, so whoever
+// picks up #612 should restore it verbatim from the commit that removed it
+// rather than writing a new one.
 
 /// The STRUCTURAL `=` is never an option `=`, even when the token in front of
 /// it is spelled like an option keyword.
