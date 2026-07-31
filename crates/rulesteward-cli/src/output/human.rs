@@ -808,6 +808,105 @@ mod tests {
     }
 
     #[test]
+    fn human_render_cost_independent_of_span_position_within_source() {
+        // #595 perf regression harness for `byte_span_to_char_span`'s
+        // CONSTANT factor (human.rs:58), distinct from the two scaling
+        // harnesses above (which pin diagnostic COUNT and sources-map SIZE).
+        // Same source, same finding COUNT (24), same total source size
+        // (~50,008 bytes, `synthetic_source_with_spans(50_000, 24)` above) -
+        // the ONLY thing that differs between the two measured groups is
+        // WHERE in the source the spans sit: the FIRST 24 of the ~1316
+        // generated spans (byte offsets 23..903, the first ~1.8% of the
+        // file - see `synthetic_source_with_spans`'s doc comment above for
+        // the per-line layout) vs the LAST 24 (byte offsets ~49096..49999,
+        // the tail of the file).
+        //
+        // `to_char` (human.rs:58) walks `source.char_indices()` from byte 0
+        // up to each endpoint, so its own cost is O(endpoint offset):
+        // converting a tail-anchored span walks roughly 50x more of the
+        // source than converting a head-anchored one. `render()`'s other
+        // per-diagnostic work (the per-source_id `Source` cache lookup,
+        // `Label`/`Report` construction, writing the snippet) does not
+        // depend on WHERE in the file the span sits, so if the conversion's
+        // own constant factor were as cheap as `str::chars().count()`
+        // (which forwards to a chunked, non-continuation-byte count already
+        // compiled into a pre-optimized std) that O(offset) term would stay
+        // too small next to render()'s constant overhead to move the
+        // measured tail/head ratio far from 1x. A per-char scalar decode
+        // loop - which is what today's `char_indices().take_while(...).count()`
+        // body performs - carries no such vectorized fast path, and was
+        // measured, isolated from render()'s own overhead in an out-of-tree
+        // replica of this exact render_ariadne()+render() structure, at
+        // roughly 12.8x slower per byte in release and ~1024x slower in
+        // dev than a `chars().count()`-based conversion; that gap is large
+        // enough to show up directly in this render()-level ratio instead
+        // of being absorbed into render()'s constant cost.
+        //
+        // Observed (this is the RED case pinned here, against TODAY's
+        // `char_indices().take_while(...).count()` body): tail/head ratio
+        // ~6.9x-13.5x across release/dev, in both this harness and the
+        // out-of-tree replica. Observed against a `chars().count()`-based
+        // conversion (semantically identical for every offset used here -
+        // both are total, monotone mappings that agree on every char
+        // boundary, and every offset in this ASCII source IS a char
+        // boundary - just decode-cost-cheaper): ~1.0x-1.6x, also in both.
+        // The 4x gate sits well above the fast case's observed ceiling
+        // (~1.6x) and well below the slow case's observed floor (~6.9x), so
+        // it discriminates cleanly without pinning an absolute wall-clock
+        // number - same flake-proofing rationale as the sibling scaling
+        // tests above (human.rs:704-709).
+        let (source, spans) = synthetic_source_with_spans(50_000, 24);
+        let mut sources = BTreeMap::new();
+        sources.insert("scaling.rules".to_string(), source);
+
+        let head_diags: Vec<Diagnostic> = spans[..24]
+            .iter()
+            .enumerate()
+            .map(|(i, span)| {
+                Diagnostic::new(
+                    Severity::Warning,
+                    "fapd-W03",
+                    span.clone(),
+                    "scaling probe",
+                    "scaling.rules",
+                    i + 1,
+                    1,
+                )
+                .with_source_id("scaling.rules")
+            })
+            .collect();
+        let tail_diags: Vec<Diagnostic> = spans[spans.len() - 24..]
+            .iter()
+            .enumerate()
+            .map(|(i, span)| {
+                Diagnostic::new(
+                    Severity::Warning,
+                    "fapd-W03",
+                    span.clone(),
+                    "scaling probe",
+                    "scaling.rules",
+                    i + 1,
+                    1,
+                )
+                .with_source_id("scaling.rules")
+            })
+            .collect();
+
+        let t_head = min_duration_over(|| drop(render(&head_diags, &sources)), 3);
+        let t_tail = min_duration_over(|| drop(render(&tail_diags, &sources)), 3);
+
+        assert!(
+            t_tail < t_head * 4,
+            "24 diagnostics anchored at the TAIL of the source took {t_tail:?}, vs \
+             {t_head:?} for 24 diagnostics of the SAME count anchored at the HEAD of \
+             the SAME source (ratio {:.1}x) - expected < 4x; byte_span_to_char_span's \
+             conversion cost should not depend on how far into the source a span sits \
+             (#595 perf regression: see human.rs:58 and the comment above)",
+            t_tail.as_secs_f64() / t_head.as_secs_f64()
+        );
+    }
+
+    #[test]
     fn format_controls_maps_every_framework_and_joins_multiple() {
         // Direct pin on format_controls: empty -> "" (byte-identical), each
         // framework's label, the alias arm, and the ", " join for multiple
