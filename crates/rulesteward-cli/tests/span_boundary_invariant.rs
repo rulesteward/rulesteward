@@ -152,14 +152,16 @@ fn multibyte_piece() -> impl Strategy<Value = String> {
 /// `\n` unconditionally, which is also true of every `VALID_LINES` entry above -
 /// none of them is itself multibyte at its very last byte - so no case here
 /// ever drove a backend's whole-line span arithmetic over a source whose
-/// final byte is a UTF-8 continuation byte. That is precisely the shape
-/// `human.rs`'s `byte_span_to_char_span` mishandles under the `q <= len`
-/// mutant (a mutation-gate SURVIVOR at `human.rs:96:17`), and it is a shape a
-/// real config file legitimately has (a file with no trailing newline). This
-/// does not change what is ASSERTED - `check_span` and the anti-vacuity
-/// counters are unchanged - only the range of sources the six backends are
-/// driven with, additionally exercising every backend's LAST-LINE span
-/// arithmetic.
+/// final byte is a UTF-8 continuation byte. That shape forces `human.rs`'s
+/// `byte_span_to_char_span` to walk its boundary scan all the way to
+/// `source.len()` before finding one - the end-of-source case an earlier,
+/// hand-rolled version of that scan mishandled (see `human.rs`'s
+/// `multibyte_source`, widened the same way in the same commit, for that
+/// scan's own coverage of this shape). It is also a shape a real config
+/// file legitimately has (a file with no trailing newline). This does not
+/// change what is ASSERTED - `check_span` and the anti-vacuity counters are
+/// unchanged - only the range of sources the six backends are driven with,
+/// additionally exercising every backend's LAST-LINE span arithmetic.
 fn backend_source(
     keywords: &'static [&'static str],
     valid_lines: &'static [&'static str],

@@ -860,51 +860,78 @@ mod tests {
     #[test]
     fn human_render_cost_independent_of_span_position_within_source() {
         // #595 perf regression harness for `byte_span_to_char_span`'s
-        // CONSTANT factor (human.rs:58), distinct from the two scaling
-        // harnesses above (which pin diagnostic COUNT and sources-map SIZE).
-        // Same source, same finding COUNT (24), same total source size
-        // (~50,008 bytes, `synthetic_source_with_spans(50_000, 24)` above) -
-        // the ONLY thing that differs between the two measured groups is
-        // WHERE in the source the spans sit: the FIRST 24 of the ~1316
-        // generated spans (byte offsets 23..903, the first ~1.8% of the
-        // file - see `synthetic_source_with_spans`'s doc comment above for
-        // the per-line layout) vs the LAST 24 (byte offsets ~49096..49999,
-        // the tail of the file).
+        // CONSTANT factor, distinct from the two scaling harnesses above
+        // (which pin diagnostic COUNT and sources-map SIZE). Same source,
+        // same finding COUNT (24), same total source size (~50,008 bytes,
+        // `synthetic_source_with_spans(50_000, 24)` above) - the ONLY thing
+        // that differs between the two measured groups is WHERE in the
+        // source the spans sit: the FIRST 24 of the ~1316 generated spans
+        // (byte offsets 23..903, the first ~1.8% of the file - see
+        // `synthetic_source_with_spans`'s doc comment above for the
+        // per-line layout) vs the LAST 24 (byte offsets ~49096..49999, the
+        // tail of the file).
         //
-        // `to_char` (human.rs:58) walks `source.char_indices()` from byte 0
-        // up to each endpoint, so its own cost is O(endpoint offset):
-        // converting a tail-anchored span walks roughly 50x more of the
-        // source than converting a head-anchored one. `render()`'s other
-        // per-diagnostic work (the per-source_id `Source` cache lookup,
-        // `Label`/`Report` construction, writing the snippet) does not
-        // depend on WHERE in the file the span sits, so if the conversion's
-        // own constant factor were as cheap as `str::chars().count()`
-        // (which forwards to a chunked, non-continuation-byte count already
-        // compiled into a pre-optimized std) that O(offset) term would stay
-        // too small next to render()'s constant overhead to move the
-        // measured tail/head ratio far from 1x. A per-char scalar decode
-        // loop - which is what today's `char_indices().take_while(...).count()`
-        // body performs - carries no such vectorized fast path, and was
-        // measured, isolated from render()'s own overhead in an out-of-tree
-        // replica of this exact render_ariadne()+render() structure, at
-        // roughly 12.8x slower per byte in release and ~1024x slower in
-        // dev than a `chars().count()`-based conversion; that gap is large
-        // enough to show up directly in this render()-level ratio instead
-        // of being absorbed into render()'s constant cost.
+        // `byte_span_to_char_span`'s current body (see its doc comment
+        // above) walks forward from the offset to the next char boundary,
+        // then calls `source[..q].chars().count()` on the resulting
+        // boundary-aligned prefix - so its cost is still O(endpoint
+        // offset): converting a tail-anchored span still counts roughly
+        // 50x more of the source than converting a head-anchored one.
+        // `render()`'s other per-diagnostic work (the per-source_id
+        // `Source` cache lookup, `Label`/`Report` construction, writing
+        // the snippet) does not depend on WHERE in the file the span
+        // sits, so this harness isolates the conversion's own
+        // offset-dependent cost from render()'s constant overhead.
         //
-        // Observed (this is the RED case pinned here, against TODAY's
-        // `char_indices().take_while(...).count()` body): tail/head ratio
-        // ~6.9x-13.5x across release/dev, in both this harness and the
-        // out-of-tree replica. Observed against a `chars().count()`-based
-        // conversion (semantically identical for every offset used here -
-        // both are total, monotone mappings that agree on every char
-        // boundary, and every offset in this ASCII source IS a char
-        // boundary - just decode-cost-cheaper): ~1.0x-1.6x, also in both.
-        // The 4x gate sits well above the fast case's observed ceiling
-        // (~1.6x) and well below the slow case's observed floor (~6.9x), so
-        // it discriminates cleanly without pinning an absolute wall-clock
-        // number - same flake-proofing rationale as the sibling scaling
-        // tests above (human.rs:704-709).
+        // This test was written (953917b, #595) against a DIFFERENT,
+        // EARLIER body: `source.char_indices().take_while(|(i, _)| *i <
+        // b).count()`, a per-char scalar decode loop with no vectorized
+        // fast path, which fully re-assembled every UTF-8 scalar below
+        // the offset. That body shipped in 132aa23 and was replaced in
+        // 9871215 by the boundary-scan-plus-`chars().count()` body
+        // described above (see `byte_span_to_char_span`'s outer doc
+        // comment for why `chars().count()` is cheaper - it forwards to a
+        // chunked, non-continuation-byte count already compiled into a
+        // pre-optimized std, unlike a hand-written loop written IN this
+        // crate, which stays unoptimized at this crate's own opt-level).
+        // This harness now guards against a REGRESSION back to that
+        // older, decode-heavy shape rather than pinning a defect in
+        // today's code.
+        //
+        // Observed against the OLD `char_indices().take_while(...).count()`
+        // body (953917b, single-environment measurement): tail/head ratio
+        // ~6.9x-13.5x. Observed against the semantically identical
+        // `chars().count()`-based replacement (both are total, monotone
+        // mappings that agree on every char boundary, and every offset in
+        // this ASCII source IS a char boundary - just decode-cost
+        // cheaper): ~1.0x-1.6x.
+        //
+        // Remeasured more thoroughly since, on the development host in
+        // the debug profile (what `just test` and CI run), 2026-07-31:
+        // the OLD body (a stale build) ran 7.70x-26.34x tail/head over 30
+        // iterations - a clean FAIL of the 4x gate below. The CURRENT
+        // body ran 0.62x-1.95x over 75 iterations across three load
+        // regimes: idle (max 1.89x), 48-way CPU oversubscription (max
+        // 1.95x), and pinned to 2 CPUs against 8 competing spinners (max
+        // 1.44x).
+        //
+        // This is a wall-clock ratio, not a deterministic pin, so its
+        // trustworthiness comes from two-sided discrimination, not from
+        // the absolute numbers: roughly 2x of margin separates the 4x
+        // gate from both the fast case's observed ceiling and the slow
+        // case's observed floor, and `min_duration_over(_, 3)` keeps
+        // each measured rep in the 25-80ms range - large enough that
+        // scheduler/GC/page-fault noise does not dominate it.
+        //
+        // The 4x gate is intentionally STRICTER than the two sibling
+        // scaling tests above, which both use 6x (see
+        // `human_render_diagnostic_count_on_one_source_scales_sublinearly`'s
+        // RATIO-check rationale). No documented reason was found for 4x
+        // specifically over 6x beyond 953917b's own note that "the 4x
+        // gate sits with wide margin on both sides" of the measured
+        // fast/slow ranges; the 2026-07-31 remeasurement above confirms
+        // that margin holds, and if anything is larger than originally
+        // observed.
         let (source, spans) = synthetic_source_with_spans(50_000, 24);
         let mut sources = BTreeMap::new();
         sources.insert("scaling.rules".to_string(), source);
@@ -951,7 +978,8 @@ mod tests {
              {t_head:?} for 24 diagnostics of the SAME count anchored at the HEAD of \
              the SAME source (ratio {:.1}x) - expected < 4x; byte_span_to_char_span's \
              conversion cost should not depend on how far into the source a span sits \
-             (#595 perf regression: see human.rs:58 and the comment above)",
+             (#595 perf regression: see byte_span_to_char_span's doc comment \
+             and the comment above)",
             t_tail.as_secs_f64() / t_head.as_secs_f64()
         );
     }
@@ -1423,13 +1451,16 @@ mod tests {
         /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
         ///
         /// Round 2 (issue #595): every source this generator produced used to
-        /// end in `\n` unconditionally, so `byte_span_to_char_span`'s inner
-        /// loop always found a non-continuation byte (the newline) before
-        /// reaching `source.len()` - the loop's `q < len` guard never took its
-        /// len-exit. `trailing_newline` closes that gap: when false and the
-        /// last line's own last scalar is multibyte, the source's final byte
-        /// is itself a continuation byte, reaching the same final-scalar
-        /// branch the hand-written unit table above pins exactly.
+        /// end in `\n` unconditionally, so `byte_span_to_char_span`'s
+        /// boundary scan always found a non-continuation byte (the newline)
+        /// before reaching `source.len()`, and no case here ever drove that
+        /// scan all the way to the end of the source. `trailing_newline`
+        /// closes that gap: when false and the last line's own last scalar
+        /// is multibyte, the source's final byte is itself a continuation
+        /// byte, so the scan must reach `source.len()` before finding a
+        /// boundary - the same end-of-source case the hand-written
+        /// `mid_character_offset_rounds_up_to_the_next_char_boundary` unit
+        /// test's final-scalar block pins exactly.
         fn multibyte_source() -> impl Strategy<Value = String> {
             let line =
                 prop::collection::vec(multibyte_piece(), 1..4).prop_map(|pieces| pieces.concat());
@@ -1764,15 +1795,27 @@ mod tests {
             // The FINAL-SCALAR case (round 2, issue #595): a source that does
             // NOT end in `\n` and whose LAST scalar is multibyte.
             //
-            // Every table above ends its source with a 1-byte `\n`, so the
-            // inner loop's `q` always finds a non-continuation byte (the
-            // newline) before it can reach `source.len()`, and the loop's
-            // `q < len` guard never takes its len-exit. That gap survived as
-            // a mutation-gate SURVIVOR at `human.rs:96:17` (`replace < with
-            // <=`): with `q <= len`, once `q` reaches `len` the guard is
-            // STILL true and `bytes[q]` indexes one past the end of the
-            // slice, panicking. No table above can catch that mutant, because
-            // none of them ever drives `q` all the way to `len`.
+            // Every table above ends its source with a 1-byte `\n`, which is
+            // itself a char boundary, so `byte_span_to_char_span`'s boundary
+            // scan always finds one before reaching `source.len()`. None of
+            // those tables ever drives the scan all the way to the very end
+            // of the source - the one place a scan starting past every char
+            // boundary must still terminate correctly. This case closes that
+            // gap: the source's very last byte is itself a continuation
+            // byte, so converting an offset inside the final scalar forces
+            // the scan to walk to `source.len()` before it finds a boundary.
+            //
+            // This table was added (d4154fe, #595) against an EARLIER body
+            // that scanned by indexing `bytes[q]` directly and stopped on a
+            // `q < len` guard; under a `q <= len` mutant that body panicked
+            // here with an index-out-of-bounds ("the len is 6 but the index
+            // is 6"), because `q` reached `len` while the guard still
+            // admitted one more index. `450b16e` replaced that scan with
+            // `source.is_char_boundary(q)`, which is total for every `q` up
+            // to and including `source.len()` - so the panic shape this
+            // table was written to reach can no longer occur by
+            // construction, and its remaining job is coverage of the
+            // end-of-source arm, not a guard against that specific mutant.
             //
             // Byte layout of `"ab\u{1F600}"`, derived by hand: two 1-byte
             // ASCII chars, then a 4-byte emoji, with NOTHING after it.
@@ -1805,9 +1848,9 @@ mod tests {
                     cspan.start, expected,
                     "to_char({b}) over a final multibyte scalar with no trailing \
                      newline must be {expected} (char starts are 0, 1, 2); bytes \
-                     3-5 drive the inner loop's `q` all the way to len (6) with no \
-                     non-continuation byte to stop on first - exactly the case \
-                     that only holds under the guard `q < len`, not `q <= len`"
+                     3-5 drive the scan all the way to len (6) with no boundary \
+                     found before that point - the end-of-source case none of \
+                     the tables above ever exercise"
                 );
             }
         }
