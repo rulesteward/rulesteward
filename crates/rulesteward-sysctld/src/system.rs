@@ -314,21 +314,6 @@ fn enumerate(
     (surviving, masked, f01)
 }
 
-/// The procps/systemd applier-divergence pass (`sysctld-W03-b`).
-///
-/// procps `sysctl --system` reads `/etc/sysctl.conf` dead-last (always winning);
-/// systemd-sysctl applies it only at the `99-sysctl.conf` symlink slot (or not at
-/// all if the symlink is absent/dangling). For each key set in `/etc/sysctl.conf`,
-/// if the two appliers resolve DIFFERENT effective values, one W03 is emitted
-/// anchored at the `/etc/sysctl.conf` assignment, stating both values and the cause.
-/// When both appliers agree the key is suppressed.
-///
-/// `prefix` is used only to work out whether `/etc/sysctl.d/99-sysctl.conf` is
-/// itself a symlink at all (round 2, #593 Finding 2): once a MISDIRECTED 99-slot
-/// symlink is followed as an ordinary drop-in ([`enumerate`]), it can become the
-/// winning `systemd_win` for a key `/etc/sysctl.conf` also sets, and the reason
-/// clause must not claim "no symlink" while naming that exact symlink as the file
-/// that applies instead.
 /// Compute the systemd-sysctl verb + reason clause for one diverging key inside
 /// [`w03b_divergence`]. Split out of that function only to stay under the
 /// workspace `clippy::too_many_lines` budget; no behavior change from the
@@ -428,6 +413,32 @@ fn w03b_verb_and_reason(
     }
 }
 
+/// The procps/systemd applier-divergence pass (`sysctld-W03-b`).
+///
+/// procps `sysctl --system` reads `/etc/sysctl.conf` dead-last (always winning).
+/// systemd-sysctl never reads that file directly (`man 5 sysctl.conf`: "it won't
+/// use the file /etc/sysctl.conf"); it reaches it only through a search-path
+/// drop-in that resolves to it. For each key set in `/etc/sysctl.conf`, if the
+/// two appliers resolve DIFFERENT effective values, one W03 is emitted anchored
+/// at the `/etc/sysctl.conf` assignment, stating both values and the cause. When
+/// both appliers agree the key is suppressed.
+///
+/// `prefix` is used only to work out whether `/etc/sysctl.d/99-sysctl.conf` is
+/// itself a symlink at all (round 2, #593 Finding 2): once a MISDIRECTED 99-slot
+/// symlink is followed as an ordinary drop-in ([`enumerate`]), it can become the
+/// winning `systemd_win` for a key `/etc/sysctl.conf` also sets, and the reason
+/// clause must not claim "no symlink" while naming that exact symlink as the file
+/// that applies instead.
+///
+/// KNOWN LIMITATION, tracked as #619: the REASON CLAUSE (not the verdict, and
+/// not the merged values, both of which are correct) still assumes the linking
+/// drop-in is named `99-sysctl.conf`. That name is a distro packaging
+/// convention with no meaning to systemd - `man 5 sysctl.d` sorts every
+/// `*.conf` in every search directory lexicographically by filename and never
+/// mentions it - so when some OTHER name carries the link (e.g.
+/// `00-local.conf -> ../sysctl.conf`), the clause wrongly reports that
+/// systemd-sysctl does not apply `/etc/sysctl.conf` at all. The value model in
+/// [`enumerate`] already went past this assumption; only this prose has not.
 fn w03b_divergence(
     dropins: &[ParsedAssignment],
     etc_conf: &[ParsedAssignment],
