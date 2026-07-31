@@ -1522,24 +1522,22 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// genuinely distinct from `-F path=`'s SINGLE-INODE watch. "Pure dir-watch
 /// shape" (the structural test [`is_pure_dir_watch_shaped`], the Dir-flavored
 /// twin of [`is_pure_path_watch_shaped`]) applies the SAME test with `dir`
-/// swapped in for `path`, plus two guards the path twin does NOT yet have: an
-/// EMPTY `-S` syscall list, the `always,exit` list/action pair, no `-C`
-/// field-comparisons, `-F` predicates limited to `dir`/`perm`/`arch`/`key`,
-/// EXACTLY ONE `dir` predicate present (using `=`), and any `perm` predicate
-/// present also using `=` (see [`is_pure_dir_watch_shaped`]'s doc comment for
-/// the full ATL-round grounding of the operator/multiplicity/key-membership
-/// refinements).
+/// swapped in for `path`: an EMPTY `-S` syscall list, the `always,exit`
+/// list/action pair, no `-C` field-comparisons, `-F` predicates limited to
+/// `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate present (using
+/// `=`), and any `perm` predicate present also using `=` (see
+/// [`is_pure_dir_watch_shaped`]'s doc comment for the full ATL-round
+/// grounding of the operator/multiplicity/key-membership refinements).
 ///
-/// NOT SYMMETRIC, deliberately, pending issue #600: the operator guard
-/// (`=`-only) and the exactly-one-predicate guard were added to the DIR twin
-/// only, because #571's scope was the dir-shape arm. The path twin still
-/// accepts `-F path!=` / `-F perm!=` and more than one `-F path=`, none of
-/// which can load on a real host (`-EAU_OPEQ`; `audit_to_watch` returns
-/// `-EINVAL` when `krule->watch` is already set). That is over-crediting, so
-/// do NOT read the path twin's laxness as intentional permissiveness -- it is
-/// an untightened copy, tracked on #600. The
-/// two shape tests are mutually exclusive (a field set that is
-/// all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
+/// SYMMETRIC as of commit db6da54 (this lane, issue #600): the path twin
+/// [`is_pure_path_watch_shaped`] carries the SAME two guards -- Path/Perm
+/// predicates must use `=` (:1732), and there must be EXACTLY ONE Path
+/// predicate, not "at least one" (:1745-1749) -- closing the fail-open where
+/// a rule spelled `-F path!=` / `-F perm!=` or naming `-F path=` more than
+/// once (`-EAU_OPEQ`; `audit_to_watch` returns `-EINVAL` when `krule->watch`
+/// is already set -- neither loads on a real host) was still credited as
+/// path-watch shaped. Both shape tests are mutually exclusive (a field set
+/// that is all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
 /// unless it has neither a `path` nor a `dir` predicate, which both shape
 /// tests' presence guards reject), so a rule is never credited by both arms
 /// at once. `-F dir=`/`-F path=` are NEVER unified with each other, in either
@@ -1906,11 +1904,18 @@ fn dir_watch_equivalent_axes_match(
 /// `mask & AUDIT_PERM_EXEC`; `AUDITSC_SOCKETCALL` returns `(mask &
 /// AUDIT_PERM_WRITE) && ...`). So for two masks `m1 subset-of m2`,
 /// `match(m1)` implies `match(m2)` for every event, and a conjunction of
-/// `-F perm=` predicates whose masks are pairwise SUBSET-COMPARABLE -- a
-/// TOTAL ORDER, not merely "every predicate names the same value" -- reduces
-/// to exactly its MINIMUM (smallest/strictest) element: for any comparable
-/// pair `X subset-of Y`, `match(X) AND match(Y) == match(X)`, and induction
-/// over the chain collapses the whole conjunction to its minimum.
+/// `-F perm=` predicates whose SET HAS A MINIMUM -- one element that is a
+/// subset of every other element, NOT the strictly stronger "every pair is
+/// subset-comparable" (a total order) -- reduces to exactly that minimum
+/// (smallest/strictest) element: for any comparable pair `X subset-of Y`,
+/// `match(X) AND match(Y) == match(X)`, and a set with a minimum `m`
+/// satisfies `match(m) AND match(other) == match(m)` for every `other` in
+/// the set, so the whole conjunction collapses to `match(m)`. A total order
+/// is a SUFFICIENT special case of "has a minimum" (the least element of a
+/// totally ordered set is a minimum by definition), not the general
+/// condition (ATL round 5, issue #601 follow-up): `{w,a}, {r,w,a}, {w,x,a}`
+/// has minimum `{w,a}` even though `{r,w,a}` and `{w,x,a}` are themselves
+/// incomparable, so the set is not totally ordered yet still collapses.
 ///
 /// Requiring bitwise EQUALITY of every predicate (this function's round-2
 /// shape, commit d21c7aa) was an over-correction: it correctly stopped two
@@ -1922,18 +1927,22 @@ fn dir_watch_equivalent_axes_match(
 /// `perm=rwxa`, which collapses to `perm=wa` even though the two values
 /// differ (round-4 regression fix, issue #601/#600 ATL).
 ///
-/// Predicates that are NOT pairwise subset-comparable (e.g. `perm=rwa` +
-/// `perm=wxa`: `r` only in the first, `x` only in the second) correctly
-/// decline (`None`) rather than folding to their bitwise INTERSECTION.
-/// Intersection is the WRONG fold for an incomparable pair: `perm=r AND
-/// perm=w` is satisfiable on an `O_RDWR` open (`ACC_MODE` sets both the read
-/// and write bits for that open), while `intersection({r}, {w})` is empty
-/// and `match(empty)` is never true. Intersection and minimum only coincide
-/// when the masks are already subset-comparable, which is exactly why no
-/// SATISFIED-subset test can discriminate the two folds -- see the
+/// A predicate set that has NO MINIMUM at all (e.g. `perm=rwa` + `perm=wxa`:
+/// `r` only in the first, `x` only in the second -- a two-element set, so
+/// "no minimum" and "not pairwise subset-comparable" coincide here) declines
+/// (`None`) rather than folding to the set's bitwise INTERSECTION.
+/// Intersection is the WRONG fold for such a set: `perm=r AND perm=w` is
+/// satisfiable on an `O_RDWR` open (`ACC_MODE` sets both the read and write
+/// bits for that open), while `intersection({r}, {w})` is empty and
+/// `match(empty)` is never true. Intersection and minimum only coincide when
+/// the set already has a minimum, which is exactly why no SATISFIED-subset
+/// test can discriminate the two folds -- see the
 /// `path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_
 /// required_value_...` test for the incomparable-but-intersects-nonempty
-/// case that does.
+/// case that does. Declining when no minimum exists is the CONSERVATIVE
+/// choice here, not a provably correct one in general: `audit_match_perm`'s
+/// monotonicity is silent on a set with no minimum, so a genuinely
+/// satisfiable conjunction may still be reported missing.
 ///
 /// Returns `None` for zero `Perm` predicates (no axis to compare) or if any
 /// predicate's value fails to parse as perm-bit letters.
@@ -1946,26 +1955,32 @@ fn perm_axis_bits(syscall_fields: &[crate::ast::FieldFilter]) -> Option<crate::a
         .map(|f| perm_bits_from_field_value(f.value.as_str()))
         .collect::<Option<Vec<_>>>()?;
 
-    // Confirm a genuine TOTAL ORDER: every pair, not merely traversal
-    // neighbors, must be subset-comparable one way or the other. Two
-    // predicates that are each comparable to a common third but not to each
-    // other would still (per the doc comment above) collapse correctly, but
-    // that is a stronger claim than "totally ordered by subset" and is not
-    // the rule this fold implements -- decline rather than reach for it.
-    for (i, a) in perm_bits.iter().enumerate() {
-        for b in &perm_bits[i + 1..] {
-            if !perm_bits_is_subset(a, b) && !perm_bits_is_subset(b, a) {
-                return None;
-            }
-        }
-    }
-
+    // Fold to a CANDIDATE minimum via a running left-to-right scan (a
+    // predicate becomes the new candidate whenever it is a subset of the
+    // current candidate), then VERIFY below that the candidate really is a
+    // subset of every element before trusting it. The verification pass is
+    // load-bearing, not a formality: a bare running fold with no re-check
+    // returns a LOCALLY minimal element whenever the set has no true
+    // minimum -- e.g. `perm=wa` then `perm=rw`: `rw` is not a subset of
+    // `wa`, so `wa` is never unseated and the fold would return `Some(wa)`
+    // even though `{w,a}` is not actually a subset of `{r,w}`. Only a set
+    // that genuinely HAS a minimum (see the doc comment above) licenses the
+    // fold at all.
     let mut min_iter = perm_bits.iter();
     let mut min = min_iter.next()?.clone();
     for candidate in min_iter {
         if perm_bits_is_subset(candidate, &min) {
             min = candidate.clone();
         }
+    }
+
+    // The running fold above only ever compares a candidate against the
+    // CURRENT min, never against every element seen so far -- so it can
+    // land on a value that is locally undefeated but not a true minimum.
+    // This pass is the actual minimum check: reject unless `min` is a
+    // subset of every predicate in the set.
+    if perm_bits.iter().any(|b| !perm_bits_is_subset(&min, b)) {
+        return None;
     }
 
     Some(min)
