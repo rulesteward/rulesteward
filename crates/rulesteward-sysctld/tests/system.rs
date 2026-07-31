@@ -1272,3 +1272,146 @@ fn a_conf_named_directory_masks_a_vendor_hardening_file_reopening_the_stig_gap()
          STIG key becomes UNSET and W02 flags it; got: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 18. #593 RED driver + regression guard: the 99-slot symlink must be
+//     followed and parsed like any ordinary drop-in when it does NOT resolve
+//     to <prefix>/etc/sysctl.conf (design section 8: "not the expected
+//     symlink -> treat as absent" applies to the APPLIER-SLOT decision only,
+//     not to whether the entry is content at all - a misdirected symlink is
+//     just a symlink pointing somewhere real). The buggy impl's
+//     `ftype.is_symlink() && path == link_99` guard is unconditional on the
+//     TARGET, so it silently drops a compliant host's assignment and reports
+//     a false "unset" (#593). Test A pins the fix's OWN behavior at the
+//     `lint_system` entry point; Test B pins that the basename-masking
+//     ordering guard (FORBIDDEN item 3 / `seen.insert` before the content
+//     decision) still holds for a misdirected symlink specifically - the
+//     existing `the_99_slot_symlink_masks_a_same_basename_file_in_a_lower_dir`
+//     (line 596) covers only the CORRECT distro symlink, where the
+//     content-skip `continue` still fires.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn misdirected_99_symlink_is_followed_and_parsed_as_an_ordinary_dropin() {
+    // /etc/sysctl.d/99-sysctl.conf is a MISDIRECTED symlink (-> ../../other/
+    // hidden.conf, NOT ../sysctl.conf), so slot_symlink_ok is false. The real
+    // systemd-sysctl oracle never special-cases this filename: it just
+    // follows the symlink and parses it like any other drop-in (#593 ground
+    // truth: the recorded oracle transcript shows "Parsing /etc/sysctl.d/
+    // 99-sysctl.conf"). etc/sysctl.d/10-first.conf sets the SAME key
+    // kernel.sysrq = 123 at rank 0. In basename merge order "10-first.conf" <
+    // "99-sysctl.conf" (bytewise), so the followed symlink's assignment (987)
+    // applies LAST and wins -> exactly one W01 anchored at 10-first.conf
+    // naming the winning value 987. The current buggy impl skips ANY symlink
+    // at the 99 slot unconditionally (path equality only, ignoring the
+    // target), so the symlink's content is never parsed, only one assignment
+    // exists, and NO W01 fires -> RED. 987/123 are distinctive (in no path,
+    // filename or line number in this fixture).
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "other/hidden.conf", "kernel.sysrq = 987\n");
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/99-sysctl.conf",
+        "../../other/hidden.conf",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/10-first.conf",
+        "kernel.sysrq = 123\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let sysrq_w01: Vec<&Diagnostic> = w01s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("kernel.sysrq") || d.message.contains("kernel/sysrq"))
+        .collect();
+    assert_eq!(
+        sysrq_w01.len(),
+        1,
+        "the misdirected symlink must be followed and parsed, so its \
+         assignment (987) conflicts with and beats 10-first.conf's (123) in \
+         basename merge order -> exactly one W01; got: {diags:?}"
+    );
+    assert!(
+        sysrq_w01[0]
+            .file
+            .display()
+            .to_string()
+            .ends_with("10-first.conf"),
+        "the dead assignment is 10-first.conf's; got {:?}",
+        sysrq_w01[0].file
+    );
+    assert!(
+        sysrq_w01[0].message.contains("= 987)")
+            && sysrq_w01[0].message.contains("etc/sysctl.d/99-sysctl.conf"),
+        "the winner must be the followed 99-sysctl.conf symlink's content \
+         (987), proving the misdirected symlink is parsed as an ordinary \
+         drop-in instead of being silently skipped; got: {}",
+        sysrq_w01[0].message
+    );
+}
+
+#[test]
+fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
+    // /etc/sysctl.d/99-sysctl.conf is a MISDIRECTED symlink (-> a real,
+    // comment-only file that is NOT ../sysctl.conf), so slot_symlink_ok is
+    // false and its content is parsed as an ordinary (empty) drop-in after
+    // the fix. But the basename CLAIM (seen.insert) must happen for EVERY
+    // .conf-named entry regardless of the content decision (system.rs:191-192's
+    // own comment: "Content contribution, decided AFTER the basename claim
+    // above"), so a real /usr/lib/sysctl.d/99-sysctl.conf (same basename,
+    // lower dir) must still be MASKED: its unique key never reaches the
+    // effective merged set -> exactly one W03-c anchored at the masked file,
+    // and no W01 anchored there. A wrong impl that moves the 99-slot content
+    // decision (or its symlink_ok conjunct) above seen.insert would let the
+    // masked lower file wrongly survive instead. 555 is distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(root.path(), "other/decoy.conf", "# misdirected target\n");
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/99-sysctl.conf",
+        "../../other/decoy.conf",
+    );
+    write_at(
+        root.path(),
+        "usr/lib/sysctl.d/99-sysctl.conf",
+        "fs.protected_hardlinks = 555\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    assert!(
+        w01s(&diags).iter().all(|d| {
+            !d.file
+                .display()
+                .to_string()
+                .contains("usr/lib/sysctl.d/99-sysctl.conf")
+        }),
+        "the masked usr/lib 99-sysctl.conf must not anchor any W01; got: {diags:?}"
+    );
+    let hits: Vec<&Diagnostic> = w03s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("protected_hardlinks"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the masked lower 99-sysctl.conf's unique key must be silently \
+         dropped -> exactly one W03-c; got: {diags:?}"
+    );
+    assert!(
+        hits[0]
+            .file
+            .display()
+            .to_string()
+            .ends_with("usr/lib/sysctl.d/99-sysctl.conf"),
+        "the W03-c must anchor at the MASKED lower file; got {:?}",
+        hits[0].file
+    );
+    assert!(
+        hits[0].message.contains("555"),
+        "the W03-c message must state the dropped value (555): {}",
+        hits[0].message
+    );
+}

@@ -30,13 +30,17 @@
 //! # Why `rulesteward_verdict` stays in this file, not the oracle adapter
 //!
 //! Defensible to extract too in principle, but [`rulesteward_verdict`] is
-//! called by 20 of this corpus's 22 scenarios: only
+//! called by 19 of this corpus's 22 scenarios: only
 //! `key-grammar-malformed-line-reject` (`key: NONE`, comparing the REJECT
-//! signal instead of a merged value) and `key-grammar-asymmetric-separator`
+//! signal instead of a merged value), `key-grammar-asymmetric-separator`
 //! (comparing the raw transcript's canonical-key handling directly, since its
 //! key is not necessarily STIG/CIS tracked in dotted-slash form for an
-//! interface name) skip it. `key-grammar-dash-prefix-identity` and
-//! `slot-symlink-absent-divergence` both call it despite ALSO comparing a
+//! interface name), and `slot-symlink-misdirected-593` (post-fix the key's
+//! value is compliant under both baselines, so no `sysctld-W02`/`W04`
+//! diagnostic ever names it, and `rulesteward_verdict` would panic before
+//! reaching a value to extract - the honest observation is the ABSENCE of a
+//! finding, asserted directly against `diags`) skip it. `key-grammar-dash-prefix-identity`
+//! and `slot-symlink-absent-divergence` both call it despite ALSO comparing a
 //! transcript signal directly, precisely so `RuleSteward`'s own value is pinned
 //! alongside the oracle's rather than the oracle side being checked alone.
 //! Keeping it here (rather than moving it beside `oracle_setting_value` in
@@ -48,13 +52,17 @@
 //!
 //! # XFAIL policy
 //!
-//! One scenario ([`XFAIL`]) asserts the CURRENT (wrong) behavior rather than
-//! oracle agreement: `slot-symlink-misdirected-593` (issue #593). Landing it
-//! xfailed documents a real, already-verified bug without blocking on a fix
-//! this test-author must not make (impl-blind barrier). The XFAIL branch
-//! below pins the SPECIFIC expected values for this scenario (oracle stays
-//! `Some("2")`, `RuleSteward` stays `None`), not merely that the two sides
-//! differ - a bare "not equal" is satisfiable by any two wrong values.
+//! [`XFAIL`] is currently EMPTY. Its sole entry, `slot-symlink-misdirected-593`
+//! (issue #593), is FIXED (`RuleSteward` session 9m lane 2): `enumerate()` now
+//! gates the 99-slot content-skip on `slot_symlink_ok`, so a symlink at the
+//! `99-sysctl.conf` slot that resolves to anything OTHER than
+//! `/etc/sysctl.conf` is followed and parsed like any ordinary drop-in instead
+//! of being silently dropped. The scenario keeps its own special-case arm
+//! below (see that arm for why it cannot use the generic `rulesteward_verdict`
+//! comparison): its post-fix value is compliant on both baselines, so the
+//! honest post-fix observation is the ABSENCE of a `sysctld-W02`/`W04` finding,
+//! pinned alongside the oracle's own `Some("2")` so the absence cannot be
+//! satisfied vacuously by a fix that breaks enumeration entirely.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -88,7 +96,7 @@ const SCENARIO_FLOOR: usize = 22;
 /// documents a bug without letting the test-author silently fix the
 /// implementation (impl-blind barrier) or silently accept the wrong answer as
 /// if it were correct.
-const XFAIL: &[(&str, u32)] = &[("slot-symlink-misdirected-593", 593)];
+const XFAIL: &[(&str, u32)] = &[];
 
 // ---------------------------------------------------------------------------
 // scenario.meta: a flat `key: value` line format, hand-parsed.
@@ -472,6 +480,49 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                 continue;
             }
 
+            // slot-symlink-misdirected-593 (#593, FIXED in RuleSteward session 9m
+            // lane 2): the 99-slot symlink targets a real file OTHER than
+            // ../sysctl.conf (etc/rs9k1-hidden.conf, outside the sysctl.d search
+            // dirs so it is never independently enumerated). The real oracle
+            // never special-cases the 99-sysctl.conf filename: it just follows the
+            // symlink and parses it like any other drop-in, landing on a value (2)
+            // that is COMPLIANT under both the STIG (baseline.rs VALUE_2,
+            // RHEL-09-213070) and CIS (cis.rs 1.5.1 VALUE_2) baselines for this
+            // key. So post-fix RuleSteward emits NO sysctld-W02/W04 for it at all
+            // - `rulesteward_verdict` would PANIC (its fail-closed guard fires
+            // when no such diagnostic names the key) before ever reaching a value
+            // to compare. The honest acceptance criterion for a FALSE-POSITIVE fix
+            // is the ABSENCE of a finding, so assert that directly instead of
+            // routing through `rulesteward_verdict`. Pin BOTH sides: the oracle's
+            // Some("2") (so this cannot be satisfied VACUOUSLY by a fix that
+            // breaks enumeration entirely so nothing is ever read) and the
+            // negative product-side assertion (the bug's whole shape is a finding
+            // that should not exist, so its absence is the observation).
+            if meta.id == "slot-symlink-misdirected-593" {
+                assert_eq!(
+                    oracle_value.as_deref(),
+                    Some("2"),
+                    "{}: expected the real oracle's value to remain 2 (it follows the \
+                     misdirected symlink to a compliant value) - if this changed, \
+                     re-ground this scenario's pin rather than widening it",
+                    meta.id
+                );
+
+                let (diags, _sources) = lint_system(Some(tmp.path()), Some(*target));
+                let quoted_key = format!("`{key}`");
+                assert!(
+                    !diags.iter().any(|d| {
+                        (d.code == "sysctld-W02" || d.code == "sysctld-W04")
+                            && d.message.contains(&quoted_key)
+                    }),
+                    "{}: expected no sysctld-W02/W04 finding for {quoted_key} once the \
+                     misdirected symlink is followed and its compliant value applies; \
+                     got: {diags:?}",
+                    meta.id
+                );
+                continue;
+            }
+
             let (diags, _sources) = lint_system(Some(tmp.path()), Some(*target));
             let rs_value = rulesteward_verdict(&diags, key);
 
@@ -483,35 +534,6 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                      this scenario from XFAIL, not the assertion",
                     meta.id
                 );
-                // Pin the SPECIFIC expected values, not just "not equal": a
-                // corruption sweep found that flipping the recorded oracle
-                // value (e.g. the transcript's `to '2'` to `to '7'`) still
-                // satisfies a bare `assert_ne!`, since any two DIFFERENT wrong
-                // values still differ from each other. #593's divergence shape
-                // is specific and already grounded in the scenario's own
-                // comment: the real oracle follows the misdirected 99-slot
-                // symlink and applies a COMPLIANT value (2), while
-                // RuleSteward's `enumerate()` unconditionally skips ANY
-                // symlink at that path (path equality only, ignoring the
-                // actual target) and reports the key completely UNSET.
-                if meta.id == "slot-symlink-misdirected-593" {
-                    assert_eq!(
-                        oracle_value.as_deref(),
-                        Some("2"),
-                        "{}: XFAIL #{issue}: expected the real oracle's value to remain 2 (it \
-                         follows the misdirected symlink to a compliant value) - if this \
-                         changed, re-ground the XFAIL pin rather than widening it",
-                        meta.id
-                    );
-                    assert_eq!(
-                        rs_value, None,
-                        "{}: XFAIL #{issue}: expected RuleSteward's value to remain unset \
-                         (enumerate() unconditionally skips the 99-slot symlink by path alone) \
-                         - if this changed, the bug's shape has changed and the XFAIL pin needs \
-                         re-grounding, not silent widening",
-                        meta.id
-                    );
-                }
                 xfail_hit.push(meta.id.clone());
             } else {
                 assert_eq!(
