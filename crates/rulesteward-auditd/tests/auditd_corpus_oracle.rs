@@ -139,7 +139,7 @@ const CONTROL_REJECT_ID: &str = "control-reject";
 /// target must fail the suite, not go quiet.
 ///
 /// Every entry states whether it is a genuine blind spot (nothing downstream
-/// catches it) or covered elsewhere; none of these 20 are caught by an
+/// catches it) or covered elsewhere; none of these 17 are caught by an
 /// existing `au-E02`/`E04`/`E05` lint: `au-E02` validates operator legality
 /// (is `>=` allowed for this field's TYPE), `au-E05` is the KERNEL-side
 /// bitmask-operator sibling to that same operator question, and `au-E04`
@@ -237,20 +237,6 @@ const XFAIL: &[(&str, &str)] = &[
         "#491 -F devminor=-1, same non-negative requirement as pers. \
          Genuine blind spot.",
     ),
-    // --- -F perm= letter validation (#601's other half): real auditctl
-    // validates -F perm='s value against the letter set 'rwxa'; the parser
-    // stores any string. This is the row the control-reject id used to
-    // carry - moved off the control because a positive control must never
-    // double as a divergence (see CONTROL_REJECT_ID's doc above).
-    (
-        "f-perm-invalid-letter",
-        "#601 -F perm=zz: real auditctl rejects an invalid permission \
-         letter set ('Permission can only contain 'rwxa''); the parser \
-         performs no letter-set validation on -F perm= values (distinct \
-         from the -p watch-flag validation in parse_perms, which DOES \
-         reject invalid letters - see p-invalid-lower/p-invalid-upper \
-         below, which are NOT XFAILs). Genuine blind spot.",
-    ),
     // --- Unknown syscall name (new finding, beyond this lane's original
     // 16-id estimate): the parser accepts ANY string as a -S syscall name
     // with no table lookup; real auditctl validates the name via
@@ -275,17 +261,6 @@ const XFAIL: &[(&str, &str)] = &[
          parser's naive split_whitespace has no such preprocessing and \
          rejects on the stray trailing token. Open parser gap, tracked by \
          #584.",
-    ),
-    (
-        "iss601-uppercase-perm-all",
-        "#601, product too STRICT: real auditctl accepts uppercase \
-         permission letters (WA); parse_perms only matches lowercase rwxa. \
-         Open parser gap, tracked by #601.",
-    ),
-    (
-        "iss601-uppercase-perm-mixed",
-        "#601, product too STRICT: same gap as iss601-uppercase-perm-all, \
-         mixed-case 'Wa'. Open parser gap, tracked by #601.",
     ),
     (
         "w-delete-watch",

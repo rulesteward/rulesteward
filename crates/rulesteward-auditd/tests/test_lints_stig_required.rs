@@ -2778,3 +2778,124 @@ fn dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d() {
          {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #600: the path twin's fail-open (`is_pure_path_watch_shaped`). NO corpus
+// row exists for this issue; these are fresh integration tests, mirroring
+// the dir twin's MISS-1/MISS-3/MISS-4 tests above but on V-230409/
+// RHEL-08-030171 (`-w /etc/sudoers -p wa -k identity`,
+// `src/lints/stig_required.rs:175-179`) -- the PLAIN-FILE twin of the row
+// the dir tests use (V-230410/RHEL-08-030172, `/etc/sudoers.d/`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_wrong_operator_path_not_equal_does_not_satisfy_v230409_sudoers() {
+    // #600 MISS-1 analog for the path twin (mirrors
+    // `dir_wrong_operator_not_equal_does_not_satisfy_v230410_sudoers_d`
+    // above): `lib/libaudit.c`'s `audit_to_watch` rejects any op but `=` on
+    // an `AUDIT_WATCH` (`path`) predicate at the kernel level -- a `-F
+    // path!=` rule never loads either, so it must not satisfy the
+    // path-shaped requirement V-230409/RHEL-08-030171.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path!=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path!=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path!= rule can never load at the kernel level (audit_to_watch \
+         rejects any op but `=`) and must not satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn path_wrong_operator_perm_not_equal_does_not_satisfy_v230409_sudoers() {
+    // #600 MISS-3 analog (mirrors
+    // `dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d`
+    // above): `lib/libaudit.c`'s AUDIT_PERM case returns `-EAU_OPEQ` for any
+    // op but `=` (verified rc=-29 against the installed audit-4.1.4
+    // libaudit) -- a `-F perm!=` rule never loads either, on the path arm
+    // just as on the dir arm. Both operator cases are needed: a fix guarding
+    // only Path leaves Perm open, and vice versa.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm!=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm!=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F perm!= rule can never load at the kernel level (EAU_OPEQ \
+         rejects any op but `=`) and must not satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_two_path_predicates_does_not_satisfy_v230409_regardless_of_field_order() {
+    // #600 MISS-4 analog (mirrors
+    // `dir_syscall_form_with_two_dir_predicates_does_not_satisfy_v230410_
+    // regardless_of_field_order` above): `audit_to_watch` returns -EINVAL
+    // once a rule's watch pointer is already set -- one location watch per
+    // rule is a hard kernel limit -- so a rule naming `-F path=` TWICE never
+    // loads no matter which value comes first. Pinned in BOTH field orders:
+    // the correct-path-FIRST order is the one that is RED today (
+    // `watch_equivalent_axes_match`'s `.find()` picks the first Path
+    // predicate, so today it matches and wrongly credits the requirement);
+    // the reversed order already passes. Keeping both in one test is what
+    // makes a `.find()`-order-dependent implementation impossible to sneak
+    // through.
+    let rules_path_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n",
+    );
+    let diags_path_first = w06(
+        &rules_path_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_path_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path= rule naming the CORRECT path FIRST but a second, wrong \
+         -F path= predicate must not satisfy V-230409 -- the rule never \
+         loads at all: {diags_path_first:?}"
+    );
+
+    let rules_path_second = parse(
+        "-a always,exit -F arch=b32 -F path=/tmp/nope -F path=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/tmp/nope -F path=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags_path_second = w06(
+        &rules_path_second,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_path_second
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order (wrong -F path= predicate FIRST, correct \
+         one second) must produce the SAME 'missing' verdict, not flip to \
+         satisfied: {diags_path_second:?}"
+    );
+}
+
+#[test]
+fn path_well_formed_syscall_pair_still_satisfies_v230409_sudoers() {
+    // Positive control (F6): without this, an "always report missing"
+    // implementation would pass the three tests above vacuously.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a well-formed -F path=/etc/sudoers -F perm=wa syscall pair must \
+         satisfy V-230409/RHEL-08-030171: {diags:?}"
+    );
+}

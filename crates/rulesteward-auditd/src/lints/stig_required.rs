@@ -1963,28 +1963,34 @@ fn multiset_eq<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> bool {
 /// NOT filtered through [`watch_equivalent_axes_match`] (which is the only
 /// caller reachable from the public `w06`/`w06_with_baseline` API).
 ///
-/// # Why this can't be pinned at the public-API level (mutation-gate report,
-/// session 9e-wave2c pipeline P2 round 3)
+/// # Why this can't be pinned (fully) at the public-API level (mutation-gate
+/// report, session 9e-wave2c pipeline P2 round 3; extended for issue #600)
 ///
-/// `cargo mutants` flagged `:1609:42 - replace == with !=` (the
-/// `fields.iter().any(|f| f.field == AuditField::Path)` guard) as a survivor.
-/// It cannot be killed through `w06`/`w06_with_baseline`: EVERY caller of
-/// [`is_pure_path_watch_shaped`] immediately follows it with
-/// [`watch_equivalent_axes_match`], which independently re-derives path
-/// presence via its OWN `.find(|f| f.field == AuditField::Path)` (and
-/// likewise for `Perm`) and returns `false` whenever either is absent. Proof
-/// by cases on the mutated `==`/`!=` divergence (only possible when `fields`
-/// contains ALL-Path-no-other, or ALL-non-Path-no-Path): both divergent
-/// shapes are missing either a Path or a Perm predicate, so
-/// `watch_equivalent_axes_match` independently forces `false` regardless of
-/// what `is_pure_path_watch_shaped` decided -- the observable `rules_match`
-/// result is IDENTICAL under the mutant and the original for every reachable
-/// input. Testing the private function directly (the standard Rust pattern
-/// for a helper with no other observable surface) is the only way to pin the
-/// "at least one Path predicate present" guard's own correctness -- it
-/// exists to reject a vacuously-empty-of-Path field set per this function's
-/// doc comment ("with at least one path predicate present, so an empty field
-/// set does not vacuously pass").
+/// `cargo mutants` originally flagged the field-presence guard as a
+/// survivor: EVERY caller of [`is_pure_path_watch_shaped`] immediately
+/// follows it with [`watch_equivalent_axes_match`], which independently
+/// re-derives path presence via its OWN `.find(|f| f.field ==
+/// AuditField::Path)` (and likewise for `Perm`) and returns `false`
+/// whenever either is absent -- so the observable `rules_match` result is
+/// IDENTICAL under a presence-only mutant and the original for every
+/// reachable input.
+///
+/// Issue #600 replaced the original `fields.iter().any(|f| f.field ==
+/// AuditField::Path)` guard with `fields.iter().filter(|f| f.field ==
+/// AuditField::Path).count() == 1` (mirroring [`is_pure_dir_watch_shaped`]'s
+/// MISS-4 fix -- `count() == 1` subsumes the old presence check: `0 != 1`)
+/// and added an operator guard, `Path | Perm => f.op == CompareOp::Eq`
+/// (mirroring MISS-1/MISS-3). The "at least one" half of `count() == 1`
+/// stays unobservable through `w06` for the same reason as the deleted
+/// `.any(..)` guard. The "exactly one, not more" half is only PARTLY
+/// unobservable: a rule with two `-F path=` predicates IS distinguishable
+/// through `w06` (see the sibling integration test
+/// `path_syscall_form_with_two_path_predicates_does_not_satisfy_v230409_
+/// regardless_of_field_order`), mirroring the note in
+/// [`pure_dir_watch_shape_tests`]'s own docstring. Testing the private
+/// function directly (the standard Rust pattern for a helper with no other
+/// observable surface) remains the sharper, most localized pin for every
+/// guard added here.
 #[cfg(test)]
 mod pure_path_watch_shape_tests {
     use super::is_pure_path_watch_shaped;
@@ -1998,15 +2004,25 @@ mod pure_path_watch_shape_tests {
         }
     }
 
+    fn field_with_op(f: AuditField, value: &str, op: CompareOp) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op,
+            value: value.to_string(),
+        }
+    }
+
     #[test]
     fn perm_and_arch_without_any_path_predicate_is_not_path_watch_shaped() {
         // Every OTHER conjunct passes (always,exit / empty -S / empty -C /
-        // every field is one of Path|Perm|Arch), but there is NO Path
-        // predicate at all -- Perm and Arch alone must NOT count as
-        // "path-watch shaped". Kills the `:1609:42 == -> !=` mutant
-        // directly: the mutant's `any(|f| f.field != Path)` evaluates `true`
-        // here (both Perm and Arch differ from Path), wrongly returning
-        // `true` for a field set that names no path at all.
+        // every field is one of Path|Perm|Arch, all using `=`), but there is
+        // NO Path predicate at all -- Perm and Arch alone must NOT count as
+        // "path-watch shaped". Pins the "at least one" half of the
+        // `fields.iter().filter(|f| f.field ==
+        // AuditField::Path).count() == 1` guard (issue #600): a mutant
+        // widening `count() == 1` to `count() >= 0` (or deleting the
+        // conjunct outright) would wrongly return `true` for a field set
+        // that names no path at all.
         let fields = vec![
             field(AuditField::Perm, "wa"),
             field(AuditField::Arch, "b32"),
@@ -2031,6 +2047,113 @@ mod pure_path_watch_shape_tests {
         assert!(
             is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
             "path+perm+arch, empty -S, empty -C must be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn dir_field_alone_is_not_path_watch_shaped() {
+        // Mirrors `path_field_alone_is_not_dir_watch_shaped` in the dir
+        // twin's module: a Dir field is not in the {Path,Perm,Arch,Key}
+        // allowed set, so a dir-only field list must never be path-watch
+        // shaped.
+        let fields = vec![field(AuditField::Dir, "/etc/sudoers.d")];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a Dir-only field set must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn path_and_dir_together_is_not_path_watch_shaped() {
+        // Test-adequacy strengthening mirroring
+        // `dir_and_path_together_is_not_dir_watch_shaped`: a Dir-only field
+        // set (see `dir_field_alone_is_not_path_watch_shaped` above) already
+        // fails both the allowed-field-set conjunct and the "has exactly one
+        // Path predicate" conjunct, so it alone cannot distinguish the real
+        // allowed set (Path|Perm|Arch|Key) from an over-broad one
+        // (Path|Dir|Perm|Arch). This test adds a Path predicate ALONGSIDE
+        // the Dir predicate so the "has exactly one Path predicate" conjunct
+        // is satisfied too, and only a correct allowed-field-set conjunct
+        // can still reject it.
+        let fields = vec![
+            field(AuditField::Dir, "/etc/sudoers.d"),
+            field(AuditField::Path, "/etc/sudoers.d"),
+            field(AuditField::Perm, "wa"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a field set containing BOTH Path and Dir must not be path-watch \
+             shaped -- Dir is not in the {{Path,Perm,Arch,Key}} allowed set"
+        );
+    }
+
+    #[test]
+    fn path_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
+        // #600 MISS-1 analog: `lib/libaudit.c`'s `audit_to_watch` rejects
+        // any op but `=` on an AUDIT_WATCH (`path`) predicate at the kernel
+        // level (mirroring AUDIT_DIR's -EINVAL). A `-F path!=` predicate
+        // never loads, so it must not count as path-watch shaped even
+        // though the value looks right.
+        let fields = vec![
+            field_with_op(AuditField::Path, "/etc/sudoers", CompareOp::Ne),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Arch, "b32"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a Path predicate using != must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn perm_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
+        // #600 MISS-3 analog, the Perm side: `lib/libaudit.c`'s AUDIT_PERM
+        // case returns -EAU_OPEQ for any op but `=` (verified rc=-29
+        // against the installed audit-4.1.4 libaudit).
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field_with_op(AuditField::Perm, "wa", CompareOp::Ne),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a Perm predicate using != must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn arch_and_key_with_non_equal_operators_are_still_path_watch_shaped() {
+        // Pins the deliberate `Arch | Key => true` arm (any operator
+        // allowed): arch's own operator restriction is au-E02's job, and
+        // `-F key=` unifies with `-k` via `effective_key` regardless of
+        // operator -- see the dir twin's identical arm and the module doc
+        // comment on `is_pure_dir_watch_shaped`. A mutant tightening this
+        // arm to require `=` would wrongly reject a well-formed rule.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Perm, "wa"),
+            field_with_op(AuditField::Arch, "b32", CompareOp::Ne),
+            field_with_op(AuditField::Key, "identity", CompareOp::Ne),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "Arch/Key predicates with != must still be path-watch shaped: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn two_path_predicates_is_not_path_watch_shaped() {
+        // #600 MISS-4 analog: `audit_to_watch` returns -EINVAL once a
+        // rule's watch pointer is already set -- one location watch per
+        // rule is a hard kernel limit, so a rule naming -F path= twice
+        // never loads either. Pins `count() == 1` against a `>= 1` mutant.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Path, "/tmp/nope"),
+            field(AuditField::Perm, "wa"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "two Path predicates must not be path-watch shaped"
         );
     }
 }

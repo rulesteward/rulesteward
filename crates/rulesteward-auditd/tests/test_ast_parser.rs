@@ -795,10 +795,15 @@ fn parse_audit_field_all_arms_recognized() {
     ];
 
     for (field_name, expected_variant) in cases {
-        // Build a minimal parseable syscall rule containing `-F <field>=0`.
-        // Using `=0` as the value works for all field types for parsing purposes
-        // (the parser stores value as a String; semantic validation is separate).
-        let rule_str = format!("-a always,exit -S execve -F {field_name}=0");
+        // Build a minimal parseable syscall rule containing `-F <field>=<value>`.
+        // `0` works as a filler value for every field EXCEPT `perm`: #601 half
+        // B added letter-set ('rwxa') validation to `-F perm=`'s value
+        // specifically, so `perm=0` now correctly rejects. `wa` is used there
+        // instead so this generic field-name sweep does not trip that
+        // unrelated, field-specific validation; every other field's value
+        // remains unvalidated (the parser stores it as a plain String).
+        let value = if *field_name == "perm" { "wa" } else { "0" };
+        let rule_str = format!("-a always,exit -S execve -F {field_name}={value}");
         let rules = parse_rules_str(&rule_str).unwrap_or_else(|e| {
             panic!("field '{field_name}' failed to parse: {e:?}\n  rule: {rule_str}")
         });
@@ -1071,4 +1076,172 @@ fn parse_action_possible_recognized() {
         }
         other => panic!("expected Syscall, got {other:?}"),
     }
+}
+
+// --------------------------------------------------------------------------
+// #601 half A: `-p` permission letters case-fold
+// --------------------------------------------------------------------------
+//
+// Real auditctl case-folds `-p` letters (corpus rows `iss601-uppercase-perm-
+// all` / `iss601-uppercase-perm-mixed`, `tests/corpus/auditd-oracle/
+// el8.tsv:44-45`, el9/el10 identical: rc=1, empty stdout, stderr `Error
+// sending add rule data request (Operation not permitted)` -- the ACCEPT
+// probe per `src/oracle.rs:153-164`, proving the line PARSED). Today
+// `parse_perms` (`src/parser.rs:425-442`) matches only the lowercase
+// literals, so these two rows are open parser gaps (#601).
+
+/// `-p WA` (uppercase) must fold to the same `PermBits` as `-p wa`.
+/// Grounded: corpus row `iss601-uppercase-perm-all`. Asserting the
+/// individual BITS (not merely "it parses") kills a mutant that accepts
+/// uppercase letters but drops a bit.
+#[test]
+fn watch_perms_uppercase_all_folds_to_lowercase() {
+    let rules = parse_ok("-w /etc/passwd -p WA -k q4");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(!perms.read, "R must not be set");
+            assert!(perms.write, "W must fold to write");
+            assert!(!perms.exec, "X must not be set");
+            assert!(perms.attr, "A must fold to attr");
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// `-p Wa` (mixed case) folds the same way. Grounded: corpus row
+/// `iss601-uppercase-perm-mixed`.
+#[test]
+fn watch_perms_mixed_case_folds() {
+    let rules = parse_ok("-w /etc/passwd -p Wa -k q5");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(!perms.read, "R must not be set");
+            assert!(perms.write, "W must fold to write");
+            assert!(!perms.exec, "X must not be set");
+            assert!(perms.attr, "A must fold to attr");
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// All four letters uppercase (`-p RWXA`) sets all four bits. Guards against
+/// a fold that only handles the two letters ('w'/'a') the corpus happens to
+/// exercise.
+#[test]
+fn watch_perms_uppercase_all_four_letters() {
+    let rules = parse_ok("-w /etc -p RWXA");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(perms.read);
+            assert!(perms.write);
+            assert!(perms.exec);
+            assert!(perms.attr);
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// An INVALID (not merely uppercase) permission letter must still be
+/// rejected, on both the lowercase and uppercase spellings. Grounded: corpus
+/// rows `p-invalid-lower` / `p-invalid-upper`
+/// (`tests/corpus/auditd-oracle/el9.tsv:58-59`) -- real auditctl rejects both
+/// (rc=1, empty stdout/stderr, a silent add-shaped reject per
+/// `classify_capture` step 5). A fold implemented as "strip non-rwxa
+/// characters" instead of "lowercase then match rwxa" would wrongly accept
+/// these. The message-content check is case-insensitive: the ground truth
+/// only requires the offending LETTER be named, not a specific casing of it
+/// in the diagnostic.
+#[test]
+fn watch_perms_invalid_letter_still_rejects_either_case() {
+    let lower = parse_err("-w /etc/passwd -p z -k pinvlow");
+    assert!(
+        lower
+            .iter()
+            .any(|e| e.message.to_ascii_lowercase().contains('z')),
+        "lowercase invalid letter 'z' must be named in the error; got: {lower:?}"
+    );
+    let upper = parse_err("-w /etc/passwd -p Z -k pinvup");
+    assert!(
+        upper
+            .iter()
+            .any(|e| e.message.to_ascii_lowercase().contains('z')),
+        "uppercase invalid letter 'Z' must be named in the error; got: {upper:?}"
+    );
+}
+
+// --------------------------------------------------------------------------
+// #601 half B: `-F perm=` letter-set validation
+// --------------------------------------------------------------------------
+//
+// Real auditctl rejects an invalid `-F perm=` letter set (corpus row
+// `f-perm-invalid-letter`, `tests/corpus/auditd-oracle/el9.tsv:60`: rc=1,
+// empty stdout, stderr `Permission can only contain  'rwxa'` -- matched by
+// `KNOWN_PARSE_COMPLAINTS`'s `"Permission can only contain"` substring,
+// `src/oracle.rs:237-242`). Today `parse_field_filter`
+// (`src/parser.rs:579-600`) stores `-F perm=` values verbatim with zero
+// letter-set validation, so this is an open parser gap (#601's other half).
+//
+// RULING (orchestrator, 2026-07-30): the letter-set check is gated on the
+// comparison OPERATOR -- only `-F perm=VALUE` (op `=`) is letter-checked.
+// `-F perm!=VALUE` (and every other operator) keeps parsing unvalidated so
+// `au-E02` can report the illegal operator, matching real auditctl's own
+// diagnostic ORDER (the kernel rejects the operator, `-EAU_OPEQ`, before it
+// ever examines the letters).
+
+/// `-F perm=zz` must be a parse error (the corpus row's exact rule text).
+/// Assert on `RuleSteward`'s OWN message shape (names `perm` and the
+/// offending value `zz`), not the oracle's `Permission can only contain
+/// 'rwxa'` text -- that string belongs to the real `auditctl` diagnostic,
+/// not to `RuleSteward`'s parser.
+#[test]
+fn field_filter_perm_invalid_letter_rejects() {
+    let errors = parse_err("-a always,exit -F perm=zz -S execve -k fpermbad");
+    assert!(!errors.is_empty(), "-F perm=zz must produce a parse error");
+    assert!(
+        errors[0].message.contains("perm") && errors[0].message.contains("zz"),
+        "error message must name 'perm' and the offending value 'zz'; got: {:?}",
+        errors[0].message
+    );
+}
+
+/// Valid `-F perm=` letter sets (including the uppercase spelling) must
+/// still parse. The uppercase case is the coupling with the `-p` fold: the
+/// `-F` check must case-fold too, or
+/// `dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d`
+/// (`tests/test_lints_stig_required.rs:2762`) goes RED.
+#[test]
+fn field_filter_perm_valid_letters_still_parse() {
+    parse_ok("-a always,exit -F perm=wa -S execve");
+    parse_ok("-a always,exit -F perm=rwxa -S execve");
+    parse_ok("-a always,exit -F perm=WA -S execve");
+}
+
+/// Pins DECISION 1/the orchestrator RULING: `-F perm!=zz` must PARSE -- the
+/// letter check does not apply to a non-`=` operator. `au-E02` (not this
+/// parser check) is what reports the illegal operator on this line; see
+/// `e02_perm_ne_is_error` (`tests/test_lints_operator_validity.rs:569`).
+#[test]
+fn field_filter_perm_operator_gating_pin() {
+    parse_ok("-a always,exit -S openat -F perm!=zz");
+}
+
+/// `-F perm=` (empty value, zero letters) parses today, mirroring
+/// `parse_perms("")`. No corpus row or oracle evidence exists for the empty
+/// case, so this pins today's behavior rather than inventing a rule.
+#[test]
+fn field_filter_perm_empty_value_unchanged() {
+    parse_ok("-a always,exit -S openat -F perm=");
+}
+
+/// Scope pin: the new letter-set check applies to `AuditField::Perm` ONLY,
+/// not to every `-F` value. `pers`/`devminor` stay unvalidated (these are
+/// XFAIL corpus ids `iss491-neg-pers` / `iss491-neg-devminor`, tracked by
+/// #491, out of this lane's scope).
+#[test]
+fn field_filter_non_perm_values_are_still_unvalidated() {
+    parse_ok("-a always,exit -S openat -F pers=-1");
+    parse_ok("-a always,exit -F devminor=-1 -S openat");
 }
