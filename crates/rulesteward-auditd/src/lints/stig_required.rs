@@ -1717,19 +1717,36 @@ fn is_pure_path_watch_shaped(
     fields: &[crate::ast::FieldFilter],
     field_compares: &[crate::ast::FieldComparison],
 ) -> bool {
-    use crate::ast::{Action, AuditField, FilterList};
+    use crate::ast::{Action, AuditField, CompareOp, FilterList};
 
     *list == FilterList::Exit
         && *action == Action::Always
         && syscalls.is_empty()
         && field_compares.is_empty()
-        && fields.iter().all(|f| {
-            matches!(
-                f.field,
-                AuditField::Path | AuditField::Perm | AuditField::Arch | AuditField::Key
-            )
+        && fields.iter().all(|f| match f.field {
+            // #600 (mirrors dir twin's MISS-1/MISS-3): `-F path=`/`-F perm=`
+            // only ever LOAD with `=` -- `kernel/audit_watch.c`'s
+            // `audit_to_watch` rejects any other operator on an AUDIT_WATCH
+            // predicate, and `lib/libaudit.c`'s AUDIT_PERM case returns
+            // -EAU_OPEQ for any op but `=`.
+            AuditField::Path | AuditField::Perm => f.op == CompareOp::Eq,
+            // `arch`'s own operator restriction is au-E02's job, not this
+            // shape test's; `-F key=` unifies with `-k` via `effective_key`
+            // (the key axis is handled separately), so its presence (with
+            // any op) never disqualifies the shape either.
+            AuditField::Arch | AuditField::Key => true,
+            _ => false,
         })
-        && fields.iter().any(|f| f.field == AuditField::Path)
+        // #600 (mirrors dir twin's MISS-4): EXACTLY one Path predicate, not
+        // "at least one" -- `audit_to_watch` returns -EINVAL once a rule's
+        // watch pointer is already set, so a rule naming `-F path=` more
+        // than once never loads either. `count() == 1` subsumes the old
+        // presence check (`0 != 1`).
+        && fields
+            .iter()
+            .filter(|f| f.field == AuditField::Path)
+            .count()
+            == 1
 }
 
 /// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure dir-watch" -- the
