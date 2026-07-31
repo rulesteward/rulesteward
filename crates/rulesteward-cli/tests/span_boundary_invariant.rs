@@ -46,10 +46,15 @@
 //!    declared arm is counted and asserted separately, and the arm list is
 //!    declared by the TEST rather than inferred from what the driver returned,
 //!    so an arm that ran in zero cases is caught too.
-//! 2. **Per multibyte source.** Every `is_char_boundary` check is trivially true
-//!    on an ASCII source, so an all-ASCII run passes every count above while
-//!    testing nothing this file exists to test. Diagnostics from non-ASCII
-//!    sources are counted separately and asserted non-zero.
+//! 2. **Per multibyte source, per ARM.** Every `is_char_boundary` check is
+//!    trivially true on an ASCII source, so an all-ASCII run passes every count
+//!    above while testing nothing this file exists to test. Diagnostics from
+//!    non-ASCII sources are counted separately and asserted non-zero - and per
+//!    arm, not per backend, because the arms are fed by different inputs. A
+//!    leading BOM reaches fapolicyd's `Ok` arm but is a parse error for auditd,
+//!    so auditd's `Err` arm can carry hundreds of multibyte diagnostics while
+//!    its `Ok` arm sees none. Measured at ZERO in 1 of 9 runs before auditd's
+//!    `VALID_LINES` gained a non-ASCII entry that parses.
 //! 3. **Per target gating.** `rulesteward_selinux::lints::check_enforcing`
 //!    returns an empty `Vec` unless the target is `Rhel9`/`Rhel10`, and
 //!    `check_policy_type` unless it is `Rhel8`, so a `None` target would have
@@ -123,9 +128,25 @@ fn multibyte_piece() -> impl Strategy<Value = String> {
 /// A UTF-8 BOM (U+FEFF, 3 bytes) is generated only at offset 0, the one position
 /// it is meaningful and the one position a backend treats specially
 /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`). It is applied to BOTH
-/// shapes on purpose: a BOM is the one way a source can parse cleanly AND be
-/// non-ASCII, so it is what carries the clean `Ok` arm past the multibyte-source
-/// counter, and it exercises the `body_start_in_file + UTF8_BOM.len()` offset.
+/// shapes, and it exercises the `body_start_in_file + UTF8_BOM.len()` offset.
+///
+/// Do NOT generalise the BOM into "the way a clean source can also be
+/// non-ASCII". That is backend-SPECIFIC, and for one backend it is inverted.
+/// Probed against the real entry points on 2026-07-30:
+///
+/// ```text
+/// fapolicyd  "allow perm=open all : all\n"                -> Ok arm
+/// fapolicyd  "\u{FEFF}allow perm=open all : all\n"        -> Ok arm, non-ASCII
+/// auditd     "-w /etc/passwd -p wa -k identity\n"         -> Ok arm
+/// auditd     "\u{FEFF}-w /etc/passwd -p wa -k identity\n" -> Err arm,
+///                                    "unknown flag '\u{FEFF}-w'"
+/// ```
+///
+/// So the BOM carries fapolicyd's clean `Ok` arm past the multibyte counter, and
+/// is redundant for sshd (which sees plenty of multibyte on its `Ok` arm anyway),
+/// but for auditd a leading BOM REMOVES the source from the `Ok` arm entirely: it
+/// is a parse error, not a tolerated prefix. auditd's clean `Ok` arm gets its
+/// non-ASCII coverage from a multibyte entry inside its `VALID_LINES` instead.
 fn backend_source(
     keywords: &'static [&'static str],
     valid_lines: &'static [&'static str],
@@ -228,10 +249,13 @@ type ArmDiags = (&'static str, Vec<Diagnostic>);
 /// 2. `arms` is declared by the CALLER, so an arm that ran in zero cases is
 ///    caught too - not just one that ran and produced nothing. A counter keyed
 ///    only by labels the driver happened to return would silently drop it.
-/// 3. Multibyte-source count `> 0`. Every `is_char_boundary` assertion in
-///    [`check_span`] is trivially true on an ASCII source, so an all-ASCII run
-///    satisfies both counts above while testing nothing this file exists to
-///    test.
+/// 3. Multibyte-source count `> 0`, ALSO PER ARM. Every `is_char_boundary`
+///    assertion in [`check_span`] is trivially true on an ASCII source, so an
+///    all-ASCII run satisfies both counts above while testing nothing this file
+///    exists to test. Per-backend was not enough: auditd's `Err` arm carries
+///    ~500 multibyte diagnostics per run and would have covered an `Ok` arm fed
+///    entirely by ASCII sources - measured at ZERO non-ASCII `Ok`-arm
+///    diagnostics in 1 of 9 runs. Same masking shape as guard 1, one axis over.
 ///
 /// Written against `TestRunner` directly rather than the `proptest!` macro
 /// because these assertions have to run AFTER the whole run, over counters
@@ -244,7 +268,7 @@ fn run_backend(
     drive: fn(&str) -> Vec<ArmDiags>,
 ) {
     let per_arm: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
-    let multibyte_examined = Cell::new(0usize);
+    let per_arm_multibyte: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
     // `failure_persistence: None` because the default `SourceParallel` policy
     // cannot resolve a source file from a hand-driven `TestRunner` (it warns on
     // every run) and would otherwise scatter regression files outside this
@@ -264,7 +288,7 @@ fn run_backend(
                 .expect("driver returned an arm label its test did not declare");
             per_arm[idx].set(per_arm[idx].get() + diags.len());
             if source_is_multibyte {
-                multibyte_examined.set(multibyte_examined.get() + diags.len());
+                per_arm_multibyte[idx].set(per_arm_multibyte[idx].get() + diags.len());
             }
             for d in &diags {
                 check_span(backend, &src, d)?;
@@ -287,13 +311,18 @@ fn run_backend(
              generator; do not relax this assertion and do not fold the arms together."
         );
     }
-    assert!(
-        multibyte_examined.get() > 0,
-        "ANTI-VACUITY FAILURE: every {backend} diagnostic examined came from an ASCII-only \
-         source, which makes every is_char_boundary assertion in check_span trivially true. \
-         The run would report clean without testing the byte-vs-char property this file \
-         exists to test. Fix the generator; do not relax this assertion."
-    );
+    for (label, count) in arms.iter().zip(&per_arm_multibyte) {
+        assert!(
+            count.get() > 0,
+            "ANTI-VACUITY FAILURE: every diagnostic {backend} examined on arm `{label}` came \
+             from an ASCII-only source, which makes every is_char_boundary assertion in \
+             check_span trivially true for that arm. A sibling arm's multibyte traffic does \
+             NOT cover it: the arms are different span origins and are fed by different \
+             inputs (a leading BOM, for one, reaches fapolicyd's Ok arm but sends auditd's \
+             source to the Err arm). Give this arm a VALID_LINES entry that is non-ASCII and \
+             parses; do not relax this assertion."
+        );
+    }
 
     // Printed so a reviewer can see WHERE the work happened, not merely that a
     // total was non-zero. Counts are unseeded and vary run to run; they are a
@@ -302,12 +331,18 @@ fn run_backend(
     let breakdown: Vec<String> = arms
         .iter()
         .zip(&per_arm)
-        .map(|(label, count)| format!("{label} = {}", count.get()))
+        .zip(&per_arm_multibyte)
+        .map(|((label, count), multibyte)| {
+            format!(
+                "{label} = {} ({} from multibyte)",
+                count.get(),
+                multibyte.get()
+            )
+        })
         .collect();
     eprintln!(
-        "span_boundary_invariant: {backend} over {CASES} cases: {} | from multibyte sources: {}",
-        breakdown.join(", "),
-        multibyte_examined.get()
+        "span_boundary_invariant: {backend} over {CASES} cases: {}",
+        breakdown.join(", ")
     );
 }
 
@@ -499,6 +534,22 @@ fn auditd_spans_are_ordered_and_char_aligned() {
     const ARMS: &[&str] = &[AUDITD_ARM_PARSE_ERR, AUDITD_ARM_LINT];
     // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
     // them, so a source built from these parses and reaches the `Ok` arm.
+    //
+    // The last entry is a non-ASCII line that PARSES, and it is here because
+    // auditd is the one backend where the BOM cannot do that job. Probed
+    // against the real entry point on 2026-07-30:
+    //
+    //   "-w /etc/passwd -p wa -k identity"          -> Ok arm, 79 lint diags, ASCII
+    //   "-w /etc/passwd -p wa -k identity\u{1F600}" -> Ok arm, 81 lint diags, non-ASCII
+    //   "\u{FEFF}-w /etc/passwd -p wa -k identity"  -> Err arm ("unknown flag")
+    //
+    // The emoji lands in the `-k` key, which auditd carries verbatim, so the
+    // rule still parses and the lint passes still run over it. Without this
+    // entry auditd's `Ok` arm is fed almost entirely by ASCII sources, where
+    // every `is_char_boundary` assertion in `check_span` is trivially true, and
+    // the per-arm multibyte guard below would sit one unlucky seed from a flake
+    // (measured 0 non-ASCII `Ok`-arm diagnostics in 1 of 9 runs before this
+    // line existed). Do not remove it as decoration.
     const VALID_LINES: &[&str] = &[
         "-w /etc/passwd -p wa -k identity",
         "-a always,exit -F arch=b64 -S execve -k exec",
@@ -507,6 +558,7 @@ fn auditd_spans_are_ordered_and_char_aligned() {
         "-b 8192",
         "-f 1",
         "# a comment",
+        "-w /etc/passwd -p wa -k identity\u{1f600}",
     ];
     run_backend(
         "auditd",
@@ -566,7 +618,10 @@ fn sysctld_spans_are_ordered_and_char_aligned() {
     ];
     const ARMS: &[&str] = &[SYSCTLD_ARM];
     // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
-    // them, so a source built from these parses and reaches the `Ok` arm.
+    // them, so a source built from these parses cleanly. This backend has a
+    // single fused arm rather than an Ok/Err split, so the clean shape is here
+    // for input variety and for the semantic passes that only fire on
+    // well-formed input, not to reach a second arm.
     const VALID_LINES: &[&str] = &[
         "kernel.randomize_va_space = 2",
         "kernel.kptr_restrict = 0",
@@ -599,7 +654,10 @@ fn sudoers_spans_are_ordered_and_char_aligned() {
     ];
     const ARMS: &[&str] = &[SUDOERS_ARM];
     // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
-    // them, so a source built from these parses and reaches the `Ok` arm.
+    // them, so a source built from these parses cleanly. This backend has a
+    // single fused arm rather than an Ok/Err split, so the clean shape is here
+    // for input variety and for the semantic passes that only fire on
+    // well-formed input, not to reach a second arm.
     const VALID_LINES: &[&str] = &[
         "root ALL=(ALL) ALL",
         "%wheel ALL=(ALL:ALL) NOPASSWD: ALL",
@@ -631,7 +689,10 @@ fn selinux_spans_are_ordered_and_char_aligned() {
     ];
     const ARMS: &[&str] = &[SELINUX_ARM_ENFORCING, SELINUX_ARM_POLICY_TYPE];
     // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
-    // them, so a source built from these parses and reaches the `Ok` arm.
+    // them, so a source built from these is a well-formed /etc/selinux/config.
+    // This backend's two arms are concurrent target-gated passes, not an Ok/Err
+    // split, so the clean shape is here to reach the present-but-wrong-value
+    // branch of each pass rather than to reach a second arm.
     const VALID_LINES: &[&str] = &[
         "SELINUX=enforcing",
         "SELINUX=permissive",

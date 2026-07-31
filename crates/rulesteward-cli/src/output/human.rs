@@ -1103,13 +1103,16 @@ mod tests {
     /// What it genuinely catches, and what no property in this file catches:
     ///
     /// - **byte-vs-char confusion.** A mapping that handed ariadne the raw byte
-    ///   offset would index 13 bytes of multibyte as 13 characters and put the
-    ///   caret somewhere else entirely.
+    ///   offset would pass 44 for a source of only 43 characters. Be exact about
+    ///   how that surfaces HERE: ariadne resolves nothing and renders `?:?`, so
+    ///   the test fails on the third bullet below rather than on a caret that
+    ///   moved. (The sibling e2e in `tests/e2e_sysctl_lint.rs` is where the same
+    ///   confusion does move a visible column, to `:2:10`.)
     /// - **a boundary-offset off-by-one.** Widening the walk's predicate to
     ///   `take_while(|(i, _)| *i <= b)` shifts every boundary offset up by one
     ///   and renders column 23 instead of 22. That mutation stays total and
     ///   monotone, so it is invisible to every ordering, totality and saturation
-    ///   property.
+    ///   property. This is the one that needs the exact column.
     /// - **a snippet that silently fails to render at all.**
     ///
     /// The observable is ariadne's own bracket header,
@@ -1463,10 +1466,17 @@ mod tests {
         /// is exactly the repair issue #595's own "suggested fix direction"
         /// proposes. On the reproduction span it computes `old(4) = 4`,
         /// `old(6) = 2`, `min(4, 2) = 2`, and returns `2..2` - it PASSES the
-        /// headline assertion. It is caught only by the table rows at bytes 4
-        /// and 5, which probe the DEGENERATE span `b..b`: clamping an endpoint
+        /// headline assertion. What catches it is the table rows at bytes 4 and
+        /// 5, which probe the DEGENERATE span `b..b`: clamping an endpoint
         /// against an identical endpoint is a no-op, so the raw byte value 4
         /// shows through where 2 is required.
+        ///
+        /// Precisely: the tables are the ONLY thing that catches the SATURATING
+        /// variant (the one that also maps past-the-end offsets to the char
+        /// count). The literal sketch above, which leaves out-of-bounds offsets
+        /// passing through as raw bytes, is additionally killed by property 6.
+        /// So "only the tables" is true of the harder variant and not of the
+        /// weaker one - which is precisely why the tables cannot be trimmed.
         ///
         /// That is also why a clamp is the wrong shape in the first place. It
         /// relocates the caret to a position no evidence supports and leaves the
