@@ -147,6 +147,19 @@ fn multibyte_piece() -> impl Strategy<Value = String> {
 /// but for auditd a leading BOM REMOVES the source from the `Ok` arm entirely: it
 /// is a parse error, not a tolerated prefix. auditd's clean `Ok` arm gets its
 /// non-ASCII coverage from a multibyte entry inside its `VALID_LINES` instead.
+/// Round 2 (issue #595): `trailing_newline` makes the closing `\n` after the
+/// LAST line optional. Every source this generator produced used to end in
+/// `\n` unconditionally, which is also true of every `VALID_LINES` entry above -
+/// none of them is itself multibyte at its very last byte - so no case here
+/// ever drove a backend's whole-line span arithmetic over a source whose
+/// final byte is a UTF-8 continuation byte. That is precisely the shape
+/// `human.rs`'s `byte_span_to_char_span` mishandles under the `q <= len`
+/// mutant (a mutation-gate SURVIVOR at `human.rs:96:17`), and it is a shape a
+/// real config file legitimately has (a file with no trailing newline). This
+/// does not change what is ASSERTED - `check_span` and the anti-vacuity
+/// counters are unchanged - only the range of sources the six backends are
+/// driven with, additionally exercising every backend's LAST-LINE span
+/// arithmetic.
 fn backend_source(
     keywords: &'static [&'static str],
     valid_lines: &'static [&'static str],
@@ -164,14 +177,17 @@ fn backend_source(
         1 => prop::collection::vec(clean_line, 1..7),
         3 => prop::collection::vec(mixed_line, 1..7),
     ];
-    (any::<bool>(), body).prop_map(|(leading_bom, lines)| {
+    (any::<bool>(), body, any::<bool>()).prop_map(|(leading_bom, lines, trailing_newline)| {
         let mut src = String::new();
         if leading_bom {
             src.push('\u{feff}');
         }
-        for line in lines {
+        let last = lines.len() - 1;
+        for (i, line) in lines.into_iter().enumerate() {
             src.push_str(&line);
-            src.push('\n');
+            if i != last || trailing_newline {
+                src.push('\n');
+            }
         }
         src
     })

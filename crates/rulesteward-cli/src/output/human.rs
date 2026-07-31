@@ -1406,26 +1406,44 @@ mod tests {
         }
 
         /// A multi-line source built from [`multibyte_piece`], optionally
-        /// opening with a UTF-8 BOM.
+        /// opening with a UTF-8 BOM and optionally CLOSING with a trailing
+        /// `\n` after its last line.
         ///
         /// U+FEFF (3 bytes) is generated ONLY at offset 0, the one position it
         /// is meaningful and the one position the fapolicyd parser treats
         /// specially when computing `body_start_in_file`
         /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
+        ///
+        /// Round 2 (issue #595): every source this generator produced used to
+        /// end in `\n` unconditionally, so `byte_span_to_char_span`'s inner
+        /// loop always found a non-continuation byte (the newline) before
+        /// reaching `source.len()` - the loop's `q < len` guard never took its
+        /// len-exit. `trailing_newline` closes that gap: when false and the
+        /// last line's own last scalar is multibyte, the source's final byte
+        /// is itself a continuation byte, reaching the same final-scalar
+        /// branch the hand-written unit table above pins exactly.
         fn multibyte_source() -> impl Strategy<Value = String> {
             let line =
                 prop::collection::vec(multibyte_piece(), 1..4).prop_map(|pieces| pieces.concat());
-            (any::<bool>(), prop::collection::vec(line, 1..6)).prop_map(|(leading_bom, lines)| {
-                let mut src = String::new();
-                if leading_bom {
-                    src.push('\u{feff}');
-                }
-                for line in lines {
-                    src.push_str(&line);
-                    src.push('\n');
-                }
-                src
-            })
+            (
+                any::<bool>(),
+                prop::collection::vec(line, 1..6),
+                any::<bool>(),
+            )
+                .prop_map(|(leading_bom, lines, trailing_newline)| {
+                    let mut src = String::new();
+                    if leading_bom {
+                        src.push('\u{feff}');
+                    }
+                    let last = lines.len() - 1;
+                    for (i, line) in lines.into_iter().enumerate() {
+                        src.push_str(&line);
+                        if i != last || trailing_newline {
+                            src.push('\n');
+                        }
+                    }
+                    src
+                })
         }
 
         proptest! {
@@ -1732,6 +1750,56 @@ mod tests {
                     cspan.start, expected,
                     "to_char({b}) over a 4-byte scalar must be {expected} \
                      (char starts are 0, 4, 7)"
+                );
+            }
+
+            // The FINAL-SCALAR case (round 2, issue #595): a source that does
+            // NOT end in `\n` and whose LAST scalar is multibyte.
+            //
+            // Every table above ends its source with a 1-byte `\n`, so the
+            // inner loop's `q` always finds a non-continuation byte (the
+            // newline) before it can reach `source.len()`, and the loop's
+            // `q < len` guard never takes its len-exit. That gap survived as
+            // a mutation-gate SURVIVOR at `human.rs:96:17` (`replace < with
+            // <=`): with `q <= len`, once `q` reaches `len` the guard is
+            // STILL true and `bytes[q]` indexes one past the end of the
+            // slice, panicking. No table above can catch that mutant, because
+            // none of them ever drives `q` all the way to `len`.
+            //
+            // Byte layout of `"ab\u{1F600}"`, derived by hand: two 1-byte
+            // ASCII chars, then a 4-byte emoji, with NOTHING after it.
+            //
+            //   byte:   0  1 | 2  3  4  5
+            //   scalar: a  b   U+1F600
+            //   char:   0  1   2
+            //
+            // Char START indices are {0, 1, 2}. Bytes 3, 4 and 5 are INTERIOR
+            // continuation bytes of the final (and only) multibyte scalar -
+            // the source's very last byte (index 5) is itself a continuation
+            // byte, so walking from any of 3/4/5 drives `q` up to `len` (6)
+            // without ever meeting a non-continuation byte to stop on first.
+            let final_scalar_src = "ab\u{1f600}";
+            assert_eq!(
+                final_scalar_src.len(),
+                6,
+                "two ASCII bytes plus a 4-byte emoji, no trailing newline"
+            );
+            assert_eq!(final_scalar_src.chars().count(), 3, "three scalars");
+            for b in [3usize, 4, 5] {
+                assert!(
+                    !final_scalar_src.is_char_boundary(b),
+                    "byte {b} must be interior to the final emoji scalar"
+                );
+            }
+            for (b, expected) in [(2usize, 2usize), (3, 3), (4, 3), (5, 3), (6, 3)] {
+                let cspan = byte_span_to_char_span(&(b..b), final_scalar_src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) over a final multibyte scalar with no trailing \
+                     newline must be {expected} (char starts are 0, 1, 2); bytes \
+                     3-5 drive the inner loop's `q` all the way to len (6) with no \
+                     non-continuation byte to stop on first - exactly the case \
+                     that only holds under the guard `q < len`, not `q <= len`"
                 );
             }
         }
