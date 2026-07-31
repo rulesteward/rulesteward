@@ -22,8 +22,11 @@
 //! 2. **Global lexicographic merge.** Every surviving file is merged in bytewise
 //!    basename order REGARDLESS of directory (`9-` beats `10-`), last-wins per key.
 //! 3. **`/etc/sysctl.conf` applier divergence.** procps `sysctl --system` reads it
-//!    dead-last (always wins); systemd-sysctl applies it only at the
-//!    `99-sysctl.conf` symlink slot (or not at all if the symlink is absent).
+//!    dead-last (always wins); systemd-sysctl reaches it only through a search-path
+//!    entry that resolves to it - `RuleSteward` currently MODELS that entry as the
+//!    `99-sysctl.conf` symlink slot specifically (or not at all if the symlink is
+//!    absent), which is the shipped distro layout but not systemd's actual rule
+//!    (any basename works); see the `w03b_divergence` KNOWN LIMITATION doc, #619.
 //!
 //! # `sysctld-W03` (system-only)
 //! * **W03-a** lower-precedence-directory override: the winner sits in a
@@ -59,37 +62,97 @@ fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
     ]
 }
 
+/// Resolve a symlink's on-disk target using RE-ROOT-THEN-CONTAIN semantics
+/// (orchestrator ruling 2026-07-31, round 2 of issue #593): an ABSOLUTE target
+/// resolves as `<prefix>/<target>` - what a real chroot/image applier would do,
+/// and what makes an admin's `ln -s /etc/sysctl.conf /etc/sysctl.d/99-sysctl.conf`
+/// repair correctly recognized as the distro slot - while a RELATIVE target
+/// resolves against `link`'s own parent directory, exactly like an ordinary
+/// symlink. Either way, the fully-resolved result is then required to still sit
+/// under `prefix`: anything that escapes (a `..`-relative walkout, or an absolute
+/// target with no re-rooted counterpart under `prefix`) is UNRESOLVABLE (`None`)
+/// rather than being followed onto the real filesystem outside the scanned root.
+/// Also `None` when `link` is not a symlink at all, or is dangling.
+///
+/// This `Some` result is not just a boolean admission gate: for the 99-slot
+/// caller in [`enumerate`] it is also the exact path that gets READ
+/// (`SurvivingFile::read_path`, round 3, #593 Finding 1). Using it for the read
+/// too - not merely to decide whether to admit the entry - is what makes the
+/// "never followed onto the real filesystem outside the scanned root" guarantee
+/// above actually hold end to end: a contained, re-rooted absolute target must
+/// be read from that re-rooted path, or the bytes would still come from
+/// wherever the literal (non-rerooted) link happens to dereference to on the
+/// real host filesystem.
+///
+/// Written GENERICALLY in terms of `prefix`, never branching on "do we have a
+/// `--root`": a live scan passes `prefix == "/"`, where re-rooting an absolute
+/// target is the IDENTITY (`/x` re-roots to `/x`) and containment trivially
+/// holds (every canonical path already starts with `/`). Real-system linting is
+/// simply the `prefix == "/"` case of this same function.
+fn resolve_reroot_contained(prefix: &Path, link: &Path) -> Option<PathBuf> {
+    let target = std::fs::read_link(link).ok()?;
+    let candidate = if target.is_absolute() {
+        // RE-ROOT: join onto `prefix`, not the real filesystem root. A
+        // genuinely absolute Unix path always strips "/" successfully; the
+        // empty-path fallback is unreachable in practice and simply re-joins
+        // `prefix` itself.
+        prefix.join(target.strip_prefix("/").unwrap_or_else(|_| Path::new("")))
+    } else {
+        link.parent()?.join(&target)
+    };
+    let resolved = std::fs::canonicalize(&candidate).ok()?;
+    let canonical_prefix = std::fs::canonicalize(prefix).ok()?;
+    // CONTAIN: a resolution that lands outside `prefix` (via re-rooted-absolute
+    // miss or a `..` walkout) is treated as unresolvable, never followed.
+    resolved.starts_with(&canonical_prefix).then_some(resolved)
+}
+
 /// Whether the `/etc/sysctl.d/99-sysctl.conf` slot under `prefix` is the EXPECTED
-/// distro symlink - a symlink that resolves to `<prefix>/etc/sysctl.conf`.
+/// distro symlink - a symlink that resolves (re-root-then-contain) to
+/// `<prefix>/etc/sysctl.conf`.
 ///
-/// This is the ONLY path by which systemd-sysctl applies `/etc/sysctl.conf` (design
-/// section 2 point 3). Per design section 8, anything that is "not the expected
-/// symlink" is treated as ABSENT (systemd does not apply `/etc/sysctl.conf`, so
-/// W03-b fires): a non-symlink, a dangling link (`canonicalize` fails, and a
-/// dangling link is never followed), or a symlink to any OTHER target.
+/// This is the ONLY path by which `RuleSteward`'s model applies `/etc/sysctl.conf`
+/// (design section 2 point 3, describing the shipped distro layout - see
+/// [`w03b_divergence`]'s KNOWN LIMITATION doc for where that departs from
+/// systemd's actual rule, #619). Per design section 8, anything that is "not the
+/// expected symlink" is treated as ABSENT (systemd does not apply
+/// `/etc/sysctl.conf` through this slot, so W03-b fires): a non-symlink, a
+/// dangling link, a symlink to any OTHER target, or (round 2, #593) a symlink
+/// whose resolution escapes `prefix` entirely.
 ///
-/// The canonicalize-equality below IS the "expected distro symlink" check: only a
-/// symlink (chain) can make `99-sysctl.conf` resolve to `etc/sysctl.conf`'s real
-/// path (a regular file / hardlink at that name canonicalizes to itself, `!=`
-/// `etc/sysctl.conf`; a missing / dangling link yields `Err -> false`), so no
-/// separate `is_symlink` guard is needed. Both sides are canonicalized so the
-/// shipped relative `../sysctl.conf` target and any prefix-level symlinks resolve
-/// identically.
+/// [`resolve_reroot_contained`] already requires `link` to be an actual, resolvable
+/// symlink: `std::fs::read_link` rejects a NON-symlink (it is `readlink(2)`, which
+/// reads the link's stored target string and never touches the target itself, so it
+/// happily succeeds on a link pointing at nothing), and the `std::fs::canonicalize`
+/// call right after it rejects a DANGLING one (it has to resolve the target to
+/// prove it exists). Between the two, no separate `is_symlink` guard is needed
+/// here; comparing the function's `Some` result against `etc/sysctl.conf`'s own
+/// canonical path is the "expected distro symlink" check.
 fn slot_symlink_ok(prefix: &Path) -> bool {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
-    match (
-        std::fs::canonicalize(&link_99),
-        std::fs::canonicalize(prefix.join("etc/sysctl.conf")),
-    ) {
-        (Ok(target), Ok(etc_conf)) => target == etc_conf,
-        _ => false,
-    }
+    let Some(resolved) = resolve_reroot_contained(prefix, &link_99) else {
+        return false;
+    };
+    std::fs::canonicalize(prefix.join("etc/sysctl.conf")).is_ok_and(|etc_conf| resolved == etc_conf)
 }
 
 /// A drop-in that survived same-basename directory masking, tagged with its
 /// search-directory precedence rank (0 = `/etc/sysctl.d`, highest).
+///
+/// `path` and `read_path` split the DISPLAY identity from the READ target
+/// (round 3, #593 Finding 1): `path` is the directory entry itself (what
+/// keys `sources`, what every diagnostic/provenance message names - the file
+/// the operator has to fix), while `read_path` is where the bytes actually
+/// come from. For every ordinary entry they are the same path (reading it
+/// directly follows the real filesystem, exactly as before). Only the 99-slot
+/// symlink entry (misdirected/dangling/escaping, followed as an ordinary
+/// drop-in) ever sets `read_path` to something else: the RE-ROOT-THEN-CONTAIN
+/// resolved path computed by [`resolve_reroot_contained`], so the containment
+/// decision and the read agree - re-rooted content is what gets read, never
+/// the real host file the literal link would otherwise dereference to.
 struct SurvivingFile {
     path: PathBuf,
+    read_path: PathBuf,
     basename: OsString,
     rank: usize,
 }
@@ -122,15 +185,29 @@ fn unreadable_file_f01(path: &Path, err: &std::io::Error) -> Diagnostic {
 /// directory that exists but cannot be read. A MISSING directory is skipped
 /// silently (a system need not have all of them).
 ///
+/// `symlink_ok` is [`slot_symlink_ok`]'s whole-prefix verdict for THIS `prefix`:
+/// whether `<prefix>/etc/sysctl.d/99-sysctl.conf` actually resolves to
+/// `<prefix>/etc/sysctl.conf`. It gates whether an entry AT that exact path is
+/// recognised as the distro applier slot (see the content-decision comment below);
+/// when it is `false` (no slot, a dangling link, or a symlink to anything else),
+/// that entry is no longer special-cased and is enumerated like any other
+/// `.conf`-named entry.
+///
 /// Masking is by directory ENTRY NAME (design section 2 point 1, man sysctl.d(5)),
 /// separate from the content decision. EVERY `.conf`-named regular file or symlink
 /// claims its basename at its directory's rank; a same-basename entry in a lower
 /// directory is masked. Content is then contributed only by an entry that resolves
-/// to a readable regular file. Two entries claim a basename WITHOUT contributing
+/// to a readable regular file. Three entries claim a basename WITHOUT contributing
 /// content: the distro `99-sysctl.conf -> ../sysctl.conf` slot (its content flows
-/// via the `/etc/sysctl.conf` applier model) and the man sysctl.d(5) `-> /dev/null`
-/// disable idiom (which masks a vendor file without applying anything).
-fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
+/// via the `/etc/sysctl.conf` applier model), the man sysctl.d(5) `-> /dev/null`
+/// disable idiom (which masks a vendor file without applying anything), and a
+/// 99-slot symlink that resolves to a real, readable file OUTSIDE `prefix` (the
+/// containment check in [`resolve_reroot_contained`] rejects it, so it still
+/// claims the basename above but is never followed to read anything).
+fn enumerate(
+    prefix: &Path,
+    symlink_ok: bool,
+) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnostic>) {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
     let mut surviving = Vec::new();
     let mut masked = Vec::new();
@@ -191,16 +268,49 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
             seen.insert(basename.clone(), path.clone());
             // Content contribution, decided AFTER the basename claim above.
             if ftype.is_symlink() && path == link_99 {
-                // The distro `99-sysctl.conf -> ../sysctl.conf` slot: claims its
-                // basename, but its content flows via the `/etc/sysctl.conf` applier
-                // model (W03-b), not as a parsed drop-in.
+                if symlink_ok {
+                    // The distro `99-sysctl.conf -> ../sysctl.conf` slot, recognized
+                    // ONLY when the symlink actually resolves (re-root-then-contain)
+                    // to `<prefix>/etc/sysctl.conf` (`symlink_ok`): claims its
+                    // basename, but its content flows via the `/etc/sysctl.conf`
+                    // applier model (W03-b), not as a parsed drop-in.
+                    continue;
+                }
+                // A symlink at this exact path that is NOT the recognized distro
+                // slot (misdirected, dangling, or escaping `prefix`) is followed
+                // like any other drop-in (#593) - but ONLY under RE-ROOT-THEN-
+                // CONTAIN (round 2, read path fixed round 3): an absolute target
+                // re-roots under `prefix` rather than the real filesystem, and any
+                // resolution that still escapes `prefix` (dangling, an absolute
+                // target with no re-rooted counterpart, or a `..` walkout) claims
+                // the basename above but contributes NO content - it is never
+                // followed onto a real path outside the scanned root. The
+                // resolved path is what gets READ (`read_path`); `path` (the link
+                // itself) stays the display/provenance key - see the
+                // `SurvivingFile` doc comment. 99-slot only: the identical escape
+                // for ORDINARY (non-99) drop-in symlinks pre-exists and is out of
+                // scope here, filed separately as #610.
+                if let Some(resolved) =
+                    resolve_reroot_contained(prefix, &path).filter(|p| p.is_file())
+                {
+                    surviving.push(SurvivingFile {
+                        path,
+                        read_path: resolved,
+                        basename,
+                        rank,
+                    });
+                }
                 continue;
             }
             if path.is_file() {
                 // A regular file, or a symlink to a readable regular file: a real
-                // drop-in whose assignments contribute to the merged set.
+                // drop-in whose assignments contribute to the merged set. (Not the
+                // 99-slot path handled above, so this follows the real filesystem
+                // directly - #610.) `read_path` equals `path`: an ordinary entry's
+                // display path and read target are the same file.
                 surviving.push(SurvivingFile {
-                    path,
+                    path: path.clone(),
+                    read_path: path,
                     basename,
                     rank,
                 });
@@ -217,22 +327,143 @@ fn enumerate(prefix: &Path) -> (Vec<SurvivingFile>, Vec<MaskedFile>, Vec<Diagnos
     (surviving, masked, f01)
 }
 
+/// Compute the systemd-sysctl verb + reason clause for one diverging key inside
+/// [`w03b_divergence`]. Split out of that function only to stay under the
+/// workspace `clippy::too_many_lines` budget; no behavior change from the
+/// inline version.
+///
+/// The four `Some(sw)` branches below are meant to be exhaustive and mutually
+/// exclusive over every reachable shape of the 99 slot: (1) the slot resolves
+/// correctly (`symlink_ok`) but a later drop-in still wins, (2) the slot is a
+/// symlink and IS itself the winner (misdirected, followed as an ordinary
+/// drop-in), (3) the slot is a symlink but some OTHER drop-in wins (dangling,
+/// escaping `--root`, or misdirected to a target that sets no keys), and (4)
+/// there is genuinely no symlink at the slot at all (absent, or replaced by a
+/// regular file). Cases (2)-(4) all fall through `symlink_ok == false`; the
+/// `slot_is_symlink` check and the `sw.file == link_99` check are independent
+/// questions - a symlink EXISTING at the slot says nothing about whether it
+/// resolves to `/etc/sysctl.conf` or about which file wins a given key - and
+/// conflating them is exactly what previously made the final `else` claim "no
+/// symlink" for a slot where a symlink was genuinely present, just broken.
+fn w03b_verb_and_reason(
+    a: &ParsedAssignment,
+    systemd_win: Option<&ParsedAssignment>,
+    symlink_ok: bool,
+    slot_is_symlink: bool,
+    link_99: &Path,
+) -> (String, String) {
+    match systemd_win {
+        None => {
+            // (round 3, #593 Finding 2) A hardcoded "no symlink" reason is
+            // only true when `slot_is_symlink` is false. When a symlink
+            // genuinely EXISTS at the 99-slot but resolves to nothing that
+            // sets this key (dangling, escaping `--root`, or misdirected to
+            // a target that sets no keys at all), `systemd_win` is `None`
+            // too, but claiming "no symlink" is false and points the
+            // operator at the wrong remedy (create one, which fails with
+            // EEXIST) instead of the right one (repoint/fix the existing
+            // one).
+            let reason = if slot_is_symlink {
+                "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
+                 not resolve to /etc/sysctl.conf (it is dangling, escapes \
+                 --root, or points elsewhere), so systemd-sysctl does not \
+                 apply /etc/sysctl.conf there"
+                    .to_string()
+            } else {
+                "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                 /etc/sysctl.d/99-sysctl.conf symlink)"
+                    .to_string()
+            };
+            (format!("leaves `{}` unset", a.display), reason)
+        }
+        Some(sw) => {
+            let verb = format!("applies `{}`", sw.value);
+            let reason = if symlink_ok {
+                format!(
+                    "systemd-sysctl applies /etc/sysctl.conf at the 99-sysctl.conf \
+                     slot, but {} sorts after it and wins",
+                    sw.file.display()
+                )
+            } else if slot_is_symlink && sw.file == link_99 {
+                // The winner IS the 99-sysctl.conf entry itself, followed as an
+                // ordinary drop-in because it is a symlink that does not resolve
+                // to /etc/sysctl.conf (misdirected or escaping --root, #593 round
+                // 2). Naming it while also asserting "no symlink" would be
+                // self-contradictory; the correct remedy is to REPOINT the
+                // symlink, not create one that already exists.
+                "the /etc/sysctl.d/99-sysctl.conf symlink does not resolve to \
+                 /etc/sysctl.conf (misdirected); systemd-sysctl does not apply \
+                 /etc/sysctl.conf there - it reads the symlink's own target as \
+                 an ordinary drop-in instead"
+                    .to_string()
+            } else if slot_is_symlink {
+                // (round 4, #593 Finding - Adversarial Testing Loop) A symlink
+                // genuinely EXISTS at the 99 slot (dangling, escaping --root, or
+                // misdirected to a target that sets no keys of its own) but some
+                // OTHER drop-in - not the symlink itself - wins this key. This is
+                // the identical false "no symlink" claim the `None` arm above and
+                // the `sw.file == link_99` arm just above both already guard
+                // against, reached here because `sw.file != link_99`: the symlink
+                // is present, just broken, and a separate file happens to win.
+                // The remedy is still to REPOINT the existing symlink, not create
+                // one that already exists.
+                format!(
+                    "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
+                     not resolve to /etc/sysctl.conf (it is dangling, escapes \
+                     --root, or points elsewhere), so systemd-sysctl does not \
+                     apply /etc/sysctl.conf there; {} applies instead",
+                    sw.file.display()
+                )
+            } else {
+                format!(
+                    "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                     99-sysctl.conf symlink); {} applies instead",
+                    sw.file.display()
+                )
+            };
+            (verb, reason)
+        }
+    }
+}
+
 /// The procps/systemd applier-divergence pass (`sysctld-W03-b`).
 ///
-/// procps `sysctl --system` reads `/etc/sysctl.conf` dead-last (always winning);
-/// systemd-sysctl applies it only at the `99-sysctl.conf` symlink slot (or not at
-/// all if the symlink is absent/dangling). For each key set in `/etc/sysctl.conf`,
-/// if the two appliers resolve DIFFERENT effective values, one W03 is emitted
-/// anchored at the `/etc/sysctl.conf` assignment, stating both values and the cause.
-/// When both appliers agree the key is suppressed.
+/// procps `sysctl --system` reads `/etc/sysctl.conf` dead-last (always winning).
+/// systemd-sysctl never reads that file directly (`man 5 sysctl.conf`: "it won't
+/// use the file /etc/sysctl.conf"); it reaches it only through a search-path
+/// drop-in that resolves to it. For each key set in `/etc/sysctl.conf`, if the
+/// two appliers resolve DIFFERENT effective values, one W03 is emitted anchored
+/// at the `/etc/sysctl.conf` assignment, stating both values and the cause. When
+/// both appliers agree the key is suppressed.
+///
+/// `prefix` is used only to work out whether `/etc/sysctl.d/99-sysctl.conf` is
+/// itself a symlink at all (round 2, #593 Finding 2): once a MISDIRECTED 99-slot
+/// symlink is followed as an ordinary drop-in ([`enumerate`]), it can become the
+/// winning `systemd_win` for a key `/etc/sysctl.conf` also sets, and the reason
+/// clause must not claim "no symlink" while naming that exact symlink as the file
+/// that applies instead.
+///
+/// KNOWN LIMITATION, tracked as #619: the REASON CLAUSE (not the verdict, and
+/// not the merged values, both of which are correct) still assumes the linking
+/// drop-in is named `99-sysctl.conf`. That name is a distro packaging
+/// convention with no meaning to systemd - `man 5 sysctl.d` sorts every
+/// `*.conf` in every search directory lexicographically by filename and never
+/// mentions it - so when some OTHER name carries the link (e.g.
+/// `00-local.conf -> ../sysctl.conf`), the clause wrongly reports that
+/// systemd-sysctl does not apply `/etc/sysctl.conf` at all. The value model in
+/// [`enumerate`] already went past this assumption; only this prose has not.
 fn w03b_divergence(
     dropins: &[ParsedAssignment],
     etc_conf: &[ParsedAssignment],
     symlink_ok: bool,
+    prefix: &Path,
 ) -> Vec<Diagnostic> {
     if etc_conf.is_empty() {
         return Vec::new();
     }
+    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
+    let slot_is_symlink =
+        std::fs::symlink_metadata(&link_99).is_ok_and(|m| m.file_type().is_symlink());
 
     // The systemd effective value of each key: drop-ins at their own basenames, plus
     // `/etc/sysctl.conf` spliced at the `99-sysctl.conf` slot when the symlink
@@ -275,31 +506,8 @@ fn w03b_divergence(
         if !diverges {
             continue;
         }
-        let (systemd_verb, systemd_reason) = match systemd_win {
-            None => (
-                format!("leaves `{}` unset", a.display),
-                "systemd-sysctl does not apply /etc/sysctl.conf (no \
-                 /etc/sysctl.d/99-sysctl.conf symlink)"
-                    .to_string(),
-            ),
-            Some(sw) => {
-                let verb = format!("applies `{}`", sw.value);
-                let reason = if symlink_ok {
-                    format!(
-                        "systemd-sysctl applies /etc/sysctl.conf at the 99-sysctl.conf \
-                         slot, but {} sorts after it and wins",
-                        sw.file.display()
-                    )
-                } else {
-                    format!(
-                        "systemd-sysctl does not apply /etc/sysctl.conf (no \
-                         99-sysctl.conf symlink); {} applies instead",
-                        sw.file.display()
-                    )
-                };
-                (verb, reason)
-            }
-        };
+        let (systemd_verb, systemd_reason) =
+            w03b_verb_and_reason(a, systemd_win, symlink_ok, slot_is_symlink, &link_99);
         let message = format!(
             "cross-directory applier divergence for `{}`: procps `sysctl --system` \
              applies `{}` (/etc/sysctl.conf read dead-last), but systemd-sysctl {} - {}",
@@ -320,6 +528,15 @@ fn w03b_divergence(
 /// Parse each surviving drop-in in merge order, returning its assignments and a
 /// parallel per-assignment search-directory rank vector, extending `diags` with any
 /// F01 and staging every read source under its display path.
+///
+/// Reads `sf.read_path` (the containment-checked, re-rooted target for a followed
+/// 99-slot symlink; identical to `sf.path` for every ordinary entry - see the
+/// `SurvivingFile` doc comment), never `sf.path` directly: the containment
+/// decision and the read must agree, or an escaping/absolute symlink target could
+/// be admitted on the re-rooted path yet silently read from the real host
+/// filesystem instead (round 3, #593 Finding 1). Every diagnostic, provenance
+/// error, and `sources` key still names `sf.path` (the link/file the operator
+/// actually has to fix), never `read_path`.
 fn parse_surviving(
     surviving: &[SurvivingFile],
     diags: &mut Vec<Diagnostic>,
@@ -328,7 +545,7 @@ fn parse_surviving(
     let mut asgns: Vec<ParsedAssignment> = Vec::new();
     let mut ranks: Vec<usize> = Vec::new();
     for sf in surviving {
-        match std::fs::read_to_string(&sf.path) {
+        match std::fs::read_to_string(&sf.read_path) {
             Ok(src) => {
                 let (parsed, f01) = parse_file(&src, &sf.path);
                 diags.extend(f01);
@@ -502,7 +719,10 @@ pub fn lint_system(
 ) -> (Vec<Diagnostic>, BTreeMap<String, String>) {
     let prefix = root.unwrap_or_else(|| Path::new("/"));
 
-    let (mut surviving, mut masked, mut diags) = enumerate(prefix);
+    // Computed once per call (rather than once per directory entry inside
+    // `enumerate`) since it is a whole-prefix property, not a per-entry one.
+    let symlink_ok = slot_symlink_ok(prefix);
+    let (mut surviving, mut masked, mut diags) = enumerate(prefix, symlink_ok);
     // Global merge order is BYTEWISE by basename across all directories.
     surviving.sort_by(|a, b| a.basename.cmp(&b.basename));
     masked.sort_by(|a, b| a.path.cmp(&b.path));
@@ -511,9 +731,8 @@ pub fn lint_system(
     let (surviving_asgns, surviving_ranks) = parse_surviving(&surviving, &mut diags, &mut sources);
     let etc_conf_asgns = parse_etc_conf(prefix, &mut diags, &mut sources);
 
-    let symlink_ok = slot_symlink_ok(prefix);
     // W03-b needs the pre-merge handles, so compute it before the two are moved.
-    let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok);
+    let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok, prefix);
 
     // The procps merged, precedence-ordered assignment list: drop-ins in basename
     // order, then /etc/sysctl.conf dead-last. Ranks run parallel (None = the
