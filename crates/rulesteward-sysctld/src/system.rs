@@ -329,6 +329,105 @@ fn enumerate(
 /// winning `systemd_win` for a key `/etc/sysctl.conf` also sets, and the reason
 /// clause must not claim "no symlink" while naming that exact symlink as the file
 /// that applies instead.
+/// Compute the systemd-sysctl verb + reason clause for one diverging key inside
+/// [`w03b_divergence`]. Split out of that function only to stay under the
+/// workspace `clippy::too_many_lines` budget; no behavior change from the
+/// inline version.
+///
+/// The four `Some(sw)` branches below are meant to be exhaustive and mutually
+/// exclusive over every reachable shape of the 99 slot: (1) the slot resolves
+/// correctly (`symlink_ok`) but a later drop-in still wins, (2) the slot is a
+/// symlink and IS itself the winner (misdirected, followed as an ordinary
+/// drop-in), (3) the slot is a symlink but some OTHER drop-in wins (dangling,
+/// escaping `--root`, or misdirected to a target that sets no keys), and (4)
+/// there is genuinely no symlink at the slot at all (absent, or replaced by a
+/// regular file). Cases (2)-(4) all fall through `symlink_ok == false`; the
+/// `slot_is_symlink` check and the `sw.file == link_99` check are independent
+/// questions - a symlink EXISTING at the slot says nothing about whether it
+/// resolves to `/etc/sysctl.conf` or about which file wins a given key - and
+/// conflating them is exactly what previously made the final `else` claim "no
+/// symlink" for a slot where a symlink was genuinely present, just broken.
+fn w03b_verb_and_reason(
+    a: &ParsedAssignment,
+    systemd_win: Option<&ParsedAssignment>,
+    symlink_ok: bool,
+    slot_is_symlink: bool,
+    link_99: &Path,
+) -> (String, String) {
+    match systemd_win {
+        None => {
+            // (round 3, #593 Finding 2) A hardcoded "no symlink" reason is
+            // only true when `slot_is_symlink` is false. When a symlink
+            // genuinely EXISTS at the 99-slot but resolves to nothing that
+            // sets this key (dangling, escaping `--root`, or misdirected to
+            // a target that sets no keys at all), `systemd_win` is `None`
+            // too, but claiming "no symlink" is false and points the
+            // operator at the wrong remedy (create one, which fails with
+            // EEXIST) instead of the right one (repoint/fix the existing
+            // one).
+            let reason = if slot_is_symlink {
+                "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
+                 not resolve to /etc/sysctl.conf (it is dangling, escapes \
+                 --root, or points elsewhere), so systemd-sysctl does not \
+                 apply /etc/sysctl.conf there"
+                    .to_string()
+            } else {
+                "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                 /etc/sysctl.d/99-sysctl.conf symlink)"
+                    .to_string()
+            };
+            (format!("leaves `{}` unset", a.display), reason)
+        }
+        Some(sw) => {
+            let verb = format!("applies `{}`", sw.value);
+            let reason = if symlink_ok {
+                format!(
+                    "systemd-sysctl applies /etc/sysctl.conf at the 99-sysctl.conf \
+                     slot, but {} sorts after it and wins",
+                    sw.file.display()
+                )
+            } else if slot_is_symlink && sw.file == link_99 {
+                // The winner IS the 99-sysctl.conf entry itself, followed as an
+                // ordinary drop-in because it is a symlink that does not resolve
+                // to /etc/sysctl.conf (misdirected or escaping --root, #593 round
+                // 2). Naming it while also asserting "no symlink" would be
+                // self-contradictory; the correct remedy is to REPOINT the
+                // symlink, not create one that already exists.
+                "the /etc/sysctl.d/99-sysctl.conf symlink does not resolve to \
+                 /etc/sysctl.conf (misdirected); systemd-sysctl does not apply \
+                 /etc/sysctl.conf there - it reads the symlink's own target as \
+                 an ordinary drop-in instead"
+                    .to_string()
+            } else if slot_is_symlink {
+                // (round 4, #593 Finding - Adversarial Testing Loop) A symlink
+                // genuinely EXISTS at the 99 slot (dangling, escaping --root, or
+                // misdirected to a target that sets no keys of its own) but some
+                // OTHER drop-in - not the symlink itself - wins this key. This is
+                // the identical false "no symlink" claim the `None` arm above and
+                // the `sw.file == link_99` arm just above both already guard
+                // against, reached here because `sw.file != link_99`: the symlink
+                // is present, just broken, and a separate file happens to win.
+                // The remedy is still to REPOINT the existing symlink, not create
+                // one that already exists.
+                format!(
+                    "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
+                     not resolve to /etc/sysctl.conf (it is dangling, escapes \
+                     --root, or points elsewhere), so systemd-sysctl does not \
+                     apply /etc/sysctl.conf there; {} applies instead",
+                    sw.file.display()
+                )
+            } else {
+                format!(
+                    "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                     99-sysctl.conf symlink); {} applies instead",
+                    sw.file.display()
+                )
+            };
+            (verb, reason)
+        }
+    }
+}
+
 fn w03b_divergence(
     dropins: &[ParsedAssignment],
     etc_conf: &[ParsedAssignment],
@@ -383,60 +482,8 @@ fn w03b_divergence(
         if !diverges {
             continue;
         }
-        let (systemd_verb, systemd_reason) = match systemd_win {
-            None => {
-                // (round 3, #593 Finding 2) A hardcoded "no symlink" reason is
-                // only true when `slot_is_symlink` is false. When a symlink
-                // genuinely EXISTS at the 99-slot but resolves to nothing that
-                // sets this key (dangling, escaping `--root`, or misdirected to
-                // a target that sets no keys at all), `systemd_win` is `None`
-                // too, but claiming "no symlink" is false and points the
-                // operator at the wrong remedy (create one, which fails with
-                // EEXIST) instead of the right one (repoint/fix the existing
-                // one).
-                let reason = if slot_is_symlink {
-                    "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
-                     not resolve to /etc/sysctl.conf (it is dangling, escapes \
-                     --root, or points elsewhere), so systemd-sysctl does not \
-                     apply /etc/sysctl.conf there"
-                        .to_string()
-                } else {
-                    "systemd-sysctl does not apply /etc/sysctl.conf (no \
-                     /etc/sysctl.d/99-sysctl.conf symlink)"
-                        .to_string()
-                };
-                (format!("leaves `{}` unset", a.display), reason)
-            }
-            Some(sw) => {
-                let verb = format!("applies `{}`", sw.value);
-                let reason = if symlink_ok {
-                    format!(
-                        "systemd-sysctl applies /etc/sysctl.conf at the 99-sysctl.conf \
-                         slot, but {} sorts after it and wins",
-                        sw.file.display()
-                    )
-                } else if slot_is_symlink && sw.file == link_99 {
-                    // The winner IS the 99-sysctl.conf entry itself, followed as an
-                    // ordinary drop-in because it is a symlink that does not resolve
-                    // to /etc/sysctl.conf (misdirected or escaping --root, #593 round
-                    // 2). Naming it while also asserting "no symlink" would be
-                    // self-contradictory; the correct remedy is to REPOINT the
-                    // symlink, not create one that already exists.
-                    "the /etc/sysctl.d/99-sysctl.conf symlink does not resolve to \
-                     /etc/sysctl.conf (misdirected); systemd-sysctl does not apply \
-                     /etc/sysctl.conf there - it reads the symlink's own target as \
-                     an ordinary drop-in instead"
-                        .to_string()
-                } else {
-                    format!(
-                        "systemd-sysctl does not apply /etc/sysctl.conf (no \
-                         99-sysctl.conf symlink); {} applies instead",
-                        sw.file.display()
-                    )
-                };
-                (verb, reason)
-            }
-        };
+        let (systemd_verb, systemd_reason) =
+            w03b_verb_and_reason(a, systemd_win, symlink_ok, slot_is_symlink, &link_99);
         let message = format!(
             "cross-directory applier divergence for `{}`: procps `sysctl --system` \
              applies `{}` (/etc/sysctl.conf read dead-last), but systemd-sysctl {} - {}",
