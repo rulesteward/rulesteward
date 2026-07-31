@@ -2260,6 +2260,74 @@ fn syscall_vs_syscall_duplicate_path_predicate_is_not_folded_stays_missing_v2304
 }
 
 #[test]
+fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601_regression_fence()
+{
+    // Item 6 (regression fence, round 7 follow-up): pins the half of
+    // `fields_match_excluding_key`'s doc comment (`stig_required.rs:
+    // 2049-2058`) that Item 3 above
+    // (`syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_
+    // stay_missing_v230412`) does NOT cover. Item 3 keeps the REQUIRED side
+    // single-valued (`perm=x`) while only the CANDIDATE carries an
+    // incomparable pair, so `perm_axis_bits(required)` is `Some` and the `if
+    // let (Some(r_perm), Some(c_perm))` guard is never even entered -- that
+    // case is caught by an ordinary field-count mismatch in the unfolded
+    // `multiset_eq`, independent of the fold.
+    //
+    // Here BOTH sides carry the SAME incomparable pair, `-F perm=rwa -F
+    // perm=wxa`: `rwa` = {r,w,a} and `wxa` = {w,x,a}. `r` appears only in the
+    // first and `x` only in the second, so neither is a subset of the other
+    // -- the set has NO MINIMUM (`perm_axis_bits`'s own doc comment's
+    // example verbatim, `stig_required.rs:1935-1938`). So BOTH
+    // `perm_axis_bits(required)` and `perm_axis_bits(candidate)` return
+    // `None`, the `if let (Some(r_perm), Some(c_perm))` guard is not entered
+    // on EITHER side, and the compare falls through to the ORIGINAL,
+    // unfolded `multiset_eq` over the full field set -- which trivially
+    // matches two byte-identical field lists.
+    //
+    // The hazard this pins: if a future change ever treated a `None` fold
+    // result as "the perm axis does not match" (instead of "no axis-level
+    // opinion, defer to the raw field compare"), two byte-identical rules
+    // each spelling `-F perm=rwa -F perm=wxa` would flip from satisfied to
+    // MISSING -- a fail-closed regression on literally identical input.
+    // GREEN today; must STAY green.
+    //
+    // Level chosen: `w06_with_baseline` with a SYNTHETIC baseline row
+    // (labeled accordingly, same pattern as `watch_equivalent_requires_
+    // exact_perm_match_not_superset` and its neighbors below), not the
+    // shipped `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` tables:
+    // scanning every literal rule string in all three shipped tables for a
+    // second `-F perm=` occurrence finds ZERO rows with more than one `-F
+    // perm=` predicate at all, so no shipped required row can carry an
+    // incomparable pair -- the required side of this property cannot be
+    // constructed from real shipped content. This is the exact seam this
+    // file's own module doc (top of file) says `w06_with_baseline` is `pub`
+    // specifically to enable: injecting a small, real matcher exercise
+    // without depending on the shipped tables. It still runs the REAL
+    // public matcher end to end (not a direct call into the private
+    // `fields_match_excluding_key`/`perm_axis_bits`), which is the sharper
+    // pin whenever it is reachable at all -- and it is reachable here.
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-INCOMPARABLE",
+        "TEST-PERM-INCOMPARABLE",
+        "-a always,exit -F path=/etc/synthetic-incomparable-perm -F perm=rwa -F perm=wxa \
+         -k synth",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/etc/synthetic-incomparable-perm -F perm=rwa -F perm=wxa \
+         -k synth\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "two BYTE-IDENTICAL rules each carrying the incomparable perm pair \
+         -F perm=rwa -F perm=wxa must still match each other -- perm_axis_bits \
+         declines (None) on both sides for a set with no minimum, which must \
+         fall through to the unfolded multiset_eq compare rather than being \
+         treated as a non-match: {diags:?}"
+    );
+}
+
+#[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and
     // original agree here since "wa" never triggers the r/x arms): pins the
