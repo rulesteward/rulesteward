@@ -1734,10 +1734,12 @@ mod tests {
     fn hash_digits_uid_subject_after_comma_is_not_a_comment() {
         // visudo: `root,#1000 ALL=(ALL) ALL` -> User_List = [root, userid 1000]
         // (a `#<digits>` UID can appear mid-user-list after a comma). The inline
-        // comment strip must NOT treat that `#1000` as a comment. (No space after
-        // the comma keeps the whole user list one whitespace-word, sidestepping the
-        // documented Phase-0 user/host whitespace-split simplification; the point
-        // here is solely that the post-comma `#1000` survives the comment strip.)
+        // comment strip must NOT treat that `#1000` as a comment. (The fixture is
+        // written with no space after the comma because the Phase-0 parser split the
+        // `User_List` at its first internal space; #538 removed that simplification -
+        // see `split_user_list` - so the spaced spelling would work too, but the
+        // fixture is left as written since the point here is solely that the
+        // post-comma `#1000` survives the comment strip.)
         let s = only_spec("root,#1000 ALL=(ALL) ALL\n");
         assert_eq!(s.users, vec!["root".to_string(), "#1000".to_string()]);
         assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
