@@ -1949,10 +1949,46 @@ fn dir_watch_equivalent_axes_match(
 /// monotonicity is silent on a set with no minimum, so a genuinely
 /// satisfiable conjunction may still be reported missing.
 ///
-/// Returns `None` for zero `Perm` predicates (no axis to compare) or if any
-/// predicate's value fails to parse as perm-bit letters.
+/// Returns `None` for zero `Perm` predicates (no axis to compare), if any
+/// predicate's value fails to parse as perm-bit letters, or if any `Perm`
+/// predicate uses an operator other than `=` (see the operator-gate
+/// paragraph below).
+///
+/// **Operator gate (ATL round 8, issue #601 followup, regression in commit
+/// 64ef6c7):** a `-F perm=` predicate only ever LOADS with the `=` operator
+/// -- `lib/libaudit.c`'s `AUDIT_PERM` case in `audit_rule_fieldpair_data()`
+/// returns `-EAU_OPEQ` for any other operator (measured rc -29 against the
+/// installed audit-4.1.4 libaudit for `!=`, `>=`, `<`, `&`, `&=`, checked
+/// BEFORE the letters are validated -- a bad letter set is a DIFFERENT code,
+/// -14). A rule spelling a non-`=` perm operator therefore never reaches the
+/// kernel at all and has no perm-axis VALUE to fold into. This function
+/// declines (`None`) the instant it sees one, rather than silently
+/// selecting/stripping it by field NAME alone regardless of operator (the
+/// round-7 fold's bug): field-name-only selection let an illegal operator
+/// ride along invisibly and get credited as satisfying a `=`-spelled
+/// requirement, a fail-open. Declining routes the whole compare back to the
+/// unfolded [`multiset_eq`] in [`fields_match_excluding_key`], which
+/// requires `a.op == b.op` per predicate and so correctly reports a non-`=`
+/// candidate as not matching a `=`-spelled requirement. This mirrors the
+/// identical guard already on the Watch-vs-Syscall and Dir-vs-Syscall arms
+/// ([`is_pure_path_watch_shaped`]/[`is_pure_dir_watch_shaped`]'s
+/// `AuditField::Path | AuditField::Perm => f.op == CompareOp::Eq`, issue
+/// #600) -- this function is unreachable with a non-`Eq` `Perm` predicate
+/// from either of those two call sites, since both already require their
+/// own pure-watch-shape check (which enforces the same `Eq`-only rule) to
+/// pass before calling here, so the gate is a true no-op for them and only
+/// changes behavior for its third caller, the Syscall-vs-Syscall arm in
+/// [`fields_match_excluding_key`], which previously had no operator guard at
+/// all.
 fn perm_axis_bits(syscall_fields: &[crate::ast::FieldFilter]) -> Option<crate::ast::PermBits> {
-    use crate::ast::AuditField;
+    use crate::ast::{AuditField, CompareOp};
+
+    if syscall_fields
+        .iter()
+        .any(|f| f.field == AuditField::Perm && f.op != CompareOp::Eq)
+    {
+        return None;
+    }
 
     let perm_bits: Vec<crate::ast::PermBits> = syscall_fields
         .iter()
@@ -2056,6 +2092,17 @@ fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
 /// matching - e.g. two byte-identical rules each carrying `-F perm=rwa -F
 /// perm=wxa` still match via that unchanged per-predicate multiset compare,
 /// even though `perm_axis_bits` declines (`None`) on both sides.
+///
+/// **Operator gate (ATL round 8, issue #601 followup):** [`perm_axis_bits`]
+/// ALSO returns `None` for a side carrying any `Perm` predicate whose
+/// operator is not `=` (a non-`=` perm predicate never loads at the kernel
+/// level at all, per that function's doc comment). The same "either side
+/// `None` falls through to unfolded `multiset_eq`" rule handles this case
+/// too, and here it is exactly what is wanted: `multiset_eq`'s per-predicate
+/// `field_eq` closure below requires `a.op == b.op`, so a candidate's
+/// illegal-operator `Perm` predicate can never raw-compare-equal to a
+/// required row's `=`-spelled one, correctly reporting the required line as
+/// missing instead of silently crediting it.
 fn fields_match_excluding_key(
     required: &[crate::ast::FieldFilter],
     candidate: &[crate::ast::FieldFilter],
