@@ -1531,8 +1531,10 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 ///
 /// SYMMETRIC as of commit db6da54 (this lane, issue #600): the path twin
 /// [`is_pure_path_watch_shaped`] carries the SAME two guards -- Path/Perm
-/// predicates must use `=` (:1732), and there must be EXACTLY ONE Path
-/// predicate, not "at least one" (:1745-1749) -- closing the fail-open where
+/// predicates must use `=` (its `AuditField::Path | AuditField::Perm => f.op
+/// == CompareOp::Eq` field-presence arm), and there must be EXACTLY ONE Path
+/// predicate, not "at least one" (its trailing `fields.iter().filter(|f|
+/// f.field == AuditField::Path).count() == 1` guard) -- closing the fail-open where
 /// a rule spelled `-F path!=` / `-F perm!=` or naming `-F path=` more than
 /// once (`-EAU_OPEQ`; `audit_to_watch` returns `-EINVAL` when `krule->watch`
 /// is already set -- neither loads on a real host) was still credited as
@@ -1900,7 +1902,10 @@ fn dir_watch_equivalent_axes_match(
 /// `mask` argument: every branch reduces to `mask & <event-determined
 /// constant>` (`AUDITSC_NATIVE`/`AUDITSC_COMPAT` return 1 on the first set
 /// bit of `mask` that lands in the event's syscall class; `AUDITSC_OPEN`/
-/// `AUDITSC_OPENAT2` return `mask & ACC_MODE(...)`; `AUDITSC_EXECVE` returns
+/// `AUDITSC_OPENAT`/`AUDITSC_OPENAT2` return `mask & ACC_MODE(...)` (the
+/// three differ only in which `argv` slot holds the open flags -- `open()`'s
+/// own `argv[1]`, `openat()`'s `argv[2]`, or `openat2()`'s `argv[2]`
+/// `struct open_how`); `AUDITSC_EXECVE` returns
 /// `mask & AUDIT_PERM_EXEC`; `AUDITSC_SOCKETCALL` returns `(mask &
 /// AUDIT_PERM_WRITE) && ...`). So for two masks `m1 subset-of m2`,
 /// `match(m1)` implies `match(m2)` for every event, and a conjunction of
@@ -1918,7 +1923,7 @@ fn dir_watch_equivalent_axes_match(
 /// incomparable, so the set is not totally ordered yet still collapses.
 ///
 /// Requiring bitwise EQUALITY of every predicate (this function's round-2
-/// shape, commit d21c7aa) was an over-correction: it correctly stopped two
+/// shape, commit e89ea30) was an over-correction: it correctly stopped two
 /// DIFFERENT predicates being credited by picking "whichever comes first"
 /// (the original bug both call sites -- [`watch_equivalent_axes_match`] and
 /// [`dir_watch_equivalent_axes_match`] -- shared; issue #601 ATL follow-up,
@@ -2032,26 +2037,67 @@ fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
 /// spuriously fail on "field set size mismatch" even when the key values
 /// unify). A set (not ordered) compare per the locked field-order-insensitive
 /// decision (grounding Part C.1).
+///
+/// Perm-multiplicity fold (ATL round 7, issue #601, USER RULING): a
+/// `-F perm=` predicate CHAIN conjoins idempotently at the kernel level (see
+/// [`perm_axis_bits`]'s doc comment - already wired into the Watch-vs-Syscall
+/// and Dir-vs-Syscall arms), so this is the ONLY field this function folds
+/// across multiplicity; every other `-F` field (in particular `path`/`dir`,
+/// which never load a second time at the kernel level at all - see
+/// [`is_pure_path_watch_shaped`]'s MISS-4 grounding) keeps the strict,
+/// multiplicity-sensitive [`multiset_eq`] compare below unchanged. Purely
+/// ADDITIVE: the fold only engages when BOTH sides' `-F perm=` predicates
+/// fold to an actual minimum. [`perm_axis_bits`] returns `None` both for zero
+/// `Perm` predicates and for a predicate SET WITH NO MINIMUM (e.g.
+/// `perm=rwa` + `perm=wxa` - its own doc comment's example: incomparable,
+/// neither a subset of the other); either side landing in `None` falls
+/// straight through to the ORIGINAL, untouched `multiset_eq` compare over
+/// every field including `Perm`, so a pair that matches TODAY keeps
+/// matching - e.g. two byte-identical rules each carrying `-F perm=rwa -F
+/// perm=wxa` still match via that unchanged per-predicate multiset compare,
+/// even though `perm_axis_bits` declines (`None`) on both sides.
 fn fields_match_excluding_key(
     required: &[crate::ast::FieldFilter],
     candidate: &[crate::ast::FieldFilter],
     opts: LintOptions,
 ) -> bool {
+    use crate::ast::AuditField;
+
     let rf: Vec<&crate::ast::FieldFilter> = required
         .iter()
-        .filter(|f| f.field != crate::ast::AuditField::Key)
+        .filter(|f| f.field != AuditField::Key)
         .collect();
     let cf: Vec<&crate::ast::FieldFilter> = candidate
         .iter()
-        .filter(|f| f.field != crate::ast::AuditField::Key)
+        .filter(|f| f.field != AuditField::Key)
         .collect();
-    multiset_eq(&rf, &cf, |a, b| {
+
+    let field_eq = |a: &&crate::ast::FieldFilter, b: &&crate::ast::FieldFilter| {
         a.field == b.field && a.op == b.op && {
             let ft = super::field_type::field_type(&a.field);
             super::value::canonical_value(ft, &a.value, opts)
                 == super::value::canonical_value(ft, &b.value, opts)
         }
-    })
+    };
+
+    if let (Some(r_perm), Some(c_perm)) = (perm_axis_bits(required), perm_axis_bits(candidate)) {
+        if r_perm != c_perm {
+            return false;
+        }
+        let rf: Vec<&crate::ast::FieldFilter> = rf
+            .iter()
+            .filter(|f| f.field != AuditField::Perm)
+            .copied()
+            .collect();
+        let cf: Vec<&crate::ast::FieldFilter> = cf
+            .iter()
+            .filter(|f| f.field != AuditField::Perm)
+            .copied()
+            .collect();
+        return multiset_eq(&rf, &cf, field_eq);
+    }
+
+    multiset_eq(&rf, &cf, field_eq)
 }
 
 /// Multiset equality: same length, and every element of `a` has a distinct
