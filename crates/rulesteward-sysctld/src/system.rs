@@ -59,31 +59,61 @@ fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
     ]
 }
 
+/// Resolve a symlink's on-disk target using RE-ROOT-THEN-CONTAIN semantics
+/// (orchestrator ruling 2026-07-31, round 2 of issue #593): an ABSOLUTE target
+/// resolves as `<prefix>/<target>` - what a real chroot/image applier would do,
+/// and what makes an admin's `ln -s /etc/sysctl.conf /etc/sysctl.d/99-sysctl.conf`
+/// repair correctly recognized as the distro slot - while a RELATIVE target
+/// resolves against `link`'s own parent directory, exactly like an ordinary
+/// symlink. Either way, the fully-resolved result is then required to still sit
+/// under `prefix`: anything that escapes (a `..`-relative walkout, or an absolute
+/// target with no re-rooted counterpart under `prefix`) is UNRESOLVABLE (`None`)
+/// rather than being followed onto the real filesystem outside the scanned root.
+/// Also `None` when `link` is not a symlink at all, or is dangling.
+///
+/// Written GENERICALLY in terms of `prefix`, never branching on "do we have a
+/// `--root`": a live scan passes `prefix == "/"`, where re-rooting an absolute
+/// target is the IDENTITY (`/x` re-roots to `/x`) and containment trivially
+/// holds (every canonical path already starts with `/`). Real-system linting is
+/// simply the `prefix == "/"` case of this same function.
+fn resolve_reroot_contained(prefix: &Path, link: &Path) -> Option<PathBuf> {
+    let target = std::fs::read_link(link).ok()?;
+    let candidate = if target.is_absolute() {
+        // RE-ROOT: join onto `prefix`, not the real filesystem root. A
+        // genuinely absolute Unix path always strips "/" successfully; the
+        // empty-path fallback is unreachable in practice and simply re-joins
+        // `prefix` itself.
+        prefix.join(target.strip_prefix("/").unwrap_or_else(|_| Path::new("")))
+    } else {
+        link.parent()?.join(&target)
+    };
+    let resolved = std::fs::canonicalize(&candidate).ok()?;
+    let canonical_prefix = std::fs::canonicalize(prefix).ok()?;
+    // CONTAIN: a resolution that lands outside `prefix` (via re-rooted-absolute
+    // miss or a `..` walkout) is treated as unresolvable, never followed.
+    resolved.starts_with(&canonical_prefix).then_some(resolved)
+}
+
 /// Whether the `/etc/sysctl.d/99-sysctl.conf` slot under `prefix` is the EXPECTED
-/// distro symlink - a symlink that resolves to `<prefix>/etc/sysctl.conf`.
+/// distro symlink - a symlink that resolves (re-root-then-contain) to
+/// `<prefix>/etc/sysctl.conf`.
 ///
 /// This is the ONLY path by which systemd-sysctl applies `/etc/sysctl.conf` (design
 /// section 2 point 3). Per design section 8, anything that is "not the expected
 /// symlink" is treated as ABSENT (systemd does not apply `/etc/sysctl.conf`, so
-/// W03-b fires): a non-symlink, a dangling link (`canonicalize` fails, and a
-/// dangling link is never followed), or a symlink to any OTHER target.
+/// W03-b fires): a non-symlink, a dangling link, a symlink to any OTHER target, or
+/// (round 2, #593) a symlink whose resolution escapes `prefix` entirely.
 ///
-/// The canonicalize-equality below IS the "expected distro symlink" check: only a
-/// symlink (chain) can make `99-sysctl.conf` resolve to `etc/sysctl.conf`'s real
-/// path (a regular file / hardlink at that name canonicalizes to itself, `!=`
-/// `etc/sysctl.conf`; a missing / dangling link yields `Err -> false`), so no
-/// separate `is_symlink` guard is needed. Both sides are canonicalized so the
-/// shipped relative `../sysctl.conf` target and any prefix-level symlinks resolve
-/// identically.
+/// [`resolve_reroot_contained`] already requires `link` to be an actual, resolvable
+/// symlink (`read_link` fails on a non-symlink or a dangling one), so no separate
+/// `is_symlink` guard is needed here; comparing its `Some` result against
+/// `etc/sysctl.conf`'s own canonical path is the "expected distro symlink" check.
 fn slot_symlink_ok(prefix: &Path) -> bool {
     let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
-    match (
-        std::fs::canonicalize(&link_99),
-        std::fs::canonicalize(prefix.join("etc/sysctl.conf")),
-    ) {
-        (Ok(target), Ok(etc_conf)) => target == etc_conf,
-        _ => false,
-    }
+    let Some(resolved) = resolve_reroot_contained(prefix, &link_99) else {
+        return false;
+    };
+    std::fs::canonicalize(prefix.join("etc/sysctl.conf")).is_ok_and(|etc_conf| resolved == etc_conf)
 }
 
 /// A drop-in that survived same-basename directory masking, tagged with its
@@ -201,20 +231,40 @@ fn enumerate(
             }
             seen.insert(basename.clone(), path.clone());
             // Content contribution, decided AFTER the basename claim above.
-            if ftype.is_symlink() && path == link_99 && symlink_ok {
-                // The distro `99-sysctl.conf -> ../sysctl.conf` slot, recognized
-                // ONLY when the symlink actually resolves to
-                // `<prefix>/etc/sysctl.conf` (`symlink_ok`): claims its basename,
-                // but its content flows via the `/etc/sysctl.conf` applier model
-                // (W03-b), not as a parsed drop-in. A symlink at this exact path
-                // that resolves to anything else (or does not resolve at all) is
-                // NOT the distro slot - it falls through to the ordinary
-                // `is_file()` content check below like any other drop-in (#593).
+            if ftype.is_symlink() && path == link_99 {
+                if symlink_ok {
+                    // The distro `99-sysctl.conf -> ../sysctl.conf` slot, recognized
+                    // ONLY when the symlink actually resolves (re-root-then-contain)
+                    // to `<prefix>/etc/sysctl.conf` (`symlink_ok`): claims its
+                    // basename, but its content flows via the `/etc/sysctl.conf`
+                    // applier model (W03-b), not as a parsed drop-in.
+                    continue;
+                }
+                // A symlink at this exact path that is NOT the recognized distro
+                // slot (misdirected, dangling, or escaping `prefix`) is followed
+                // like any other drop-in (#593) - but ONLY under RE-ROOT-THEN-
+                // CONTAIN (round 2): an absolute target re-roots under `prefix`
+                // rather than the real filesystem, and any resolution that still
+                // escapes `prefix` (dangling, an absolute target with no
+                // re-rooted counterpart, or a `..` walkout) claims the basename
+                // above but contributes NO content - it is never followed onto a
+                // real path outside the scanned root. 99-slot only: the identical
+                // escape for ORDINARY (non-99) drop-in symlinks pre-exists and is
+                // out of scope here, filed separately as #610.
+                if resolve_reroot_contained(prefix, &path).is_some_and(|p| p.is_file()) {
+                    surviving.push(SurvivingFile {
+                        path,
+                        basename,
+                        rank,
+                    });
+                }
                 continue;
             }
             if path.is_file() {
                 // A regular file, or a symlink to a readable regular file: a real
-                // drop-in whose assignments contribute to the merged set.
+                // drop-in whose assignments contribute to the merged set. (Not the
+                // 99-slot path handled above, so this follows the real filesystem
+                // directly - #610.)
                 surviving.push(SurvivingFile {
                     path,
                     basename,
@@ -241,14 +291,25 @@ fn enumerate(
 /// if the two appliers resolve DIFFERENT effective values, one W03 is emitted
 /// anchored at the `/etc/sysctl.conf` assignment, stating both values and the cause.
 /// When both appliers agree the key is suppressed.
+///
+/// `prefix` is used only to work out whether `/etc/sysctl.d/99-sysctl.conf` is
+/// itself a symlink at all (round 2, #593 Finding 2): once a MISDIRECTED 99-slot
+/// symlink is followed as an ordinary drop-in ([`enumerate`]), it can become the
+/// winning `systemd_win` for a key `/etc/sysctl.conf` also sets, and the reason
+/// clause must not claim "no symlink" while naming that exact symlink as the file
+/// that applies instead.
 fn w03b_divergence(
     dropins: &[ParsedAssignment],
     etc_conf: &[ParsedAssignment],
     symlink_ok: bool,
+    prefix: &Path,
 ) -> Vec<Diagnostic> {
     if etc_conf.is_empty() {
         return Vec::new();
     }
+    let link_99 = prefix.join("etc/sysctl.d/99-sysctl.conf");
+    let slot_is_symlink =
+        std::fs::symlink_metadata(&link_99).is_ok_and(|m| m.file_type().is_symlink());
 
     // The systemd effective value of each key: drop-ins at their own basenames, plus
     // `/etc/sysctl.conf` spliced at the `99-sysctl.conf` slot when the symlink
@@ -306,6 +367,18 @@ fn w03b_divergence(
                          slot, but {} sorts after it and wins",
                         sw.file.display()
                     )
+                } else if slot_is_symlink && sw.file == link_99 {
+                    // The winner IS the 99-sysctl.conf entry itself, followed as an
+                    // ordinary drop-in because it is a symlink that does not resolve
+                    // to /etc/sysctl.conf (misdirected or escaping --root, #593 round
+                    // 2). Naming it while also asserting "no symlink" would be
+                    // self-contradictory; the correct remedy is to REPOINT the
+                    // symlink, not create one that already exists.
+                    "the /etc/sysctl.d/99-sysctl.conf symlink does not resolve to \
+                     /etc/sysctl.conf (misdirected); systemd-sysctl does not apply \
+                     /etc/sysctl.conf there - it reads the symlink's own target as \
+                     an ordinary drop-in instead"
+                        .to_string()
                 } else {
                     format!(
                         "systemd-sysctl does not apply /etc/sysctl.conf (no \
@@ -531,7 +604,7 @@ pub fn lint_system(
     let etc_conf_asgns = parse_etc_conf(prefix, &mut diags, &mut sources);
 
     // W03-b needs the pre-merge handles, so compute it before the two are moved.
-    let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok);
+    let applier = w03b_divergence(&surviving_asgns, &etc_conf_asgns, symlink_ok, prefix);
 
     // The procps merged, precedence-ordered assignment list: drop-ins in basename
     // order, then /etc/sysctl.conf dead-last. Ranks run parallel (None = the
