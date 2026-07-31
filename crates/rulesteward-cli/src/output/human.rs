@@ -56,16 +56,20 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// the operator saw a hard panic instead of a diagnostic.
 ///
 /// `to_char(b)`, for `b` at or past `source.len()`, is `source.chars().count()`
-/// by definition (saturation). For `b` strictly inside the source, `to_char(b)`
-/// equals `source[..q].chars().count()` where `q` is the smallest char
-/// boundary `>= b` (found by scanning forward at most 3 bytes past `b`, since
-/// a UTF-8 scalar is at most 4 bytes: `q` is `b` itself when `b` is already a
-/// boundary, or the start of the NEXT scalar when `b` lands mid-character).
-/// This is the same total, monotone, round-up mapping the previous walk
-/// computed one char at a time - see `mid_character_offset_rounds_up_to_the_next_char_boundary`
-/// below for the byte-by-byte derivation of WHY a boundary-scan-then-prefix-count
-/// agrees with "count char starts strictly below `b`" at every offset,
-/// including mid-character ones.
+/// by definition (saturation) - `b.min(source.len())` folds that case into the
+/// same walk rather than branching on it: `is_char_boundary(source.len())` is
+/// always `true`, so the clamp alone makes the saturating arm total. For `b`
+/// strictly inside the source, `to_char(b)` equals `source[..q].chars().count()`
+/// where `q` is the smallest char boundary `>= b`, found by advancing `q` one
+/// byte at a time until `source.is_char_boundary(q)` holds (at most 3 steps
+/// past a mid-character `b`, since a UTF-8 scalar is at most 4 bytes): `q` is
+/// `b` itself when `b` is already a boundary, or the start of the NEXT scalar
+/// when `b` lands mid-character. This is the same total, monotone, round-up
+/// mapping the previous walk computed one char at a time - see
+/// `mid_character_offset_rounds_up_to_the_next_char_boundary` below for the
+/// byte-by-byte derivation of WHY a boundary-scan-then-prefix-count agrees
+/// with "count char starts strictly below `b`" at every offset, including
+/// mid-character ones.
 ///
 /// This replaces `source.char_indices().take_while(|(i, _)| *i < b).count()`
 /// (#595 perf follow-up), which fully DECODED every scalar below `b` - each
@@ -73,27 +77,31 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// question that only needs to know where chars START, not what they decode
 /// to. `str::chars().count()` has a dedicated fast path in the standard
 /// library that counts non-continuation bytes directly without assembling
-/// scalar values, and because `Chars` is a concrete (non-generic) type, that
-/// method resolves to machine code already compiled into the (optimized)
-/// prebuilt std, not re-monomorphised into this crate at ITS OWN opt-level.
-/// That distinction is what actually matters at `opt-level = 0` (this crate's
-/// dev/test profile): a hand-written byte-counting loop written IN this
-/// crate is still compiled unoptimized and was measured, isolated from
-/// `render()`'s own overhead, at a materially smaller but still real speedup
-/// over the decode loop it replaced - real, but not enough headroom to clear
-/// this file's tail/head ratio gate with margin. Routing the actual counting
-/// through `str::chars().count()` was measured (in the same isolated
-/// harness) to close that remaining gap, cutting the decode loop's ~12.8x
-/// (release) / ~1024x (dev) per-byte cost down to roughly 1.0x-1.6x.
+/// scalar values. `Chars` being a concrete (non-generic) type does NOT by
+/// itself keep that fast path out of this crate's own codegen: `Chars::count`
+/// and the `count::count_chars` it forwards to are both `#[inline]`, and an
+/// `#[inline]` function's MIR is exported cross-crate and instantiated into
+/// the CALLING crate's CGU at the CALLER's opt-level regardless of whether
+/// the function is generic (verified against `core::str::iter`/`count` at
+/// `$(rustc --print sysroot)/lib/rustlib/src/rust/library/core/src/str/` on
+/// 1.97.0). What actually stays a call into the pre-optimized prebuilt
+/// `libcore` is one level further down: `do_count_chars` (the SWAR chunked
+/// variant used for longer inputs) and `char_count_general_case` (the
+/// short-input / head-tail fallback) are NEITHER of them `#[inline]`, so
+/// those two are what is not re-monomorphised into this crate at ITS OWN
+/// opt-level. That distinction is what actually matters at `opt-level = 0`
+/// (this crate's dev/test profile): a hand-written byte-counting loop written
+/// IN this crate is still compiled unoptimized and was measured, isolated
+/// from `render()`'s own overhead, at a materially smaller but still real
+/// speedup over the decode loop it replaced - real, but not enough headroom
+/// to clear this file's tail/head ratio gate with margin. Routing the actual
+/// counting through `str::chars().count()` was measured (in the same
+/// isolated harness) to close that remaining gap, cutting the decode loop's
+/// ~12.8x (release) / ~1000x (dev) per-byte cost down to roughly 1.0x-1.6x.
 fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
-    let bytes = source.as_bytes();
-    let len = bytes.len();
     let to_char = |b: usize| {
-        if b >= len {
-            return source.chars().count();
-        }
-        let mut q = b;
-        while q < len && (bytes[q] & 0xC0) == 0x80 {
+        let mut q = b.min(source.len());
+        while !source.is_char_boundary(q) {
             q += 1;
         }
         source[..q].chars().count()
