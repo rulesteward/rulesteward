@@ -54,6 +54,13 @@ pub fn canonical_value(ft: FieldType, raw: &str, opts: LintOptions) -> Cow<'_, s
         // it only ever merges spellings of the SAME number, never distinct ones).
         FieldValue::Unsigned(n) => Cow::Owned(n.to_string()),
         FieldValue::Signed(n) => Cow::Owned(n.to_string()),
+        // Fold -F perm= (session 9m lane 1, round 3 ATL) to the same
+        // rwxa-ordered spelling regardless of source case/letter-order, so
+        // `perm=X`/`perm=x`/`perm=xa`/`perm=ax` all canonicalize identically
+        // (a value-preserving fold: it only ever merges spellings of the
+        // SAME kernel bitmask, never distinct ones -- same principle as the
+        // numeric decimal-normalize arms above, one level up).
+        FieldValue::Perm(mask) => Cow::Owned(mask.to_letters()),
         FieldValue::Opaque => Cow::Borrowed(raw.trim()),
     }
 }

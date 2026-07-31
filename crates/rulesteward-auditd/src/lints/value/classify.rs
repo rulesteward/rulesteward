@@ -23,6 +23,18 @@ pub enum FieldValue {
     /// field, a malformed or out-of-range number). Compares only by exact
     /// spelling.
     Opaque,
+    /// A `-F perm=` (or `-p`) value that parses as a `rwxa` permission-letter
+    /// set on a [`FieldType::Perm`] field, folded into an order-free bitmask
+    /// (session 9m lane 1, round 3 ATL, issues #600/#601). `lib/libaudit.c`'s
+    /// `audit_rule_fieldpair_data` case-folds every character
+    /// (`tolower((unsigned char)v[i])`) and ORs the letters into one bitmask
+    /// before the kernel ever compares it, so `perm=wa`/`perm=aw`/`perm=WA`
+    /// are the SAME kernel value. A value that does not parse as perm
+    /// letters (e.g. a too-long or invalid-letter spelling that only reaches
+    /// this classifier because its `-F perm!=...` operator skipped the
+    /// parser's letter-set check) stays [`FieldValue::Opaque`] instead --
+    /// never a partial/best-effort parse.
+    Perm(PermMask),
 }
 
 impl FieldValue {
@@ -36,8 +48,77 @@ impl FieldValue {
         match self {
             FieldValue::Signed(n) => Some(i128::from(n)),
             FieldValue::Unsigned(n) => Some(i128::from(n)),
-            FieldValue::UidGidUnset | FieldValue::Opaque => None,
+            FieldValue::UidGidUnset | FieldValue::Opaque | FieldValue::Perm(_) => None,
         }
+    }
+}
+
+/// A parsed `-F perm=` / `-p` permission-letter set, folded into a 4-bit
+/// order-free bitmask matching `AUDIT_PERM_READ`/`WRITE`/`EXEC`/`ATTR`
+/// (`permtab.h:28-31`). A newtype rather than reusing `crate::ast::PermBits`:
+/// that type is not `Copy`/`Eq`, both of which `FieldValue` needs. `pub`
+/// (matching `FieldValue`'s own visibility -- the derived `Perm(PermMask)`
+/// variant field is reachable wherever `FieldValue` is), but the inner `u8`
+/// stays private, so nothing outside this module can construct one or peek
+/// at the raw bits; only (in)equality and `Debug` are exposed via the derive.
+/// Deliberately NOT unified with `parser::parse_perms` or
+/// `stig_required::perm_bits_from_field_value` -- each call site's fix is
+/// scoped to its own file, and the grammar is small and stable (4 letters,
+/// `permtab.h:28-31`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermMask(u8);
+
+impl PermMask {
+    const READ: u8 = 0b0001;
+    const WRITE: u8 = 0b0010;
+    const EXEC: u8 = 0b0100;
+    const ATTR: u8 = 0b1000;
+
+    /// Fold `raw` (already trimmed by the caller) into a `PermMask`,
+    /// ASCII-case-folded per `lib/libaudit.c`'s `audit_rule_fieldpair_data`
+    /// `AUDIT_PERM` case. `None` for any character outside `rwxa` -- an
+    /// unparseable value stays `Opaque` rather than a partial parse. No
+    /// length limit here: the `<= 4` bound is a userspace-parser concern
+    /// (`src/parser.rs`'s `op == Eq`-gated length check), not part of the
+    /// kernel-level bitmask identity this type models, and a value that
+    /// reaches this classifier via a non-`=` operator (e.g. the too-long
+    /// `-F perm!=rwxar`) was never length-checked by the parser at all.
+    fn parse(raw: &str) -> Option<Self> {
+        let mut bits = 0u8;
+        for ch in raw.chars() {
+            bits |= match ch.to_ascii_lowercase() {
+                'r' => Self::READ,
+                'w' => Self::WRITE,
+                'x' => Self::EXEC,
+                'a' => Self::ATTR,
+                _ => return None,
+            };
+        }
+        Some(Self(bits))
+    }
+
+    /// Canonical `rwxa`-ordered spelling of this bitmask, matching
+    /// `normalize::perm_letters`'s convention for a `Watch` rule's `-p`
+    /// value, so a `-F perm=` predicate's canonical form and a `-p` value's
+    /// canonical form agree on the same bitmask.
+    ///
+    /// `pub(super)`: called by `canonical_value` in the sibling `canonical`
+    /// module.
+    pub(super) fn to_letters(self) -> String {
+        let mut s = String::new();
+        if self.0 & Self::READ != 0 {
+            s.push('r');
+        }
+        if self.0 & Self::WRITE != 0 {
+            s.push('w');
+        }
+        if self.0 & Self::EXEC != 0 {
+            s.push('x');
+        }
+        if self.0 & Self::ATTR != 0 {
+            s.push('a');
+        }
+        s
     }
 }
 
@@ -91,11 +172,14 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
         FieldType::Numeric | FieldType::NumericEqNe => {
             parse_u64_base0(v).map_or(FieldValue::Opaque, FieldValue::Unsigned)
         }
-        // Every string / special-grammar field: never numerically folded.
+        // -F perm= / -p: fold rwxa letters into an order-free bitmask
+        // (session 9m lane 1, round 3 ATL). Falls back to Opaque for a
+        // value that fails to parse as perm letters -- see PermMask::parse.
+        FieldType::Perm => PermMask::parse(v).map_or(FieldValue::Opaque, FieldValue::Perm),
+        // Every other string / special-grammar field: never numerically folded.
         FieldType::String
         | FieldType::StringEqNe
         | FieldType::Arch
-        | FieldType::Perm
         | FieldType::MsgType
         | FieldType::Filetype
         | FieldType::Key

@@ -437,12 +437,15 @@ fn parse_perms(s: &str, lineno: usize) -> Result<PermBits, ParseError> {
     }
     let mut perms = PermBits::default();
     for ch in s.chars() {
-        // Real auditctl case-folds `-p` permission letters (lib/libaudit.c
-        // calls tolower() on each byte before matching); `-p WA` and `-p wa`
-        // are the same rule (issue #601 half A). ASCII fold only, matching
-        // the C `tolower` on a byte -- mirrors `perm_bits_from_field_value`
-        // (`lints/stig_required.rs`), which already folds the same way for
-        // `-F perm=`.
+        // Real auditctl case-folds `-p` permission letters (`src/auditctl.c:343`
+        // `audit_setup_perms` calls tolower() on each byte before matching --
+        // NOT lib/libaudit.c, which is the `-F perm=` tolower() site mirrored
+        // below; the length-check comment immediately above this loop already
+        // cites `src/auditctl.c` correctly, only this tolower() attribution
+        // was wrong); `-p WA` and `-p wa` are the same rule (issue #601 half
+        // A). ASCII fold only, matching the C `tolower` on a byte -- mirrors
+        // `perm_bits_from_field_value` (`lints/stig_required.rs`), which
+        // already folds the same way for `-F perm=`.
         match ch.to_ascii_lowercase() {
             'r' => perms.read = true,
             'w' => perms.write = true,
