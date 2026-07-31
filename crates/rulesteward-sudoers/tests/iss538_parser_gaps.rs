@@ -786,18 +786,26 @@ fn gap_b_user_list_with_no_host_list_is_malformed() {
 /// escaped hex mode, e.g., \x20 for space.
 /// ```
 ///
-/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0, `"my user", ALL ALL=(ALL) ALL`:
 ///
 /// ```text
-/// "my user", ALL ALL = ALL
-///     cvtsudoers: User_List [{"username":"my user"},{"username":"ALL"}]
-///                 Host_List [{"hostname":"ALL"}]  Commands [{"command":"ALL"}]
+/// cvtsudoers: User_List [{"username":"my user"},{"username":"ALL"}]
+///             Host_List [{"hostname":"ALL"}]  Commands [{"command":"ALL"}]
+///             runasusers [{"username":"ALL"}]
 /// ```
 ///
 /// So this line grants EVERY user on the box unrestricted sudo, exactly as
 /// `bob, ALL ALL=(ALL) ALL` does, and round 1 leaves W06 silent on it: the
 /// user list is truncated to `"my` at the space inside the quotes. Same DISA
 /// false negative, different spelling.
+///
+/// The `(ALL)` runas group is load-bearing here, not incidental: `sudo-W06`
+/// requires an explicit `Runas_Spec` naming the reserved `ALL` user (DISA's
+/// literal check-content is `ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`,
+/// both WITH a runas group), so a bare `"my user", ALL ALL = ALL` with no
+/// runas group at all must NOT fire -- see
+/// `gap_b_w06_does_not_fire_without_a_runas_group` immediately below, which
+/// pins that as its own negative control with its own host probe.
 #[test]
 fn gap_b_w06_fires_on_a_spaced_user_list_granting_all() {
     assert_eq!(
@@ -812,15 +820,47 @@ fn gap_b_w06_fires_on_a_spaced_user_list_granting_all() {
          the whitespace after the comma, so W06 must fire on the spaced form too"
     );
     assert_eq!(
-        w06_count("\"my user\", ALL ALL = ALL\n"),
+        w06_count("\"my user\", ALL ALL=(ALL) ALL\n"),
         1,
         "a QUOTED principal carrying a space must not truncate the User_List \
-         either: `ALL` is still a member and W06 must fire (host probe, rc 0)"
+         either: `ALL` is still a member and, with the runas group present, \
+         W06 must fire (host probe, rc 0)"
     );
     assert_eq!(
-        s_hosts("\"my user\", ALL ALL = ALL\n"),
+        s_hosts("\"my user\", ALL ALL=(ALL) ALL\n"),
         vec!["ALL".to_string()],
         "and the Host_List is exactly [ALL], not a merged garbage token"
+    );
+}
+
+/// Negative control for the assertion directly above: `sudo-W06` requires an
+/// explicit `Runas_Spec` naming the reserved `ALL` user
+/// (`is_unrestricted_privilege_elevation` in `tags.rs` early-returns `false`
+/// when `effective_runas` is `None`) -- DISA's own check-content literal is
+/// `ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`, both WITH a runas group.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0, `"my user", ALL ALL = ALL`
+/// (no parens at all):
+///
+/// ```text
+/// cvtsudoers: User_List [{"username":"my user"},{"username":"ALL"}]
+///             Host_List [{"hostname":"ALL"}]  Commands [{"command":"ALL"}]
+/// ```
+///
+/// No `runasusers` key appears at all, so sudo defaults the runas user to
+/// root at invocation time -- narrower than either grounded DISA pattern --
+/// and `sudo-W06` must stay silent even though `ALL` is (correctly, per Gap
+/// B's fix) a member of the `User_List`. This is the exact defect this test
+/// module once had: this fixture was originally asserted to fire W06 with no
+/// runas group present at all.
+#[test]
+fn gap_b_w06_does_not_fire_without_a_runas_group() {
+    assert_eq!(
+        w06_count("\"my user\", ALL ALL = ALL\n"),
+        0,
+        "no Runas_Spec at all is narrower than either grounded DISA \
+         (ALL)/(ALL:ALL) pattern; W06 must not fire even though ALL is a \
+         User_List member"
     );
 }
 
