@@ -1517,3 +1517,89 @@ fn a_correct_99_symlink_does_not_double_parse_etc_sysctl_conf() {
          the symlink correctly resolves to /etc/sysctl.conf; got: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 20. Over-fix guard (second rework round, impl-blind adversarial review): the
+//     PARTIAL over-fix `if ftype.is_symlink() && symlink_ok { continue; }` -
+//     dropping only the `path == link_99` conjunct, keeping `symlink_ok` -
+//     passes the ENTIRE suite as it stood before this test (all 22 corpus rows,
+//     all 24 unit tests). It is a tempting simplification once `symlink_ok` is
+//     hoisted to a per-`lint_system`-call value: "`slot_symlink_ok` already
+//     looks at the 99 path, so `path == link_99` is redundant" reads plausibly
+//     at the call site, but `slot_symlink_ok` is a whole-PREFIX property (is
+//     THIS prefix's distro slot wired correctly at all?), not a per-ENTRY one
+//     (is THIS specific directory entry the 99 slot?) - the two are
+//     independent questions and the guard needs both.
+//
+//     Blast radius wider than #593: on a host with the standard distro slot
+//     (symlink_ok == true, the ordinary RHEL default), the partial over-fix
+//     drops EVERY symlinked drop-in in the whole search path, not just the 99
+//     slot - the common config-management pattern
+//     `60-hardening.conf -> /opt/cm/hardening.conf` would report its keys
+//     UNSET and fabricate W02/W04 findings on a compliant host, the same
+//     defect class #593 fixes, on a bigger surface.
+//
+//     Why no existing test catches it: `a_symlinked_non_99_dropin_pointing_at_
+//     a_regular_file_is_parsed_normally` (line 1105) is the test that LOOKS
+//     like it should - its own comment says it exists to catch a
+//     `path == link_99` -> `!=` mutation, and today (with only `path ==
+//     link_99` in the guard) it does: deleting that conjunct alone leaves
+//     `is_symlink` and reddens it. But :1105's fixture has NO 99 slot and NO
+//     `/etc/sysctl.conf`, so `symlink_ok` is FALSE there - under the partial
+//     over-fix `is_symlink && symlink_ok` is `true && false` = false, the
+//     `continue` never fires, and :1105 stays GREEN by COINCIDENCE, not
+//     because it exercises the conjunct that was actually deleted. The guard
+//     survives in name only once `&& symlink_ok` lands. The mutation gate does
+//     not cover this either: conjunct DELETION is not a cargo-mutants
+//     operator, and the `&&`->`||` mutants ARE killed by :1105
+//     (`is_symlink || (path == link_99 && symlink_ok)` reddens it), so the
+//     gate reports clean while this hole is open.
+//
+//     This test is :1105's fixture PLUS a resolving 99 slot (symlink_99_
+//     sysctl_conf + a present /etc/sysctl.conf), so symlink_ok is TRUE here -
+//     the one condition :1105 cannot provide. Today and post-fix: the
+//     50-link.conf symlink's path is not link_99, so `path == link_99` is
+//     false regardless of symlink_ok, the drop-in is parsed normally, and its
+//     compliant kernel.dmesg_restrict = 1 satisfies the baseline -> no W02
+//     (GREEN). Under the partial over-fix: is_symlink && symlink_ok is
+//     `true && true` = true, so 50-link.conf is wrongly swallowed by the
+//     content-skip, kernel.dmesg_restrict becomes unset -> W02 "unset" fires
+//     (RED).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_symlinked_non_99_dropin_is_still_parsed_when_the_distro_slot_also_resolves() {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "other/hardening.conf",
+        "kernel.dmesg_restrict = 1\n",
+    );
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/50-link.conf",
+        "../../other/hardening.conf",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "# present so the distro slot resolves\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(
+        Some(root.path()),
+        Some(rulesteward_sysctld::TargetVersion::Rhel9),
+    );
+
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == "sysctld-W02" && d.message.contains("kernel.dmesg_restrict")),
+        "a symlinked non-99 drop-in must still be parsed even when the distro \
+         99-slot ALSO resolves (symlink_ok true) - only path == link_99 may \
+         gate the content-skip, not symlink_ok alone - so the compliant \
+         kernel.dmesg_restrict = 1 must still satisfy the baseline (no W02); \
+         got: {diags:?}"
+    );
+}
