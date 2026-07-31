@@ -29,9 +29,9 @@ use rulesteward_core::Span;
 use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::ast::{
-    AliasDef, AliasKind, AliasSpec, CmndItem, CmndSpec, DefaultSetting, DefaultsEntry,
-    DefaultsScope, HostGroup, IncludeDirective, IncludeKind, LineKind, LogicalLine, RunasSpec,
-    SudoersFile, Tag, UserSpec,
+    AliasDef, AliasKind, AliasSpec, CmndItem, CmndOption, CmndOptionKey, CmndSpec, DefaultSetting,
+    DefaultsEntry, DefaultsScope, HostGroup, IncludeDirective, IncludeKind, LineKind, LogicalLine,
+    RunasSpec, SudoersFile, Tag, UserSpec,
 };
 
 /// Parse a sudoers file's `source` (read from `path`) into a [`SudoersFile`].
@@ -602,10 +602,10 @@ fn classify_alias(trimmed: &str) -> Option<LineKind> {
 /// (sudoers(5) `User_Spec`). The line is split into top-level `:`-separated
 /// host-group segments (see [`split_top_level_segments`]); the FIRST segment is
 /// `User_List Host_List = Cmnd_Spec_List` (the user list is the leading
-/// whitespace-run), and every later segment is `Host_List = Cmnd_Spec_List` sharing
-/// that same user list. Each segment becomes one [`HostGroup`], so tag inheritance is
-/// per-group and does not cross the `:` (the #345 fix; grounded against
-/// `cvtsudoers -f json`, sudo 1.9.17p2).
+/// COMMA-CONTINUED token run - see [`split_user_list`]), and every later segment is
+/// `Host_List = Cmnd_Spec_List` sharing that same user list. Each segment becomes one
+/// [`HostGroup`], so tag inheritance is per-group and does not cross the `:` (the
+/// #345 fix; grounded against `cvtsudoers -f json`, sudo 1.9.17p2).
 fn classify_user_spec(trimmed: &str) -> LineKind {
     // A user-spec MUST contain an `=` (the User/Host = Cmnd boundary). Without one
     // it is not a valid spec - report the dispatcher's catch-all message.
@@ -634,10 +634,10 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
         let rhs = &seg[eq + 1..];
 
         let hosts = if idx == 0 {
-            // First segment: `User_List Host_List`. The user list is the leading
-            // whitespace-run; the rest is the host list. sudoers requires both.
-            let (user_part, host_part) = split_first_word(lhs);
-            let host_part = host_part.trim();
+            // First segment: `User_List Host_List`. The `User_List` is a
+            // COMMA-CONTINUED run, not just the first word (see
+            // `split_user_list`); the rest is the host list. sudoers requires both.
+            let (user_part, host_part) = split_user_list(lhs);
             if user_part.is_empty() || host_part.is_empty() {
                 return LineKind::Malformed(
                     "user specification needs both a user list and a host list before the `=`"
@@ -686,16 +686,21 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     backslash-escaped (`\:`; an unescaped `:` in a command is a syntax error), so
 ///     the char after a backslash is skipped;
 ///   * when `skip_tag_colons` (user-specs only), the `NOPASSWD:` / `PASSWD:` tag
-///     colon - recognised because the token immediately before it (back to the last
-///     `,` / `=` / `)` / consumed colon, with whitespace irrelevant) is a
-///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`.
+///     colon - recognised because the token immediately before it (the text back to
+///     the last `,` / `=` / `)` / consumed colon, with whitespace irrelevant) is a
+///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`. An
+///     `Option_Spec`'s own `=` puts that boundary after the option's VALUE rather
+///     than after the `=`, so `TIMEOUT=30 NOEXEC:` still leaves `NOEXEC` alone in
+///     the span (#538 gap C - see the `'='` arm).
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
     // boundary (`,` / `=` / `)` / a consumed colon - NOT whitespace, so a tag keyword
     // spaced away from its colon is still recognised). Used only to spot a tag keyword
-    // sitting just before a colon.
+    // sitting just before a colon. An `Option_Spec`'s `=` moves this past the option's
+    // whole `KEY=value` token rather than just past the `=`, so it can land at
+    // `s.len()`; every read goes through `preceding_token`, which clamps.
     let mut tok_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
@@ -763,20 +768,52 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 }
             }
             '=' => {
-                tok_start = i + c.len_utf8();
+                // An `Option_Spec`'s OWN `=` (`TIMEOUT=30`) is not a token boundary the
+                // way a structural `=` is: the whole `KEY=value` is ONE `Cmnd_Spec`
+                // prefix token, so `tok_start` must skip PAST the value. Leaving it just
+                // after the `=` made the span at a following tag colon multi-word
+                // (`"30 NOEXEC"` on `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls`), so
+                // `parse_tag` failed, the tag colon was read as a genuine host-group
+                // separator, and the whole line - which `visudo -c -f -` accepts rc 0 -
+                // was thrown away as Malformed (#538 gap C).
+                //
+                // POSITION-ANCHORED exactly like `parse_cmnd_spec`'s option scan, and
+                // for the same reason: the candidate is the single token since the last
+                // boundary (no `Option_Spec` keyword contains whitespace, so an exact
+                // match already implies one word). A command's own `KEY=value` ARGUMENT
+                // has a multi-word span (`"/usr/bin/env TIMEOUT"`) and keeps the old
+                // boundary behavior - which is what real sudo does: on this host
+                // (1.9.17p2, 2026-07-30) `cvtsudoers -f json` reads
+                // `alice h1 = /bin/echo NOPASSWD : h2 = ALL` as TWO host groups with the
+                // first command `"/bin/echo NOPASSWD"`, i.e. once the command word has
+                // begun, a later tag keyword is an ARGUMENT and the colon really does
+                // separate. Requiring `in_cmnd_list` keeps the structural `=` itself
+                // (span `"alice ALL"`, or `"ALL"` after a `,`) out of the candidate set.
+                let is_option_eq =
+                    in_cmnd_list && parse_option_key(preceding_token(s, tok_start, i)).is_some();
+                let after_eq = i + c.len_utf8();
+                tok_start = if is_option_eq {
+                    // No whitespace after the `=` means the value runs to the end of the
+                    // string, so there is no complete token after it; `s.len()` says
+                    // exactly that, and `preceding_token` clamps the reads.
+                    s[after_eq..]
+                        .find(char::is_whitespace)
+                        .map_or(s.len(), |w| after_eq + w)
+                } else {
+                    after_eq
+                };
                 // Only the FIRST top-level `=` of a host-group is the structural
                 // `Host_List = Cmnd_Spec_List` separator; it opens the command list and
-                // arms the first `Cmnd_Spec`'s runas position. A later `=` is a literal
-                // byte inside a command argument and must NOT re-arm `at_spec_start` (the
-                // #416 colon-splitter fix). The `tok_start` reset stays UNCONDITIONAL so
-                // tag detection (e.g. `host=NOPASSWD:`) is unaffected.
+                // arms the first `Cmnd_Spec`'s runas position. A later `=` is an option's
+                // or a command argument's and must NOT re-arm `at_spec_start` (the #416
+                // colon-splitter fix).
                 if !in_cmnd_list {
                     in_cmnd_list = true;
                     at_spec_start = true;
                 }
             }
             ':' if depth == 0 => {
-                let preceding = s[tok_start..i].trim();
+                let preceding = preceding_token(s, tok_start, i);
                 if skip_tag_colons && parse_tag(preceding).is_some() {
                     // A tag colon (`NOPASSWD:`): not a segment separator. The next token
                     // starts just after it (still mid-spec, so `at_spec_start` stays false).
@@ -800,11 +837,26 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     segments
 }
 
+/// The trimmed text of `s` between `tok_start` and the boundary char at `i` - the
+/// token candidate [`split_top_level_segments`] tests against the `Tag_Spec` and
+/// `Option_Spec` keyword sets.
+///
+/// `tok_start` is CLAMPED to `i`. It can legitimately overshoot: an `Option_Spec`
+/// whose value runs to the end of the string (`TIMEOUT=30:x`, no whitespace after
+/// the `=`) pushes `tok_start` to `s.len()`, and a boundary char INSIDE that value
+/// is then at a lower index. The clamp yields `""`, which is the right reading -
+/// the boundary sits inside a token, not after a complete one - and `""` matches
+/// neither keyword set.
+fn preceding_token(s: &str, tok_start: usize, i: usize) -> &str {
+    s[tok_start.min(i)..i].trim()
+}
+
 /// Parse a comma-separated `Cmnd_Spec_List` into [`CmndSpec`]s.
 ///
-/// Each `Cmnd_Spec` is `Runas_Spec? Tag_Spec* Cmnd`. The tags written EXPLICITLY
-/// on each spec are captured (NOT inheritance-resolved - the #330 pass walks the
-/// list and applies inheritance). A leading `(runas)` group is captured.
+/// Each `Cmnd_Spec` is `Runas_Spec? Option_Spec* (Tag_Spec ':')* Cmnd`. The options
+/// and tags written EXPLICITLY on each spec are captured (NOT inheritance-resolved -
+/// the #330 pass walks the list and applies tag inheritance). A leading `(runas)`
+/// group is captured.
 fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
     split_cmnd_specs(s)
         .into_iter()
@@ -901,8 +953,20 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     segments
 }
 
-/// Parse one `Cmnd_Spec`: an optional `(runas)` group, zero or more `TAG:` tags,
-/// then the command token (the rest of the spec).
+/// Parse one `Cmnd_Spec`: an optional `(runas)` group, zero or more `=`-form
+/// options, zero or more `TAG:` tags, then the command token (the rest of the
+/// spec).
+///
+/// The three prefix loops run in the GRAMMAR's order, `Runas_Spec? Option_Spec*
+/// (Tag_Spec ':')* Cmnd` (sudoers(5), sudo 1.9.17p2). They are deliberately kept
+/// SEPARATE and ORDERED rather than merged into one interleaved matcher: real
+/// sudo enforces the order, and an interleaved matcher would accept
+/// `NOEXEC: TIMEOUT=30 /bin/ls`, which `visudo -c -f -` rejects rc 1
+/// (`syntax error`) on this host while the correctly-ordered
+/// `TIMEOUT=30 NOEXEC: /bin/ls` is rc 0 (#538). This function is TOTAL and has
+/// no reject path, so nothing here can DIAGNOSE the wrong order; keeping the
+/// loops separate is what stops the parser from silently modelling a shape sudo
+/// does not accept.
 fn parse_cmnd_spec(spec: &str) -> CmndSpec {
     let mut rest = spec.trim();
 
@@ -913,6 +977,26 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
     {
         runas = Some(parse_runas(&after_open[..close]));
         rest = after_open[close + 1..].trim_start();
+    }
+
+    // Zero or more `=`-form `Option_Spec`s (`ROLE=`, `TIMEOUT=`, ...). The scan
+    // is POSITION-ANCHORED: it only ever inspects the token at the CURRENT head
+    // of `rest` and stops at the first token that is not an option, so an option
+    // keyword written AFTER the command word stays part of the command
+    // (`/usr/bin/env TIMEOUT=30` is ONE command to `cvtsudoers -f json`, with no
+    // `Options` entry - host probe, sudo 1.9.17p2, 2026-07-30). A position-BLIND
+    // scan over every whitespace token would harvest that keyword and truncate
+    // the command to `/usr/bin/env`, re-creating the very corruption #538 exists
+    // to close - and no differential would catch it, because no projector reads
+    // the option field.
+    let mut options = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        let Some((option, remainder)) = split_leading_option(rest) else {
+            break;
+        };
+        options.push(option);
+        rest = remainder;
     }
 
     // Zero or more `TAG:` prefixes. A tag is an UPPERCASE keyword from the
@@ -941,10 +1025,60 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
 
     CmndSpec {
         runas,
-        options: Vec::new(),
+        options,
         tags,
         cmnd,
     }
+}
+
+/// If `rest` STARTS with an `=`-form `Option_Spec`, split it off and return it
+/// plus the remaining text; otherwise return `None` so the caller stops scanning.
+///
+/// `rest` must already be leading-trimmed. The option is the first
+/// whitespace-delimited token, split at its FIRST `=`: the keyword before it must
+/// be one of the closed [`CmndOptionKey`] set (case-sensitively), and everything
+/// after it up to the next whitespace is the value, kept VERBATIM (a `TIMEOUT=30m`
+/// suffix, a path, a timestamp - none of it is coerced; see [`CmndOption`]).
+///
+/// Returning `None` (rather than skipping the token) is what keeps the scan
+/// position-anchored, and returning `None` for an unknown keyword is what keeps
+/// the set CLOSED: `/usr/bin/env FOO=bar` is a single valid command to real sudo,
+/// so a generic `WORD=VALUE` matcher would corrupt it.
+fn split_leading_option(rest: &str) -> Option<(CmndOption, &str)> {
+    let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let (keyword, value) = rest[..token_end].split_once('=')?;
+    let key = parse_option_key(keyword)?;
+    Some((
+        CmndOption {
+            key,
+            value: value.to_string(),
+        },
+        &rest[token_end..],
+    ))
+}
+
+/// Map an uppercase `Option_Spec` keyword to its [`CmndOptionKey`]. Returns
+/// `None` for anything outside the closed set (so `parse_cmnd_spec` stops
+/// consuming options and treats the rest as tags + command), exactly as
+/// [`parse_tag`] does for the `Tag_Spec` set.
+///
+/// The ten members and the evidence for each (including why the man page's
+/// seven-keyword `Option_Spec` block is not the whole set, and why matching is
+/// case-sensitive) are documented on [`CmndOptionKey`].
+fn parse_option_key(keyword: &str) -> Option<CmndOptionKey> {
+    Some(match keyword {
+        "ROLE" => CmndOptionKey::Role,
+        "TYPE" => CmndOptionKey::Type,
+        "NOTBEFORE" => CmndOptionKey::NotBefore,
+        "NOTAFTER" => CmndOptionKey::NotAfter,
+        "TIMEOUT" => CmndOptionKey::Timeout,
+        "CWD" => CmndOptionKey::Cwd,
+        "CHROOT" => CmndOptionKey::Chroot,
+        "PRIVS" => CmndOptionKey::Privs,
+        "LIMITPRIVS" => CmndOptionKey::LimitPrivs,
+        "APPARMOR_PROFILE" => CmndOptionKey::AppArmorProfile,
+        _ => return None,
+    })
 }
 
 /// Parse the inside of a `(runas_users[:runas_groups])` group.
@@ -994,9 +1128,64 @@ fn comma_split(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Split a user-spec's pre-`=` text into `(User_List, Host_List)`, both trimmed.
+///
+/// `User_Spec ::= User_List Host_List '='...` and `User_List ::= User | User ','
+/// User_List` (sudoers(5), sudo 1.9.17p2). The two lists are separated by
+/// whitespace, but a `User_List` comma may itself carry whitespace on either side,
+/// so the boundary is NOT simply the first space: the user list is the leading
+/// COMMA-CONTINUED token run. A whitespace run ends the user list only when
+/// neither side of it is a comma. All three comma spellings are `visudo -c -f -`
+/// rc 0 on this host (sudo 1.9.17p2, probed 2026-07-30) and `cvtsudoers -f json`
+/// reports the same `User_List [bob, ALL]` / `Host_List [ALL]` for each:
+///
+/// ```text
+/// bob, ALL ALL=(ALL) ALL      trailing comma  (corpus accept-user-list-whitespace-bug)
+/// bob , ALL ALL=(ALL) ALL     standalone comma
+/// bob ,ALL ALL=(ALL) ALL      leading comma
+/// ```
+///
+/// Using [`split_first_word`] here instead (the pre-#538 behavior) truncated the
+/// list at its first internal space: `bob, ALL ALL=(ALL) ALL` yielded
+/// `users = ["bob"]` and the garbage host token `"ALL ALL"`, dropping the reserved
+/// `ALL` principal and with it `sudo-W06`, the DISA finding for `ALL` in a
+/// `User_List`.
+///
+/// The run is comma-DRIVEN, so it stops at the end of the user list rather than
+/// eating a comma-separated HOST list that follows: `alice, bob web1, web2 = ...`
+/// is `User_List [alice, bob]` / `Host_List [web1, web2]`, and `alice bob = ...`
+/// (no comma at all) still splits at the first space.
+///
+/// A pre-`=` text that is ONE comma-continued run has no host list at all, so the
+/// `Host_List` comes back empty and the caller reports it Malformed - which is what
+/// real sudo does with `alice, bob = /bin/ls` (rc 1, `syntax error`).
+fn split_user_list(lhs: &str) -> (&str, &str) {
+    let lhs = lhs.trim();
+    let mut cursor = 0usize;
+    while let Some(offset) = lhs[cursor..].find(char::is_whitespace) {
+        let ws_start = cursor + offset;
+        let after_ws = lhs[ws_start..].trim_start();
+        let ws_end = lhs.len() - after_ws.len();
+        // The run continues across this whitespace if a comma sits on either side
+        // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
+        // its own token and both adjacent runs continue).
+        if !lhs[..ws_start].ends_with(',') && !after_ws.starts_with(',') {
+            // `lhs` is trimmed and `after_ws` starts at a non-whitespace char, so
+            // both halves are already trimmed.
+            return (&lhs[..ws_start], after_ws);
+        }
+        cursor = ws_end;
+    }
+    (lhs, "")
+}
+
 /// Split off the first whitespace-delimited word from `s`, returning
 /// `(first_word, remainder)`. The remainder keeps its leading whitespace stripped
 /// only by the caller as needed. Returns `("", "")` for an all-whitespace input.
+///
+/// Used for the `include` / `includedir` keyword and the `User_Alias` /
+/// `Runas_Alias` / `Host_Alias` / `Cmnd_Alias` keyword, both of which really are
+/// single words. A user-spec's `User_List` is NOT (see [`split_user_list`]).
 fn split_first_word(s: &str) -> (&str, &str) {
     let s = s.trim_start();
     match s.find(char::is_whitespace) {
@@ -2207,6 +2396,57 @@ mod tests {
             vec!["h1, (x", "h2 = NOPASSWD: /bin/su"],
             "a `(` in the Host_List region (after a top-level `,`, before the structural \
              `=`) is not a runas opener, so it must not bump depth and swallow the `:` (#416)"
+        );
+    }
+
+    // ---- #538 gap C (colon splitter): an `Option_Spec`'s own `=` must not desync the
+    //      preceding-token marker. The `Option_Spec` case itself is pinned by the frozen
+    //      barrier suite (`tests/iss538_parser_gaps.rs`); these two pin the boundaries of
+    //      the fix at the splitter level, where the barrier suite does not reach.
+
+    #[test]
+    fn command_argument_tag_keyword_before_a_colon_still_splits() {
+        // The over-reach guard on the gap C fix. The option-`=` skip is POSITION-ANCHORED
+        // (`in_cmnd_list` + an exact single-token keyword match), so once the COMMAND word
+        // has begun, a tag keyword written after it is a command ARGUMENT and the colon is
+        // still a genuine host-group separator.
+        //
+        // Ground truth, host sudo 1.9.17p2 (2026-07-30): `alice h1 = /bin/echo NOPASSWD :
+        // h2 = ALL` is `visudo -c -f -` rc 0, and `cvtsudoers -f json` reports TWO
+        // `User_Specs` entries - `h1` with the single command `"/bin/echo NOPASSWD"`, and
+        // `h2` with `ALL`. A naive gap C fix that just took the LAST word of the span
+        // would read `NOPASSWD` as a tag here, merge the two host-groups, and hand the
+        // whole tail to the command constructor as garbage.
+        assert_eq!(
+            split_top_level_segments("h1 = /bin/echo NOPASSWD : h2 = ALL", true),
+            vec!["h1 = /bin/echo NOPASSWD", "h2 = ALL"],
+            "a tag keyword used as a command ARGUMENT does not make the following colon a \
+             tag colon (#538 gap C over-reach guard)"
+        );
+    }
+
+    #[test]
+    fn colon_inside_an_option_value_does_not_panic() {
+        // Panic guard on the option-value skip. With no whitespace after the option's
+        // `=`, the value runs to the end of the input and `tok_start` becomes `s.len()`,
+        // which is PAST a colon sitting inside that value - an inverted slice range if it
+        // were not clamped (see `preceding_token`).
+        //
+        // Real sudo REJECTS a colon in an option value: `alice h1 = TIMEOUT=30:x` is
+        // `visudo -c -f -` rc 1 (`stdin:1:22: syntax error`) on host sudo 1.9.17p2
+        // (2026-07-30), as is `CWD=/a:/b`. So no particular split is the "right" one and
+        // this asserts only the clamp's reading - the colon sits INSIDE a token, so there
+        // is no complete preceding token, so it is not a tag colon - and, above all, that
+        // the splitter does not panic on it.
+        assert_eq!(
+            split_top_level_segments("h1 = TIMEOUT=30:x", true),
+            vec!["h1 = TIMEOUT=30", "x"],
+            "a colon inside an option value must not panic the splitter (#538 gap C)"
+        );
+        assert_eq!(
+            preceding_token("h1 = TIMEOUT=30:x", "h1 = TIMEOUT=30:x".len(), 15),
+            "",
+            "an overshot `tok_start` clamps to an empty token, never an inverted range"
         );
     }
 }
