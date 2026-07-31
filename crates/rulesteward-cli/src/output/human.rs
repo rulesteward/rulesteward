@@ -1077,8 +1077,89 @@ mod tests {
         assert_eq!(cspan.end, char_end, "char end must match");
     }
 
+    /// The caret-column pin (session 9m lane 4, issue #595): assert the RENDERED
+    /// column against a value derived BY HAND from the source layout.
+    ///
+    /// GREEN before and after the #595 fix, deliberately. "Does not panic" is
+    /// not the acceptance condition for a diagnostics tool: a wrong-but-ORDERED
+    /// mapping - a clamp, a `min`, or any monotone walk that is off by one -
+    /// satisfies every ordering property and still puts the caret in a position
+    /// no evidence supports, which is the entire product. This test is what a
+    /// monotone-but-wrong replacement fails.
+    ///
+    /// The observable is ariadne's own bracket header,
+    /// `[ <source_id>:<line>:<col> ]` (`ariadne-0.6.0/src/write.rs:280`), whose
+    /// `col` is counted in CHARACTERS (`write.rs:262-269`). The multi-source
+    /// cache pin earlier in this file asserts the same header shape
+    /// (`\u{256d}\u{2500}[ a.rules:1:20 ]`), so the format is already pinned
+    /// twice over.
+    ///
+    /// Layout, derived by hand:
+    ///
+    /// ```text
+    /// line 1: "# \u{1F600} \u{65E5}\u{672C}\u{8A9E} notes"
+    /// line 2: "allow exe=/usr/bin/x trust=1"
+    /// ```
+    ///
+    /// Line 1 carries a 4-byte emoji plus three 3-byte CJK scalars: 13 bytes of
+    /// multibyte for 4 characters. That gap is the point - any byte-vs-char
+    /// confusion in `byte_span_to_char_span` moves the column asserted below.
+    ///
+    /// Line 2 is pure ASCII, so its 1-based CHARACTER columns are:
+    ///
+    /// ```text
+    /// a1 l2 l3 o4 w5 _6 e7 x8 e9 =10 /11 u12 s13 r14 /15 b16 i17 n18 /19 x20 _21 t22
+    /// ```
+    ///
+    /// so `trust` begins at character column 22 of line 2, and the header must
+    /// read `t.rules:2:22`. The value is derived from the layout, NOT copied
+    /// from a test run: copying observed output converts the assertion into a
+    /// snapshot of whatever the code does, bug included.
+    #[test]
+    fn human_ariadne_header_column_is_char_counted_with_multibyte_before_the_line() {
+        let source = "# \u{1f600} \u{65e5}\u{672c}\u{8a9e} notes\nallow exe=/usr/bin/x trust=1\n";
+        let byte_start = source.find("trust").expect("trust present");
+        let mut sources = BTreeMap::new();
+        sources.insert("t.rules".to_string(), source.to_string());
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            byte_start..byte_start + "trust".len(),
+            "trust attribute is not permitted here",
+            "t.rules",
+            2,
+            22,
+        )
+        .with_source_id("t.rules");
+
+        // Strip ANSI first: `color_enabled()` is true whenever this test
+        // process's own stdout is a real terminal, so an unstripped pin passes
+        // in CI and fails under a pty for reasons unrelated to #595.
+        let out = strip_ansi(&render(&[d], &sources));
+
+        assert!(
+            out.contains("\u{256d}\u{2500}[ t.rules:2:22 ]"),
+            "ariadne's header must place the caret at character column 22 of \
+             line 2 despite 13 bytes of multibyte on line 1; got: {out:?}"
+        );
+        assert!(
+            out.contains('\u{2500}'),
+            "the caret box must render at all (ariadne silently omits the whole \
+             snippet when it cannot locate the span); got: {out:?}"
+        );
+        assert!(
+            out.contains("allow exe=/usr/bin/x trust=1"),
+            "the underlined source line must appear verbatim; got: {out:?}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // Layer-2 property tests for `byte_span_to_char_span`.
+    //
+    // Properties 1-3 predate issue #595 and are ASCII-only by construction;
+    // properties 4-6 (added by session 9m lane 4) are the multibyte ones that
+    // pin the defect. Do not narrow 4-6 back to boundary-aligned or in-bounds
+    // offsets: that restriction IS the bug.
     //
     // Properties:
     // 1. For ASCII-only source, the char span equals the byte span (identity).
@@ -1086,11 +1167,79 @@ mod tests {
     //    <= the byte offset (multibyte chars compress the char index).
     // 3. For any source and char-boundary byte offset b, char offset ==
     //    source[..b].chars().count().
+    // 4. (#595) For ANY source, multibyte included, and ANY ORDERED byte span -
+    //    boundary-aligned or not, in bounds or not - the converted char span is
+    //    still ORDERED. This is the direct pin on the panic: `ariadne::Label::new`
+    //    asserts `start <= end` (ariadne-0.6.0/src/lib.rs:145) and aborts the
+    //    process in the DEFAULT renderer when it does not hold.
+    // 5. (#595) Totality: a DEGENERATE byte span `b..b` converts to a degenerate
+    //    char span, for every `b` including mid-character and past-the-end.
+    // 6. (#595) Saturation: every offset past `source.len()` maps to
+    //    `source.chars().count()`, not to itself.
     // -----------------------------------------------------------------
 
     mod proptest_byte_to_char {
         use super::super::byte_span_to_char_span;
         use proptest::prelude::*;
+
+        /// How far past `source.len()` the generated offsets reach.
+        ///
+        /// 5 clears the widest UTF-8 scalar (4 bytes) plus one, so an
+        /// out-of-bounds offset is always genuinely out of bounds rather than
+        /// merely inside the final character.
+        const OOB_SLACK: usize = 5;
+
+        /// One piece of generated source text, one arm per UTF-8 length class
+        /// the renderer has to survive. Contains no `\n`: the source builder
+        /// below owns line structure.
+        ///
+        /// | class          | scalar(s)                      | UTF-8 bytes |
+        /// |----------------|--------------------------------|-------------|
+        /// | CJK            | U+65E5, U+672C, U+8A9E         | 3           |
+        /// | combining mark | `e` + U+0301 (COMBINING ACUTE) | 1 + 2       |
+        /// | 4-byte emoji   | U+1F600                        | 4           |
+        /// | ASCII filler   | `[a-z0-9 =:.]`                 | 1           |
+        ///
+        /// Each class earns its place. CJK is the class issue #595 reproduces
+        /// with. The combining mark is one grapheme cluster spanning two
+        /// scalars, so it fails any "count graphemes" mistake. The 4-byte emoji
+        /// is the ONLY class with three distinct interior byte offsets, so an
+        /// off-by-one that first appears at interior offset +3 is invisible to a
+        /// 3-byte-only alphabet. ASCII filler keeps ordinary runs in the mix so
+        /// the properties are not exclusively about exotic input.
+        fn multibyte_piece() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("\u{65e5}".to_string()),
+                Just("\u{672c}".to_string()),
+                Just("\u{8a9e}".to_string()),
+                Just("e\u{301}".to_string()),
+                Just("\u{1f600}".to_string()),
+                "[a-z0-9 =:.]{1,4}",
+            ]
+        }
+
+        /// A multi-line source built from [`multibyte_piece`], optionally
+        /// opening with a UTF-8 BOM.
+        ///
+        /// U+FEFF (3 bytes) is generated ONLY at offset 0, the one position it
+        /// is meaningful and the one position the fapolicyd parser treats
+        /// specially when computing `body_start_in_file`
+        /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
+        fn multibyte_source() -> impl Strategy<Value = String> {
+            let line =
+                prop::collection::vec(multibyte_piece(), 1..4).prop_map(|pieces| pieces.concat());
+            (any::<bool>(), prop::collection::vec(line, 1..6)).prop_map(|(leading_bom, lines)| {
+                let mut src = String::new();
+                if leading_bom {
+                    src.push('\u{feff}');
+                }
+                for line in lines {
+                    src.push_str(&line);
+                    src.push('\n');
+                }
+                src
+            })
+        }
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(512))]
@@ -1143,6 +1292,168 @@ mod tests {
                 prop_assert_eq!(cspan.start, expected_chars,
                     "char offset for byte {} must be {} in {:?}",
                     b, expected_chars, src);
+            }
+
+            // Property 4 (T1a, issue #595): ORDERING is preserved.
+            //
+            // The property whose absence let #595 through. Properties 1-3 are
+            // all ASCII-only, and none of them relates `to_char(start)` to
+            // `to_char(end)` for `start != end` - two independent gaps, and a
+            // multibyte generator alone would not have closed the second.
+            //
+            // The generator deliberately draws offsets that are NOT char
+            // boundaries and offsets past the end of the source. Restricting
+            // either one is exactly the assumption the defect lives in: a
+            // non-boundary `start` takes the `map_or` fallback and keeps its
+            // raw BYTE value while a boundary `end` converts to a (smaller)
+            // CHAR count, and the resulting span is inverted.
+            #[test]
+            fn multibyte_ordered_byte_span_stays_ordered(
+                src in multibyte_source(),
+                p in 0usize..4096,
+                q in 0usize..4096,
+            ) {
+                let hi = src.len() + OOB_SLACK;
+                let a = p % (hi + 1);
+                let b = q % (hi + 1);
+                let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                let cspan = byte_span_to_char_span(&(start..end), &src);
+                prop_assert!(
+                    cspan.start <= cspan.end,
+                    "ordered byte span {}..{} over {:?} converted to the INVERTED \
+                     char span {}..{}; ariadne::Label::new asserts start <= end \
+                     and aborts the process when it does not hold",
+                    start, end, src, cspan.start, cspan.end
+                );
+            }
+
+            // Property 5 (T1b, issue #595): TOTALITY.
+            //
+            // GREEN before AND after the fix - it describes behavior the old
+            // function already had, and exists so a later rewrite that reaches
+            // for slicing (`&source[..b]`, which PANICS on a non-boundary
+            // offset) cannot land quietly. A degenerate input span must stay
+            // degenerate, which is strictly stronger than "does not panic".
+            #[test]
+            fn degenerate_byte_span_stays_degenerate(
+                src in multibyte_source(),
+                p in 0usize..4096,
+            ) {
+                let hi = src.len() + OOB_SLACK;
+                let b = p % (hi + 1);
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(
+                    cspan.start, cspan.end,
+                    "degenerate byte span {}..{} over {:?} must stay degenerate, got {}..{}",
+                    b, b, src, cspan.start, cspan.end
+                );
+            }
+
+            // Property 6 (T1d, issue #595): SATURATION past the end.
+            //
+            // An out-of-bounds byte offset maps to the source's total char
+            // count, not to itself. The old function returned the raw byte
+            // value here (`source.get(..b)` is `None` past the end), which is
+            // both larger than any real char offset and, paired with an
+            // in-bounds `end`, one of the two ways to invert the span.
+            #[test]
+            fn out_of_bounds_offset_saturates_at_char_count(
+                src in multibyte_source(),
+                over in 1usize..=OOB_SLACK,
+            ) {
+                let b = src.len() + over;
+                let expected = src.chars().count();
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(
+                    cspan.start, expected,
+                    "byte offset {} is past the end of {:?} ({} bytes) and must \
+                     saturate at its {} chars, got {}",
+                    b, src, src.len(), expected, cspan.start
+                );
+            }
+        }
+
+        /// T1c (issue #595): the EXACT mapping at a mid-character offset.
+        ///
+        /// A unit test, not a property: the ordering properties above pin that
+        /// the mapping is monotone, and this pins WHICH monotone mapping it is.
+        /// Both are needed - a monotone-but-wrong mapping satisfies every
+        /// ordering assertion and still moves the caret.
+        ///
+        /// Byte layout of `"\u{65e5}\u{672c}\u{8a9e}\n"`, derived by hand (three
+        /// CJK scalars at 3 bytes each, then a 1-byte newline):
+        ///
+        /// ```text
+        /// byte:   0  1  2 | 3  4  5 | 6  7  8 | 9
+        /// scalar: U+65E5    U+672C    U+8A9E    U+000A
+        /// char:   0         1         2         3
+        /// ```
+        ///
+        /// Char START indices are therefore {0, 3, 6, 9}, and `to_char(b)`
+        /// counts the char starts STRICTLY BELOW `b`:
+        ///
+        /// ```text
+        /// to_char(0)  = |{}|           = 0
+        /// to_char(3)  = |{0}|          = 1
+        /// to_char(4)  = |{0, 3}|       = 2   <- byte 4 is mid-character
+        /// to_char(5)  = |{0, 3}|       = 2   <- byte 5 is mid-character
+        /// to_char(6)  = |{0, 3}|       = 2
+        /// to_char(9)  = |{0, 3, 6}|    = 3
+        /// to_char(10) = |{0, 3, 6, 9}| = 4   <- == src.chars().count()
+        /// ```
+        ///
+        /// So the span `4..6` - issue #595's own reproduction, which the old
+        /// function mapped to the inverted `4..2` - maps to `2..2`.
+        ///
+        /// Byte 4 lies INSIDE the scalar starting at byte 3 (char index 1) and
+        /// maps to 2, the index of the FOLLOWING character. That is ROUND-UP,
+        /// not floor. Round-down would be equally total and equally monotone;
+        /// this test records round-up as a DECISION rather than leaving it an
+        /// accident a later cleanup can silently flip. What is NOT arbitrary,
+        /// and is the whole point, is that both endpoints go through the SAME
+        /// total monotone function and so can never take different branches.
+        ///
+        /// Every expected value above is derived from the byte layout, not read
+        /// off a test run: copying observed output would pin whatever the code
+        /// does, including whatever it does wrong.
+        #[test]
+        fn mid_character_offset_rounds_up_to_the_next_char_boundary() {
+            let src = "\u{65e5}\u{672c}\u{8a9e}\n";
+            assert_eq!(
+                src.len(),
+                10,
+                "three 3-byte CJK scalars plus a 1-byte newline"
+            );
+            assert_eq!(src.chars().count(), 4, "four scalars");
+            assert!(!src.is_char_boundary(4), "byte 4 must be mid-character");
+            assert!(!src.is_char_boundary(5), "byte 5 must be mid-character");
+
+            assert_eq!(
+                byte_span_to_char_span(&(4..6), src),
+                2..2,
+                "issue #595's reproduction span 4..6 must map to the ORDERED 2..2, \
+                 not the inverted 4..2 the byte-fallback produced"
+            );
+
+            // The full mapping, not just the reproduction's two endpoints: this
+            // is what separates the intended round-up walk from any other
+            // monotone mapping, and it is what makes a `<` -> `<=` off-by-one
+            // in the walk's predicate observable (that mutation moves
+            // to_char(3) from 1 to 2).
+            for (b, expected) in [
+                (0usize, 0usize),
+                (3, 1),
+                (4, 2),
+                (5, 2),
+                (6, 2),
+                (9, 3),
+                (10, 4),
+            ] {
+                let cspan = byte_span_to_char_span(&(b..b), src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) must be {expected} (char starts are 0, 3, 6, 9)"
+                );
             }
         }
     }
