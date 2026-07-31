@@ -295,13 +295,19 @@ pub enum CmndOptionKey {
     AppArmorProfile,
 }
 
-/// One `=`-form `Option_Spec` written on a `Cmnd_Spec`: its keyword plus the
-/// RAW source value (everything after the `=`, up to the next whitespace).
+/// One `=`-form `Option_Spec` written on a `Cmnd_Spec`: its keyword plus the RAW
+/// source value (everything after the `=`, up to the next un-quoted,
+/// un-escaped whitespace - NOT simply "the next whitespace": the value may
+/// itself be double-quoted or backslash-escaped (`CWD="/tmp/a b"`,
+/// `CWD=/tmp/a\ b`; `man 5 sudoers` rendered page line 399), in which case the
+/// quoted/escaped whitespace is part of the value, not its end).
 ///
-/// The value is kept as WRITTEN, never coerced. `cvtsudoers -f json` renders
-/// `TIMEOUT=30` as the JSON number `30`, but the AST is a faithful record of the
-/// source token, so this holds the string `"30"` - the same choice
-/// [`RunasSpec`] makes for its raw comma-split members.
+/// The value is kept as WRITTEN, never coerced or unescaped/unquoted.
+/// `cvtsudoers -f json` renders `TIMEOUT=30` as the JSON number `30` and
+/// dequotes a quoted value, but the AST is a faithful record of the source
+/// token, so this holds the string `"30"` (or `"\"/tmp/a b\""`, quotes
+/// retained) - the same choice [`RunasSpec`] makes for its raw comma-split
+/// members.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmndOption {
     /// Which of the ten accepted `Option_Spec` keywords was written.

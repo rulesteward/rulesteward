@@ -693,6 +693,10 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     than after the `=`, so `TIMEOUT=30 NOEXEC:` still leaves `NOEXEC` alone in
 ///     the span (#538 gap C - see the `'='` arm).
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
+    // Byte positions of every genuinely-CLOSED quoted region in `s` (#538 gap C
+    // round 2): a colon INSIDE an `Option_Spec` value's quotes (`CWD="/a:b"`) is
+    // a value byte, not a tag/separator colon. Computed once; see the `:` arm.
+    let quotes = unescaped_quote_positions(s);
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
@@ -748,9 +752,16 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 depth += 1;
                 at_spec_start = false;
             }
-            ')' => {
+            ')' if i >= tok_start => {
                 // `if depth > 0` only guards a malformed UNBALANCED `)` (which visudo
                 // rejects); for valid input depth is always >= 1 here.
+                //
+                // `i >= tok_start` (#538 gap C round 2): a `)` byte sitting INSIDE an
+                // `Option_Spec` value the `=` arm has already skipped past (`tok_start`
+                // now points AHEAD of `i`, e.g. `CWD=/a)b`) is a literal value byte, not
+                // a runas close-paren, and must not drag the marker BACKWARD into the
+                // middle of that value -- which desynced the following tag colon's
+                // preceding-token span and threw the whole line away as Malformed.
                 if depth > 0 {
                     depth -= 1;
                 }
@@ -793,12 +804,14 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     in_cmnd_list && parse_option_key(preceding_token(s, tok_start, i)).is_some();
                 let after_eq = i + c.len_utf8();
                 tok_start = if is_option_eq {
-                    // No whitespace after the `=` means the value runs to the end of the
-                    // string, so there is no complete token after it; `s.len()` says
-                    // exactly that, and `preceding_token` clamps the reads.
-                    s[after_eq..]
-                        .find(char::is_whitespace)
-                        .map_or(s.len(), |w| after_eq + w)
+                    // The value may itself be double-quoted or backslash-escaped
+                    // (`CWD="/a b"`, `CWD=/a\ b`; #538 gap A/C round 2), so a bare
+                    // "next whitespace" scan would land INSIDE the value when it
+                    // contains one. `option_value_end` is quote/escape-aware and
+                    // returns `s.len()` when the value runs to the end of the string
+                    // (no complete token follows it); `preceding_token` clamps the reads
+                    // either way.
+                    option_value_end(s, after_eq)
                 } else {
                     after_eq
                 };
@@ -812,7 +825,13 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     at_spec_start = true;
                 }
             }
-            ':' if depth == 0 => {
+            ':' if depth == 0 && !inside_a_clean_quoted_region(&quotes, i) => {
+                // A colon inside a CLEAN (closed) quoted `Option_Spec` value
+                // (`CWD="/a:b"`) is a value byte, neither a tag colon nor a genuine
+                // separator; the guard routes it to the `_` catch-all below instead
+                // (#538 gap C round 2). An unterminated quote pairs into no region at
+                // all (`inside_a_clean_quoted_region`), so it does not gain this
+                // protection -- matching `unterminated_quote_does_not_swallow_the_segment_colon`.
                 let preceding = preceding_token(s, tok_start, i);
                 if skip_tag_colons && parse_tag(preceding).is_some() {
                     // A tag colon (`NOPASSWD:`): not a segment separator. The next token
@@ -851,6 +870,87 @@ fn preceding_token(s: &str, tok_start: usize, i: usize) -> &str {
     s[tok_start.min(i)..i].trim()
 }
 
+/// Byte positions of every UNESCAPED `"` in `s`, honoring the sudoers single
+/// backslash escape (a `\` consumes exactly the next char literally, so `\"`
+/// is not a quote and does not toggle anything, and `\\` is one literal
+/// backslash that leaves a following `"` un-escaped -- the same escape model
+/// [`split_cmnd_specs`] and [`split_top_level_segments`] already use).
+///
+/// Shared by [`split_top_level_segments`]'s `:` guard and [`split_cmnd_specs`]'s
+/// `,` guard (#538 gap A/C round 2): both need to tell a colon or comma INSIDE
+/// a quoted `Option_Spec` value (`CWD="/a:b"`, `CWD="/a,b"`) apart from an
+/// ordinary top-level one.
+fn unescaped_quote_positions(s: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => positions.push(i),
+            _ => {}
+        }
+    }
+    positions
+}
+
+/// Whether byte index `i` sits strictly inside a CLEAN (both quotes present)
+/// double-quoted region -- an EVEN-numbered pair of `quote_positions` (see
+/// [`unescaped_quote_positions`]).
+///
+/// A trailing UNMATCHED `"` (an odd count) opens no region at all: the frozen
+/// `unterminated_quote_does_not_swallow_comma_separator` (on [`split_cmnd_specs`])
+/// and `unterminated_quote_does_not_swallow_the_segment_colon` (on
+/// [`split_top_level_segments`]) regressions already pin that a lone,
+/// never-closed quote must not suppress a real separator, so only a
+/// properly-CLOSED pair may mask one. `chunks_exact(2)` silently drops a
+/// leftover odd element, which is exactly that rule.
+fn inside_a_clean_quoted_region(quote_positions: &[usize], i: usize) -> bool {
+    quote_positions
+        .chunks_exact(2)
+        .any(|pair| pair[0] < i && i < pair[1])
+}
+
+/// The end (exclusive byte index, absolute within `s`) of an `Option_Spec`
+/// value starting at `start`: the first double-quote/backslash-escape-aware
+/// whitespace, or `s.len()` if none.
+///
+/// `man 5 sudoers` (rendered page line 399, sudo 1.9.17p2): a value's special
+/// characters "may be enclosed in double quotes ... [or] specified in escaped
+/// hex mode"; the shipping parser also accepts a plain backslash-escaped space
+/// (`CWD=/tmp/a\ b`), not just a hex escape. A `"` toggles a quoted span in
+/// which whitespace is part of the value; a `\` consumes exactly the next byte
+/// literally (whitespace or not) without toggling anything. Shared by
+/// [`split_leading_option`] (the value's own scan) and
+/// [`split_top_level_segments`]'s `=` arm, which needs the SAME end point so
+/// its preceding-token marker lands past the whole value rather than inside it
+/// (#538 gap A/C round 2).
+fn option_value_end(s: &str, start: usize) -> usize {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (i, c) in s[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if c.is_whitespace() && !in_quotes {
+            return start + i;
+        }
+    }
+    s.len()
+}
+
 /// Parse a comma-separated `Cmnd_Spec_List` into [`CmndSpec`]s.
 ///
 /// Each `Cmnd_Spec` is `Runas_Spec? Option_Spec* (Tag_Spec ':')* Cmnd`. The options
@@ -883,13 +983,22 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 ///     `(ALL) /bin/echo a(b` is globally unbalanced (2 `(`, 1 `)`) yet `(ALL)` is a real
 ///     runas group, so a leading/runas-position `(` must be told apart from a mid-token `(`.
 ///
-/// There is NO quote tracking. In a VALID config a top-level `,` is never inside a
-/// balanced quote - sudo REJECTS an unescaped quoted comma (`visudo -c` / `cvtsudoers`
-/// reject `/bin/echo "a, b"`; a literal comma needs `\,`, per bullet 1) - and an
-/// UNTERMINATED quote does not suppress the split either (`cvtsudoers` still splits
-/// `/bin/echo "x, /bin/su` into two commands). A `"` is thus a literal command byte, and a
-/// quoted `(` is mid-command so it never reaches `depth` anyway. This fixed the old quote
-/// tracker (#416) that merged two `Cmnd_Spec`s past an unbalanced quote, hiding a grant.
+/// A comma inside a genuinely CLOSED pair of unescaped `"` is masked (does not split;
+/// #538 gap A round 2, `inside_a_clean_quoted_region`). Round 1's premise here was
+/// "there is no quote tracking, because in a VALID config a top-level `,` is never inside
+/// a balanced quote" - TRUE for a COMMAND (sudo REJECTS an unescaped quoted comma there:
+/// `visudo -c` / `cvtsudoers` reject `/bin/echo "a, b"`; a literal comma needs `\,`, per
+/// bullet 1) but FALSE for an `Option_Spec` VALUE, where quoting a comma is exactly how
+/// sudo accepts one (`alice ALL = CWD="/a,b" /bin/ls` is `visudo -c -f -` rc 0, host probe
+/// 2026-07-31). So the premise held for the domain round 1 shipped in (commands only) and
+/// broke once options got their own quote-aware value scanner. Masking is scoped to a
+/// CLOSED pair only: an UNTERMINATED quote must still not suppress the split (`cvtsudoers`
+/// still splits `/bin/echo "x, /bin/su` into two commands - a lone `"` pairs into no
+/// region at all, per `inside_a_clean_quoted_region`, so the comma after it is never
+/// masked; see `unterminated_quote_does_not_swallow_comma_separator`). A `"` is otherwise a
+/// literal command byte, and a quoted `(` is mid-command so it never reaches `depth`
+/// anyway. This preserves the #416 fix (which retired the OLD quote tracker that merged
+/// two `Cmnd_Spec`s past an unbalanced quote, hiding a grant).
 ///
 /// Unlike [`split_top_level_segments`], this splitter receives ONLY the `Cmnd_Spec_List`
 /// (the `rhs` after the structural `=`), so it has no `=` arm at all: a command-argument
@@ -902,6 +1011,10 @@ fn parse_cmnd_spec_list(s: &str) -> Vec<CmndSpec> {
 /// lints do not inspect argument contents). Segments are trimmed, mirroring
 /// `split_top_level_segments`; empties are dropped by the caller.
 fn split_cmnd_specs(s: &str) -> Vec<&str> {
+    // Byte positions of every genuinely-CLOSED quoted region in `s` (#538 gap A
+    // round 2): a comma INSIDE an `Option_Spec` value's quotes (`CWD="/a,b"`) is
+    // a value byte, not a `Cmnd_Spec` separator. Computed once; see the `,` arm.
+    let quotes = unescaped_quote_positions(s);
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     let mut depth: i32 = 0;
@@ -941,7 +1054,7 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 }
                 at_spec_start = false;
             }
-            ',' if depth == 0 => {
+            ',' if depth == 0 && !inside_a_clean_quoted_region(&quotes, i) => {
                 segments.push(s[seg_start..i].trim());
                 seg_start = i + c.len_utf8();
                 at_spec_start = true;
@@ -1034,18 +1147,24 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
 /// If `rest` STARTS with an `=`-form `Option_Spec`, split it off and return it
 /// plus the remaining text; otherwise return `None` so the caller stops scanning.
 ///
-/// `rest` must already be leading-trimmed. The option is the first
-/// whitespace-delimited token, split at its FIRST `=`: the keyword before it must
-/// be one of the closed [`CmndOptionKey`] set (case-sensitively), and everything
-/// after it up to the next whitespace is the value, kept VERBATIM (a `TIMEOUT=30m`
-/// suffix, a path, a timestamp - none of it is coerced; see [`CmndOption`]).
+/// `rest` must already be leading-trimmed. The option token runs from `rest`'s
+/// start to [`option_value_end`]'s first UNQUOTED, UNESCAPED whitespace (or the
+/// end of `rest`) - NOT simply "up to the next whitespace": `man 5 sudoers`
+/// (rendered page line 399, sudo 1.9.17p2) lets a value's special characters be
+/// double-quoted or backslash-escaped, and the shipping parser accepts both
+/// spellings (`CWD="/tmp/a b"`, `CWD=/tmp/a\ b`), so a bare whitespace scan would
+/// split INSIDE such a value (#538 gap A round 2). The token is then split at its
+/// FIRST `=`: the keyword before it must be one of the closed [`CmndOptionKey`]
+/// set (case-sensitively), and everything after it is the value, kept VERBATIM -
+/// quotes and backslashes included (a `TIMEOUT=30m` suffix, a path, a timestamp -
+/// none of it is coerced or unescaped; see [`CmndOption`]).
 ///
 /// Returning `None` (rather than skipping the token) is what keeps the scan
 /// position-anchored, and returning `None` for an unknown keyword is what keeps
 /// the set CLOSED: `/usr/bin/env FOO=bar` is a single valid command to real sudo,
 /// so a generic `WORD=VALUE` matcher would corrupt it.
 fn split_leading_option(rest: &str) -> Option<(CmndOption, &str)> {
-    let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let token_end = option_value_end(rest, 0);
     let (keyword, value) = rest[..token_end].split_once('=')?;
     let key = parse_option_key(keyword)?;
     Some((
@@ -1159,24 +1278,81 @@ fn comma_split(s: &str) -> Vec<String> {
 /// A pre-`=` text that is ONE comma-continued run has no host list at all, so the
 /// `Host_List` comes back empty and the caller reports it Malformed - which is what
 /// real sudo does with `alice, bob = /bin/ls` (rc 1, `syntax error`).
+///
+/// # Round 2: a principal may itself carry whitespace
+///
+/// `man 5 sudoers` (rendered page lines 399-402, sudo 1.9.17p2): a principal "may
+/// be enclosed in double quotes to avoid the need for escaping special
+/// characters", or escape them directly (`\x20` / a plain `\ `). Host probes
+/// (2026-07-31, all `visudo -c -f -` rc 0): `"my user", ALL ALL = ALL`,
+/// `"my user" ALL = ALL`, and `my\ user ALL = ALL` all keep the space-bearing
+/// principal as ONE `User_List` member. Round 1's whitespace scan had no notion of
+/// quotes or escapes, so it split INSIDE the quoted/escaped principal - exactly
+/// the Gap A/C failure class, on the users axis. [`unquoted_whitespace_runs`]
+/// finds only whitespace OUTSIDE a quoted span and not consumed by a backslash
+/// escape; the comma-continuation logic below is unchanged.
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
-    let mut cursor = 0usize;
-    while let Some(offset) = lhs[cursor..].find(char::is_whitespace) {
-        let ws_start = cursor + offset;
-        let after_ws = lhs[ws_start..].trim_start();
-        let ws_end = lhs.len() - after_ws.len();
+    for (ws_start, ws_end) in unquoted_whitespace_runs(lhs) {
+        let after_ws = &lhs[ws_end..];
         // The run continues across this whitespace if a comma sits on either side
         // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
         // its own token and both adjacent runs continue).
         if !lhs[..ws_start].ends_with(',') && !after_ws.starts_with(',') {
-            // `lhs` is trimmed and `after_ws` starts at a non-whitespace char, so
-            // both halves are already trimmed.
+            // `lhs` is trimmed and `after_ws` starts right after the whitespace run
+            // (a non-whitespace char or the string end), so both halves are
+            // already trimmed.
             return (&lhs[..ws_start], after_ws);
         }
-        cursor = ws_end;
     }
     (lhs, "")
+}
+
+/// Byte ranges `(start, end)` of whitespace RUNS in `s` that sit OUTSIDE a
+/// genuinely CLOSED double-quoted span (see [`inside_a_clean_quoted_region`])
+/// and are not themselves consumed by a backslash escape.
+///
+/// A whitespace byte inside a CLOSED quote pair is part of the token, not a
+/// boundary; a `\` consumes exactly the next byte literally, whitespace or not
+/// (same single-backslash escape model as [`option_value_end`] and the two
+/// top-level splitters). Deliberately uses PAIRED quote detection rather than a
+/// live open/close toggle: an unrelated, unpaired `"` elsewhere in the same
+/// pre-`=` text (e.g. a malformed `%bad"group` principal, `f02_group_name_with_dquote_fires`)
+/// must not swallow every later whitespace boundary as "still inside quotes" -
+/// the same "unterminated quote must not suppress a real boundary" rule the
+/// two top-level splitters already enforce for `:` / `,`. Used by
+/// [`split_user_list`] (#538 gap B round 2) to find the real
+/// `User_List`/`Host_List` boundary without splitting inside a quoted or
+/// escaped principal.
+fn unquoted_whitespace_runs(s: &str) -> Vec<(usize, usize)> {
+    let quotes = unescaped_quote_positions(s);
+    let mut runs = Vec::new();
+    let mut escaped = false;
+    let mut run_start: Option<usize> = None;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            if let Some(start) = run_start.take() {
+                runs.push((start, i));
+            }
+            continue;
+        }
+        if c.is_whitespace() && !inside_a_clean_quoted_region(&quotes, i) {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+        } else if let Some(start) = run_start.take() {
+            runs.push((start, i));
+        }
+    }
+    if let Some(start) = run_start.take() {
+        runs.push((start, s.len()));
+    }
+    runs
 }
 
 /// Split off the first whitespace-delimited word from `s`, returning
@@ -2434,12 +2610,17 @@ mod tests {
         // which is PAST a colon sitting inside that value - an inverted slice range if it
         // were not clamped (see `preceding_token`).
         //
-        // Real sudo REJECTS a colon in an option value: `alice h1 = TIMEOUT=30:x` is
-        // `visudo -c -f -` rc 1 (`stdin:1:22: syntax error`) on host sudo 1.9.17p2
-        // (2026-07-30), as is `CWD=/a:/b`. So no particular split is the "right" one and
-        // this asserts only the clamp's reading - the colon sits INSIDE a token, so there
-        // is no complete preceding token, so it is not a tag colon - and, above all, that
-        // the splitter does not panic on it.
+        // Real sudo REJECTS an UNQUOTED colon in an option value: `alice h1 =
+        // TIMEOUT=30:x` is `visudo -c -f -` rc 1 (`stdin:1:22: syntax error`) on host
+        // sudo 1.9.17p2 (2026-07-30), as is `CWD=/a:/b`. That premise is scoped to the
+        // UNQUOTED spelling and does NOT extend to a quoted value - `alice h1 =
+        // CWD="/a:b" /bin/ls` is rc 0 (2026-07-31 probe; see
+        // `gap_c_quoted_colon_in_an_option_value_is_not_a_separator` in the barrier
+        // suite, which `inside_a_clean_quoted_region` exists to satisfy) - so this
+        // deliberately UNQUOTED input is the one case where no particular split is the
+        // "right" one, and this asserts only the clamp's reading - the colon sits
+        // INSIDE a token, so there is no complete preceding token, so it is not a tag
+        // colon - and, above all, that the splitter does not panic on it.
         assert_eq!(
             split_top_level_segments("h1 = TIMEOUT=30:x", true),
             vec!["h1 = TIMEOUT=30", "x"],
