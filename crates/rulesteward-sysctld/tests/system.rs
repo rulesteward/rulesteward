@@ -1361,11 +1361,32 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
     // .conf-named entry regardless of the content decision (system.rs:191-192's
     // own comment: "Content contribution, decided AFTER the basename claim
     // above"), so a real /usr/lib/sysctl.d/99-sysctl.conf (same basename,
-    // lower dir) must still be MASKED: its unique key never reaches the
-    // effective merged set -> exactly one W03-c anchored at the masked file,
-    // and no W01 anchored there. A wrong impl that moves the 99-slot content
-    // decision (or its symlink_ok conjunct) above seen.insert would let the
-    // masked lower file wrongly survive instead. 555 is distinctive.
+    // lower dir) must still be MASKED: its unique key fs.protected_hardlinks
+    // never reaches the effective merged set -> exactly one W03-c anchored at
+    // the masked file, and no W01 anchored there.
+    //
+    // A wrong impl that ties the basename CLAIM itself to the symlink's
+    // target - e.g. skipping `seen.insert` for ANY symlink at the 99-slot
+    // path regardless of `symlink_ok` - would let the masked lower file
+    // wrongly survive instead. (The specific `&& symlink_ok`-gated reorder
+    // that positive-control 2 exercises is a no-op for THIS misdirected
+    // fixture: its condition is false regardless of block position, so it
+    // cannot redden this test - verified empirically, see the lane report.
+    // This guard instead directly observes that the type-agnostic
+    // basename-claim invariant holds for the misdirected case too, which the
+    // pre-existing correct-symlink guard at line 596 does not exercise.)
+    //
+    // The masked file ALSO sets net.core.somaxconn = 999, a key a surviving
+    // drop-in (run/sysctl.d/zz-after.conf) ALSO sets, = 111 - "zz-after.conf"
+    // sorts AFTER "99-sysctl.conf" bytewise, so IF the masked file wrongly
+    // survived, its 999 would apply before 111 wins, producing a W01
+    // anchored AT the masked path. This gives the "no W01 anchored there"
+    // assertion below something to range over (without it, no key in this
+    // fixture could EVER produce a W01 under any implementation, making that
+    // assertion vacuously true - a real gap the reviewer caught). Under the
+    // correct impl the masked file never survives, so no such conflict
+    // exists and the assertion holds trivially, as intended. 555/999/111 are
+    // distinctive.
     let root = tempdir().expect("temp root");
     write_at(root.path(), "other/decoy.conf", "# misdirected target\n");
     symlink_at(
@@ -1376,7 +1397,12 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
     write_at(
         root.path(),
         "usr/lib/sysctl.d/99-sysctl.conf",
-        "fs.protected_hardlinks = 555\n",
+        "fs.protected_hardlinks = 555\nnet.core.somaxconn = 999\n",
+    );
+    write_at(
+        root.path(),
+        "run/sysctl.d/zz-after.conf",
+        "net.core.somaxconn = 111\n",
     );
 
     let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
@@ -1413,5 +1439,81 @@ fn a_misdirected_99_symlink_still_masks_a_same_basename_file_in_a_lower_dir() {
         hits[0].message.contains("555"),
         "the W03-c message must state the dropped value (555): {}",
         hits[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 19. Over-fix guard (rework, impl-blind adversarial review): the LAZIEST
+//     wrong "fix" for #593 is to DELETE the whole 99-slot content-skip block
+//     (system.rs:193-198) instead of adding the `&& symlink_ok` conjunct -
+//     six lines removed, no hoist, no signature change. That greens the two
+//     tests above (it happens to follow a MISDIRECTED symlink correctly),
+//     but it is wrong on the MOST COMMON real layout: the CORRECT distro
+//     symlink `99-sysctl.conf -> ../sysctl.conf` alongside a real
+//     `/etc/sysctl.conf`. With the block gone, the symlink is parsed as an
+//     ordinary drop-in via `parse_surviving` AND `parse_etc_conf` ALSO
+//     parses the same physical file directly - the two share no dedup, so
+//     every key in `/etc/sysctl.conf` is read TWICE, fabricating a
+//     duplicate finding. `net.core.somaxconn` is set twice in
+//     `/etc/sysctl.conf` (4444 then 5555, a genuine within-file conflict,
+//     not just duplication) with the CORRECT symlink present.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_correct_99_symlink_does_not_double_parse_etc_sysctl_conf() {
+    // Correct impl: content flows via the /etc/sysctl.conf applier model
+    // ONCE (the 99-slot continue fires, symlink_ok is true), so merged is
+    // exactly [etcconf:4444(line 1), etcconf:5555(line 2)] -> exactly one
+    // W01, anchored at etc/sysctl.conf line 1, naming the winner 5555. The
+    // symlink path itself is never independently parsed, so NO diagnostic of
+    // any code anchors at etc/sysctl.d/99-sysctl.conf.
+    //
+    // The block-deleted over-fix instead ALSO parses the symlink as a
+    // surviving drop-in, producing a SECOND copy of both assignments
+    // (anchored at the symlink path). Merged becomes
+    // [99:4444(l1), 99:5555(l2), etcconf:4444(l1), etcconf:5555(l2)];
+    // last-wins picks etcconf:5555 as the winner, and BOTH earlier
+    // DIFFERENT-valued assignments (99:4444 and etcconf:4444) are now dead
+    // -> TWO W01s, one anchored at EACH path - failing both assertions
+    // below. 4444/5555 are distinctive.
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 4444\nnet.core.somaxconn = 5555\n",
+    );
+    symlink_99_sysctl_conf(root.path());
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let somaxconn_w01: Vec<&Diagnostic> = w01s(&diags)
+        .into_iter()
+        .filter(|d| d.message.contains("somaxconn"))
+        .collect();
+    assert_eq!(
+        somaxconn_w01.len(),
+        1,
+        "the correct distro symlink's content must flow via the \
+         /etc/sysctl.conf applier model ONCE, not be double-parsed through \
+         the symlink path too -> exactly one W01; got: {diags:?}"
+    );
+    let anchor = somaxconn_w01[0].file.display().to_string();
+    assert!(
+        anchor.ends_with("etc/sysctl.conf") && !anchor.ends_with("99-sysctl.conf"),
+        "the single W01 must anchor at the real etc/sysctl.conf, not the \
+         99-sysctl.conf symlink path; got {anchor:?}"
+    );
+    assert_eq!(
+        somaxconn_w01[0].line, 1,
+        "the dead assignment is etc/sysctl.conf's line 1 (4444); got line {}",
+        somaxconn_w01[0].line
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| !d.file.display().to_string().ends_with("99-sysctl.conf")),
+        "no diagnostic of any code must anchor at the 99-sysctl.conf symlink \
+         path itself - its content must never be independently parsed when \
+         the symlink correctly resolves to /etc/sysctl.conf; got: {diags:?}"
     );
 }

@@ -60,9 +60,14 @@
 //! of being silently dropped. The scenario keeps its own special-case arm
 //! below (see that arm for why it cannot use the generic `rulesteward_verdict`
 //! comparison): its post-fix value is compliant on both baselines, so the
-//! honest post-fix observation is the ABSENCE of a `sysctld-W02`/`W04` finding,
-//! pinned alongside the oracle's own `Some("2")` so the absence cannot be
-//! satisfied vacuously by a fix that breaks enumeration entirely.
+//! honest post-fix observation is the ABSENCE of a `sysctld-W02`/`W04` finding.
+//! The oracle's own `Some("2")` is pinned alongside it too, but that pin only
+//! guards against CORPUS corruption (a flipped or emptied `=== APPLY-DEBUG ===`
+//! transcript section) - it reads the recorded transcript and never touches
+//! `lint_system`, so it cannot detect a broken product. The arm's separate
+//! `sources` assertion (the misdirected symlink was actually READ) is what
+//! closes the product-side vacuity gap: a `lint_system` stub returning nothing
+//! would otherwise satisfy the absence assertion outright.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -493,11 +498,18 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
             // when no such diagnostic names the key) before ever reaching a value
             // to compare. The honest acceptance criterion for a FALSE-POSITIVE fix
             // is the ABSENCE of a finding, so assert that directly instead of
-            // routing through `rulesteward_verdict`. Pin BOTH sides: the oracle's
-            // Some("2") (so this cannot be satisfied VACUOUSLY by a fix that
-            // breaks enumeration entirely so nothing is ever read) and the
-            // negative product-side assertion (the bug's whole shape is a finding
-            // that should not exist, so its absence is the observation).
+            // routing through `rulesteward_verdict`.
+            //
+            // Two SEPARATE assertions guard two SEPARATE vacuity classes (an
+            // earlier version of this comment wrongly conflated them - corrected
+            // in rework): the oracle-side `Some("2")` pin below guards against
+            // CORPUS corruption (a flipped or emptied `=== APPLY-DEBUG ===`
+            // transcript section) - it reads only the recorded transcript and
+            // never touches `lint_system`, so it CANNOT detect a broken product.
+            // The `sources` assertion further down is what guards the PRODUCT
+            // side: it fails a `lint_system` stub returning
+            // `(vec![], BTreeMap::new())`, which would otherwise satisfy "no
+            // W02/W04 names the key" vacuously by reading nothing at all.
             if meta.id == "slot-symlink-misdirected-593" {
                 assert_eq!(
                     oracle_value.as_deref(),
@@ -508,7 +520,17 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                     meta.id
                 );
 
-                let (diags, _sources) = lint_system(Some(tmp.path()), Some(*target));
+                let (diags, sources) = lint_system(Some(tmp.path()), Some(*target));
+                assert!(
+                    sources
+                        .keys()
+                        .any(|k| k.ends_with("etc/sysctl.d/99-sysctl.conf")),
+                    "{}: the misdirected 99-slot symlink must actually be READ (staged \
+                     as a source) - a stub or a still-buggy enumerate() that skips it \
+                     entirely would otherwise satisfy the absence assertion below \
+                     vacuously",
+                    meta.id
+                );
                 let quoted_key = format!("`{key}`");
                 assert!(
                     !diags.iter().any(|d| {
