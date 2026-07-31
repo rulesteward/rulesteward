@@ -102,6 +102,26 @@ fn w06_count(src: &str) -> usize {
         .count()
 }
 
+/// How many `sudo-F01` (parse-failure Fatal) findings `lint` emits for `src`.
+///
+/// The operator-visible half of the Gap C failure class: a `Malformed` logical
+/// line does not merely lose its grant, it is REPORTED as a syntax error on a
+/// line real `visudo` accepts rc 0.
+fn f01_count(src: &str) -> usize {
+    let files = vec![parse(src, Path::new("/etc/sudoers"))];
+    lint(&files, &SudoersLintContext {})
+        .iter()
+        .filter(|d| d.code == "sudo-F01")
+        .count()
+}
+
+/// The single user-spec's single host group's host list.
+fn s_hosts(src: &str) -> Vec<String> {
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1, "expected exactly one host group");
+    s.host_groups[0].hosts.clone()
+}
+
 /// Build the expected one-element option list for the common single-option
 /// case, keeping each test's assertion to one line.
 fn opt(key: CmndOptionKey, value: &str) -> Vec<CmndOption> {
@@ -240,6 +260,38 @@ fn gap_a_timeout_option_after_a_runas_group_leaves_the_command_clean() {
 /// (see the three tests above); the other six are host probes only. The parser
 /// is deliberately NOT version-aware, so all ten are implemented on every
 /// target; no el8 measurement is claimed for the six probe-only keywords.
+///
+/// # Round 2: the value may be QUOTED or BACKSLASH-ESCAPED
+///
+/// Every value spelling above is a whitespace-free, unquoted, punctuation-free
+/// token, which is exactly why round 1 could end the option token at the first
+/// whitespace and still pass. `man 5 sudoers` (sudo 1.9.17p2, rendered page
+/// line 399) records that special characters may be quoted or hex-escaped, and
+/// the shipping parser accepts both spellings for an option value. Host probes
+/// on this host (2026-07-31), all `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/tmp/a b" /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/tmp/a b"}]        Commands [{"command":"/bin/ls"}]
+/// alice ALL = CWD=/tmp/a\ b /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/tmp/a b"}]        Commands [{"command":"/bin/ls"}]
+/// alice ALL = APPARMOR_PROFILE="my profile" /bin/ls
+///     cvtsudoers: Options [{"apparmor_profile":"my profile"}] Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Round 1 ends the option token at `rest.find(char::is_whitespace)`, so it
+/// splits INSIDE the value: `CWD="/tmp/a` becomes the option and the command
+/// becomes the garbage `b" /bin/ls`. That is Gap A's own failure class, on the
+/// `commands` axis the L3 differential really compares, re-created by the fix.
+///
+/// The expected AST value is the VERBATIM SOURCE BYTES, quotes and backslash
+/// retained (`ast::CmndOption`: "kept as WRITTEN, never coerced"; the same
+/// choice `RunasSpec` makes for its raw comma-split members). This DIVERGES
+/// from `cvtsudoers -f json`, which dequotes: the projection that compares the
+/// two is what must account for the difference, never the AST. Keeping the
+/// source bytes preserves information a consumer can still strip; dequoting in
+/// the parser would throw away the distinction between `CWD="/a b"` and a
+/// hypothetical unquoted spelling.
 #[test]
 fn gap_a_all_ten_accepted_option_keywords_are_recognized() {
     let cases: &[(&str, CmndOptionKey, &str)] = &[
@@ -261,6 +313,28 @@ fn gap_a_all_ten_accepted_option_keywords_are_recognized() {
         ("PRIVS=x", CmndOptionKey::Privs, "x"),
         ("LIMITPRIVS=y", CmndOptionKey::LimitPrivs, "y"),
         ("APPARMOR_PROFILE=p", CmndOptionKey::AppArmorProfile, "p"),
+        // Round 2: a DOUBLE-QUOTED value whose content contains whitespace. The
+        // option token ends at the closing quote, not at the space inside it.
+        (
+            "CWD=\"/tmp/a b\"",
+            CmndOptionKey::Cwd,
+            "\"/tmp/a b\"", // verbatim source bytes, quotes retained
+        ),
+        // Round 2: a BACKSLASH-ESCAPED space, the other spelling of the same
+        // value. `split_top_level_segments` and `split_cmnd_specs` already honor
+        // a backslash; the option scanner must too.
+        (
+            "CWD=/tmp/a\\ b",
+            CmndOptionKey::Cwd,
+            "/tmp/a\\ b", // verbatim, backslash retained
+        ),
+        // Round 2: a quoted value on a DIFFERENT keyword, so no implementation
+        // can pass by special-casing `CWD`.
+        (
+            "APPARMOR_PROFILE=\"my profile\"",
+            CmndOptionKey::AppArmorProfile,
+            "\"my profile\"",
+        ),
     ];
     for (written, key, value) in cases {
         let src = format!("alice ALL = {written} /bin/ls\n");
@@ -698,6 +772,32 @@ fn gap_b_user_list_with_no_host_list_is_malformed() {
 /// The space-free spelling is asserted alongside as a regression control: it is
 /// the fixture the existing in-crate W06 test uses precisely BECAUSE it
 /// sidesteps this gap, so it fires today and must keep firing.
+///
+/// # Round 2: the comma spelling is not the only one that hides `ALL`
+///
+/// Round 1 covers only whitespace introduced by a COMMA. A principal may also
+/// carry whitespace inside itself. `man 5 sudoers` on this host (sudo 1.9.17p2,
+/// rendered page lines 399-402, read 2026-07-31):
+///
+/// ```text
+/// A user name, user-ID, group, group-ID, netgroup, nonunix_group or
+/// nonunix_gid may be enclosed in double quotes to avoid the need for escaping
+/// special characters.  Alternately, special characters may be specified in
+/// escaped hex mode, e.g., \x20 for space.
+/// ```
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// "my user", ALL ALL = ALL
+///     cvtsudoers: User_List [{"username":"my user"},{"username":"ALL"}]
+///                 Host_List [{"hostname":"ALL"}]  Commands [{"command":"ALL"}]
+/// ```
+///
+/// So this line grants EVERY user on the box unrestricted sudo, exactly as
+/// `bob, ALL ALL=(ALL) ALL` does, and round 1 leaves W06 silent on it: the
+/// user list is truncated to `"my` at the space inside the quotes. Same DISA
+/// false negative, different spelling.
 #[test]
 fn gap_b_w06_fires_on_a_spaced_user_list_granting_all() {
     assert_eq!(
@@ -710,6 +810,17 @@ fn gap_b_w06_fires_on_a_spaced_user_list_granting_all() {
         1,
         "the reserved ALL principal is a MEMBER of this User_List regardless of \
          the whitespace after the comma, so W06 must fire on the spaced form too"
+    );
+    assert_eq!(
+        w06_count("\"my user\", ALL ALL = ALL\n"),
+        1,
+        "a QUOTED principal carrying a space must not truncate the User_List \
+         either: `ALL` is still a member and W06 must fire (host probe, rc 0)"
+    );
+    assert_eq!(
+        s_hosts("\"my user\", ALL ALL = ALL\n"),
+        vec!["ALL".to_string()],
+        "and the Host_List is exactly [ALL], not a merged garbage token"
     );
 }
 
@@ -833,4 +944,669 @@ fn gap_c_tag_keyword_spaced_from_its_colon_is_still_a_tag() {
     );
     assert_eq!(s.host_groups[0].cmnd_specs[0].tags, vec![Tag::NoPasswd]);
     assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+// ===========================================================================
+// Round 2 (strengthening): QUOTED and BACKSLASH-ESCAPED tokens
+// ===========================================================================
+//
+// Round 1 closed gaps A, B and C for the token spellings the corpus happens to
+// contain: every option value is a whitespace-free, unquoted, punctuation-free
+// word, and every principal is a bare name. No corpus scenario contains a `"`
+// at all. The round-1 code therefore ends an option token at the first
+// whitespace and a `User_List` at the first non-comma-adjacent whitespace, and
+// both readings split INSIDE a quoted or escaped token.
+//
+// `man 5 sudoers` on this host (sudo 1.9.17p2, `visudo grammar version 50`,
+// rendered page lines 399-402, read 2026-07-31) records the quoting rule for
+// principals, and every input in this section was re-derived on this host with
+// `printf '%s\n' "<line>" | visudo -c -f -` and the same line through
+// `cvtsudoers -f json` on 2026-07-31. Every one of them is rc 0: these are
+// valid sudoers lines that RuleSteward gets wrong.
+//
+// The two pre-existing splitters in `parser.rs` already honor a backslash
+// (`split_top_level_segments` and `split_cmnd_specs`), and the former also
+// tracks paren depth and double quotes, so honoring quotes and escapes in the
+// option scanner is CONSISTENCY with the surrounding code, not an expansion of
+// the lane.
+//
+// The expected AST value for a quoted or escaped token is the VERBATIM SOURCE
+// BYTES: `CWD="/a b"` stores `"/a b"` WITH its quotes, `my\ user` stores
+// `my\ user` WITH its backslash. That matches the documented convention on
+// `ast::CmndOption` ("kept as WRITTEN, never coerced") and `ast::RunasSpec`
+// ("RAW comma-split tokens"), and it preserves information a consumer can
+// still strip. It DIVERGES from `cvtsudoers -f json`, which dequotes; where a
+// differential projection compares the two, the PROJECTION accounts for the
+// difference, never the AST.
+//
+// Failure classes closed here, in increasing order of harm:
+//
+//   1. a truncated option value plus a garbage command token (Gap A's own
+//      failure class, on the `commands` axis L3 compares);
+//   2. an EMPTY command token from a `Cmnd_Spec_List` split inside a quoted
+//      value;
+//   3. the whole logical line thrown away as `Malformed`, which also emits a
+//      `sudo-F01` FATAL on a line real sudo accepts (Gap C's failure class);
+//   4. a dropped `ALL` principal and a silent `sudo-W06`, the DISA finding
+//      (Gap B's failure class).
+
+/// Two options where the FIRST value is quoted and contains a space.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = TYPE="a b" ROLE=r /bin/ls
+///     cvtsudoers: Options [{"role":"r"},{"type":"a b"}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Round 1 splits the option token at the space inside the quotes, yielding
+/// `options = [Type("\"a")]` and the garbage command `b" ROLE=r /bin/ls`. Note
+/// what that costs beyond the corrupted command: the ENTIRE `ROLE=r` option is
+/// LOST, because the scan stops at the first token it cannot read as an option.
+///
+/// The `options.len() == 2` assertion is deliberately made FIRST and separately
+/// from the whole-`Vec` comparison: it kills the silent option loss
+/// independently of how the value is spelled, so an implementation that gets
+/// the quote handling subtly wrong still fails here with a message that names
+/// the actual defect.
+///
+/// Source order, not `cvtsudoers` order: the AST records options in the order
+/// WRITTEN (`ast::CmndSpec::options`, "in SOURCE order"), and `cvtsudoers`
+/// reports this line's `SELinux` pair as `role` then `type` even though the
+/// source writes `TYPE=` first. That reordering is the oracle's, not ours.
+#[test]
+fn gap_a_two_options_survive_when_the_first_value_is_quoted() {
+    let s = only_spec("alice ALL = TYPE=\"a b\" ROLE=r /bin/ls\n");
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(
+        specs[0].options.len(),
+        2,
+        "BOTH options must survive: a quoted value in the first option must not \
+         end the option scan and silently discard `ROLE=r`; got {:?}",
+        specs[0].options
+    );
+    assert_eq!(
+        specs[0].options,
+        vec![
+            CmndOption {
+                key: CmndOptionKey::Type,
+                value: "\"a b\"".to_string(),
+            },
+            CmndOption {
+                key: CmndOptionKey::Role,
+                value: "r".to_string(),
+            },
+        ],
+        "values are the verbatim source bytes, in SOURCE order"
+    );
+    assert_eq!(
+        specs[0].cmnd,
+        CmndItem::Cmnd("/bin/ls".to_string()),
+        "the command token must not inherit the tail of a quoted option value"
+    );
+}
+
+/// A comma INSIDE a quoted option value must not split the `Cmnd_Spec_List`.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a,b" /bin/ls
+///     cvtsudoers: ONE Cmnd_Spec, Options [{"runcwd":"/a,b"}],
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Round 1 produces TWO `CmndSpec`s here - `{options:[Cwd("\"/a")], cmnd:
+/// Cmnd("")}` and `{cmnd: Cmnd("b\" /bin/ls")}` - so a grant becomes an EMPTY
+/// command token plus a garbage one.
+///
+/// `split_cmnd_specs`'s own doc justifies "There is NO quote tracking" on the
+/// premise that sudo REJECTS an unescaped quoted comma. That premise is true
+/// for a COMMAND and FALSE for an option value, re-derived on this host
+/// 2026-07-31:
+///
+/// ```text
+/// alice ALL = /bin/echo "a, b"    rc 1  "expected a fully-qualified path name"
+/// alice ALL = CWD="/a,b" /bin/ls  rc 0
+/// ```
+///
+/// So the new option code inherited a premise that is false in its own domain.
+/// The command-side premise is untouched and stays grounded.
+#[test]
+fn gap_a_comma_inside_a_quoted_option_value_does_not_split_the_cmnd_spec_list() {
+    let s = only_spec("alice ALL = CWD=\"/a,b\" /bin/ls\n");
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        1,
+        "the comma is INSIDE a quoted option value, so it is not a Cmnd_Spec \
+         separator; got {specs:?}"
+    );
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a,b\""));
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// General guard: no `CmndSpec` produced from a VALID sudoers line may carry an
+/// empty command token.
+///
+/// An empty `CmndItem::Cmnd("")` is never a real grant - it is the signature of
+/// a splitter that cut a token in half - and it matches no `Cmnd_Alias`, no
+/// reserved-`ALL` check and no path check, so it is silent. This guard is
+/// spelling-independent: it catches the next quoted-separator bug even if that
+/// bug's value spelling is one nobody thought to enumerate.
+///
+/// Every input below is `visudo -c -f -` rc 0 on this host (2026-07-31).
+///
+/// The `seen > 0` assertion is the instrument's own positive control: a guard
+/// that inspected NOTHING (because every line came back `Malformed`, which is
+/// exactly what round 1 does to four of these) would otherwise report clean.
+#[test]
+fn no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token() {
+    let cases = [
+        "alice ALL = CWD=\"/a,b\" /bin/ls\n",
+        "alice ALL = CWD=\"/tmp/a b\" /bin/ls\n",
+        "alice h1 = CWD=\"/a:b\" /bin/ls\n",
+        "alice ALL = CWD=/tmp/a\\ b /bin/ls\n",
+        "alice ALL = TYPE=\"a b\" ROLE=r /bin/ls\n",
+        "alice ALL = APPARMOR_PROFILE=\"my profile\" /bin/ls\n",
+        "alice ALL = CWD=\"/a b\" NOEXEC: /bin/ls, /bin/cat\n",
+        "alice ALL = CWD=/a)b NOEXEC: /bin/ls\n",
+    ];
+    for src in cases {
+        let file = parse(src, Path::new("/etc/sudoers"));
+        let mut seen = 0usize;
+        for line in &file.lines {
+            let LineKind::UserSpec(s) = &line.kind else {
+                continue;
+            };
+            for group in &s.host_groups {
+                for spec in &group.cmnd_specs {
+                    seen += 1;
+                    assert_ne!(
+                        spec.cmnd,
+                        CmndItem::Cmnd(String::new()),
+                        "{src:?} produced a Cmnd_Spec with an EMPTY command token, the \
+                         signature of a splitter cutting a token in half; got {:?}",
+                        s.host_groups
+                    );
+                }
+            }
+        }
+        assert!(
+            seen > 0,
+            "positive control: {src:?} is visudo rc 0 and must yield at least one \
+             Cmnd_Spec to inspect, but the guard saw none (the line was discarded)"
+        );
+    }
+}
+
+/// A whitespace-bearing option value before a TAG COLON must not throw the
+/// whole line away.
+///
+/// This is the sharpest input in the section: the line grants `ALL`, and round
+/// 1 makes it VANISH.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a b" NOEXEC: ALL
+///     cvtsudoers: Options [{"runcwd":"/a b"},{"noexec":true},{"setenv":true}]
+///                 Commands [{"command":"ALL"}]
+/// ```
+///
+/// (The `setenv` entry is `cvtsudoers` reporting the semantics sudo attaches to
+/// a bare `ALL` command; it is not a tag written on the line, and the AST
+/// records only the tags actually WRITTEN.)
+///
+/// Round 1 returns
+/// `Malformed("user specification segment is missing its `= command` part")`.
+/// The mechanism: the `'='` arm advances the preceding-token marker by
+/// `s[after_eq..].find(char::is_whitespace)`, which for `CWD="/a b"` lands
+/// INSIDE the quoted value; at the tag colon the marker has overshot, the
+/// clamp in `preceding_token` yields `""`, `""` is not a tag, and the tag colon
+/// is read as a top-level host-group separator. The second segment has no `=`,
+/// so the whole logical line is discarded.
+///
+/// The harm doubles, which is why this test asserts both halves: the grant
+/// becomes invisible to every lint, AND `sudo-F01` fires, so `RuleSteward`
+/// actively reports a valid line as a syntax error.
+#[test]
+fn gap_c_quoted_option_value_with_a_space_before_a_tag_does_not_split_the_user_spec() {
+    let src = "alice ALL = CWD=\"/a b\" NOEXEC: ALL\n";
+    let kind = first_kind(src);
+    assert!(
+        !matches!(kind, LineKind::Malformed(_)),
+        "`{}` is visudo rc 0 and must not be discarded; got {kind:?}",
+        src.trim_end()
+    );
+    let LineKind::UserSpec(s) = kind else {
+        panic!("expected a user-spec");
+    };
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "the `NOEXEC:` tag colon is not a host-group separator; got {:?}",
+        s.host_groups
+    );
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a b\""));
+    assert_eq!(specs[0].tags, vec![Tag::NoExec]);
+    assert_eq!(
+        specs[0].cmnd,
+        CmndItem::All,
+        "this line grants the reserved ALL command and must not lose it"
+    );
+    assert_eq!(
+        f01_count(src),
+        0,
+        "no parse-failure Fatal may be emitted for a line real visudo accepts"
+    );
+}
+
+/// The same defect with a BACKSLASH-ESCAPED space instead of quotes, and a
+/// named host instead of `ALL`, so no implementation can pass by handling only
+/// the double-quote spelling.
+///
+/// Host probe, 2026-07-31, rc 0:
+///
+/// ```text
+/// alice h1 = CWD=/tmp/a\ b NOEXEC: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/tmp/a b"},{"noexec":true}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+#[test]
+fn gap_c_escaped_space_in_an_option_value_before_a_tag_does_not_split_the_user_spec() {
+    let src = "alice h1 = CWD=/tmp/a\\ b NOEXEC: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::Cwd, "/tmp/a\\ b"),
+        "the backslash is kept VERBATIM, matching the `\\:` precedent the two \
+         pre-existing splitters already set"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoExec]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// A COLON inside a quoted option value is not a separator of any kind.
+///
+/// Host probe, 2026-07-31, rc 0:
+///
+/// ```text
+/// alice h1 = CWD="/a:b" /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a:b"}]  Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// This is the case that falsifies the round-1 grounding claim that "real sudo
+/// REJECTS a colon in an option value". That is true UNQUOTED - `CWD=/a:/b` and
+/// `TIMEOUT=30:x` are both rc 1 - and false once the value is quoted. The
+/// unquoted reading is untouched by this test; only the quoted one is pinned.
+#[test]
+fn gap_c_quoted_colon_in_an_option_value_is_not_a_separator() {
+    let src = "alice h1 = CWD=\"/a:b\" /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "a quoted colon is a value byte, not a host-group separator; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a:b\""));
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// The whitespace-bearing option value combined with a multi-command
+/// `Cmnd_Spec_List`, so the fix cannot be a special case for a single-command
+/// line.
+///
+/// Host probe, 2026-07-31, rc 0:
+///
+/// ```text
+/// alice ALL = CWD="/a b" NOEXEC: /bin/ls, /bin/cat
+///     cvtsudoers: Options [{"runcwd":"/a b"},{"noexec":true}]
+///                 Commands [{"command":"/bin/ls"},{"command":"/bin/cat"}]
+/// ```
+///
+/// `cvtsudoers` reports ONE `Cmnd_Spec` with two `Commands`; the AST models the
+/// list as TWO `CmndSpec`s carrying only the options and tags WRITTEN on each
+/// (tag inheritance is the separate #330 pass), the same shape
+/// `gap_a_each_cmnd_spec_in_a_list_keeps_its_own_option` already pins. Round 1
+/// discards the entire line as `Malformed`.
+#[test]
+fn gap_c_quoted_option_value_before_a_tag_keeps_the_whole_cmnd_spec_list() {
+    let src = "alice ALL = CWD=\"/a b\" NOEXEC: /bin/ls, /bin/cat\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 2, "two Cmnd_Specs; got {specs:?}");
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "\"/a b\""));
+    assert_eq!(specs[0].tags, vec![Tag::NoExec]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        specs[1].cmnd,
+        CmndItem::Cmnd("/bin/cat".to_string()),
+        "the second command must survive intact, not carry the tail of the \
+         quoted option value"
+    );
+}
+
+/// A `)` inside an option value must not drag the preceding-token marker
+/// BACKWARD, undoing the `'='` arm's skip.
+///
+/// No quotes are involved: this is a defect entirely inside the code round 1
+/// added. Host probe, 2026-07-31, rc 0:
+///
+/// ```text
+/// alice ALL = CWD=/a)b NOEXEC: /bin/ls
+///     cvtsudoers: Options [{"runcwd":"/a)b"},{"noexec":true}]
+///                 Commands [{"command":"/bin/ls"}]
+/// ```
+///
+/// Mechanism: the `'='` arm sets the marker to the END of the whole `CWD=/a)b`
+/// token, and the `')'` arm - which runs at a byte INSIDE that token - then
+/// unconditionally resets the marker to just after itself, i.e. BACKWARD into
+/// the middle of the value. At the tag colon the span is `"b NOEXEC"`, which is
+/// not a tag, so the colon splits and the line is discarded as `Malformed`.
+///
+/// The `=` sibling of this defect is unreachable (`CWD=/a=b` is rc 1,
+/// `stdin:1:19: syntax error`, re-derived 2026-07-31); the `)` one is
+/// reachable, because a `)` is an ordinary byte in a directory name.
+#[test]
+fn gap_c_option_value_containing_a_paren_does_not_split_the_user_spec() {
+    let src = "alice ALL = CWD=/a)b NOEXEC: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "a `)` inside an option value is not a token boundary, so the tag colon \
+         is still a tag colon; got {:?}",
+        s.host_groups
+    );
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert_eq!(specs[0].options, opt(CmndOptionKey::Cwd, "/a)b"));
+    assert_eq!(specs[0].tags, vec![Tag::NoExec]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Round 2, Gap B: a principal may carry whitespace inside itself
+// ---------------------------------------------------------------------------
+
+/// A QUOTED principal containing a space, in a `User_List` that also grants
+/// `ALL`.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// "my user", ALL ALL = ALL
+///     cvtsudoers: User_List [{"username":"my user"},{"username":"ALL"}]
+///                 Host_List [{"hostname":"ALL"}]  Commands [{"command":"ALL"}]
+/// ```
+///
+/// Round 1 truncates the user list at the space INSIDE the quotes, yielding
+/// `users = ["\"my"]` and `hosts = ["user\"", "ALL ALL"]`: the reserved `ALL`
+/// principal is dropped from the subject list, exactly the Gap B harm, for the
+/// spelling the Gap B fix did not cover. The operator-visible half (`sudo-W06`
+/// stays silent) is asserted in
+/// `gap_b_w06_fires_on_a_spaced_user_list_granting_all`.
+///
+/// The stored principal is the VERBATIM source token, quotes retained, matching
+/// `ast::RunasSpec`'s "RAW comma-split tokens" convention. `cvtsudoers`
+/// dequotes to `my user`; that difference belongs to the projection.
+#[test]
+fn gap_b_quoted_principal_with_a_space_keeps_the_reserved_all_principal() {
+    let s = only_spec("\"my user\", ALL ALL = ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["\"my user\"".to_string(), "ALL".to_string()],
+        "the quoted principal is ONE user and `ALL` is the second, so the \
+         reserved principal stays in the subject list"
+    );
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    assert!(
+        !s.host_groups[0].hosts.iter().any(|h| h.contains(' ')),
+        "no host token may contain whitespace; got {:?}",
+        s.host_groups[0].hosts
+    );
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+/// The same quoted principal with NO comma, so the fix cannot key on a comma.
+///
+/// Host probe, 2026-07-31, rc 0: `"my user" ALL = ALL` reports
+/// `User_List [{"username":"my user"}]` / `Host_List [{"hostname":"ALL"}]`.
+///
+/// Round 1 yields `users = ["\"my"]` and the single merged garbage host token
+/// `"user\" ALL"`. This is the input that proves the user-list boundary is not
+/// merely comma-driven: a quoted token is ONE token whether or not a comma
+/// follows it.
+#[test]
+fn gap_b_quoted_principal_alone_does_not_swallow_the_host_list() {
+    let s = only_spec("\"my user\" ALL = ALL\n");
+    assert_eq!(s.users, vec!["\"my user\"".to_string()]);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host list is exactly [ALL], not a merged token"
+    );
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+/// The BACKSLASH-ESCAPED spelling of the same principal.
+///
+/// `man 5 sudoers` (rendered page line 401, this host) offers escaping as the
+/// alternative to quoting, and the shipping parser accepts it: host probe,
+/// 2026-07-31, rc 0, `my\ user ALL = ALL` reports
+/// `User_List [{"username":"my user"}]` / `Host_List [{"hostname":"ALL"}]`.
+///
+/// Round 1 yields `users = ["my\\"]` and the merged host token `"user ALL"`.
+/// Both pre-existing splitters in `parser.rs` already honor a backslash, so
+/// this is the user-list side of the same consistency.
+#[test]
+fn gap_b_escaped_space_in_a_principal_does_not_swallow_the_host_list() {
+    let s = only_spec("my\\ user ALL = ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["my\\ user".to_string()],
+        "the backslash-escaped space is part of the principal, kept verbatim"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+/// Regression control for the user-list cursor arithmetic: a MULTI-space
+/// whitespace run inside a comma-continued `User_List`.
+///
+/// Host probe, 2026-07-31, rc 0: `bob,   ALL   ALL=(ALL) ALL` reports the same
+/// `User_List [{"username":"bob"},{"username":"ALL"}]` /
+/// `Host_List [{"hostname":"ALL"}]` as the single-space corpus spelling.
+///
+/// Every other Gap B input in this file uses SINGLE spaces, where the end of a
+/// whitespace run is trivially `ws_start + 1`. That makes the arithmetic that
+/// advances the scan cursor past a run unobservable, and an implementation that
+/// advanced by one byte instead of to the end of the run would pass every other
+/// test here while returning the untrimmed user part `"bob, "` and the merged
+/// host token `"ALL   ALL"` on this line. This is also the exact input that
+/// exposes the `split_user_list` cursor arithmetic to the mutation gate.
+#[test]
+fn gap_b_multi_space_run_in_a_comma_continued_user_list_splits_at_the_run_end() {
+    let s = only_spec("bob,   ALL   ALL=(ALL) ALL\n");
+    assert_eq!(s.users, vec!["bob".to_string(), "ALL".to_string()]);
+    assert!(
+        !s.users.iter().any(|u| u.contains(char::is_whitespace)),
+        "no user token may carry whitespace from the run; got {:?}",
+        s.users
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+    assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+// ---------------------------------------------------------------------------
+// Round 2, Gap C: end-to-end siblings for the splitter's in-crate unit tests
+// ---------------------------------------------------------------------------
+
+/// End-to-end sibling of the in-crate unit test
+/// `command_argument_tag_keyword_before_a_colon_still_splits`
+/// (`src/parser.rs`), which drives the private `split_top_level_segments`
+/// directly and has had no test at the public entry point.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice h1 = /bin/echo NOPASSWD : h2 = ALL
+///     cvtsudoers: TWO User_Specs
+///       h1 -> Commands [{"command":"/bin/echo NOPASSWD"}]
+///       h2 -> Commands [{"command":"ALL"}]
+/// ```
+///
+/// Once the COMMAND word has begun a tag keyword is an ARGUMENT, so the colon
+/// really does separate two host groups. This passes today; it is the control
+/// half of the pair, and it exists so the RED test below is attributable to the
+/// `=` in the argument rather than to the tag keyword.
+#[test]
+fn gap_c_command_argument_tag_keyword_before_a_colon_still_splits_end_to_end() {
+    let s = only_spec("alice h1 = /bin/echo NOPASSWD : h2 = ALL\n");
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "a tag keyword used as a command ARGUMENT does not make the following \
+         colon a tag colon; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    assert_eq!(
+        s.host_groups[0].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/echo NOPASSWD".to_string())
+    );
+    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+    assert_eq!(s.host_groups[1].cmnd_specs[0].cmnd, CmndItem::All);
+}
+
+/// The RED half of that pair: the same line with a `KEY=value` ARGUMENT in
+/// front of the tag keyword.
+///
+/// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
+///
+/// ```text
+/// alice h1 = /bin/echo X=NOPASSWD : h2 = ALL
+///     cvtsudoers: TWO User_Specs
+///       h1 -> Commands [{"command":"/bin/echo X=NOPASSWD"}]
+///       h2 -> Commands [{"command":"ALL"}]
+/// ```
+///
+/// Round 1 collapses this into ONE host group whose single command is the
+/// garbage `"/bin/echo X=NOPASSWD : h2 = ALL"`, and the `h2` grant - a bare
+/// `ALL` - disappears entirely.
+///
+/// Mechanism, and why the unit test above does not catch it: the `'='` arm
+/// resets the preceding-token marker on a COMMAND-ARGUMENT `=` as well as on
+/// the structural one. With `X=` present the marker lands just after that `=`,
+/// so the span at the colon is the bare `"NOPASSWD"` - a tag - and the colon is
+/// suppressed. Without `X=` the span is `"/bin/echo NOPASSWD"`, which is not a
+/// tag, so the unit test's input splits correctly and the over-reach it claims
+/// to guard is invisible to it. A command argument's `=` is not a token
+/// boundary for tag-keyword purposes at all.
+#[test]
+fn gap_c_command_argument_assignment_before_a_tag_keyword_colon_still_splits() {
+    let s = only_spec("alice h1 = /bin/echo X=NOPASSWD : h2 = ALL\n");
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "a `KEY=value` command ARGUMENT must not turn the following separator \
+         colon into a tag colon and swallow the second host group; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    assert_eq!(
+        s.host_groups[0].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/echo X=NOPASSWD".to_string()),
+        "the first command keeps its `KEY=value` argument verbatim"
+    );
+    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+    assert_eq!(
+        s.host_groups[1].cmnd_specs[0].cmnd,
+        CmndItem::All,
+        "the second host group's `ALL` grant must not disappear"
+    );
+}
+
+/// The STRUCTURAL `=` is never an option `=`, even when the token in front of
+/// it is spelled like an option keyword.
+///
+/// This pins the `in_cmnd_list` half of the `'='` arm's guard independently of
+/// the keyword-match half, which nothing else in the suite does. Drop it, so
+/// that any `=` whose preceding token is an option keyword counts as an option
+/// `=`, and the marker skips past the following `NOPASSWD:` token, the clamp
+/// then yields `""` at the tag colon, the colon is read as a host-group
+/// separator, and the whole line is discarded as `Malformed` with a `sudo-F01`
+/// Fatal.
+/// (Verified by hand on 2026-07-31 by making exactly that one-operator change
+/// in `split_top_level_segments` and re-parsing this line.)
+///
+/// Grounding, and its limit: `visudo -c -f -` REJECTS this line rc 1,
+/// `stdin:1:10: syntax error` pointing at `CWD`, because all ten option
+/// keywords are reserved words in sudo's lexer and cannot be used bare as a
+/// Host (`alice ROLE = /bin/ls` and `Cmnd_Alias CWD = /bin/ls` are rc 1 too,
+/// the latter saying so explicitly: `reserved word CWD used as an alias name`).
+/// Quoting rescues the line (`alice "CWD" = /bin/ls` is rc 0) but then the
+/// token carries its quotes and is no longer spelled like a keyword. So there
+/// is NO visudo-accepted input that separates these two conjuncts, and this
+/// test necessarily pins `RuleSteward`'s RECOVERY behavior on a line sudo
+/// rejects, in the same spirit as the in-crate
+/// `colon_inside_an_option_value_does_not_panic`.
+///
+/// What is asserted is narrow and defensible on its own terms: `RuleSteward` has
+/// no reserved-word check, so it must parse this line leniently rather than
+/// discard it, and a `sudo-F01` fired here would be a right answer for an
+/// entirely wrong reason.
+#[test]
+fn gap_c_the_structural_equals_is_never_an_option_equals() {
+    let src = "alice h1,CWD=NOPASSWD: /bin/ls\n";
+    let kind = first_kind(src);
+    assert!(
+        !matches!(kind, LineKind::Malformed(_)),
+        "the structural `=` must not be mistaken for an option `=`; got {kind:?}"
+    );
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        1,
+        "the `NOPASSWD:` tag colon is not a host-group separator; got {:?}",
+        s.host_groups
+    );
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["h1".to_string(), "CWD".to_string()],
+        "`CWD` here is the last member of the Host_List, not an option keyword"
+    );
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(specs.len(), 1, "one Cmnd_Spec; got {specs:?}");
+    assert!(
+        specs[0].options.is_empty(),
+        "no Option_Spec was written on this Cmnd_Spec; got {:?}",
+        specs[0].options
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        f01_count(src),
+        0,
+        "the line must not be reported as a parse failure"
+    );
 }
