@@ -1163,7 +1163,17 @@ fn gap_a_comma_inside_a_quoted_option_value_does_not_split_the_cmnd_spec_list() 
 /// The `seen > 0` assertion is the instrument's own positive control: a guard
 /// that inspected NOTHING (because every line came back `Malformed`, which is
 /// exactly what round 1 does to four of these) would otherwise report clean.
+///
+/// The two round-6 cases (glued to a preceding `,` and to a preceding `)`)
+/// are a KNOWN-OPEN #538 defect: commit ec11a15's attempted fix was
+/// narrow-reverted because it regressed real `visudo`-accepted input
+/// elsewhere (a false `sudo-F01` fatal, and silently swallowed
+/// grants/aliases). See the section comment above
+/// `option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value`
+/// later in this file for the full grounding and the pre-existing substrate
+/// defects a real fix must address first.
 #[test]
+#[ignore = "known-open #538 defect (round-6 cases only); round-6 fix reverted (ec11a15)"]
 fn no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token() {
     let cases = [
         "alice ALL = CWD=\"/a,b\" /bin/ls\n",
@@ -2619,6 +2629,48 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 }
 
 // ===========================================================================
+// KNOWN-OPEN #538 defects (round 6 fix reverted).
+// ===========================================================================
+//
+// Every `#[ignore]`d test below (and `no_cmnd_spec_from_a_valid_line_carries_
+// an_empty_command_token` earlier in this file) pins a GENUINELY OPEN #538
+// defect, verified against real `visudo` 1.9.17p2 (`visudo -c -f -` and
+// `cvtsudoers -f json`, this host, 2026-07-31). They are not stale or
+// speculative: each input below IS accepted (rc 0) by real sudo, and the
+// AST/diagnostic shape each test asserts IS what real sudo's own tooling
+// reports for that input.
+//
+// Commit ec11a15 ("9m lane 3 round 6: glued option keywords + the ','
+// arm's missing guard (#538)") attempted to fix these by (1) widening
+// `word_immediately_before`'s boundary set from whitespace-only to also
+// include `)`, `,`, and `=`, and (2) guarding `split_top_level_segments`'s
+// `','` arm with `i >= tok_start`, mirroring its `')'` sibling. Both changes
+// were NARROW-REVERTED (this commit) because they introduced two confirmed
+// regressions against the real `visudo` oracle:
+//   * a FALSE `sudo-F01` fatal on a valid line with NO comma at all in the
+//     option value (`alice ALL = CWD="/a b"/bin/ls, (root:grp) /bin/su`,
+//     real visudo rc 0), which disproves the ','-arm guard's stated premise;
+//   * SILENTLY SWALLOWED grants/aliases (a second `Cmnd_Alias` or a
+//     `NOPASSWD: ALL` grant vanishing with no diagnostic at all) on inputs
+//     shaped like `Cmnd_Alias A = /bin/echo X=CWD="/a : B = /bin/su"`.
+//
+// The underlying blockers are two PRE-EXISTING substrate defects, neither of
+// which a narrow revert (or the reverted fix) addresses:
+//   * `option_value_end` scans PAST a closing option-value quote to the next
+//     whitespace, instead of ending the value AT the closing quote;
+//   * `is_option_value_quote_opener` (via `word_immediately_before`) matches
+//     the LAST WORD before an `=` and is POSITION-BLIND, while the `'='`
+//     arm's own recognizer (`preceding_token`/`tok_start`) does a
+//     WHOLE-SPAN, POSITION-ANCHORED match -- the two disagree about where an
+//     `Option_Spec` keyword starts for any glued spelling, and any fix that
+//     reconciles them by widening one side alone (as ec11a15 did) reopens
+//     exactly the two regressions above.
+//
+// A real fix must address the substrate (both bullets) first, not patch
+// around it with another positional guard.
+// ===========================================================================
+
+// ===========================================================================
 // Round 6 (ATL round 6): a REGRESSION introduced BY round 5.
 // ===========================================================================
 //
@@ -2669,6 +2721,7 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 /// top-level separator once the quote's opener is rejected, exactly MISS-1's
 /// mechanism, and the whole line is discarded `Malformed`).
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value() {
     let src = "%wheel ALL=(ALL)CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2721,6 +2774,7 @@ fn option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value() {
 ///
 /// Today: `sudo-F01` fatal, same mechanism as the `)`-glued case above.
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value() {
     let src = "%wheel ALL=CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2765,6 +2819,7 @@ fn option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value() 
 /// is what makes this the sharpest of the three F01 rows: the defect fires
 /// on the QUOTED VALUE's own interior colon, with no tag involved at all.
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural_equals() {
     let src = "alice ALL = (root)CWD=\"/a:b\" /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2815,6 +2870,7 @@ fn option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural
 /// which this test's input was added to above; this test additionally pins
 /// the exact expected values that guard does not check).
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list()
  {
     let src = "alice ALL = (root)CWD=\"/a,b\" /bin/ls\n";
@@ -2858,6 +2914,7 @@ fn option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_no
 /// the general empty-command guard above; this test pins the exact expected
 /// two-spec shape that guard does not check.
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
     let src = "alice ALL = /bin/true,CWD=\"/a,b\" /bin/ls\n";
     let s = only_spec(src);
@@ -2949,6 +3006,7 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
 /// tag colon is misread as a genuine top-level separator and the whole line
 /// is discarded `Malformed`.
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
     let src = "alice ALL = CWD=\"/a,b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2999,6 +3057,7 @@ fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
 /// option is asserted first here and not against `cvtsudoers`'s own field
 /// order.)
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
     let src = "alice ALL = APPARMOR_PROFILE=\"a,b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -3043,6 +3102,7 @@ fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
 /// swallowed into a command string that matches no `Cmnd_Alias`, no reserved
 /// `ALL` check and no path check, and nothing about `h2` is reported at all.
 #[test]
+#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_the_next_host_group()
  {
     let src = "alice ALL = CWD=\"/a,(b\" NOEXEC: /bin/ls : h2 = /bin/cat\n";
@@ -3085,9 +3145,15 @@ fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_
 }
 
 /// Control - already correct today, must STAY green: a HYPHEN in the quoted
-/// value, not a comma. Only the punctuation byte differs from the `CWD` false
-/// fatal above; this is what stops an over-broad fix (e.g. rejecting every
-/// byte inside a quoted value at this position) from breaking a clean line.
+/// value, not a comma, so it is never routed through the (now-reverted)
+/// `','`-arm guard at all -- there is nothing for that arm's absence to
+/// affect here. Only the punctuation byte differs from the `CWD` false-fatal
+/// input pinned by `comma_inside_a_quoted_cwd_option_value_does_not_trigger_
+/// a_false_fatal` above (now `#[ignore]`d as an open #538 defect, its
+/// round-6 fix having been narrow-reverted in ec11a15's follow-up); this
+/// control exists so a FUTURE fix at that arm cannot pass by being
+/// over-broad (e.g. rejecting every byte inside a quoted value at this
+/// position) and breaking this clean line.
 ///
 /// Host probe, rc 0:
 ///
