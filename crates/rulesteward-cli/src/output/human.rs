@@ -1080,12 +1080,37 @@ mod tests {
     /// The caret-column pin (session 9m lane 4, issue #595): assert the RENDERED
     /// column against a value derived BY HAND from the source layout.
     ///
-    /// GREEN before and after the #595 fix, deliberately. "Does not panic" is
-    /// not the acceptance condition for a diagnostics tool: a wrong-but-ORDERED
-    /// mapping - a clamp, a `min`, or any monotone walk that is off by one -
-    /// satisfies every ordering property and still puts the caret in a position
-    /// no evidence supports, which is the entire product. This test is what a
-    /// monotone-but-wrong replacement fails.
+    /// GREEN before and after the #595 fix, deliberately.
+    ///
+    /// Be precise about what this test does and does not discriminate. The
+    /// obvious overstatement - "this is what a monotone-but-wrong replacement
+    /// fails" - is mechanically FALSE here. This test's span is `44..49` and
+    /// BOTH endpoints are char boundaries, so every candidate mapping agrees:
+    ///
+    /// ```text
+    /// byte span:           44..49
+    /// ceil walk (the fix): 35..40      old byte-fallback: 35..40
+    /// floor walk:          35..40      clamp on the old:  35..40
+    /// ```
+    ///
+    /// A clamp is a NO-OP on a span that is already ordered and boundary
+    /// aligned, and floor and ceil agree on every boundary offset, so all four
+    /// render the identical header `t.rules:2:22`. The pins that actually
+    /// separate the mapping families are the offset tables in
+    /// `mid_character_offset_rounds_up_to_the_next_char_boundary`, which probe
+    /// MID-character offsets; this test cannot do that job and does not claim to.
+    ///
+    /// What it genuinely catches, and what no property in this file catches:
+    ///
+    /// - **byte-vs-char confusion.** A mapping that handed ariadne the raw byte
+    ///   offset would index 13 bytes of multibyte as 13 characters and put the
+    ///   caret somewhere else entirely.
+    /// - **a boundary-offset off-by-one.** Widening the walk's predicate to
+    ///   `take_while(|(i, _)| *i <= b)` shifts every boundary offset up by one
+    ///   and renders column 23 instead of 22. That mutation stays total and
+    ///   monotone, so it is invisible to every ordering, totality and saturation
+    ///   property.
+    /// - **a snippet that silently fails to render at all.**
     ///
     /// The observable is ariadne's own bracket header,
     /// `[ <source_id>:<line>:<col> ]` (`ariadne-0.6.0/src/write.rs:280`), whose
@@ -1242,7 +1267,18 @@ mod tests {
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(512))]
+            // `failure_persistence: None`: a failing property here would
+            // otherwise write `crates/rulesteward-cli/proptest-regressions/`,
+            // a path that is not gitignored and sits outside this lane's owned
+            // set, so it could be neither committed nor ignored cleanly. Nothing
+            // is lost - the shrunk input is in the panic message, and the
+            // interesting offsets are pinned explicitly by the unit test below
+            // rather than left to a saved seed.
+            #![proptest_config(ProptestConfig {
+                cases: 512,
+                failure_persistence: None,
+                ..ProptestConfig::default()
+            })]
 
             // Property 1: ASCII-only source: byte span == char span.
             // For any ASCII string and two in-bounds offsets, the conversion
@@ -1416,6 +1452,27 @@ mod tests {
         /// Every expected value above is derived from the byte layout, not read
         /// off a test run: copying observed output would pin whatever the code
         /// does, including whatever it does wrong.
+        ///
+        /// # The offset TABLES are load-bearing; the headline assertion is not
+        ///
+        /// Do not trim the tables below as redundant with the `4..6 -> 2..2`
+        /// assertion. They are what kills the CLAMP family, and the headline
+        /// assertion on its own does not.
+        ///
+        /// A clamp such as `let s = old(start); let e = old(end); s.min(e)..e`
+        /// is exactly the repair issue #595's own "suggested fix direction"
+        /// proposes. On the reproduction span it computes `old(4) = 4`,
+        /// `old(6) = 2`, `min(4, 2) = 2`, and returns `2..2` - it PASSES the
+        /// headline assertion. It is caught only by the table rows at bytes 4
+        /// and 5, which probe the DEGENERATE span `b..b`: clamping an endpoint
+        /// against an identical endpoint is a no-op, so the raw byte value 4
+        /// shows through where 2 is required.
+        ///
+        /// That is also why a clamp is the wrong shape in the first place. It
+        /// relocates the caret to a position no evidence supports and leaves the
+        /// reader unable to tell "the span was fine" from "the span was garbage
+        /// and I hid it". A total, monotone mapping needs no clamp: the ordering
+        /// is a theorem, not a repair.
         #[test]
         fn mid_character_offset_rounds_up_to_the_next_char_boundary() {
             let src = "\u{65e5}\u{672c}\u{8a9e}\n";
@@ -1435,11 +1492,12 @@ mod tests {
                  not the inverted 4..2 the byte-fallback produced"
             );
 
-            // The full mapping, not just the reproduction's two endpoints: this
+            // The full mapping, not just the reproduction's two endpoints. This
             // is what separates the intended round-up walk from any other
-            // monotone mapping, and it is what makes a `<` -> `<=` off-by-one
-            // in the walk's predicate observable (that mutation moves
-            // to_char(3) from 1 to 2).
+            // monotone mapping; it is what kills the clamp family (see the doc
+            // comment); and it is what makes a `<` -> `<=` off-by-one in the
+            // walk's predicate observable (that mutation moves to_char(3) from
+            // 1 to 2).
             for (b, expected) in [
                 (0usize, 0usize),
                 (3, 1),
@@ -1453,6 +1511,58 @@ mod tests {
                 assert_eq!(
                     cspan.start, expected,
                     "to_char({b}) must be {expected} (char starts are 0, 3, 6, 9)"
+                );
+            }
+
+            // The 4-byte class, pinned exactly rather than merely generated.
+            //
+            // The multibyte alphabet includes U+1F600 specifically because it is
+            // the only class with THREE distinct interior byte offsets, so an
+            // off-by-one that first appears at interior offset +3 is invisible
+            // to a 3-byte-only alphabet. Properties 4/5/6 do generate it, but
+            // they assert ordering, degeneracy and saturation - none of which is
+            // sensitive to WHICH monotone mapping was chosen. Without the rows
+            // below, that stated rationale would be undischarged: the emoji
+            // would be generated and its exact mapping never checked.
+            //
+            // Byte layout of "\u{1F600}\u{65E5}\n", derived by hand:
+            //
+            //   byte:   0  1  2  3 | 4  5  6 | 7
+            //   scalar: U+1F600      U+65E5    U+000A
+            //   char:   0            1         2
+            //
+            // Char START indices are {0, 4, 7}, so counting the starts strictly
+            // below b gives 1 for every one of the emoji's interior offsets
+            // (1, 2, 3) AND for byte 4 - the emoji rounds up to the index of the
+            // following character, exactly as the 3-byte case does at +1/+2.
+            let emoji_src = "\u{1f600}\u{65e5}\n";
+            assert_eq!(
+                emoji_src.len(),
+                8,
+                "a 4-byte emoji, a 3-byte CJK, a newline"
+            );
+            assert_eq!(emoji_src.chars().count(), 3, "three scalars");
+            for b in [1usize, 2, 3] {
+                assert!(
+                    !emoji_src.is_char_boundary(b),
+                    "byte {b} must be interior to the 4-byte scalar"
+                );
+            }
+            for (b, expected) in [
+                (0usize, 0usize),
+                (1, 1),
+                (2, 1),
+                (3, 1),
+                (4, 1),
+                (5, 2),
+                (7, 2),
+                (8, 3),
+            ] {
+                let cspan = byte_span_to_char_span(&(b..b), emoji_src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) over a 4-byte scalar must be {expected} \
+                     (char starts are 0, 4, 7)"
                 );
             }
         }

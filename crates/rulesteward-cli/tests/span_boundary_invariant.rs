@@ -32,14 +32,33 @@
 //! # Anti-vacuity
 //!
 //! "Zero diagnostics" and "every diagnostic passed" are indistinguishable to an
-//! assertion loop. Each backend therefore counts the diagnostics it actually
-//! examined and FAILS if that count is zero across the whole run. An instrument
-//! that parsed nothing must never report clean. This is the same guard the
-//! mutation gate applies with `total_mutants > 0`, and it is load-bearing here:
-//! `rulesteward_selinux::lints::check_enforcing` returns an empty `Vec` unless
-//! the target is `Rhel9`/`Rhel10`, and `check_policy_type` unless it is `Rhel8`,
-//! so a `None` target would have made that arm generate thousands of cases,
-//! assert over zero diagnostics, and report green.
+//! assertion loop, so an instrument that parsed nothing must never report clean.
+//! That is the same rule the mutation gate applies with `total_mutants > 0`, and
+//! it has to hold at three levels here, because a guard at one level happily
+//! reports green while the level below it is empty:
+//!
+//! 1. **Per ARM, not per backend.** Three backends' entry points are a `match`,
+//!    and the two arms are different SPAN ORIGINS - for fapolicyd the `Err` arm
+//!    is `rich_to_diagnostic`'s chumsky spans and the `Ok` arm is `lints` over
+//!    `fixup_attr`'s sub-line spans, the only sub-line spans in the tree. The
+//!    `Ok` arm is also the low-traffic one, so a single per-backend total in the
+//!    hundreds can sit on top of an `Ok` arm that has gone to zero. Every
+//!    declared arm is counted and asserted separately, and the arm list is
+//!    declared by the TEST rather than inferred from what the driver returned,
+//!    so an arm that ran in zero cases is caught too.
+//! 2. **Per multibyte source.** Every `is_char_boundary` check is trivially true
+//!    on an ASCII source, so an all-ASCII run passes every count above while
+//!    testing nothing this file exists to test. Diagnostics from non-ASCII
+//!    sources are counted separately and asserted non-zero.
+//! 3. **Per target gating.** `rulesteward_selinux::lints::check_enforcing`
+//!    returns an empty `Vec` unless the target is `Rhel9`/`Rhel10`, and
+//!    `check_policy_type` unless it is `Rhel8`, so a `None` target would have
+//!    generated thousands of cases, asserted over zero diagnostics, and reported
+//!    green. Each pass gets the target that makes it fire, and each is its own
+//!    arm under guard 1.
+//!
+//! All three guards have been fired against known-bad input rather than merely
+//! written: a guard that has never been observed to fail is not evidence.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -80,27 +99,51 @@ fn multibyte_piece() -> impl Strategy<Value = String> {
     ]
 }
 
-/// Source text for one backend: that backend's REAL keywords interleaved with
-/// the multibyte alphabet, one generated line per element.
+/// Source text for one backend, in two deliberately different shapes.
 ///
-/// The keyword mix is what makes this evidence rather than decoration. A
-/// generator that only produces unparseable garbage exercises the error path
-/// and nothing else; a generator that only produces clean input produces zero
-/// diagnostics and asserts nothing. Weighting keywords 3:1 over multibyte
-/// fragments gets both: real syntax reaches the semantic passes' span-emitting
-/// paths, and the interleaved multibyte both lands inside otherwise-valid lines
-/// and produces malformed lines for the parse-error paths.
+/// The mix is what makes this evidence rather than decoration. A generator that
+/// only produces unparseable garbage exercises the error path and nothing else;
+/// a generator that only produces clean input produces few diagnostics and can
+/// assert nothing. Both shapes are needed because for three of the six backends
+/// the entry point is a `match` and the two arms are different SPAN ORIGINS
+/// (see [`ArmDiags`]):
 ///
-/// A UTF-8 BOM (U+FEFF, 3 bytes) is generated only at offset 0, the one
-/// position it is meaningful and the one position a backend treats specially
-/// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
-fn backend_source(keywords: &'static [&'static str]) -> impl Strategy<Value = String> {
-    let piece = prop_oneof![
-        3 => prop::sample::select(keywords).prop_map(str::to_string),
-        1 => multibyte_piece(),
+/// - **CLEAN** (weight 1): every line is exactly one entry from `valid_lines`,
+///   so the whole source parses and the `Ok` arm runs. For fapolicyd that arm is
+///   `lints` over `fixup_attr` sub-line spans - the only path in the tree that
+///   produces a span narrower than a whole line, and therefore the only arm that
+///   could ever exhibit #595 from real parser output. Leaving it to chance is
+///   not acceptable for a guard the suite gates on: the mixed shape alone
+///   reached it in roughly 13 of 256 cases, close enough to zero that an
+///   unlucky seed could have flipped the per-arm assertion into a flake.
+/// - **MIXED** (weight 3): keywords spliced with multibyte fragments inside the
+///   same line, weighted 3:1. Produces malformed lines for the `Err` arm and
+///   lands multibyte inside otherwise-valid ones.
+///
+/// A UTF-8 BOM (U+FEFF, 3 bytes) is generated only at offset 0, the one position
+/// it is meaningful and the one position a backend treats specially
+/// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`). It is applied to BOTH
+/// shapes on purpose: a BOM is the one way a source can parse cleanly AND be
+/// non-ASCII, so it is what carries the clean `Ok` arm past the multibyte-source
+/// counter, and it exercises the `body_start_in_file + UTF8_BOM.len()` offset.
+fn backend_source(
+    keywords: &'static [&'static str],
+    valid_lines: &'static [&'static str],
+) -> impl Strategy<Value = String> {
+    let clean_line = prop::sample::select(valid_lines).prop_map(str::to_string);
+    let mixed_line = prop::collection::vec(
+        prop_oneof![
+            3 => prop::sample::select(keywords).prop_map(str::to_string),
+            1 => multibyte_piece(),
+        ],
+        1..4,
+    )
+    .prop_map(|pieces| pieces.concat());
+    let body = prop_oneof![
+        1 => prop::collection::vec(clean_line, 1..7),
+        3 => prop::collection::vec(mixed_line, 1..7),
     ];
-    let line = prop::collection::vec(piece, 1..4).prop_map(|pieces| pieces.concat());
-    (any::<bool>(), prop::collection::vec(line, 1..7)).prop_map(|(leading_bom, lines)| {
+    (any::<bool>(), body).prop_map(|(leading_bom, lines)| {
         let mut src = String::new();
         if leading_bom {
             src.push('\u{feff}');
@@ -153,19 +196,55 @@ fn check_span(backend: &str, source: &str, d: &Diagnostic) -> TestCaseResult {
     Ok(())
 }
 
+/// One backend's diagnostics for a single generated source, labelled by SPAN
+/// ORIGIN.
+///
+/// A list of labelled groups rather than a flat `Vec<Diagnostic>` because the
+/// anti-vacuity counters have to be per-ARM. Where a backend's entry point is a
+/// `match`, exactly ONE arm runs per case and the two arms are different span
+/// origins: for fapolicyd the `Err` side is `rich_to_diagnostic`'s chumsky spans
+/// (`parser/error.rs:26-38`) and the `Ok` side is `lints` over `fixup_attr`'s
+/// shifted sub-line spans (`parser/mod.rs:211-217`). The `Ok` side is both the
+/// low-traffic one AND the only path in the whole tree that surfaces a
+/// `fixup_attr` span - it is the entire reason fapolicyd is in this file.
+///
+/// A single per-backend total lets the busy arm mask the interesting one going
+/// to zero: a generator or parser change that stops producing parseable input
+/// would leave the total in the hundreds while covering zero sub-line spans,
+/// and the run would report clean. That is the same "an instrument that parsed
+/// nothing must never report clean" rule the selinux target gating already
+/// forced, applied one level down.
+type ArmDiags = (&'static str, Vec<Diagnostic>);
+
 /// Drive one backend over `CASES` generated sources, asserting [`check_span`]
-/// on every diagnostic and refusing to pass if the run examined none.
+/// on every diagnostic and refusing to pass unless EVERY declared arm produced
+/// at least one diagnostic and at least one diagnostic came from a source
+/// containing a non-ASCII scalar.
+///
+/// Three guards, each closing a different way to report clean while asserting
+/// nothing:
+///
+/// 1. Per-ARM count `> 0`. See [`ArmDiags`].
+/// 2. `arms` is declared by the CALLER, so an arm that ran in zero cases is
+///    caught too - not just one that ran and produced nothing. A counter keyed
+///    only by labels the driver happened to return would silently drop it.
+/// 3. Multibyte-source count `> 0`. Every `is_char_boundary` assertion in
+///    [`check_span`] is trivially true on an ASCII source, so an all-ASCII run
+///    satisfies both counts above while testing nothing this file exists to
+///    test.
 ///
 /// Written against `TestRunner` directly rather than the `proptest!` macro
-/// because the anti-vacuity assertion has to run AFTER the whole run, over a
-/// counter accumulated across cases. A separate `#[test]` reading a `static`
-/// counter would depend on test execution order and is not an option.
+/// because these assertions have to run AFTER the whole run, over counters
+/// accumulated across cases. A separate `#[test]` reading a `static` counter
+/// would depend on test execution order and is not an option.
 fn run_backend(
     backend: &str,
+    arms: &'static [&'static str],
     strategy: &impl Strategy<Value = String>,
-    drive: fn(&str) -> Vec<Diagnostic>,
+    drive: fn(&str) -> Vec<ArmDiags>,
 ) {
-    let examined = Cell::new(0usize);
+    let per_arm: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
+    let multibyte_examined = Cell::new(0usize);
     // `failure_persistence: None` because the default `SourceParallel` policy
     // cannot resolve a source file from a hand-driven `TestRunner` (it warns on
     // every run) and would otherwise scatter regression files outside this
@@ -177,29 +256,58 @@ fn run_backend(
         ..ProptestConfig::default()
     });
     let outcome = runner.run(strategy, |src| {
-        let diags = drive(&src);
-        examined.set(examined.get() + diags.len());
-        for d in &diags {
-            check_span(backend, &src, d)?;
+        let source_is_multibyte = !src.is_ascii();
+        for (label, diags) in drive(&src) {
+            let idx = arms
+                .iter()
+                .position(|declared| *declared == label)
+                .expect("driver returned an arm label its test did not declare");
+            per_arm[idx].set(per_arm[idx].get() + diags.len());
+            if source_is_multibyte {
+                multibyte_examined.set(multibyte_examined.get() + diags.len());
+            }
+            for d in &diags {
+                check_span(backend, &src, d)?;
+            }
         }
         Ok(())
     });
     if let Err(e) = outcome {
         panic!("{backend}: span-boundary invariant violated: {e}");
     }
+
+    for (label, count) in arms.iter().zip(&per_arm) {
+        assert!(
+            count.get() > 0,
+            "ANTI-VACUITY FAILURE: {backend} arm `{label}` produced ZERO diagnostics across \
+             {CASES} cases, so that arm asserted nothing while the run reported green. Each \
+             arm is a distinct SPAN ORIGIN, so a sibling arm's healthy count does not cover \
+             it. Either the generator stopped reaching this arm, or the entry point is gated \
+             (see check_enforcing / check_policy_type, silent at the wrong --target). Fix the \
+             generator; do not relax this assertion and do not fold the arms together."
+        );
+    }
     assert!(
-        examined.get() > 0,
-        "ANTI-VACUITY FAILURE: {backend} produced ZERO diagnostics across {CASES} cases, \
-         so this arm asserted nothing while reporting green. Either the generator never \
-         reaches a span-emitting path, or the entry point is gated (see \
-         check_enforcing / check_policy_type, which are silent at the wrong --target). \
-         Fix the generator; do not relax this assertion."
+        multibyte_examined.get() > 0,
+        "ANTI-VACUITY FAILURE: every {backend} diagnostic examined came from an ASCII-only \
+         source, which makes every is_char_boundary assertion in check_span trivially true. \
+         The run would report clean without testing the byte-vs-char property this file \
+         exists to test. Fix the generator; do not relax this assertion."
     );
-    // Printed so a reviewer can see the arm did real work, not just that it
-    // was non-zero. `cargo test -- --nocapture` shows it.
+
+    // Printed so a reviewer can see WHERE the work happened, not merely that a
+    // total was non-zero. Counts are unseeded and vary run to run; they are a
+    // cross-check on the assertions above, never a pass condition themselves.
+    // `cargo test -- --nocapture` shows them.
+    let breakdown: Vec<String> = arms
+        .iter()
+        .zip(&per_arm)
+        .map(|(label, count)| format!("{label} = {}", count.get()))
+        .collect();
     eprintln!(
-        "span_boundary_invariant: {backend} examined {} diagnostics across {CASES} cases",
-        examined.get()
+        "span_boundary_invariant: {backend} over {CASES} cases: {} | from multibyte sources: {}",
+        breakdown.join(", "),
+        multibyte_examined.get()
     );
 }
 
@@ -209,50 +317,76 @@ fn run_backend(
 
 /// fapolicyd: the ONLY backend with a sub-line span origin, and the only one
 /// whose spans come from a chumsky cursor rather than `split('\n')` arithmetic.
-/// Both arms are asserted on: the `Err` arm is `rich_to_diagnostic`
-/// (`parser/error.rs:26-38`), the sole chumsky-span path in the tree.
-fn drive_fapolicyd(src: &str) -> Vec<Diagnostic> {
+/// Its two arms are DIFFERENT span origins and are counted separately - see
+/// [`ArmDiags`] for why the `Ok` arm cannot be allowed to hide behind the
+/// `Err` arm's volume.
+const FAPD_ARM_PARSE_ERR: &str = "Err: rich_to_diagnostic chumsky spans";
+const FAPD_ARM_LINT: &str = "Ok: lints over fixup_attr sub-line spans";
+
+fn drive_fapolicyd(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/fapolicyd/rules.d/10-generated.rules");
     match rulesteward_fapolicyd::parse_rules_file(src, file) {
-        Ok(entries) => rulesteward_fapolicyd::lints::lint(&entries, src, file),
-        Err(diags) => diags,
+        Ok(entries) => vec![(
+            FAPD_ARM_LINT,
+            rulesteward_fapolicyd::lints::lint(&entries, src, file),
+        )],
+        Err(diags) => vec![(FAPD_ARM_PARSE_ERR, diags)],
     }
 }
 
-fn drive_auditd(src: &str) -> Vec<Diagnostic> {
+const AUDITD_ARM_PARSE_ERR: &str = "Err: parse_error_to_diagnostic";
+const AUDITD_ARM_LINT: &str = "Ok: lints over LocatedRule spans";
+
+fn drive_auditd(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/audit/rules.d/10-generated.rules");
     match rulesteward_auditd::parser::parse_rules_str_located(src, file) {
-        Ok(rules) => rulesteward_auditd::lints::lint(
-            &rules,
-            rulesteward_auditd::lints::LintOptions::default(),
-            Some(rulesteward_auditd::TargetVersion::Rhel9),
-        ),
-        Err(errs) => errs
-            .iter()
-            .map(rulesteward_auditd::lints::parse_error_to_diagnostic)
-            .collect(),
+        Ok(rules) => vec![(
+            AUDITD_ARM_LINT,
+            rulesteward_auditd::lints::lint(
+                &rules,
+                rulesteward_auditd::lints::LintOptions::default(),
+                Some(rulesteward_auditd::TargetVersion::Rhel9),
+            ),
+        )],
+        Err(errs) => vec![(
+            AUDITD_ARM_PARSE_ERR,
+            errs.iter()
+                .map(rulesteward_auditd::lints::parse_error_to_diagnostic)
+                .collect(),
+        )],
     }
 }
 
-fn drive_sshd(src: &str) -> Vec<Diagnostic> {
+const SSHD_ARM_PARSE_ERR: &str = "Err: parse_error_to_diagnostic";
+const SSHD_ARM_LINT: &str = "Ok: lints over Directive spans";
+
+fn drive_sshd(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/ssh/sshd_config");
     match rulesteward_sshd::parse_config_str_located(src, file) {
-        Ok(blocks) => rulesteward_sshd::lints::lint(
-            &blocks,
-            file,
-            &rulesteward_sshd::SshdLintContext::default(),
-        ),
-        Err(errs) => errs
-            .iter()
-            .map(rulesteward_sshd::lints::parse_error_to_diagnostic)
-            .collect(),
+        Ok(blocks) => vec![(
+            SSHD_ARM_LINT,
+            rulesteward_sshd::lints::lint(
+                &blocks,
+                file,
+                &rulesteward_sshd::SshdLintContext::default(),
+            ),
+        )],
+        Err(errs) => vec![(
+            SSHD_ARM_PARSE_ERR,
+            errs.iter()
+                .map(rulesteward_sshd::lints::parse_error_to_diagnostic)
+                .collect(),
+        )],
     }
 }
 
-/// sysctld fuses parse and lint. Both the target-less and the targeted entry
-/// points run, so the version-aware W02/W04 baseline passes (which anchor at a
-/// real assignment line when the key is present) are reached too.
-fn drive_sysctld(src: &str) -> Vec<Diagnostic> {
+/// sysctld fuses parse and lint, and both calls run on every case, so there is
+/// no `match` to split: one arm. The targeted call is still made so the
+/// version-aware W02/W04 baseline passes (which anchor at a real assignment
+/// line when the key is present) are reached.
+const SYSCTLD_ARM: &str = "lint_str + lint_str_with_target";
+
+fn drive_sysctld(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/sysctl.d/99-generated.conf");
     let mut diags = rulesteward_sysctld::parser::lint_str(src, file);
     diags.extend(rulesteward_sysctld::parser::lint_str_with_target(
@@ -260,39 +394,56 @@ fn drive_sysctld(src: &str) -> Vec<Diagnostic> {
         file,
         Some(rulesteward_sysctld::TargetVersion::Rhel9),
     ));
-    diags
+    vec![(SYSCTLD_ARM, diags)]
 }
 
 /// sudoers' `parse` is TOTAL - it never fails - so there is no error arm to
-/// assert separately; malformed lines surface as `sudo-F01` from `lint`.
-fn drive_sudoers(src: &str) -> Vec<Diagnostic> {
+/// split out; malformed lines surface as `sudo-F01` from `lint`.
+const SUDOERS_ARM: &str = "parse (total) + lint";
+
+fn drive_sudoers(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/sudoers");
     let parsed = rulesteward_sudoers::parse(src, file);
-    rulesteward_sudoers::lints::lint(
-        std::slice::from_ref(&parsed),
-        &rulesteward_sudoers::SudoersLintContext::default(),
-    )
+    vec![(
+        SUDOERS_ARM,
+        rulesteward_sudoers::lints::lint(
+            std::slice::from_ref(&parsed),
+            &rulesteward_sudoers::SudoersLintContext::default(),
+        ),
+    )]
 }
 
 /// selinux: BOTH passes are `--target`-gated in opposite directions, so each
-/// gets the target that actually makes it fire. `se-W01` is silent outside
-/// `Rhel9`/`Rhel10` and `se-W02` outside `Rhel8`; passing `None` to either (or
-/// the same target to both) would make this arm vacuous, which the
-/// anti-vacuity assertion in `run_backend` exists to catch.
-fn drive_selinux(src: &str) -> Vec<Diagnostic> {
+/// gets the target that actually makes it fire, and each is counted as its own
+/// arm. `se-W01` is silent outside `Rhel9`/`Rhel10` and `se-W02` outside
+/// `Rhel8`; passing `None` to either (or the same target to both) silently
+/// zeroes that pass, which is exactly what the per-arm guard catches. Both run
+/// on every case, so unlike the `match`-shaped backends these two arms are
+/// concurrent rather than exclusive.
+const SELINUX_ARM_ENFORCING: &str = "check_enforcing (se-W01, Rhel9)";
+const SELINUX_ARM_POLICY_TYPE: &str = "check_policy_type (se-W02, Rhel8)";
+
+fn drive_selinux(src: &str) -> Vec<ArmDiags> {
     let file = Path::new("/etc/selinux/config");
     let config = rulesteward_selinux::config::parse_selinux_config(src);
-    let mut diags = rulesteward_selinux::lints::check_enforcing(
-        &config,
-        Some(rulesteward_selinux::TargetVersion::Rhel9),
-        file,
-    );
-    diags.extend(rulesteward_selinux::lints::check_policy_type(
-        &config,
-        Some(rulesteward_selinux::TargetVersion::Rhel8),
-        file,
-    ));
-    diags
+    vec![
+        (
+            SELINUX_ARM_ENFORCING,
+            rulesteward_selinux::lints::check_enforcing(
+                &config,
+                Some(rulesteward_selinux::TargetVersion::Rhel9),
+                file,
+            ),
+        ),
+        (
+            SELINUX_ARM_POLICY_TYPE,
+            rulesteward_selinux::lints::check_policy_type(
+                &config,
+                Some(rulesteward_selinux::TargetVersion::Rhel8),
+                file,
+            ),
+        ),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +464,21 @@ fn fapolicyd_spans_are_ordered_and_char_aligned() {
         "perm=open ",
         " : all",
     ];
+    const ARMS: &[&str] = &[FAPD_ARM_PARSE_ERR, FAPD_ARM_LINT];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "allow perm=open all : all",
+        "deny_audit perm=any uid=0 : all",
+        "allow exe=/usr/bin/x : ftype=text/plain",
+        "deny perm=execute dir=/tmp : all",
+        "# a comment",
+    ];
     run_backend(
         "fapolicyd",
-        &backend_source(KEYWORDS),
-        drive_fapolicyd as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_fapolicyd as fn(&str) -> Vec<ArmDiags>,
     );
 }
 
@@ -334,10 +496,23 @@ fn auditd_spans_are_ordered_and_char_aligned() {
         "-p rwxa",
         "-w ",
     ];
+    const ARMS: &[&str] = &[AUDITD_ARM_PARSE_ERR, AUDITD_ARM_LINT];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "-w /etc/passwd -p wa -k identity",
+        "-a always,exit -F arch=b64 -S execve -k exec",
+        "-a always,exit -F arch=b32 -S open -F exit=-EACCES -k access",
+        "-D",
+        "-b 8192",
+        "-f 1",
+        "# a comment",
+    ];
     run_backend(
         "auditd",
-        &backend_source(KEYWORDS),
-        drive_auditd as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_auditd as fn(&str) -> Vec<ArmDiags>,
     );
 }
 
@@ -355,10 +530,23 @@ fn sshd_spans_are_ordered_and_char_aligned() {
         "# a comment",
         "Subsystem sftp ",
     ];
+    const ARMS: &[&str] = &[SSHD_ARM_PARSE_ERR, SSHD_ARM_LINT];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "PermitRootLogin yes",
+        "PermitEmptyPasswords yes",
+        "Port 22",
+        "X11Forwarding yes",
+        "Ciphers aes256-ctr",
+        "ClientAliveInterval 0",
+        "# a comment",
+    ];
     run_backend(
         "sshd",
-        &backend_source(KEYWORDS),
-        drive_sshd as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_sshd as fn(&str) -> Vec<ArmDiags>,
     );
 }
 
@@ -376,10 +564,22 @@ fn sysctld_spans_are_ordered_and_char_aligned() {
         "kernel.dmesg_restrict",
         " = 2",
     ];
+    const ARMS: &[&str] = &[SYSCTLD_ARM];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "kernel.randomize_va_space = 2",
+        "kernel.kptr_restrict = 0",
+        "kernel.kptr_restrict = 1",
+        "net.ipv4.ip_forward=1",
+        "fs.suid_dumpable = 1",
+        "# a comment",
+    ];
     run_backend(
         "sysctld",
-        &backend_source(KEYWORDS),
-        drive_sysctld as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_sysctld as fn(&str) -> Vec<ArmDiags>,
     );
 }
 
@@ -397,10 +597,22 @@ fn sudoers_spans_are_ordered_and_char_aligned() {
         "root ALL=",
         "ALL",
     ];
+    const ARMS: &[&str] = &[SUDOERS_ARM];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "root ALL=(ALL) ALL",
+        "%wheel ALL=(ALL:ALL) NOPASSWD: ALL",
+        "Defaults !authenticate",
+        "Defaults env_reset",
+        "alice ALL=(root) /bin/ls",
+        "# a comment",
+    ];
     run_backend(
         "sudoers",
-        &backend_source(KEYWORDS),
-        drive_sudoers as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_sudoers as fn(&str) -> Vec<ArmDiags>,
     );
 }
 
@@ -417,9 +629,21 @@ fn selinux_spans_are_ordered_and_char_aligned() {
         "SELINUX=",
         "SELINUXTYPE=",
     ];
+    const ARMS: &[&str] = &[SELINUX_ARM_ENFORCING, SELINUX_ARM_POLICY_TYPE];
+    // Syntactically COMPLETE lines only: the CLEAN shape splices nothing into
+    // them, so a source built from these parses and reaches the `Ok` arm.
+    const VALID_LINES: &[&str] = &[
+        "SELINUX=enforcing",
+        "SELINUX=permissive",
+        "SELINUX=disabled",
+        "SELINUXTYPE=targeted",
+        "SELINUXTYPE=mls",
+        "# a comment",
+    ];
     run_backend(
         "selinux",
-        &backend_source(KEYWORDS),
-        drive_selinux as fn(&str) -> Vec<Diagnostic>,
+        ARMS,
+        &backend_source(KEYWORDS, VALID_LINES),
+        drive_selinux as fn(&str) -> Vec<ArmDiags>,
     );
 }
