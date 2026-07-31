@@ -34,10 +34,28 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// ariadne 0.6 indexes its `Source` by CHARACTER offset, but our `Span` is a
 /// BYTE range into the source. Convert byte offsets to char offsets so the
 /// caret lands correctly (and renders at all) when the source contains
-/// multibyte UTF-8 before the span. Falls back to the raw byte value if an
-/// offset is not a char boundary (should not happen for parser-produced spans).
+/// multibyte UTF-8 before the span.
+///
+/// `to_char` is TOTAL (defined for every `usize`, including a mid-character
+/// offset or an offset past `source.len()`) and MONOTONE NON-DECREASING in
+/// its argument. It counts char-START indices strictly below `b`, which means
+/// a mid-character offset rounds UP to the index of the character it falls
+/// inside of, and any offset past `source.len()` saturates at
+/// `source.chars().count()` rather than passing through unchanged. Because
+/// both endpoints of the span go through this same total, monotone function,
+/// `span.start <= span.end` implies the converted span is also ordered - that
+/// is a theorem, not a clamp applied after the fact.
+///
+/// This matters because the previous implementation converted each endpoint
+/// independently via `source.get(..b)` and fell back to the raw BYTE value
+/// whenever an endpoint was not a char boundary (issue #595). A span whose
+/// `start` was mid-character and whose `end` was boundary-aligned then kept a
+/// large byte value on one side and shrank to a small char count on the
+/// other, inverting the span. `ariadne::Label::new` asserts
+/// `span.start() <= span.end()` and aborts the process when that happens, so
+/// the operator saw a hard panic instead of a diagnostic.
 fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
-    let to_char = |b: usize| source.get(..b).map_or(b, |s| s.chars().count());
+    let to_char = |b: usize| source.char_indices().take_while(|(i, _)| *i < b).count();
     to_char(span.start)..to_char(span.end)
 }
 
