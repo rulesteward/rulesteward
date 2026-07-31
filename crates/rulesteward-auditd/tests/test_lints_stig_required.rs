@@ -2082,6 +2082,183 @@ fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// ATL round 7 (round-6 adversarial MISS-1, USER RULING): the Syscall-vs-
+// Syscall arm (`fields_match_excluding_key` -> `multiset_eq`, `stig_required.
+// rs:2035-2073`) never folds `-F perm=` PREDICATE MULTIPLICITY at all --
+// rounds 4-5 taught `perm_axis_bits` to fold a chain of `-F perm=` predicates
+// to their minimum (subset partial order, `audit_match_perm`'s monotonicity),
+// but wired it into the Watch-vs-Syscall/Dir-vs-Syscall arms ONLY. So a
+// candidate that is kernel-identical to a required row except for a
+// REDUNDANT `-F perm=` predicate (e.g. `-F perm=x -F perm=x`, or `-F perm=x
+// -F perm=rx` where `x` subset-of `rx`) fails on `multiset_eq`'s `a.len() !=
+// b.len()` guard and is wrongly reported MISSING, even though
+// `kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once PER
+// `AUDIT_PERM` field and ANDs the results (`if (!result) return 0;`) -- the
+// SAME idempotent-conjunction argument `perm_axis_bits`'s doc comment already
+// makes for the other two arms.
+//
+// USER RULING (this round, in direct response to the finding above): extend
+// the fold to the Syscall-vs-Syscall arm. The locked matcher spec
+// (`rules_match`'s doc comment, `:1337-1345`) says to compare `-F` fields "as
+// a SET - same size", but its grounding cite (Part C.1/C.5) is about ORDER,
+// not multiplicity -- duplicate-predicate semantics were never actually
+// decided by that line. The arm already folds perm VALUE identity (rounds
+// 2-3, the `syscall_vs_syscall_perm_*` tests above).
+//
+// The reviewer separately warned that a GENERIC "dedupe `-F` predicates
+// before `multiset_eq`" repair would be WRONG: duplicate `-F path=` (and
+// other fields) have their OWN kernel semantics -- `kernel/audit_watch.c`'s
+// `audit_to_watch` returns `-EINVAL` when `krule->watch` is already set, so a
+// second `-F path=` predicate never LOADS at all, and crediting it as if it
+// were redundant would be a fail-open, not a fold. The fold must therefore be
+// scoped to `AuditField::Perm` specifically, never a generic multiset
+// dedupe -- pinned by the path-duplicate fence test below.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_exact_duplicate_perm_predicate_satisfies_v230412() {
+    // Item 1: exact duplicate `-F perm=x -F perm=x` -- idempotent
+    // conjunction, `match(x) AND match(x) == match(x)`. RED today
+    // (`multiset_eq` sees 5 candidate fields vs the required row's 4 and
+    // fails on length alone); must go GREEN once the Syscall-vs-Syscall arm
+    // folds `-F perm=` predicate multiplicity the same way the Watch-vs-
+    // Syscall/Dir-vs-Syscall arms already do via `perm_axis_bits`.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate repeating the SAME -F perm=x predicate twice must \
+         satisfy a required perm=x row -- audit_match_perm is called once \
+         per AUDIT_PERM field and ANDed, so an exact duplicate is a no-op \
+         conjunction: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_predicate_chain_folds_to_its_minimum_v230412() {
+    // Item 2: `-F perm=x -F perm=rx` -- `x` is a SUBSET of `rx`, so the
+    // chain's minimum is exactly `x`, the required mask (same monotonicity
+    // licence round 5 used for the Watch-vs-Syscall arm). RED today for the
+    // same length-mismatch reason as the exact-duplicate case above.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=x -F perm=rx (x subset-of rx) must \
+         satisfy a required perm=x row -- the chain's minimum is exactly x: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_stay_missing_v230412() {
+    // Item 3 (fence): `-F perm=x -F perm=wa` -- {x} and {w,a} are
+    // INCOMPARABLE (neither is a subset of the other), so the predicate set
+    // has no minimum and nothing licenses a fold (`perm_axis_bits` declines
+    // with `None` for exactly this shape). GREEN today (unfolded multiset_eq
+    // already rejects on length) and must STAY green: a correct fold must
+    // decline here, not fold to an intersection or "first wins".
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=wa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=x -F perm=wa has an INCOMPARABLE perm \
+         predicate pair (no minimum) and must NOT satisfy a required perm=x \
+         row: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_duplicate_perm_predicate_of_a_different_mask_stays_missing_v230412() {
+    // Item 4 (fence): `-F perm=rx -F perm=rx` -- a duplicate of a DIFFERENT
+    // mask. The fold gives {r,x} (the set's own minimum, since both
+    // predicates are equal), which is NOT the required {x}. Blocks a lazy
+    // "drop any extra perm predicate regardless of value" repair: the fold
+    // must actually compute the minimum and compare it against the required
+    // value, not just collapse duplicates and skip the comparison. GREEN
+    // today (unfolded length mismatch) and must STAY green.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=rx -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate repeating -F perm=rx twice folds to {{r,x}}, which is \
+         NOT the required {{x}} mask, and must stay MISSING: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_duplicate_path_predicate_is_not_folded_stays_missing_v230412() {
+    // Item 5 (fence, the sharpest one): a duplicate `-F path=` predicate,
+    // with perm left at the single required value. Pins that the fold is
+    // scoped to `AuditField::Perm` and must NOT become a generic multiset
+    // dedupe applied to every field type -- a second `-F path=` predicate
+    // never even LOADS at the kernel level (`kernel/audit_watch.c`'s
+    // `audit_to_watch` returns `-EINVAL` once `krule->watch` is already set),
+    // so crediting it would be a fail-open, not a fold. GREEN today (length
+    // mismatch) and must STAY green.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F path=/usr/bin/su -F perm=x -F auid>=1000 \
+         -F auid!=unset -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate repeating -F path=/usr/bin/su twice must NOT be folded \
+         like a duplicate perm predicate would be -- a second -F path= never \
+         loads at the kernel level at all, so crediting it would be a \
+         fail-open: {diags:?}"
+    );
+}
+
 #[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and
