@@ -423,6 +423,18 @@ fn parse_watch_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Parse
 }
 
 fn parse_perms(s: &str, lineno: usize) -> Result<PermBits, ParseError> {
+    // Real auditctl's audit_setup_perms (src/auditctl.c) checks length BEFORE
+    // it examines any letter: `len = strlen(opt); if (len > 4) { ...; return
+    // -1; }`. That's the same `return -1` the invalid-letter arm below uses,
+    // so a too-long value (even one built entirely from valid letters, e.g.
+    // "rwxar") must reject exactly like an invalid letter would (issue #601
+    // ATL follow-up, MISS-1).
+    if s.len() > 4 {
+        return Err(ParseError {
+            line: lineno,
+            message: format!("permission '{s}' is too long"),
+        });
+    }
     let mut perms = PermBits::default();
     for ch in s.chars() {
         // Real auditctl case-folds `-p` permission letters (lib/libaudit.c
@@ -603,6 +615,18 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
             // RULING, 2026-07-30): `-F perm!=zz` and friends still parse so
             // `au-E02` can report the illegal operator.
             if field == AuditField::Perm && *op == CompareOp::Eq {
+                // libaudit's audit_rule_fieldpair_data (lib/libaudit.c) checks
+                // length BEFORE the letter loop: `len = strlen(v); if (len > 4)
+                // return -EAU_STRTOOLONG;` -- a distinct diagnostic from the
+                // letter-set rejection below (issue #601 ATL follow-up,
+                // MISS-2). Gated on the same `op == Eq` condition as the
+                // letter check: a non-`=` operator returns -EAU_OPEQ before
+                // libaudit ever reaches the length check.
+                if value_str.len() > 4 {
+                    return Err(err(&format!(
+                        "-F perm value '{value_str}' is too long (must be at most 4 chars)"
+                    )));
+                }
                 for ch in value_str.chars() {
                     if !matches!(ch.to_ascii_lowercase(), 'r' | 'w' | 'x' | 'a') {
                         return Err(err(&format!(

@@ -1843,21 +1843,19 @@ fn watch_equivalent_axes_match(
 ) -> bool {
     use crate::ast::AuditField;
 
-    let syscall_path = syscall_fields
+    let Some(sp) = syscall_fields
         .iter()
         .find(|f| f.field == AuditField::Path)
-        .map(|f| f.value.as_str());
-    let syscall_perm = syscall_fields
-        .iter()
-        .find(|f| f.field == AuditField::Perm)
-        .map(|f| f.value.as_str());
-
-    let (Some(sp), Some(sperm)) = (syscall_path, syscall_perm) else {
+        .map(|f| f.value.as_str())
+    else {
         return false;
     };
 
-    normalize_watch_path(watch_path) == normalize_watch_path(sp)
-        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+    let Some(sperm_bits) = perm_axis_bits(syscall_fields) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sp) && sperm_bits == *watch_perms
 }
 
 /// Compare a `Watch`'s `path`/`perms` against a (structurally pure-dir-watch,
@@ -1880,21 +1878,53 @@ fn dir_watch_equivalent_axes_match(
 ) -> bool {
     use crate::ast::AuditField;
 
-    let syscall_dir = syscall_fields
+    let Some(sd) = syscall_fields
         .iter()
         .find(|f| f.field == AuditField::Dir)
-        .map(|f| f.value.as_str());
-    let syscall_perm = syscall_fields
-        .iter()
-        .find(|f| f.field == AuditField::Perm)
-        .map(|f| f.value.as_str());
-
-    let (Some(sd), Some(sperm)) = (syscall_dir, syscall_perm) else {
+        .map(|f| f.value.as_str())
+    else {
         return false;
     };
 
-    normalize_watch_path(watch_path) == normalize_watch_path(sd)
-        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+    let Some(sperm_bits) = perm_axis_bits(syscall_fields) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sd) && sperm_bits == *watch_perms
+}
+
+/// Fold a syscall rule's `-F perm=` predicate(s) into a single [`PermBits`]
+/// value for the watch-equivalence axis compare, or `None` if they cannot
+/// represent one. Multiple `Perm` predicates CONJOIN at the kernel level
+/// (`kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once
+/// PER `AUDIT_PERM` field and ANDs the per-field results via `if (!result)
+/// return 0;`), so two `-F perm=` predicates reduce to the semantics of a
+/// single `-p PERMS` watch only when EVERY predicate names the same value
+/// (`X AND X` collapses to `X`); two DIFFERENT `-F perm=` predicates are
+/// strictly more restrictive than any single watch and must never be folded
+/// by picking "whichever comes first" -- the bug both call sites
+/// ([`watch_equivalent_axes_match`] and [`dir_watch_equivalent_axes_match`])
+/// shared before this fix (issue #601 ATL follow-up, MISS-3). Returns `None`
+/// for zero `Perm` predicates (no axis to compare) or if any predicate's
+/// value fails to parse as perm-bit letters.
+fn perm_axis_bits(syscall_fields: &[crate::ast::FieldFilter]) -> Option<crate::ast::PermBits> {
+    use crate::ast::AuditField;
+
+    let mut perm_values = syscall_fields
+        .iter()
+        .filter(|f| f.field == AuditField::Perm)
+        .map(|f| f.value.as_str());
+
+    let first_raw = perm_values.next()?;
+    let first_bits = perm_bits_from_field_value(first_raw)?;
+
+    for raw in perm_values {
+        if perm_bits_from_field_value(raw).as_ref() != Some(&first_bits) {
+            return None;
+        }
+    }
+
+    Some(first_bits)
 }
 
 /// Parse a `-F perm=` field VALUE (e.g. `"wa"`) into `PermBits`, mirroring
