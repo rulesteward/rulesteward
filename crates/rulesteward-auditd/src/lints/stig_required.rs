@@ -1898,33 +1898,84 @@ fn dir_watch_equivalent_axes_match(
 /// represent one. Multiple `Perm` predicates CONJOIN at the kernel level
 /// (`kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once
 /// PER `AUDIT_PERM` field and ANDs the per-field results via `if (!result)
-/// return 0;`), so two `-F perm=` predicates reduce to the semantics of a
-/// single `-p PERMS` watch only when EVERY predicate names the same value
-/// (`X AND X` collapses to `X`); two DIFFERENT `-F perm=` predicates are
-/// strictly more restrictive than any single watch and must never be folded
-/// by picking "whichever comes first" -- the bug both call sites
-/// ([`watch_equivalent_axes_match`] and [`dir_watch_equivalent_axes_match`])
-/// shared before this fix (issue #601 ATL follow-up, MISS-3). Returns `None`
-/// for zero `Perm` predicates (no axis to compare) or if any predicate's
-/// value fails to parse as perm-bit letters.
+/// return 0;`), and `audit_match_perm` is MONOTONE NON-DECREASING in its
+/// `mask` argument: every branch reduces to `mask & <event-determined
+/// constant>` (`AUDITSC_NATIVE`/`AUDITSC_COMPAT` return 1 on the first set
+/// bit of `mask` that lands in the event's syscall class; `AUDITSC_OPEN`/
+/// `AUDITSC_OPENAT2` return `mask & ACC_MODE(...)`; `AUDITSC_EXECVE` returns
+/// `mask & AUDIT_PERM_EXEC`; `AUDITSC_SOCKETCALL` returns `(mask &
+/// AUDIT_PERM_WRITE) && ...`). So for two masks `m1 subset-of m2`,
+/// `match(m1)` implies `match(m2)` for every event, and a conjunction of
+/// `-F perm=` predicates whose masks are pairwise SUBSET-COMPARABLE -- a
+/// TOTAL ORDER, not merely "every predicate names the same value" -- reduces
+/// to exactly its MINIMUM (smallest/strictest) element: for any comparable
+/// pair `X subset-of Y`, `match(X) AND match(Y) == match(X)`, and induction
+/// over the chain collapses the whole conjunction to its minimum.
+///
+/// Requiring bitwise EQUALITY of every predicate (this function's round-2
+/// shape, commit d21c7aa) was an over-correction: it correctly stopped two
+/// DIFFERENT predicates being credited by picking "whichever comes first"
+/// (the original bug both call sites -- [`watch_equivalent_axes_match`] and
+/// [`dir_watch_equivalent_axes_match`] -- shared; issue #601 ATL follow-up,
+/// MISS-3), but "different" is not the same as "incomparable": it also
+/// declined a genuinely-equivalent subset-comparable pair like `perm=wa` +
+/// `perm=rwxa`, which collapses to `perm=wa` even though the two values
+/// differ (round-4 regression fix, issue #601/#600 ATL).
+///
+/// Predicates that are NOT pairwise subset-comparable (e.g. `perm=rwa` +
+/// `perm=wxa`: `r` only in the first, `x` only in the second) correctly
+/// decline (`None`) rather than folding to their bitwise INTERSECTION.
+/// Intersection is the WRONG fold for an incomparable pair: `perm=r AND
+/// perm=w` is satisfiable on an `O_RDWR` open (`ACC_MODE` sets both the read
+/// and write bits for that open), while `intersection({r}, {w})` is empty
+/// and `match(empty)` is never true. Intersection and minimum only coincide
+/// when the masks are already subset-comparable, which is exactly why no
+/// SATISFIED-subset test can discriminate the two folds -- see the
+/// `path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_
+/// required_value_...` test for the incomparable-but-intersects-nonempty
+/// case that does.
+///
+/// Returns `None` for zero `Perm` predicates (no axis to compare) or if any
+/// predicate's value fails to parse as perm-bit letters.
 fn perm_axis_bits(syscall_fields: &[crate::ast::FieldFilter]) -> Option<crate::ast::PermBits> {
     use crate::ast::AuditField;
 
-    let mut perm_values = syscall_fields
+    let perm_bits: Vec<crate::ast::PermBits> = syscall_fields
         .iter()
         .filter(|f| f.field == AuditField::Perm)
-        .map(|f| f.value.as_str());
+        .map(|f| perm_bits_from_field_value(f.value.as_str()))
+        .collect::<Option<Vec<_>>>()?;
 
-    let first_raw = perm_values.next()?;
-    let first_bits = perm_bits_from_field_value(first_raw)?;
-
-    for raw in perm_values {
-        if perm_bits_from_field_value(raw).as_ref() != Some(&first_bits) {
-            return None;
+    // Confirm a genuine TOTAL ORDER: every pair, not merely traversal
+    // neighbors, must be subset-comparable one way or the other. Two
+    // predicates that are each comparable to a common third but not to each
+    // other would still (per the doc comment above) collapse correctly, but
+    // that is a stronger claim than "totally ordered by subset" and is not
+    // the rule this fold implements -- decline rather than reach for it.
+    for (i, a) in perm_bits.iter().enumerate() {
+        for b in &perm_bits[i + 1..] {
+            if !perm_bits_is_subset(a, b) && !perm_bits_is_subset(b, a) {
+                return None;
+            }
         }
     }
 
-    Some(first_bits)
+    let mut min_iter = perm_bits.iter();
+    let mut min = min_iter.next()?.clone();
+    for candidate in min_iter {
+        if perm_bits_is_subset(candidate, &min) {
+            min = candidate.clone();
+        }
+    }
+
+    Some(min)
+}
+
+/// `a`'s permission bits are a subset of `b`'s: every bit set in `a` is also
+/// set in `b`. The subset partial order [`perm_axis_bits`] folds a chain of
+/// `-F perm=` predicates across.
+fn perm_bits_is_subset(a: &crate::ast::PermBits, b: &crate::ast::PermBits) -> bool {
+    (!a.read || b.read) && (!a.write || b.write) && (!a.exec || b.exec) && (!a.attr || b.attr)
 }
 
 /// Parse a `-F perm=` field VALUE (e.g. `"wa"`) into `PermBits`, mirroring
