@@ -125,6 +125,58 @@ fn w03b_message_for_genuinely_absent_99_slot() -> String {
         .clone()
 }
 
+/// Build the round-4 (Adversarial Testing Loop) `else`-arm CONTROL fixture
+/// (src/system.rs:430-436, the `Some(sw)` branch's final `else`): ONLY
+/// `etc/sysctl.d/zz-other.conf` (`net.core.somaxconn = 2222`) and
+/// `etc/sysctl.conf` (`net.core.somaxconn = 1111`), with NOTHING AT ALL at
+/// the `/etc/sysctl.d/99-sysctl.conf` slot - no symlink, dangling or
+/// otherwise. `zz-other.conf` sorts after "99-sysctl.conf" bytewise
+/// (`'z' > '9'`) and is the only drop-in providing `somaxconn`, so
+/// `systemd_win` is `Some(zz-other.conf)`, `slot_is_symlink` is `false`,
+/// and the `else` branch's "no 99-sysctl.conf symlink; ... applies instead"
+/// message is TRUE here. This is the "D - genuinely absent" control the
+/// misdirected/dangling/escaping fixtures below are compared against: they
+/// change ONLY whether a symlink is present at the 99 slot, keeping the
+/// winning drop-in and both values identical, so any difference in the
+/// (normalized) message is attributable to slot presence, not to an
+/// unrelated fixture difference.
+///
+/// Returns the `TempDir` (kept alive so `root.path()` stays valid for the
+/// caller to normalize the tempdir's own absolute prefix out of both
+/// messages before comparing - the message embeds `sw.file.display()`,
+/// which is the winning file's full path under this root's own tempdir, so
+/// two different roots' raw messages are never byte-comparable directly)
+/// alongside the resulting W03-b message for `somaxconn`.
+fn w03b_else_arm_control_root_and_message() -> (tempfile::TempDir, String) {
+    let root = tempdir().expect("temp root");
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-other.conf",
+        "net.core.somaxconn = 2222\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 1111\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let message = w03s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W03-b divergence for somaxconn in the else-arm \
+                 control (genuinely absent 99 slot, zz-other.conf wins); \
+                 diags: {diags:?}"
+            )
+        })
+        .message
+        .clone();
+    (root, message)
+}
+
 // ---------------------------------------------------------------------------
 // 1. Lexicographic sort proof (design section 2 items 2 & 4, section 2.1
 //    decision): the merge order is BYTEWISE by basename, not natural sort.
@@ -2261,6 +2313,56 @@ fn w03b_reason_names_the_actual_winning_dropin_not_the_misdirected_symlink_itsel
          which the `||` mutant reaches for this case): {}",
         hit.message
     );
+
+    // STRENGTHEN (Adversarial Testing Loop, round 4 - impl-aware review):
+    // round 3 fixed the identical false claim in the `None` arm
+    // (src/system.rs:397-407, "leaves `{}` unset") but left the BYTE-SAME
+    // claim in the `Some(sw)` arm's final `else` (src/system.rs:430-436)
+    // completely unconditional. This fixture reaches exactly that `else`:
+    // `slot_is_symlink` is true (a real, present symlink), but its second
+    // conjunct `sw.file == link_99` is false (the winner is zz-other.conf,
+    // not the 99-slot symlink itself), so the `else if` at :418 is false and
+    // falls through. A 99-sysctl.conf symlink genuinely EXISTS here
+    // (misdirected to decoy.conf, which sets no keys); the message must not
+    // claim there is none. The two `assert!` calls above already pin this
+    // fixture's *positive* content (names zz-other.conf, says "applies
+    // instead", avoids "misdirected") without ever excluding the false "no
+    // symlink" clause coexisting alongside them - exactly the one-conjunct-
+    // too-weak gap `tests/system.rs:1926-1927`'s vacuous conjunction has for
+    // the sibling (already-fixed) `Some(sw)` branch at :418-429.
+    //
+    // Ground truth: `std::fs::symlink_metadata` on the 99 slot reports
+    // `is_symlink() == true` here regardless of what the target resolves to
+    // (`src/system.rs:342-343` already computes this correctly and simply
+    // never consults it in this arm); operator remedy for a misdirected slot
+    // is to REPOINT the existing symlink, which "no symlink" wrongly implies
+    // is unnecessary (or worse, suggests creating one, which fails EEXIST).
+    assert!(
+        !hit.message.contains("no 99-sysctl.conf symlink"),
+        "a 99-sysctl.conf symlink genuinely EXISTS here (misdirected to a \
+         resolvable decoy, but present) - the reason must not claim there is \
+         none just because zz-other.conf (a DIFFERENT file) won the key: {}",
+        hit.message
+    );
+    // Non-vacuity: compare against the round-4 else-arm CONTROL (identical
+    // winning drop-in and values, but genuinely nothing at the 99 slot),
+    // normalizing each root's own absolute tempdir prefix out of its message
+    // first (the message embeds `sw.file.display()`, a full path under that
+    // root, so two different roots' raw messages are never byte-comparable
+    // directly - a plain `assert_ne!` here would pass FOR THE WRONG REASON,
+    // on tempdir-name noise alone, even if the reason clause were unchanged).
+    // Under the current bug the `else` branch is unconditional, so the two
+    // NORMALIZED messages are byte-identical even though one root has a real
+    // (misdirected) symlink and the other has none at all.
+    let (absent_root, absent_message) = w03b_else_arm_control_root_and_message();
+    let norm = |m: &str, r: &Path| m.replace(&r.display().to_string(), "<ROOT>");
+    assert_ne!(
+        norm(&hit.message, root.path()),
+        norm(&absent_message, absent_root.path()),
+        "a present-but-misdirected 99 slot and a genuinely absent one must \
+         not produce the same reason clause when a different file \
+         (zz-other.conf) wins the key"
+    );
 }
 
 #[test]
@@ -2313,5 +2415,187 @@ fn w03b_reason_does_not_call_a_regular_file_at_the_99_path_a_misdirected_symlink
         "the reason must use the accurate \"no symlink ... applies instead\" \
          wording, naming the real file that won: {}",
         hit.message
+    );
+
+    // ANTI-OVER-FIX CONTROL (round 4): this fixture is the one case where
+    // "no 99-sysctl.conf symlink" is TRUE (a regular file replaced the
+    // symlink; there is genuinely none). The round-4 tests above forbid this
+    // phrase whenever a symlink IS present but a different/broken target
+    // makes some other file win; without this control an implementer could
+    // "fix" round 4 by deleting the phrase from the `else` arm ENTIRELY
+    // (rather than conditioning it on `slot_is_symlink`, as the `None` arm
+    // already correctly does), which would make every round-4 assertion pass
+    // for the wrong reason while breaking this genuinely-true case.
+    assert!(
+        hit.message.contains("no 99-sysctl.conf symlink"),
+        "there is genuinely NO symlink at all here (a regular file replaced \
+         it) - the reason must still correctly say so; the round-4 fix must \
+         condition this phrase on `slot_is_symlink`, not delete it outright: \
+         {}",
+        hit.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 26. STRENGTHEN (Adversarial Testing Loop, round 4 - impl-aware review):
+//     round 3 fixed the `None` arm's identical false claim
+//     (src/system.rs:397-407) but left the byte-same claim in the
+//     `Some(sw)` arm's final `else` (src/system.rs:430-436) completely
+//     unconditional - reached whenever `slot_is_symlink` is true (a symlink
+//     genuinely exists at the 99 slot) AND some file OTHER than the 99-slot
+//     symlink itself wins the key (`sw.file != link_99`, so the `else if`
+//     at :418 is false). The misdirected shape is strengthened above (test
+//     "22."); these two siblings pin the DANGLING and ESCAPING shapes, the
+//     same two the round-2/3 `None`-arm strengthen ("24.") already covers
+//     for the case where NO OTHER file sets the key. Here a THIRD file,
+//     zz-other.conf, also sets `net.core.somaxconn` and sorts after
+//     "99-sysctl.conf" bytewise, so `systemd_win` is `Some(zz-other.conf)`
+//     instead of `None`, routing into the still-buggy `else` rather than the
+//     already-fixed `None` arm.
+//
+//     Ground truth: `crates/rulesteward-sysctld/tests/corpus/sysctld-oracle/
+//     slot-symlink-misdirected-593/oracle-rs-oracle9.txt` (real systemd 252,
+//     el9) records the slot symlink itself in COMPUTED-INVENTORY (`l
+//     etc/sysctl.d/99-sysctl.conf -> ...`) and a `Parsing
+//     /etc/sysctl.d/99-sysctl.conf` line in APPLY-DEBUG even in the
+//     misdirected shape - the slot symlink is present and read; systemd's
+//     reason for not applying `/etc/sysctl.conf` is non-resolution, not
+//     absence, and the same non-resolution fact holds for a dangling target
+//     (`std::fs::symlink_metadata` reports `is_symlink() == true` regardless
+//     of whether the target exists - it never follows the link) and for a
+//     target that resolves but escapes `--root` (present on the real
+//     filesystem, just outside the scanned root). Operator remedy in both
+//     cases is to REPOINT/fix the existing symlink; "no symlink" wrongly
+//     implies creating one, which fails EEXIST since one is already there.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w03b_dangling_99_symlink_else_arm_does_not_deny_the_symlink_when_a_different_file_wins() {
+    // A DANGLING 99-sysctl.conf symlink (target never created), PLUS a
+    // separate zz-other.conf drop-in that also sets `somaxconn` and sorts
+    // after "99-sysctl.conf" - so `systemd_win` is `Some(zz-other.conf)`,
+    // NOT `None` (unlike `w03b_dangling_99_symlink_reason_differs_from_
+    // genuinely_absent` above, whose fixture has nothing else providing the
+    // key). `slot_is_symlink` is true; `sw.file` is zz-other.conf's path,
+    // not `link_99`; the `else if` at src/system.rs:418 is false; the buggy
+    // unconditional `else` at :430-436 fires.
+    let root = tempdir().expect("temp root");
+    symlink_at(
+        root.path(),
+        "etc/sysctl.d/99-sysctl.conf",
+        "../../other/never-created.conf",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-other.conf",
+        "net.core.somaxconn = 2222\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 1111\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hit = w03s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W03-b divergence for somaxconn (dangling 99-slot \
+                 symlink, but zz-other.conf still wins the key); \
+                 diags: {diags:?}"
+            )
+        });
+    assert!(
+        !hit.message.contains("no 99-sysctl.conf symlink"),
+        "a 99-sysctl.conf symlink genuinely EXISTS here (dangling, but \
+         present) - the reason must not claim there is none just because \
+         zz-other.conf (a DIFFERENT file) won the key: {}",
+        hit.message
+    );
+    // Non-vacuity, normalized (see the round-4 comment on the strengthened
+    // "misdirected" test above for why raw `assert_ne!` cannot be used here).
+    let (absent_root, absent_message) = w03b_else_arm_control_root_and_message();
+    let norm = |m: &str, r: &Path| m.replace(&r.display().to_string(), "<ROOT>");
+    assert_ne!(
+        norm(&hit.message, root.path()),
+        norm(&absent_message, absent_root.path()),
+        "a present-but-dangling 99 slot and a genuinely absent one must not \
+         produce the same reason clause when a different file \
+         (zz-other.conf) wins the key"
+    );
+}
+
+#[test]
+fn w03b_escaping_99_symlink_else_arm_does_not_deny_the_symlink_when_a_different_file_wins() {
+    // An ESCAPING 99-sysctl.conf symlink (a relative `..` walkout to a file
+    // that genuinely EXISTS outside --root, mirroring
+    // `ninety_nine_symlink_dotdot_escape_out_of_root_contributes_no_content`
+    // and `w03b_escaping_99_symlink_reason_differs_from_genuinely_absent`
+    // above), PLUS a separate zz-other.conf drop-in that also sets
+    // `somaxconn` and sorts after "99-sysctl.conf" - so `systemd_win` is
+    // `Some(zz-other.conf)`, NOT `None`. `slot_is_symlink` is true (it is a
+    // real, present symlink); `resolve_reroot_contained`'s containment check
+    // rejects the resolved path (canonicalizes fine, but does not
+    // `starts_with` the canonical prefix), so the symlink's own target
+    // contributes no content, but zz-other.conf still wins the key; the same
+    // buggy unconditional `else` fires.
+    let root = tempdir().expect("temp root");
+    let outside = tempdir().expect("temp dir OUTSIDE root - never nested under it");
+    let outside_name = outside
+        .path()
+        .file_name()
+        .expect("tempdir has a basename")
+        .to_string_lossy()
+        .into_owned();
+    write_at(
+        outside.path(),
+        "593-w03b-r4-escape.conf",
+        "# unrelated, outside root\n",
+    );
+    let target = format!("../../../{outside_name}/593-w03b-r4-escape.conf");
+    symlink_at(root.path(), "etc/sysctl.d/99-sysctl.conf", &target);
+    write_at(
+        root.path(),
+        "etc/sysctl.d/zz-other.conf",
+        "net.core.somaxconn = 2222\n",
+    );
+    write_at(
+        root.path(),
+        "etc/sysctl.conf",
+        "net.core.somaxconn = 1111\n",
+    );
+
+    let (diags, _sources) = rulesteward_sysctld::system::lint_system(Some(root.path()), None);
+
+    let hit = w03s(&diags)
+        .into_iter()
+        .find(|d| d.message.contains("somaxconn"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a W03-b divergence for somaxconn (escaping 99-slot \
+                 symlink, but zz-other.conf still wins the key); \
+                 diags: {diags:?}"
+            )
+        });
+    assert!(
+        !hit.message.contains("no 99-sysctl.conf symlink"),
+        "a 99-sysctl.conf symlink genuinely EXISTS here (it escapes --root, \
+         but is present) - the reason must not claim there is none just \
+         because zz-other.conf (a DIFFERENT file) won the key: {}",
+        hit.message
+    );
+    // Non-vacuity, normalized (see the round-4 comment on the strengthened
+    // "misdirected" test above for why raw `assert_ne!` cannot be used here).
+    let (absent_root, absent_message) = w03b_else_arm_control_root_and_message();
+    let norm = |m: &str, r: &Path| m.replace(&r.display().to_string(), "<ROOT>");
+    assert_ne!(
+        norm(&hit.message, root.path()),
+        norm(&absent_message, absent_root.path()),
+        "a present-but-escaping 99 slot and a genuinely absent one must not \
+         produce the same reason clause when a different file \
+         (zz-other.conf) wins the key"
     );
 }
