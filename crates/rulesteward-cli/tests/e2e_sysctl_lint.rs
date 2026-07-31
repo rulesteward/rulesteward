@@ -413,6 +413,90 @@ kernel.kptr_restrict = 1
     );
 }
 
+#[test]
+fn human_snippet_survives_four_byte_and_cjk_multibyte_and_keeps_its_caret_column() {
+    // Issue #595, session 9m lane 4: the end-to-end obligation for a change to
+    // the DEFAULT renderer's byte-span -> char-span conversion. The sibling test
+    // above uses a single 2-byte scalar; this one uses the two widest classes
+    // together - a 4-byte emoji (U+1F600) and three 3-byte CJK scalars - because
+    // a 2-byte-only source cannot distinguish an off-by-one that first appears
+    // at a wider interior offset.
+    //
+    // Three separate claims, in order of what they would catch:
+    //
+    // 1. The process EXITS with a lint code. `byte_span_to_char_span` feeds
+    //    `ariadne::Label::new`, which asserts `start <= end`
+    //    (ariadne-0.6.0/src/lib.rs:145) - an inverted span is a hard panic and
+    //    abort of the real binary in its default output mode, with no
+    //    diagnostics printed at all. A signal death, not a wrong caret.
+    // 2. The snippet RENDERS: ariadne silently omits the whole box when it
+    //    cannot locate the span, so the U+2500 box-drawing char is the proof
+    //    the caret survived the conversion.
+    // 3. The header's LINE and COLUMN are right.
+    //
+    // Be precise about claim 3's reach. sysctld builds every span as the byte
+    // range of a whole raw line (`rulesteward-sysctld/src/parser.rs:180`), so
+    // this span starts at a char boundary and ariadne's char-counted column
+    // (ariadne-0.6.0/src/write.rs:262-269,280) must read 1. On a boundary
+    // aligned span a clamp is a no-op and floor and ceil agree, so this
+    // assertion does NOT discriminate between those mapping families - the
+    // mid-character offset tables in human.rs's
+    // `mid_character_offset_rounds_up_to_the_next_char_boundary` are what does
+    // that. What it DOES catch is byte-vs-char confusion, through the whole
+    // real binary rather than a unit call.
+    //
+    // Worked through, because it is why the assertion pins `:2:1 ]` and not
+    // `:2:1`: line 1 is 32 bytes but 23 characters (4 + 3 + 3 + 3 = 13 bytes of
+    // multibyte for 4 characters), so line 2 starts at byte 33 / char 24, and
+    // line 2 is itself 24 characters. Handing ariadne the BYTE offset 33 would
+    // resolve to char 33 - still inside line 2, but 9 characters in, rendering
+    // `:2:10`. And `:2:10` CONTAINS the substring `:2:1`, so a prefix match
+    // would have passed on exactly the confusion this test exists to catch. The
+    // header always renders `...:<line>:<col> ]`, so pinning the trailing ` ]`
+    // closes it. Both values are derived from the layout, not copied from a run.
+    let body = "\
+# \u{1f600} \u{65e5}\u{672c}\u{8a9e} hardening notes
+kernel.kptr_restrict = 2
+kernel.kptr_restrict = 1
+";
+    let cfg = config_file(body);
+    let out = bin()
+        .env("NO_COLOR", "1")
+        .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
+        .output()
+        .expect("binary ran");
+
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a warning-only run must exit 1 - a `None` code means the process died on a \
+         signal, which is what an inverted ariadne label span does; stdout: {stdout} \
+         (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("sysctld-W01"),
+        "the last-wins conflict emits sysctld-W01; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains('\u{2500}'),
+        "the caret box must render with 4-byte and 3-byte scalars before the finding; \
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(":2:1 ]"),
+        "the snippet header must anchor at line 2, character column 1 (sysctld spans are \
+         whole-line, so the caret starts at the line's first character). The trailing ` ]` \
+         is load-bearing: a bare `:2:1` prefix match is also satisfied by `:2:10`, which is \
+         exactly what byte-vs-char confusion renders here; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kernel.kptr_restrict = 2"),
+        "the snippet must underline the real dead source line; stdout: {stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // issue #335: the version-aware sysctld-W02 STIG baseline, gated on --target.
 // RED before the impl: --target is unknown to clap (or W02 is the empty stub), so
