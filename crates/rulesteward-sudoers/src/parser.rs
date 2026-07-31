@@ -772,7 +772,35 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 tok_start = i + c.len_utf8();
                 at_spec_start = false;
             }
-            ',' => {
+            ',' if i >= tok_start => {
+                // `i >= tok_start` (#538 MISS-2, round 6 second brief): mirrors the `)`
+                // arm's own guard exactly, for the identical reason. A comma byte sitting
+                // INSIDE an `Option_Spec` value the `'='` arm has already skipped past
+                // (`tok_start` now points AHEAD of `i`, e.g. `CWD="/a,b"`) is a literal
+                // value byte, not a `Cmnd_Spec_List` separator, and must not drag the
+                // marker BACKWARD into the middle of that value -- which desyncs whatever
+                // boundary check comes next (a following tag/segment colon's
+                // preceding-token span) and, when `in_cmnd_list`, wrongly re-arms
+                // `at_spec_start` too, letting an in-value `(` masquerade as a runas
+                // opener and permanently desync `depth`, masking every later top-level `:`
+                // (the SILENT host-group-swallow face of this bug).
+                //
+                // This is a POSITIONAL guard, not a content-based one: it asks "has
+                // `tok_start` already been advanced past `i` by an earlier arm", which is
+                // exactly what this arm's own writes to `tok_start` need protecting
+                // against -- the same question the `)` arm asks of itself. The `':'` arm's
+                // sibling guard, `!inside_a_clean_quoted_region`, answers a DIFFERENT
+                // question (does `i` sit inside a quote span `enclosing_option_value_quote_spans`
+                // recognizes) because that arm's OWN job is deciding whether `i` is a real
+                // separator at all (it may push a segment); the content check is what THAT
+                // decision needs. This arm never decides separator-ness (it only tracks
+                // `tok_start`/`at_spec_start` bookkeeping for a LATER arm's decision), so
+                // mirroring `)` is the correct choice, not `':'` --
+                // `enclosing_option_value_quote_spans` is also blind to `in_cmnd_list`
+                // (unlike this arm's own `is_option_eq` computation, which requires it),
+                // so a content-based guard here could diverge from `tok_start`'s real
+                // state outside the command list, where this arm's own writes don't
+                // apply at all.
                 tok_start = i + c.len_utf8();
                 // A top-level (depth-0) comma starts the next `Cmnd_Spec` ONLY inside the
                 // command list, whose runas `(` sits at the next non-whitespace char. A
@@ -1017,26 +1045,46 @@ fn is_option_value_quote_opener(s: &str, open: usize) -> bool {
     parse_option_key(word_immediately_before(before_eq)).is_some()
 }
 
-/// The whitespace-delimited word ending `before` (`before`'s own trailing
-/// whitespace trimmed first): the token run back to the previous whitespace,
-/// or the start of `before` if there is none. Shared by
+/// The word ending `before` (`before`'s own trailing whitespace trimmed
+/// first): the token run back to the previous boundary -- whitespace, `)`,
+/// `,`, or `=` -- or the start of `before` if there is none. Shared by
 /// [`is_option_value_quote_opener`] to tolerate whitespace between an
-/// `Option_Spec` keyword and its own `=` (`CWD = "..."`; round 5 MISS-2).
+/// `Option_Spec` keyword and its own `=` (`CWD = "..."`; round 5 MISS-2), AND
+/// (round 6, #538 MISS-1) a keyword GLUED directly to a preceding `)`, `,`,
+/// or `=` with no whitespace at all (`(ALL)CWD=`, `/bin/true,CWD=`,
+/// `ALL=CWD=`) -- exactly the reset points [`preceding_token`]'s own
+/// `tok_start` already uses (see [`split_top_level_segments`]'s `')'`, `','`
+/// and `'='` arms). Before round 6 this split on whitespace ONLY, so the two
+/// functions disagreed about where a keyword starts for any glued spelling:
+/// `preceding_token` (tok_start-driven) saw `CWD` cleanly, while this saw the
+/// whole glued run (`)CWD`, `,CWD`, `=CWD`) and [`parse_option_key`] rejected
+/// it, regressing to the round-5 MISS-1 failure class for that one spelling.
+/// No valid `Option_Spec` keyword itself contains `)`, `,`, `=` or
+/// whitespace (see [`parse_option_key`]'s closed set), so widening the
+/// boundary set can only ADD recognized openers, never reject one this
+/// function previously accepted.
 fn word_immediately_before(before: &str) -> &str {
     before
         .trim_end()
-        .rsplit(|c: char| c.is_whitespace())
+        .rsplit(|c: char| c.is_whitespace() || c == ')' || c == ',' || c == '=')
         .next()
         .unwrap_or("")
 }
 
 /// The first byte index at or after `start` that is not whitespace: `start`
 /// advanced past any run of whitespace SEPARATING an `Option_Spec`'s `=` from
-/// its value. `man 5 sudoers` grants free-form tokenization around `=`, and
-/// the shipping parser accepts whitespace on EITHER side of an `Option_Spec`'s
-/// `=` (round 5, #538 MISS-2) - every test written before round 5 happened to
-/// glue the value to the `=` (`TIMEOUT=30`), which is why this gap sat
-/// unnoticed under a green suite. Shared by [`split_leading_option`]'s own
+/// its value. `man 5 sudoers`'s own EBNF shows an `Option_Spec` glued with NO
+/// space at all (`Chdir_Spec ::= 'CWD=directory'`, sudo 1.9.17p2 rendered
+/// page) and states no general whitespace tolerance around it -- this is NOT
+/// grounded in that grammar text. The shipping parser instead follows the
+/// REAL parser's more permissive behavior: `visudo -c -f -` (sudo 1.9.17p2,
+/// re-probed 2026-07-31) accepts whitespace on EITHER side of an
+/// `Option_Spec`'s `=` (`alice ALL = CWD = "/a b" NOPASSWD: /bin/ls` and
+/// `alice ALL = TIMEOUT= 30 NOEXEC: /bin/ls` are both rc 0) despite the
+/// grammar's glued spelling being the only one it documents (round 5, #538
+/// MISS-2) - every test written before round 5 happened to glue the value to
+/// the `=` (`TIMEOUT=30`), which is why this gap sat unnoticed under a green
+/// suite. Shared by [`split_leading_option`]'s own
 /// value scan and [`split_top_level_segments`]'s `'='` arm, both of which must
 /// find the value's TRUE first byte before calling [`option_value_end`] (which
 /// itself still assumes `start` IS that first byte - see its doc comment).
