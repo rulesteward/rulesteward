@@ -71,6 +71,16 @@ fn search_dirs(prefix: &Path) -> [(PathBuf, usize); 5] {
 /// rather than being followed onto the real filesystem outside the scanned root.
 /// Also `None` when `link` is not a symlink at all, or is dangling.
 ///
+/// This `Some` result is not just a boolean admission gate: for the 99-slot
+/// caller in [`enumerate`] it is also the exact path that gets READ
+/// (`SurvivingFile::read_path`, round 3, #593 Finding 1). Using it for the read
+/// too - not merely to decide whether to admit the entry - is what makes the
+/// "never followed onto the real filesystem outside the scanned root" guarantee
+/// above actually hold end to end: a contained, re-rooted absolute target must
+/// be read from that re-rooted path, or the bytes would still come from
+/// wherever the literal (non-rerooted) link happens to dereference to on the
+/// real host filesystem.
+///
 /// Written GENERICALLY in terms of `prefix`, never branching on "do we have a
 /// `--root`": a live scan passes `prefix == "/"`, where re-rooting an absolute
 /// target is the IDENTITY (`/x` re-roots to `/x`) and containment trivially
@@ -118,8 +128,21 @@ fn slot_symlink_ok(prefix: &Path) -> bool {
 
 /// A drop-in that survived same-basename directory masking, tagged with its
 /// search-directory precedence rank (0 = `/etc/sysctl.d`, highest).
+///
+/// `path` and `read_path` split the DISPLAY identity from the READ target
+/// (round 3, #593 Finding 1): `path` is the directory entry itself (what
+/// keys `sources`, what every diagnostic/provenance message names - the file
+/// the operator has to fix), while `read_path` is where the bytes actually
+/// come from. For every ordinary entry they are the same path (reading it
+/// directly follows the real filesystem, exactly as before). Only the 99-slot
+/// symlink entry (misdirected/dangling/escaping, followed as an ordinary
+/// drop-in) ever sets `read_path` to something else: the RE-ROOT-THEN-CONTAIN
+/// resolved path computed by [`resolve_reroot_contained`], so the containment
+/// decision and the read agree - re-rooted content is what gets read, never
+/// the real host file the literal link would otherwise dereference to.
 struct SurvivingFile {
     path: PathBuf,
+    read_path: PathBuf,
     basename: OsString,
     rank: usize,
 }
@@ -243,17 +266,23 @@ fn enumerate(
                 // A symlink at this exact path that is NOT the recognized distro
                 // slot (misdirected, dangling, or escaping `prefix`) is followed
                 // like any other drop-in (#593) - but ONLY under RE-ROOT-THEN-
-                // CONTAIN (round 2): an absolute target re-roots under `prefix`
-                // rather than the real filesystem, and any resolution that still
-                // escapes `prefix` (dangling, an absolute target with no
-                // re-rooted counterpart, or a `..` walkout) claims the basename
-                // above but contributes NO content - it is never followed onto a
-                // real path outside the scanned root. 99-slot only: the identical
-                // escape for ORDINARY (non-99) drop-in symlinks pre-exists and is
-                // out of scope here, filed separately as #610.
-                if resolve_reroot_contained(prefix, &path).is_some_and(|p| p.is_file()) {
+                // CONTAIN (round 2, read path fixed round 3): an absolute target
+                // re-roots under `prefix` rather than the real filesystem, and any
+                // resolution that still escapes `prefix` (dangling, an absolute
+                // target with no re-rooted counterpart, or a `..` walkout) claims
+                // the basename above but contributes NO content - it is never
+                // followed onto a real path outside the scanned root. The
+                // resolved path is what gets READ (`read_path`); `path` (the link
+                // itself) stays the display/provenance key - see the
+                // `SurvivingFile` doc comment. 99-slot only: the identical escape
+                // for ORDINARY (non-99) drop-in symlinks pre-exists and is out of
+                // scope here, filed separately as #610.
+                if let Some(resolved) =
+                    resolve_reroot_contained(prefix, &path).filter(|p| p.is_file())
+                {
                     surviving.push(SurvivingFile {
                         path,
+                        read_path: resolved,
                         basename,
                         rank,
                     });
@@ -264,9 +293,11 @@ fn enumerate(
                 // A regular file, or a symlink to a readable regular file: a real
                 // drop-in whose assignments contribute to the merged set. (Not the
                 // 99-slot path handled above, so this follows the real filesystem
-                // directly - #610.)
+                // directly - #610.) `read_path` equals `path`: an ordinary entry's
+                // display path and read target are the same file.
                 surviving.push(SurvivingFile {
-                    path,
+                    path: path.clone(),
+                    read_path: path,
                     basename,
                     rank,
                 });
@@ -353,12 +384,29 @@ fn w03b_divergence(
             continue;
         }
         let (systemd_verb, systemd_reason) = match systemd_win {
-            None => (
-                format!("leaves `{}` unset", a.display),
-                "systemd-sysctl does not apply /etc/sysctl.conf (no \
-                 /etc/sysctl.d/99-sysctl.conf symlink)"
-                    .to_string(),
-            ),
+            None => {
+                // (round 3, #593 Finding 2) A hardcoded "no symlink" reason is
+                // only true when `slot_is_symlink` is false. When a symlink
+                // genuinely EXISTS at the 99-slot but resolves to nothing that
+                // sets this key (dangling, escaping `--root`, or misdirected to
+                // a target that sets no keys at all), `systemd_win` is `None`
+                // too, but claiming "no symlink" is false and points the
+                // operator at the wrong remedy (create one, which fails with
+                // EEXIST) instead of the right one (repoint/fix the existing
+                // one).
+                let reason = if slot_is_symlink {
+                    "the /etc/sysctl.d/99-sysctl.conf symlink exists but does \
+                     not resolve to /etc/sysctl.conf (it is dangling, escapes \
+                     --root, or points elsewhere), so systemd-sysctl does not \
+                     apply /etc/sysctl.conf there"
+                        .to_string()
+                } else {
+                    "systemd-sysctl does not apply /etc/sysctl.conf (no \
+                     /etc/sysctl.d/99-sysctl.conf symlink)"
+                        .to_string()
+                };
+                (format!("leaves `{}` unset", a.display), reason)
+            }
             Some(sw) => {
                 let verb = format!("applies `{}`", sw.value);
                 let reason = if symlink_ok {
@@ -409,6 +457,15 @@ fn w03b_divergence(
 /// Parse each surviving drop-in in merge order, returning its assignments and a
 /// parallel per-assignment search-directory rank vector, extending `diags` with any
 /// F01 and staging every read source under its display path.
+///
+/// Reads `sf.read_path` (the containment-checked, re-rooted target for a followed
+/// 99-slot symlink; identical to `sf.path` for every ordinary entry - see the
+/// `SurvivingFile` doc comment), never `sf.path` directly: the containment
+/// decision and the read must agree, or an escaping/absolute symlink target could
+/// be admitted on the re-rooted path yet silently read from the real host
+/// filesystem instead (round 3, #593 Finding 1). Every diagnostic, provenance
+/// error, and `sources` key still names `sf.path` (the link/file the operator
+/// actually has to fix), never `read_path`.
 fn parse_surviving(
     surviving: &[SurvivingFile],
     diags: &mut Vec<Diagnostic>,
@@ -417,7 +474,7 @@ fn parse_surviving(
     let mut asgns: Vec<ParsedAssignment> = Vec::new();
     let mut ranks: Vec<usize> = Vec::new();
     for sf in surviving {
-        match std::fs::read_to_string(&sf.path) {
+        match std::fs::read_to_string(&sf.read_path) {
             Ok(src) => {
                 let (parsed, f01) = parse_file(&src, &sf.path);
                 diags.extend(f01);
