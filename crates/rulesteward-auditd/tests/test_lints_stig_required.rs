@@ -3275,20 +3275,30 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
 // `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
 // regardless_of_field_order` test above ({w,a} vs {r}, neither subset of
 // the other) -- the fold correctly declines (`None`) and the row stays
-// "missing". Intersection is NOT the right generalization of "declines":
-// `perm=r AND perm=w` is satisfiable on an `O_RDWR` open (the kernel tests
-// mask-overlap against EACH predicate independently, not a single overlap
-// test against their intersected bits, which is empty and would wrongly
-// treat the pair as "never satisfiable"); an implementation that folds
-// incomparable predicates via bitwise intersection rather than declining
-// is answering a different, ungrounded question. The two tests below pin
-// the SATISFIED side of the corrected boundary with two INDEPENDENT
-// subset chains against two DIFFERENT required rows and BOTH call sites
-// (path-form and dir-form), each in BOTH field orders (the same rigor the
-// round-2 fix itself required of the "does-not-satisfy" tests); the
-// pre-existing incomparable-pair test above pins the declining side and
-// is intentionally left unmodified -- the three tests together are one
-// contract on `perm_axis_bits`.
+// "missing".
+//
+// What each test below actually discriminates (stated precisely, not by
+// aspiration): tests 1 and 2 are SATISFIED assertions over SUBSET-COMPARABLE
+// pairs. In each, the reversed-field-order half kills first-wins on its own
+// (`.find()` would pick the superset predicate on that order and compare it
+// to the required value via exact `==`, wrongly reporting missing); BOTH
+// orders of each kill the round-2 equality-fold regression under test here
+// (it declines whenever the two predicates differ at all, regardless of
+// order, which is why both are RED today). Test 2 additionally uses an
+// INDEPENDENT chain against a DIFFERENT required row and the dir-form call
+// site, so the fix cannot be a special case of test 1's specific superset.
+// Neither test 1 nor test 2 can discriminate a correct "subset chain ->
+// minimum" fold from a naive "fold via bitwise intersection, then compare
+// via ==" fold: for any pair where one mask is a subset of the other,
+// intersection(A, B) == min(A, B) by definition, so the two folds provably
+// agree on every input either test could construct -- no SATISFIED-subset
+// test can ever tell them apart. Test 3 below is the one that can: it uses
+// an INCOMPARABLE pair whose intersection happens to be non-empty and to
+// equal the required value, which is exactly the shape needed to separate
+// the two folds (the pre-existing incomparable-pair test referenced above
+// cannot do this either, since its {w,a}-vs-{r} pair intersects to EMPTY,
+// which also disagrees with the required value, so "decline" and "naive
+// intersection" coincidentally land on the same missing verdict there too).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3296,7 +3306,14 @@ fn path_syscall_form_with_subset_comparable_perm_predicates_satisfies_v230409_re
  {
     // {w,a} (the required V-230409 value) subset-of {r,w,x,a}: the
     // conjunction `perm=wa AND perm=rwxa` collapses to `perm=wa`, which IS
-    // the required row, in BOTH field orders.
+    // the required row, in BOTH field orders. Discriminates: the reversed
+    // order below (rwxa-first) on its own kills first-wins (it would pick
+    // rwxa, compare it to the required wa via exact equality, and wrongly
+    // report missing); both orders kill the round-2 equality-fold
+    // regression (it declines on any two differing predicates, regardless
+    // of which comes first). Does NOT discriminate a naive intersection
+    // fold from the correct minimum fold -- see the section doc comment
+    // above and test 3 below for why no SATISFIED-subset test can.
     let rules_wa_first = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n",
@@ -3345,6 +3362,12 @@ fn dir_syscall_form_with_a_different_subset_comparable_perm_chain_satisfies_v230
     // special case of the {w,a}-subset-of-{r,w,x,a} pair above: {w,a} (the
     // required value) subset-of {r,w,a} (a superset that adds ONLY 'r',
     // never 'x' -- a genuinely different chain from V-230409's above).
+    // Discriminates exactly as test 1 above: the reversed order
+    // (superset-first) on its own kills first-wins; both orders kill the
+    // round-2 equality-fold regression. Also does NOT discriminate a naive
+    // intersection fold from the correct minimum fold, for the same
+    // structural reason (subset-comparable inputs make the two folds agree
+    // by definition) -- see test 3 below for the test that does.
     let rules_wa_first = parse(
         "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n\
          -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n",
@@ -3378,5 +3401,77 @@ fn dir_syscall_form_with_a_different_subset_comparable_perm_chain_satisfies_v230
             .any(|d| d.message.contains("RHEL-08-030172")),
         "reversing the field order must produce the SAME satisfied \
          verdict, not flip to missing: {diags_superset_first:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_required_value_still_does_not_satisfy_v230409_regardless_of_field_order()
+ {
+    // THE test that discriminates "decline on incomparable masks" (correct)
+    // from "fold multiple -F perm= predicates via bitwise intersection,
+    // then compare via ==" (wrong, ungrounded): {r,w,a} and {w,x,a} are
+    // INCOMPARABLE -- neither is a subset of the other ('r' is only in the
+    // first, 'x' only in the second) -- so `audit_match_perm`'s
+    // monotonicity gives no single mask equivalent to their conjunction,
+    // and the fold must decline. Their bitwise INTERSECTION, however, is
+    // exactly {w,a} -- V-230409's required value -- so a naive
+    // intersection-fold would wrongly report this SATISFIED.
+    //
+    // Neither test 1 nor test 2 above can catch that bug: intersection
+    // provably equals the minimum on any SUBSET-COMPARABLE input, so those
+    // two tests can never tell the two folds apart (see the section doc
+    // comment above). Nor can the pre-existing
+    // `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
+    // regardless_of_field_order` test: its {w,a}-vs-{r} pair intersects to
+    // EMPTY, which also disagrees with the required {w,a}, so "decline" and
+    // "naive intersection" coincidentally land on the same missing verdict
+    // there too. This pair -- incomparable, but with a NON-EMPTY
+    // intersection that happens to equal a real required value -- is the
+    // only shape that actually separates the two folds.
+    //
+    // Consequently this test currently PASSES (is GREEN) under BOTH the
+    // pre-fix round-2 equality-fold (declines because {r,w,a} != {w,x,a})
+    // and the corrected monotone-min-or-decline fold (declines because the
+    // masks are incomparable) -- it is not a regression pin like tests 1
+    // and 2, but a forward guard: it exists so that whichever fix lands for
+    // the round-4 regression above, it cannot silently be (or become) an
+    // intersection fold without this test catching it.
+    let rules_rwa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_rwa_first = w06(
+        &rules_rwa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_rwa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=rwa AND perm=wxa are INCOMPARABLE ({{r,w,a}} vs {{w,x,a}}, \
+         neither a subset of the other) even though their intersection \
+         ({{w,a}}) equals the required V-230409 value -- a fold that \
+         answers via bitwise intersection would wrongly credit this; the \
+         correct fold declines (no single equivalent watch exists for an \
+         incomparable pair) and V-230409 must stay missing: \
+         {diags_rwa_first:?}"
+    );
+
+    let rules_wxa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wxa -F perm=rwa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wxa -F perm=rwa -k identity\n",
+    );
+    let diags_wxa_first = w06(
+        &rules_wxa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wxa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order must produce the SAME missing verdict: \
+         {diags_wxa_first:?}"
     );
 }
