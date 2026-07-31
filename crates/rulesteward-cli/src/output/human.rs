@@ -301,7 +301,7 @@ mod tests {
     /// general form covering ariadne's SGR color codes) from `s`.
     ///
     /// `render()`'s ariadne path colors its output whenever `color_enabled()`
-    /// (human.rs:57) is true, which happens whenever the CALLING PROCESS's
+    /// is true, which happens whenever the CALLING PROCESS's
     /// own stdout is a real terminal - including `cargo test` run
     /// interactively (not piped/CI-captured). An exact-byte `assert_eq!`
     /// pin taken against raw `render()` output is therefore fragile: it
@@ -446,7 +446,7 @@ mod tests {
         )
         .with_source_id("same.rules");
 
-        // Strip ANSI before comparing: `color_enabled()` (human.rs:57) is
+        // Strip ANSI before comparing: `color_enabled()` is
         // true whenever THIS test process's own stdout is a real terminal
         // (e.g. `cargo test` run interactively), which would otherwise
         // inject SGR color codes and break an exact-byte pin for reasons
@@ -1303,11 +1303,13 @@ mod tests {
     ///   the test fails on the third bullet below rather than on a caret that
     ///   moved. (The sibling e2e in `tests/e2e_sysctl_lint.rs` is where the same
     ///   confusion does move a visible column, to `:2:10`.)
-    /// - **a boundary-offset off-by-one.** Widening the walk's predicate to
-    ///   `take_while(|(i, _)| *i <= b)` shifts every boundary offset up by one
-    ///   and renders column 23 instead of 22. That mutation stays total and
-    ///   monotone, so it is invisible to every ordering, totality and saturation
-    ///   property. This is the one that needs the exact column.
+    /// - **a boundary-offset off-by-one.** Any variant that shifts every
+    ///   boundary offset up by one - the pre-`450b16e` body admitted one by
+    ///   widening its `take_while` predicate to `*i <= b`, and the current
+    ///   boundary walk would admit one by counting the prefix past `q` rather
+    ///   than up to it - renders column 23 instead of 22. Such a variant stays
+    ///   total and monotone, so it is invisible to every ordering, totality and
+    ///   saturation property. This is the one that needs the exact column.
     /// - **a snippet that silently fails to render at all.**
     ///
     /// The observable is ariadne's own bracket header,

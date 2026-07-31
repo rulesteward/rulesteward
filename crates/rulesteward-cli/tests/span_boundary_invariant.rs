@@ -285,6 +285,11 @@ fn run_backend(
     strategy: &impl Strategy<Value = String>,
     drive: fn(&str) -> Vec<ArmDiags>,
 ) {
+    // `Cell` rather than a plain `usize` behind `&mut`: `TestRunner::run` takes
+    // an `impl Fn`, not an `impl FnMut`, so the closure below cannot hold a
+    // mutable borrow of these counters. `Cell` is the standard single-threaded
+    // interior-mutability escape hatch, and for a `Copy` payload it costs
+    // nothing at runtime - `get`/`set` with no borrow flag, unlike `RefCell`.
     let per_arm: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
     let per_arm_multibyte: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
     // `failure_persistence: None` because the default `SourceParallel` policy
