@@ -939,7 +939,12 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
         CmndItem::Cmnd(cmnd_token.to_string())
     };
 
-    CmndSpec { runas, tags, cmnd }
+    CmndSpec {
+        runas,
+        options: Vec::new(),
+        tags,
+        cmnd,
+    }
 }
 
 /// Parse the inside of a `(runas_users[:runas_groups])` group.

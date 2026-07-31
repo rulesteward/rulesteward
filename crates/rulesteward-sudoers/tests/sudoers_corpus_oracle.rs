@@ -355,16 +355,39 @@ const SCENARIO_FLOOR: usize = 41;
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
 ///
-/// Measured: 33 accept scenarios x 3 targets = 99 candidate pairs; minus 1
-/// scoped-out (el8 `SELinux` invalid JSON) = 98 attempted; minus 14 xfail
-/// hits (5 scenarios x 3 targets = 15, minus the 1 el8 scope-out/xfail
-/// overlap - see `L3_XFAIL`) = 84 clean structural matches. (90 -> 99
-/// candidates is exactly the 3 round-4 scenarios x 3 targets = 9 added; of
-/// those, `accept-negated-user` / `accept-negated-host` land in the "clean"
-/// bucket (+6) and `accept-negated-uid-subject` is a NEW `L3_XFAIL` entry
-/// (+3 candidates, but also +3 xfail hits, netting 0 new "clean"), hence 78
-/// -> 84.)
-const L3_CLEAN_FLOOR: usize = 84;
+/// DERIVED FROM A RUN, never computed. This is a ONE-SIDED floor: set too
+/// high it is unsatisfiable and blocks the implementer forever, set too low
+/// it silently weakens the differential, and both are defects. Session 9k-1
+/// froze it at a value no contract-honouring implementation could reach (66
+/// against an achievable 60); that survived two full adversarial rounds
+/// because every reviewer asked "what WRONG implementation passes these
+/// tests?" and nobody asked "does any CORRECT one pass them?". So the
+/// procedure is: build a reference implementation, set this constant to a
+/// deliberately unreachable value, read the TRUE achieved count out of the
+/// failure message, put that number here, and re-run to confirm it passes.
+/// The arithmetic below is a cross-check ON the measurement, never its
+/// source.
+///
+/// Measured 2026-07-30 (session 9m, lane 3) against a throwaway reference
+/// implementation of BOTH #538 gaps, with the four `Some(538)` entries
+/// removed from `L3_XFAIL` - the state this constant is frozen for, since
+/// removing them is #538's acceptance signal. A floor of 999 failed with
+/// `expected >= 999 clean L3 comparisons, got 95`, and 95 then passed. That
+/// deliberately-failing run is also this assertion's positive control: a
+/// floor that cannot be made to fail is not measuring anything.
+///
+/// Cross-check, which AGREES with the measurement: 33 accept scenarios x 3
+/// targets = 99 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 98 attempted; minus 3 xfail hits (the 1 remaining `L3_XFAIL`
+/// scenario x 3 targets, minus 0 scope-out/xfail overlap now that
+/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 95.
+///
+/// 84 -> 95 is exactly the four #538 scenarios leaving `L3_XFAIL`:
+/// `accept-user-list-whitespace-bug`, `accept-notbefore` and
+/// `accept-timeout-option` contribute 3 targets each, while
+/// `accept-selinux-role-type` contributes only 2 because its el8 pair is
+/// scoped out of L3 entirely (9 + 2 = 11).
+const L3_CLEAN_FLOOR: usize = 95;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -715,6 +738,7 @@ fn project_ast_marks_negation_and_tags_sigil_on_users_and_hosts() {
                     hosts: vec!["!web1".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::All,
                     }],
@@ -776,6 +800,7 @@ fn project_ast_marks_negation_on_commands() {
                     hosts: vec!["ALL".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd,
                     }],
@@ -843,6 +868,7 @@ fn project_ast_negation_is_kleene_star_not_a_single_strip() {
                     hosts: vec![host.to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::Cmnd(cmnd.to_string()),
                     }],
@@ -919,6 +945,7 @@ fn project_ast_trims_whitespace_after_the_bang_run() {
                     hosts: vec!["ALL".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::Cmnd("! /usr/bin/su".to_string()),
                     }],
@@ -964,11 +991,13 @@ fn project_ast_distinguishes_which_of_two_commands_is_negated() {
                     cmnd_specs: vec![
                         CmndSpec {
                             runas: None,
+                            options: vec![],
                             tags: vec![],
                             cmnd: CmndItem::Cmnd("/bin/ls".to_string()),
                         },
                         CmndSpec {
                             runas: None,
+                            options: vec![],
                             tags: vec![],
                             cmnd: CmndItem::Cmnd("!/bin/su".to_string()),
                         },
@@ -1012,6 +1041,7 @@ fn project_ast_tags_typed_user_subjects_but_not_plain_names() {
                     hosts: vec!["ALL".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::All,
                     }],
@@ -1070,6 +1100,7 @@ fn project_ast_canonicalizes_and_tags_uid_and_gid_subjects() {
                     hosts: vec!["ALL".to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::All,
                     }],
@@ -1139,6 +1170,7 @@ fn project_ast_tags_host_netgroup_but_not_networkaddr_or_hash_prefixed_hostname(
                     hosts: vec![host.to_string()],
                     cmnd_specs: vec![CmndSpec {
                         runas: None,
+                        options: vec![],
                         tags: vec![],
                         cmnd: CmndItem::All,
                     }],
