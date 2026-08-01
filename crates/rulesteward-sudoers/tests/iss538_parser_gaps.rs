@@ -3924,3 +3924,290 @@ fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mas
          (mis-split) fragment too"
     );
 }
+
+// ===========================================================================
+// 9m round 3: `split_cmnd_specs`'s `')'` arm has no `i >= tok_start` guard,
+// unlike its `split_top_level_segments` sibling.
+// ===========================================================================
+//
+// `split_top_level_segments`'s `')'` arm is guarded `i >= tok_start` (9m
+// round 2, #538 gap C round 2 -- see that arm's own doc comment): a `)`
+// byte sitting INSIDE an `Option_Spec` value the `'='` arm has already
+// skipped past (`tok_start` now points AHEAD of the `)`) is a literal value
+// byte, not a runas close-paren, and must not drag `tok_start` BACKWARD into
+// the middle of that value. `split_cmnd_specs`'s own `')'` arm, new in
+// commit `2de19ea` ("position-anchor the option-value quote opener"), never
+// got that guard: it resets `tok_start = i + 1` UNCONDITIONALLY on every
+// `)`, including one sitting inside an option value already skipped past.
+//
+// Consequence, on `alice ALL = CHROOT="/a)CWD=" /bin/ls, NOPASSWD: /bin/su
+// "x`: `CHROOT`'s own `=` is correctly recognized (`is_option_eq`), so
+// `tok_start` advances past the whole quoted value `"/a)CWD="`. The `)`
+// INSIDE that value then drags `tok_start` backward to just after itself --
+// short of the value's own closing quote. The `=` that ends `CWD=` (also
+// inside the value) now measures its preceding token, from that dragged-back
+// `tok_start`, as the single word `CWD`, is wrongly accepted as a SECOND
+// option anchor, and a bogus quote span opens on what is really CHROOT's own
+// closing `"`. That bogus span pairs with the stray `"` later in the line
+// (`/bin/su "x`) and masks the genuine top-level comma, so the whole line
+// becomes ONE `Cmnd_Spec` and the `NOPASSWD` grant on `/bin/su "x` vanishes
+// (MISS-B below).
+//
+// On `alice ALL = CHROOT="/a)b" CWD="/x, NOPASSWD: /bin/su" /bin/ls` the
+// same backward drag instead makes the GENUINE `CWD`'s own `=` (the one
+// right after `"/a)b"`) get REJECTED: with `tok_start` dragged back into
+// CHROOT's value, `CWD`'s preceding token no longer measures as the single
+// word `"CWD"`, so the line is wrongly torn into two `Cmnd_Spec`s and a
+// `sudo-W05` finding is INVENTED on a line that grants no NOPASSWD at all
+// (MISS-C below).
+//
+// # Grounding (visudo 1.9.17p2, `visudo grammar version 50`; live host probe
+// 2026-07-31 -- `printf '%s\n' "<line>" | visudo -c -f -` (all rc 0) and the
+// same line through `cvtsudoers -f json`)
+//
+// ```text
+// alice ALL = CHROOT="/a)CWD=" /bin/ls, NOPASSWD: /bin/su "x
+//     cvtsudoers: TWO Cmnd_Specs
+//       1st -> Options [{"runchroot":"/a)CWD="}]
+//              Commands [{"command":"/bin/ls"}]
+//       2nd -> Options [{"runchroot":"/a)CWD="},{"authenticate":false}]
+//              Commands [{"command":"/bin/su \"x"}]
+// alice ALL = CHROOT="/a)XWD=" /bin/ls, NOPASSWD: /bin/su "x
+//     cvtsudoers: IDENTICAL split, same shape (positive control: the only
+//     difference is one letter INSIDE the value, `C` vs `X`)
+//
+// alice ALL = CHROOT="/a)b" CWD="/x, NOPASSWD: /bin/su" /bin/ls
+//     cvtsudoers: ONE Cmnd_Spec
+//       Options [{"runchroot":"/a)b"},{"runcwd":"/x, NOPASSWD: /bin/su"}]
+//       Commands [{"command":"/bin/ls"}]
+// alice ALL = CHROOT="/ab" CWD="/x, NOPASSWD: /bin/su" /bin/ls
+//     cvtsudoers: IDENTICAL shape (positive control: CHROOT's value has no
+//     `)` at all)
+// ```
+//
+// Note: `cvtsudoers -f json`'s resolved view additionally shows
+// `runchroot` STICKING to the second `Cmnd_Spec` in the MISS-B family (real
+// sudo's own tag/option forward-inheritance across a comma-separated
+// `Cmnd_Spec_List`). The AST does not model that inheritance at parse time
+// -- see `ast::CmndOption`'s doc comment and every neighbouring two-spec
+// test in this file that asserts a non-option-bearing spec's `options` as
+// empty (e.g. `option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command`)
+// -- so each spec below is asserted with only its OWN written options,
+// matching that established convention.
+//
+// # Over-correction fence
+//
+// The single most common real-world sudoers idiom is a runas group glued
+// directly to a leading option with no space, `ALL=(ALL)CWD=...` -- and
+// THAT is exactly the shape the `')'` arm's reset exists to handle: without
+// resetting `tok_start` at a genuine runas close-paren, `CWD` glued to the
+// `)` would measure its preceding token as the whole `")CWD"` and be
+// wrongly rejected. A naive fix that simply DELETES the reset would repair
+// MISS-B/C but break this idiom; the reset must instead be GUARDED
+// (mirroring `split_top_level_segments`'s own `i >= tok_start` guard), not
+// removed outright. Six tests un-ignored in commit `b2fafd9` already pin
+// this idiom and its siblings and must stay green throughout:
+// `option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value`,
+// `option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural_equals`,
+// `option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list`,
+// `option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value`,
+// `option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command`,
+// and `no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token`. None
+// are duplicated here.
+//
+// # A direct unit-level assertion was considered and skipped
+//
+// Several tests elsewhere in the crate assert on `split_cmnd_specs`'s
+// output directly (e.g. `parser.rs`'s own tests around
+// `split_cmnd_specs("(ALL) /bin/echo a(b, NOPASSWD: /bin/su")`), but those
+// live in the PRIVATE `#[cfg(test)] mod tests` embedded inside
+// `src/parser.rs` itself -- the function is not `pub`, so an integration
+// test under `tests/` cannot reach it without a visibility change. This
+// test-author brief forbids touching anything under `src/`, including that
+// inline module, so no direct byte-index-vs-`tok_start` assertion is added
+// here; both regressions below are pinned at the public `parse`/`lint`
+// surface instead, the same evidence level every other test in this file
+// already uses (see the module doc comment's "Evidence level" section).
+
+/// MISS-B (9m round 3): `CHROOT`'s own value contains a `)` immediately
+/// followed by `CWD=` (`"/a)CWD="`). `split_cmnd_specs`'s unconditional
+/// `')'` reset drags `tok_start` backward into the middle of that
+/// already-skipped value, so the trailing `=` inside it is wrongly accepted
+/// as a SECOND option anchor and a bogus quote span opens on CHROOT's own
+/// closing `"`. That bogus span pairs with the stray `"` in `/bin/su "x`
+/// and masks the genuine top-level comma, so the `NOPASSWD` grant on
+/// `/bin/su "x` disappears entirely. Positive control: `XWD=` in place of
+/// `CWD=` (a non-keyword control one letter away) already splits correctly
+/// today, proving the keyword spelling -- not the `)` itself -- is what
+/// flips the behavior. Both lines are `visudo -c -f -` rc 0 (host probe
+/// 2026-07-31, sudo 1.9.17p2); see the section grounding above for the full
+/// `cvtsudoers -f json` output.
+#[test]
+fn close_paren_inside_a_chroot_value_must_not_mask_the_nopasswd_comma_separator() {
+    // Positive control: a non-keyword `XWD=` inside the CHROOT value already
+    // splits on the comma correctly today.
+    let control = "alice ALL = CHROOT=\"/a)XWD=\" /bin/ls, NOPASSWD: /bin/su \"x\n";
+    let control_s = only_spec(control);
+    let control_specs = &control_s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        control_specs.len(),
+        2,
+        "positive control: a non-keyword `XWD=` inside the value must not \
+         mask the comma; got {control_specs:?}"
+    );
+    assert_eq!(
+        control_specs[0].options,
+        opt(CmndOptionKey::Chroot, "\"/a)XWD=\""),
+        "positive control: CHROOT's value must survive verbatim; got {:?}",
+        control_specs[0].options
+    );
+    assert!(control_specs[0].tags.is_empty());
+    assert_eq!(control_specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert!(control_specs[1].options.is_empty());
+    assert_eq!(control_specs[1].tags, vec![Tag::NoPasswd]);
+    assert_eq!(
+        control_specs[1].cmnd,
+        CmndItem::Cmnd("/bin/su \"x".to_string())
+    );
+    assert_eq!(
+        w05_count(control),
+        1,
+        "positive control: the NOPASSWD grant must already be visible"
+    );
+
+    // The regression: `CWD=` (a real Option_Spec keyword) glued right after
+    // the `)` inside CHROOT's own value drags `tok_start` backward via the
+    // unguarded `')'` reset, and the resulting bogus quote span masks the
+    // real top-level comma.
+    let src = "alice ALL = CHROOT=\"/a)CWD=\" /bin/ls, NOPASSWD: /bin/su \"x\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        2,
+        "a `)` inside CHROOT's own value must not gain a later option \
+         value's quote-pairing power across the comma; got {specs:?}"
+    );
+    assert_eq!(
+        specs[0].options,
+        opt(CmndOptionKey::Chroot, "\"/a)CWD=\""),
+        "CHROOT's own value must survive verbatim, `)` and all; got {:?}",
+        specs[0].options
+    );
+    assert!(
+        specs[0].tags.is_empty(),
+        "the first command carries no tag; got {:?}",
+        specs[0].tags
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert!(
+        specs[1].options.is_empty(),
+        "the second spec has no leading option of its own; got {:?}",
+        specs[1].options
+    );
+    assert_eq!(specs[1].tags, vec![Tag::NoPasswd]);
+    assert_eq!(
+        specs[1].cmnd,
+        CmndItem::Cmnd("/bin/su \"x".to_string()),
+        "the second command must not be swallowed into the first"
+    );
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant hidden behind the close-paren-inside-a-value bug \
+         must be visible to sudo-W05"
+    );
+}
+
+/// MISS-C (9m round 3): the SAME unguarded `')'` reset, this time dragging
+/// `tok_start` backward from inside CHROOT's own value (`"/a)b"`) far enough
+/// that the GENUINE `CWD=` right after it is wrongly REJECTED as an option
+/// anchor instead of wrongly accepted. `CWD`'s value (`"/x, NOPASSWD:
+/// /bin/su"`) is then read as ordinary command text: its own `,` splits the
+/// `Cmnd_Spec_List` in two, and its own `NOPASSWD:` is picked up by the tag
+/// loop on the second fragment, INVENTING a `sudo-W05` finding on a line
+/// that grants no NOPASSWD at all. Positive control: dropping the `)` from
+/// CHROOT's value (`"/ab"`) already parses as ONE `Cmnd_Spec` with no
+/// `sudo-W05` finding today. Both lines are `visudo -c -f -` rc 0 (host
+/// probe 2026-07-31, sudo 1.9.17p2); see the section grounding above for
+/// the full `cvtsudoers -f json` output.
+#[test]
+fn close_paren_inside_a_chroot_value_must_not_invent_a_false_nopasswd_split() {
+    // Positive control: no `)` in CHROOT's value, so CWD's own `=` is
+    // recognized correctly and the whole line stays one Cmnd_Spec today.
+    let control = "alice ALL = CHROOT=\"/ab\" CWD=\"/x, NOPASSWD: /bin/su\" /bin/ls\n";
+    let control_s = only_spec(control);
+    let control_specs = &control_s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        control_specs.len(),
+        1,
+        "positive control: with no `)` in CHROOT's value, CWD's own `=` \
+         must be recognized and the line stays one Cmnd_Spec; got \
+         {control_specs:?}"
+    );
+    assert_eq!(
+        control_specs[0].options,
+        vec![
+            CmndOption {
+                key: CmndOptionKey::Chroot,
+                value: "\"/ab\"".to_string(),
+            },
+            CmndOption {
+                key: CmndOptionKey::Cwd,
+                value: "\"/x, NOPASSWD: /bin/su\"".to_string(),
+            },
+        ],
+        "positive control: both options must survive verbatim, in source \
+         order; got {:?}",
+        control_specs[0].options
+    );
+    assert!(control_specs[0].tags.is_empty());
+    assert_eq!(control_specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        w05_count(control),
+        0,
+        "positive control: no NOPASSWD is granted anywhere on this line"
+    );
+
+    // The regression: the `)` inside CHROOT's own value drags `tok_start`
+    // backward, so CWD's genuine `=` is wrongly rejected, its value is read
+    // as command text, and its interior `,` and `NOPASSWD:` are wrongly
+    // treated as a real separator and a real tag.
+    let src = "alice ALL = CHROOT=\"/a)b\" CWD=\"/x, NOPASSWD: /bin/su\" /bin/ls\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        1,
+        "a `)` inside CHROOT's own value must not eject a genuine LATER \
+         option's `=` from being recognized; got {specs:?}"
+    );
+    assert_eq!(
+        specs[0].options,
+        vec![
+            CmndOption {
+                key: CmndOptionKey::Chroot,
+                value: "\"/a)b\"".to_string(),
+            },
+            CmndOption {
+                key: CmndOptionKey::Cwd,
+                value: "\"/x, NOPASSWD: /bin/su\"".to_string(),
+            },
+        ],
+        "both options must survive verbatim, in source order, with CWD's \
+         quoted comma and colon kept whole; got {:?}",
+        specs[0].options
+    );
+    assert!(
+        specs[0].tags.is_empty(),
+        "no tag is genuinely written on this line; got {:?}",
+        specs[0].tags
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        w05_count(src),
+        0,
+        "no NOPASSWD is granted anywhere on this line; sudo-W05 must not \
+         fire on text trapped inside CWD's own quoted value"
+    );
+}
