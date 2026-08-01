@@ -1909,6 +1909,640 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Syscall-vs-Syscall `-F perm=` identity WAS a RAW STRING COMPARE prior to
+// round 3's fix (session 9m lane 1, round 2-3 ATL) -- unlike the
+// Watch-vs-Syscall fold pinned by the two tests just above (which
+// case/order-folds via `perm_axis_bits`/`perm_bits_from_field_value` because
+// the CANDIDATE is a `Watch`), a required row that is ITSELF `Syscall`-shaped
+// (not pure-path-watch-shaped, e.g. because it also restricts `-F auid=`) is
+// compared via `fields_match_excluding_key`, whose per-field value equality
+// is `super::value::canonical_value(ft, ..)` (called from that function's
+// `field_eq` closure). PRIOR to round 3, `classify.rs` bucketed
+// `FieldType::Perm` into `FieldValue::Opaque`, and `canonical_value`'s
+// `Opaque` arm is `Cow::Borrowed(raw.trim())` -- a raw string compare, so
+// `-F perm=X` vs `-F perm=x` (case) and `-F perm=xa` vs `-F perm=ax` (order)
+// wrongly compared as DIFFERENT. Round 3 added a `FieldValue::Perm(PermMask)`
+// variant (`classify.rs`/`canonical.rs`) that folds `-F perm=` into an
+// order-free bitmask instead, so `fields_match_excluding_key` now folds both
+// spellings together and the four tests below are all GREEN.
+//
+// Grounding: `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
+// `-F perm=` character before OR-ing it into a bitmask (`case AUDIT_PERM:
+// switch (tolower((unsigned char)v[i])) { case 'r': val |= AUDIT_PERM_READ;
+// ... }`, so BOTH case and letter order are semantically irrelevant at the
+// kernel: `x`/`X` -> 4, `xa`/`ax`/`XA` -> 12), and the kernel's own
+// `audit_compare_rule` (`kernel/auditfilter.c`) has NO `AUDIT_PERM` special
+// case, falling to the generic `default: if (a->fields[i].val !=
+// b->fields[i].val) return 1;` -- it compares the BITMASK, never the
+// spelling.
+//
+// V-230412/RHEL-08-030190 is a REAL shipped RHEL8 baseline row
+// (`stig_required.rs:186-189`), deliberately `Syscall`-only (the `-F auid=`
+// restriction takes it outside `is_pure_path_watch_shaped`, per this file's
+// existing `dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_
+// watch_shaped` doc comment) -- so it exercises the (pre-round-3, now fixed)
+// Syscall-vs-Syscall arm, not the already-fixed Watch-vs-Syscall fold two
+// tests above.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_perm_case_flip_wrongly_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=X -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=X (uppercase) must satisfy a required \
+         perm=x row -- libaudit case-folds every -F perm= letter before \
+         building the bitmask, so the two are the SAME kernel rule: {diags:?}"
+    );
+}
+
+#[test]
+fn watch_equivalent_recognizes_swapped_perm_letter_order_ax() {
+    // Positive-control anchor for the contract the next test pins: the
+    // Watch-vs-Syscall fold (candidate is a `Watch`) already order-folds via
+    // `perm_axis_bits`/`perm_bits_from_field_value` (`PermBits` is four
+    // independent bools, order-free by construction), so a candidate spelled
+    // `-p ax` (letters swapped) satisfies a required `perm=xa` row exactly
+    // like `-p xa` does (`watch_equivalent_recognizes_exec_perm_bit` above).
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-X",
+        "TEST-PERM-X",
+        "-a always,exit -F path=/etc/synthetic-x -F perm=xa -k synth",
+    )];
+    let rules = parse("-w /etc/synthetic-x -p ax -k synth\n");
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a watch with perm 'ax' (order-swapped) must satisfy a required \
+         perm='xa' path-watch row, same as 'xa' -- PermBits is order-free: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
+    // Pinned as ONE contract with `watch_equivalent_recognizes_swapped_perm_
+    // letter_order_ax` immediately above: that test already folds order/case
+    // via `perm_axis_bits`/`perm_bits_from_field_value` because the
+    // CANDIDATE is a `Watch`. Here BOTH sides are `Syscall`-shaped (required
+    // carries the same `-F auid=` restriction as V-230412 above), which
+    // routes through the UNFOLDED `fields_match_excluding_key` arm instead --
+    // the internal inconsistency IS the point: a fix that folds perm
+    // identity in one arm and not the other leaves this pair disagreeing
+    // with the Watch-vs-Syscall pair above despite both asserting the exact
+    // same kernel-level claim (perm='xa' with the letters swapped).
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=xa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=ax -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=ax (letters swapped) must satisfy a \
+         required perm=xa row, exactly like a `-w path -p ax` watch already \
+         satisfies a perm=xa row in the sibling test above: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round 3 (issues #600/#601 follow-up): PermMask fold DISTINCTNESS on the
+// Syscall-vs-Syscall arm. The two tests immediately above pin only that
+// EQUIVALENT perm spellings (case/order variants of the SAME kernel bitmask)
+// satisfy a required row. Nothing above pins the opposite direction: that a
+// candidate whose perm value is a GENUINELY DIFFERENT AUDIT_PERM bitmask
+// must still report the control MISSING. A `PermMask::to_letters`
+// (`value/classify.rs:107`) that folds every bitmask to a constant string
+// (or whose `&`/`!=` bit tests are flipped to `|`/`^`/`==`) would make
+// `classify.rs`'s `canonical_value` -- and so `fields_match_excluding_key`
+// (whose `field_eq` closure calls it) -- treat every perm value as equal, wrongly
+// crediting V-230412/RHEL-08-030190 for a candidate whose perms are simply
+// wrong. The two pairs below each toggle exactly one AUDIT_PERM bit
+// (READ=1, WRITE=2, EXEC=4, ATTR=8, `classify.rs:72-75`) relative to the
+// required row, so a broken single-bit test collapses exactly this pair.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_different_write_vs_read_perm_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=wa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=ra -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=ra (READ+ATTR, bits 1|8 = 9) must NOT \
+         satisfy a required perm=wa (WRITE+ATTR, bits 2|8 = 10) row -- these \
+         are DIFFERENT AUDIT_PERM bitmasks (READ != WRITE), not a case/order \
+         respelling of the same value: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=rw -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=rx (READ+EXEC, bits 1|4 = 5) must NOT \
+         satisfy a required perm=rw (READ+WRITE, bits 1|2 = 3) row -- \
+         different AUDIT_PERM bitmasks (WRITE != EXEC): {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round 7 (round-6 adversarial MISS-1, USER RULING): the Syscall-vs-
+// Syscall arm (`fields_match_excluding_key`'s `multiset_eq` fallback) never
+// folds `-F perm=` PREDICATE MULTIPLICITY at all --
+// rounds 4-5 taught `perm_axis_bits` to fold a chain of `-F perm=` predicates
+// to their minimum (subset partial order, `audit_match_perm`'s monotonicity),
+// but wired it into the Watch-vs-Syscall/Dir-vs-Syscall arms ONLY. So a
+// candidate that is kernel-identical to a required row except for a
+// REDUNDANT `-F perm=` predicate (e.g. `-F perm=x -F perm=x`, or `-F perm=x
+// -F perm=rx` where `x` subset-of `rx`) fails on `multiset_eq`'s `a.len() !=
+// b.len()` guard and is wrongly reported MISSING, even though
+// `kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once PER
+// `AUDIT_PERM` field and ANDs the results (`if (!result) return 0;`) -- the
+// SAME idempotent-conjunction argument `perm_axis_bits`'s doc comment already
+// makes for the other two arms.
+//
+// USER RULING (this round, in direct response to the finding above): extend
+// the fold to the Syscall-vs-Syscall arm. The locked matcher spec (the
+// `w06_with_baseline` "Grounded matcher spec" doc comment, which points to
+// `rules_match`'s doc comment for the full grounding) says to compare `-F`
+// fields "as a SET - same size", but its grounding cite (Part C.1/C.5) is
+// about ORDER, not multiplicity -- duplicate-predicate semantics were never
+// actually decided by that line. The arm already folds perm VALUE identity
+// (rounds 2-3, the `syscall_vs_syscall_perm_*` tests above).
+//
+// The reviewer separately warned that a GENERIC "dedupe `-F` predicates
+// before `multiset_eq`" repair would be WRONG: duplicate `-F path=` (and
+// other fields) have their OWN kernel semantics -- `kernel/audit_watch.c`'s
+// `audit_to_watch` returns `-EINVAL` when `krule->watch` is already set, so a
+// second `-F path=` predicate never LOADS at all, and crediting it as if it
+// were redundant would be a fail-open, not a fold. The fold must therefore be
+// scoped to `AuditField::Perm` specifically, never a generic multiset
+// dedupe -- pinned by the path-duplicate fence test below.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_exact_duplicate_perm_predicate_satisfies_v230412() {
+    // Item 1: exact duplicate `-F perm=x -F perm=x` -- idempotent
+    // conjunction, `match(x) AND match(x) == match(x)`. RED today
+    // (`multiset_eq` sees 5 candidate fields vs the required row's 4 and
+    // fails on length alone); must go GREEN once the Syscall-vs-Syscall arm
+    // folds `-F perm=` predicate multiplicity the same way the Watch-vs-
+    // Syscall/Dir-vs-Syscall arms already do via `perm_axis_bits`.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate repeating the SAME -F perm=x predicate twice must \
+         satisfy a required perm=x row -- audit_match_perm is called once \
+         per AUDIT_PERM field and ANDed, so an exact duplicate is a no-op \
+         conjunction: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_predicate_chain_folds_to_its_minimum_v230412() {
+    // Item 2: `-F perm=x -F perm=rx` -- `x` is a SUBSET of `rx`, so the
+    // chain's minimum is exactly `x`, the required mask (same monotonicity
+    // licence round 5 used for the Watch-vs-Syscall arm). RED today for the
+    // same length-mismatch reason as the exact-duplicate case above.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "a candidate spelling -F perm=x -F perm=rx (x subset-of rx) must \
+         satisfy a required perm=x row -- the chain's minimum is exactly x: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_stay_missing_v230412() {
+    // Item 3 (fence): `-F perm=x -F perm=wa` -- {x} and {w,a} are
+    // INCOMPARABLE (neither is a subset of the other), so the predicate set
+    // has no minimum and nothing licenses a fold (`perm_axis_bits` declines
+    // with `None` for exactly this shape). GREEN today (unfolded multiset_eq
+    // already rejects on length) and must STAY green: a correct fold must
+    // decline here, not fold to an intersection or "first wins".
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F perm=wa -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=x -F perm=wa has an INCOMPARABLE perm \
+         predicate pair (no minimum) and must NOT satisfy a required perm=x \
+         row: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_duplicate_perm_predicate_of_a_different_mask_stays_missing_v230412() {
+    // Item 4 (fence): `-F perm=rx -F perm=rx` -- a duplicate of a DIFFERENT
+    // mask. The fold gives {r,x} (the set's own minimum, since both
+    // predicates are equal), which is NOT the required {x}. Blocks a lazy
+    // "drop any extra perm predicate regardless of value" repair: the fold
+    // must actually compute the minimum and compare it against the required
+    // value, not just collapse duplicates and skip the comparison. GREEN
+    // today (unfolded length mismatch) and must STAY green.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F perm=rx -F perm=rx -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate repeating -F perm=rx twice folds to {{r,x}}, which is \
+         NOT the required {{x}} mask, and must stay MISSING: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_duplicate_path_predicate_is_not_folded_stays_missing_v230412() {
+    // Item 5 (fence, the sharpest one): a duplicate `-F path=` predicate,
+    // with perm left at the single required value. Pins that the fold is
+    // scoped to `AuditField::Perm` and must NOT become a generic multiset
+    // dedupe applied to every field type -- a second `-F path=` predicate
+    // never even LOADS at the kernel level (`kernel/audit_watch.c`'s
+    // `audit_to_watch` returns `-EINVAL` once `krule->watch` is already set),
+    // so crediting it would be a fail-open, not a fold. GREEN today (length
+    // mismatch) and must STAY green.
+    let baseline = vec![bl(
+        "V-230412",
+        "RHEL-08-030190",
+        "-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset \
+         -k privileged-priv_change",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/usr/bin/su -F path=/usr/bin/su -F perm=x -F auid>=1000 \
+         -F auid!=unset -k privileged-priv_change\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030190") && d.message.contains("is missing")),
+        "a candidate repeating -F path=/usr/bin/su twice must NOT be folded \
+         like a duplicate perm predicate would be -- a second -F path= never \
+         loads at the kernel level at all, so crediting it would be a \
+         fail-open: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601_regression_fence()
+{
+    // Item 6 (regression fence, round 7 follow-up): pins the half of
+    // `fields_match_excluding_key`'s doc comment (`stig_required.rs:
+    // 2049-2058`) that Item 3 above
+    // (`syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_
+    // stay_missing_v230412`) does NOT cover. Item 3 keeps the REQUIRED side
+    // single-valued (`perm=x`) while only the CANDIDATE carries an
+    // incomparable pair, so `perm_axis_bits(required)` is `Some` and the `if
+    // let (Some(r_perm), Some(c_perm))` guard is never even entered -- that
+    // case is caught by an ordinary field-count mismatch in the unfolded
+    // `multiset_eq`, independent of the fold.
+    //
+    // Here BOTH sides carry the SAME incomparable pair, `-F perm=rwa -F
+    // perm=wxa`: `rwa` = {r,w,a} and `wxa` = {w,x,a}. `r` appears only in the
+    // first and `x` only in the second, so neither is a subset of the other
+    // -- the set has NO MINIMUM (`perm_axis_bits`'s own doc comment's
+    // example verbatim, `stig_required.rs:1935-1938`). So BOTH
+    // `perm_axis_bits(required)` and `perm_axis_bits(candidate)` return
+    // `None`, the `if let (Some(r_perm), Some(c_perm))` guard is not entered
+    // on EITHER side, and the compare falls through to the ORIGINAL,
+    // unfolded `multiset_eq` over the full field set -- which trivially
+    // matches two byte-identical field lists.
+    //
+    // The hazard this pins: if a future change ever treated a `None` fold
+    // result as "the perm axis does not match" (instead of "no axis-level
+    // opinion, defer to the raw field compare"), two byte-identical rules
+    // each spelling `-F perm=rwa -F perm=wxa` would flip from satisfied to
+    // MISSING -- a fail-closed regression on literally identical input.
+    // GREEN today; must STAY green.
+    //
+    // Level chosen: `w06_with_baseline` with a SYNTHETIC baseline row
+    // (labeled accordingly, same pattern as `watch_equivalent_requires_
+    // exact_perm_match_not_superset` and its neighbors below), not the
+    // shipped `RHEL8_REQUIRED`/`RHEL9_REQUIRED`/`RHEL10_REQUIRED` tables:
+    // scanning every literal rule string in all three shipped tables for a
+    // second `-F perm=` occurrence finds ZERO rows with more than one `-F
+    // perm=` predicate at all, so no shipped required row can carry an
+    // incomparable pair -- the required side of this property cannot be
+    // constructed from real shipped content. This is the exact seam this
+    // file's own module doc (top of file) says `w06_with_baseline` is `pub`
+    // specifically to enable: injecting a small, real matcher exercise
+    // without depending on the shipped tables. It still runs the REAL
+    // public matcher end to end (not a direct call into the private
+    // `fields_match_excluding_key`/`perm_axis_bits`), which is the sharper
+    // pin whenever it is reachable at all -- and it is reachable here.
+    let baseline = vec![bl(
+        "SYNTHETIC-PERM-INCOMPARABLE",
+        "TEST-PERM-INCOMPARABLE",
+        "-a always,exit -F path=/etc/synthetic-incomparable-perm -F perm=rwa -F perm=wxa \
+         -k synth",
+    )];
+    let rules = parse(
+        "-a always,exit -F path=/etc/synthetic-incomparable-perm -F perm=rwa -F perm=wxa \
+         -k synth\n",
+    );
+    let diags = w06_with_baseline(&rules, LintOptions::default(), &baseline);
+    assert!(
+        diags.is_empty(),
+        "two BYTE-IDENTICAL rules each carrying the incomparable perm pair \
+         -F perm=rwa -F perm=wxa must still match each other -- perm_axis_bits \
+         declines (None) on both sides for a set with no minimum, which must \
+         fall through to the unfolded multiset_eq compare rather than being \
+         treated as a non-match: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round 8 (issue #601, a regression introduced by round 7's own fix): a
+// FAIL-OPEN on the OPERATOR axis, distinct from the VALUE axis the round-7
+// fold section above pins. `perm_axis_bits` (`stig_required.rs`, before its
+// operator-gate paragraph was added) selected `-F perm=` predicates with
+// `.filter(|f| f.field == AuditField::Perm)` and never inspected `f.op` at
+// all -- the round-7 fix wired that op-blind selection straight into the
+// Syscall-vs-Syscall arm of `fields_match_excluding_key`. So an ILLEGAL
+// OPERATOR on a `-F perm=` predicate (one the kernel/libaudit would refuse
+// to load at all) becomes
+// INVISIBLE to the matcher: the fold strips it by field NAME only, the same
+// way it strips a legal `-F perm=` predicate, and the candidate is wrongly
+// credited as satisfying the requirement. Direction: FAIL-OPEN --
+// RuleSteward reports a STIG control MET on a host where the audit rule
+// never loaded.
+//
+// Grounding, re-derived THIS round via a fresh userspace-only probe (no
+// netlink -- `audit_rule_fieldpair_data()` per its own doc comment in
+// `libaudit.h` only builds an in-memory `struct audit_rule_data`; the
+// netlink-sending function is the separate, never-called-here
+// `audit_add_rule_data()`), calling `audit_rule_fieldpair_data()` directly
+// against this host's freshly-installed `audit-libs-devel-4.1.4-1.fc44.
+// x86_64` (Fedora Linux 44, Cloud Edition):
+//
+//   perm=x, perm=wa                       -> rc  0   (loads)
+//   perm!=x, perm!=wa, perm>=wa, perm<wa,
+//   perm&wa, perm&=wa                     -> rc -29  (refused: any op but
+//                                                      `=` is illegal on
+//                                                      AUDIT_PERM)
+//   perm=zz     (bad letter set)          -> rc -14
+//   perm=rwxar  (too long)                -> rc -11
+//   perm!=zz                              -> rc -29  (operator is checked
+//                                                      BEFORE the letters)
+//   perm=x then perm!=x on ONE rule       -> rc1 0, rc2 -29, field_count
+//                                             stays 1 (the second pair
+//                                             never gets added)
+//
+// -14/-11 are DIFFERENT codes from -29, which is what makes -29 specifically
+// the operator gate rather than a generic "bad perm value" rejection. This
+// extends -- same host, same installed library, same refusal code -- the
+// identical claim already grounding the two MERGED sibling tests
+// `dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d`
+// (this file, above) and `path_wrong_operator_perm_not_equal_does_not_
+// satisfy_v230409_sudoers` (this file, below), which cite the same rc=-29
+// fact for `!=` alone; this round adds `>=`/`&`/`&=` and the same-rule chain
+// case.
+//
+// No committed EL differential-corpus row covers this axis: none of
+// `tests/corpus/auditd-oracle/el8.tsv`, `el9.tsv`, `el10.tsv`,
+// `XFAIL-ISSUES.md`, or `PROVENANCE.md` has a `perm!=`/`perm>=`/`perm&`/
+// `perm&=` row (checked directly). The corpus's one perm-axis XFAIL entry
+// (`f-perm-invalid-letter`, `XFAIL-ISSUES.md`'s "#601 auditd
+// permission-letter handling" section) is about LETTER-SET validity, a
+// different code path from operator legality. So this section's grounding
+// is the libaudit measurement above, not a corpus citation.
+//
+// V-281128/RHEL-10-500420 (`stig_required.rs:997-1000`, real shipped row:
+// "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
+// -F auid!=-1 -F key=privileged-chage") is used for items 1-4 via the real
+// `w06`/`TargetVersion::Rhel10` entry point, not a synthetic baseline: its
+// `-S all` list takes it outside `is_pure_path_watch_shaped` (which
+// requires an EMPTY `-S` list), so it always routes through the buggy
+// Syscall-vs-Syscall arm, never the already operator-gated Watch-vs-Syscall
+// fold (`is_pure_path_watch_shaped`'s own `AuditField::Path | AuditField::
+// Perm => f.op == CompareOp::Eq` guard, added for #600).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn syscall_vs_syscall_perm_not_equal_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 1: `-F perm!=x` in place of the required `-F perm=x`. A `!=`
+    // predicate never loads (rc -29 above) and must not satisfy V-281128.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm!=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm!=x rule can never load at the kernel level (audit_rule_ \
+         fieldpair_data refuses any op but `=` on AUDIT_PERM, rc -29) and \
+         must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_relational_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 2: `-F perm>=x`, a relational operator, same refusal code (-29)
+    // as `!=` -- the kernel rejects EVERY non-`=` operator on AUDIT_PERM,
+    // not just `!=`.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm>=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm>=x rule can never load at the kernel level either (rc \
+         -29) and must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_bitmask_operator_wrongly_satisfies_v281128_fail_open() {
+    // Item 3: `-F perm&x`, the bitmask operator (`&`/`&=` both measured at
+    // rc -29 above).
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm&x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a -F perm&x rule can never load at the kernel level either (rc \
+         -29) and must not satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_equal_then_not_equal_chain_wrongly_satisfies_v281128_fail_open() {
+    // Item 4: the mixed shape `-F perm=x -F perm!=x` on the SAME rule. The
+    // libaudit chain measurement above shows the SECOND fieldpair call
+    // (perm!=x) returns rc -29 and never gets added (field_count stays at
+    // 1, frozen on the first, legal `perm=x`) -- so this candidate rule
+    // never loads AT ALL, not merely "loads without the perm!=x half". It
+    // must not satisfy V-281128 either.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F perm!=x \
+         -F auid>=1000 -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500420") && d.message.contains("is missing")),
+        "a candidate spelling -F perm=x -F perm!=x on one rule never loads \
+         at all -- the illegal second pair aborts the whole rule at the \
+         kernel level (rc -29, field_count frozen at 1) -- and must not \
+         satisfy V-281128: {diags:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_not_equal_reported_missing_on_both_rhel8_and_rhel10_v230409_v281154() {
+    // Item 5, the sharpest assertion: whether a rule LOADS is a kernel/
+    // libaudit fact that cannot depend on how DISA spelled the required
+    // row. The SAME candidate text must be reported MISSING for BOTH
+    // targets:
+    //
+    // - RHEL8's V-230409/RHEL-08-030171 (`stig_required.rs:175-179`,
+    //   "-w /etc/sudoers -p wa -k identity") is Watch-shaped, so this
+    //   Syscall candidate routes through the (Watch, Syscall) arm via
+    //   `is_pure_path_watch_shaped`, which ALREADY guards the perm operator
+    //   (`AuditField::Perm => f.op == CompareOp::Eq`, the #600 fix) --
+    //   this half is a GREEN fence, confirming the round-8 fix must not
+    //   regress the already-correct arm.
+    // - RHEL10's V-281154/RHEL-10-500680 (`stig_required.rs:1138-1146`,
+    //   "-a always,exit -F arch=bXX -F path=/etc/sudoers -F perm=wa -F
+    //   key=logins") is ITSELF Syscall-shaped, so this candidate routes
+    //   through the buggy Syscall-vs-Syscall arm -- this half is RED today.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm!=wa -F key=logins\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm!=wa -F key=logins\n",
+    );
+
+    let diags_rhel8 = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags_rhel8
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F perm!=wa rule can never load at the kernel level and must not \
+         satisfy V-230409 on RHEL8, where the required row is Watch-shaped \
+         and already routes through the operator-gated is_pure_path_watch_ \
+         shaped check: {diags_rhel8:?}"
+    );
+
+    let diags_rhel10 = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        diags_rhel10
+            .iter()
+            .any(|d| d.message.contains("RHEL-10-500680") && d.message.contains("is missing")),
+        "the SAME -F perm!=wa rule must ALSO not satisfy V-281154 on RHEL10, \
+         where the required row is itself Syscall-shaped and routes through \
+         the (previously) unguarded Syscall-vs-Syscall arm -- whether a rule \
+         loads cannot depend on which RHEL major DISA wrote the requirement \
+         for: {diags_rhel10:?}"
+    );
+}
+
+#[test]
+fn syscall_vs_syscall_perm_equal_operator_still_satisfies_v281128() {
+    // Positive control: the legal `=` operator must keep satisfying
+    // V-281128 once the operator gate lands -- an exact copy of the
+    // required row's own perm predicate. GREEN today and must STAY green.
+    let rules = parse(
+        "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
+         -F auid!=-1 -F key=privileged-chage\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-10-500420")),
+        "a -F perm=x candidate (the legal operator) must still satisfy \
+         V-281128 -- the operator gate must reject illegal operators \
+         without breaking the legal one: {diags:?}"
+    );
+}
+
 #[test]
 fn watch_equivalent_requires_exact_perm_match_not_superset() {
     // Grounding control (not a mutation killer by itself, both mutant and
@@ -2776,5 +3410,947 @@ fn dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d() {
         "a -F perm=WA (uppercase) rule must satisfy V-230410's perm=wa \
          requirement -- libaudit case-folds perm letters before comparing: \
          {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #600: the path twin's fail-open (`is_pure_path_watch_shaped`). NO corpus
+// row exists for this issue; these are fresh integration tests, mirroring
+// the dir twin's MISS-1/MISS-3/MISS-4 tests above but on V-230409/
+// RHEL-08-030171 (`-w /etc/sudoers -p wa -k identity`,
+// `src/lints/stig_required.rs:175-179`) -- the PLAIN-FILE twin of the row
+// the dir tests use (V-230410/RHEL-08-030172, `/etc/sudoers.d/`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_wrong_operator_path_not_equal_does_not_satisfy_v230409_sudoers() {
+    // #600 MISS-1 analog for the path twin (mirrors
+    // `dir_wrong_operator_not_equal_does_not_satisfy_v230410_sudoers_d`
+    // above): `kernel/audit_watch.c`'s `audit_to_watch` rejects any op but
+    // `=` on an `AUDIT_WATCH` (`path`) predicate at the kernel level -- a
+    // `-F path!=` rule never loads either, so it must not satisfy the
+    // path-shaped requirement V-230409/RHEL-08-030171.
+    //
+    // TWO operators are driven through the PUBLIC entry point here, not
+    // just `!=`: `au-E02` deliberately treats `-F path>=`/`-F path>`/etc.
+    // as CLEAN (`e02_path_relational_and_bitmask_all_clean`,
+    // `tests/test_lints_operator_validity.rs:717`, grounded at
+    // `libaudit.c:1804-1811` -- userspace has no operator check on
+    // AUDIT_WATCH at all), so the Path axis has NO downstream lint net the
+    // way Perm partially does. A guard checking only `op != Ne` (instead of
+    // `op == Eq`) would pass the `!=` case below while wrongly accepting
+    // `>=` and reporting V-230409 SATISFIED for a rule that can never load.
+    let rules_bang_eq = parse(
+        "-a always,exit -F arch=b32 -F path!=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path!=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags_bang_eq = w06(
+        &rules_bang_eq,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_bang_eq
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path!= rule can never load at the kernel level (audit_to_watch \
+         rejects any op but `=`) and must not satisfy V-230409: {diags_bang_eq:?}"
+    );
+
+    let rules_relational = parse(
+        "-a always,exit -F arch=b32 -F path>=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path>=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags_relational = w06(
+        &rules_relational,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_relational
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path>= rule can never load at the kernel level either -- the \
+         kernel rejects EVERY non-`=` operator, not just `!=` -- and must \
+         not satisfy V-230409: {diags_relational:?}"
+    );
+}
+
+#[test]
+fn path_wrong_operator_perm_not_equal_does_not_satisfy_v230409_sudoers() {
+    // #600 MISS-3 analog (mirrors
+    // `dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d`
+    // above): `lib/libaudit.c`'s AUDIT_PERM case returns `-EAU_OPEQ` for any
+    // op but `=` (verified rc=-29 against the installed audit-4.1.4
+    // libaudit) -- a `-F perm!=` rule never loads either, on the path arm
+    // just as on the dir arm. Both operator cases are needed: a fix guarding
+    // only Path leaves Perm open, and vice versa.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm!=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm!=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F perm!= rule can never load at the kernel level (EAU_OPEQ \
+         rejects any op but `=`) and must not satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_two_path_predicates_does_not_satisfy_v230409_regardless_of_field_order() {
+    // #600 MISS-4 analog (mirrors
+    // `dir_syscall_form_with_two_dir_predicates_does_not_satisfy_v230410_
+    // regardless_of_field_order` above): `audit_to_watch` returns -EINVAL
+    // once a rule's watch pointer is already set -- one location watch per
+    // rule is a hard kernel limit -- so a rule naming `-F path=` TWICE never
+    // loads no matter which value comes first. Pinned in BOTH field orders:
+    // the correct-path-FIRST order is the one that is RED today (
+    // `watch_equivalent_axes_match`'s `.find()` picks the first Path
+    // predicate, so today it matches and wrongly credits the requirement);
+    // the reversed order already passes. Keeping both in one test is what
+    // makes a `.find()`-order-dependent implementation impossible to sneak
+    // through.
+    let rules_path_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n",
+    );
+    let diags_path_first = w06(
+        &rules_path_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_path_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a -F path= rule naming the CORRECT path FIRST but a second, wrong \
+         -F path= predicate must not satisfy V-230409 -- the rule never \
+         loads at all: {diags_path_first:?}"
+    );
+
+    let rules_path_second = parse(
+        "-a always,exit -F arch=b32 -F path=/tmp/nope -F path=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/tmp/nope -F path=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags_path_second = w06(
+        &rules_path_second,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_path_second
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order (wrong -F path= predicate FIRST, correct \
+         one second) must produce the SAME 'missing' verdict, not flip to \
+         satisfied: {diags_path_second:?}"
+    );
+}
+
+#[test]
+fn path_well_formed_syscall_pair_still_satisfies_v230409_sudoers() {
+    // Positive control (F6): without this, an "always report missing"
+    // implementation would pass the three tests above vacuously.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a well-formed -F path=/etc/sudoers -F perm=wa syscall pair must \
+         satisfy V-230409/RHEL-08-030171: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round (issue #601 follow-up, MISS-3): duplicate `-F perm=` predicates.
+// Distinct from the two-Path/two-Dir tests above, which `count() == 1`
+// guards on Path/Dir already close -- there is NO analogous multiplicity
+// guard on Perm in EITHER `is_pure_path_watch_shaped` or
+// `is_pure_dir_watch_shaped`, so a field set with two DIFFERENT-valued
+// `-F perm=` predicates still passes the shape test, and
+// `watch_equivalent_axes_match`/`dir_watch_equivalent_axes_match`'s
+// `.find(|f| f.field == AuditField::Perm)` picks whichever ONE happens to
+// come first -- the verdict flips on FIELD ORDER. The kernel loads BOTH perm
+// predicates (`kernel/auditfilter.c`'s `audit_data_to_entry` has no dedup
+// for AUDIT_PERM, only `if (f->val & ~15) return -EINVAL`) and CONJOINS them
+// (`kernel/auditsc.c`'s `audit_filter_rules`: `case AUDIT_PERM: result =
+// audit_match_perm(ctx, f->val);` then `if (!result) return 0;` per field),
+// so the rule means "perm matches {w,a} AND perm matches {r}", not the
+// simple `-p wa` the required row asks for -- it is "missing" in BOTH field
+// orders. This also violates the locked field-order-insensitive decision
+// (`fields_match_excluding_key`'s grounding, Part C.1).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_regardless_of_field_order() {
+    // The correct-value-FIRST order is the one that is RED today:
+    // `watch_equivalent_axes_match`'s `.find()` picks the first Perm
+    // predicate ("wa", matching the required row), so today it wrongly
+    // credits the requirement. The reversed order ("r" first) already
+    // reports missing. Keeping both in one test is what makes a
+    // `.find()`-order-dependent implementation impossible to sneak through.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=r -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=r -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "a rule naming the CORRECT perm value FIRST but a second, different \
+         -F perm= predicate must not satisfy V-230409 -- the two predicates \
+         conjoin at the kernel level, they do not mean a simple -p wa watch: \
+         {diags_wa_first:?}"
+    );
+
+    let rules_r_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=r -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=r -F perm=wa -k identity\n",
+    );
+    let diags_r_first = w06(
+        &rules_r_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_r_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order (a different -F perm= predicate FIRST, \
+         the correct one second) must produce the SAME 'missing' verdict, \
+         not flip to satisfied: {diags_r_first:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_two_perm_predicates_does_not_satisfy_v230410_regardless_of_field_order() {
+    // The Dir-flavored twin of the test above: `is_pure_dir_watch_shaped`
+    // has the identical gap (a Dir-count guard, no Perm-count guard), and
+    // `dir_watch_equivalent_axes_match`'s `.find()` on Perm is exactly as
+    // order-dependent as the path arm's.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=r -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=r -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "a rule naming the CORRECT perm value FIRST but a second, different \
+         -F perm= predicate must not satisfy V-230410: {diags_wa_first:?}"
+    );
+
+    let rules_r_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=r -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=r -F perm=wa -k identity\n",
+    );
+    let diags_r_first = w06(
+        &rules_r_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_r_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+        "reversing the field order (a different -F perm= predicate FIRST, \
+         the correct one second) must produce the SAME 'missing' verdict, \
+         not flip to satisfied: {diags_r_first:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v230409_sudoers() {
+    // Positive control for the MISS-3 pair above: two Perm predicates with
+    // the IDENTICAL value are semantically equivalent to a single `-p wa`
+    // watch (`perm=wa AND perm=wa` is just `perm=wa`) and must STAY
+    // CREDITED. Without this, an implementer could satisfy the two tests
+    // above with a blanket "reject any field set naming Perm more than
+    // once", which would ALSO wrongly reject this genuinely-equivalent rule.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "two IDENTICAL -F perm=wa predicates are semantically equivalent to \
+         a single -p wa watch and must still satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v230410_sudoers_d() {
+    // The Dir-flavored twin of the positive control above, for the same
+    // reason: a blanket "reject Perm named more than once" fix applied to
+    // the dir arm must not break a genuinely-equivalent identical-duplicate
+    // rule either.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=wa -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "two IDENTICAL -F perm=wa predicates are semantically equivalent to \
+         a single -p wa watch and must still satisfy V-230410: {diags:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round 4 (issue #601/#600 follow-up): `perm_axis_bits` demands EQUALITY
+// where the kernel is MONOTONE -- a REGRESSION introduced by the round-2 fix
+// (commit d21c7aa) above. Round 2 correctly closed the "different predicates
+// get first-wins-credited" bug by requiring every `-F perm=` predicate to be
+// byte-identical (see `perm_axis_bits`'s doc comment in
+// `stig_required.rs`), but "different" is not the same as "incomparable":
+// `kernel/auditsc.c`'s `audit_match_perm` is monotone non-decreasing in its
+// mask argument (every branch reduces to `mask & <event-determined
+// constant>`), so `m1 subset-of m2` implies `match(m1) implies match(m2)`.
+// A conjunction of two SUBSET-COMPARABLE perm predicates is therefore
+// exactly equivalent to the smaller (stricter) one alone -- `perm=wa AND
+// perm=rwxa` collapses to `perm=wa`, not to "no representable value at
+// all". Before round 2, first-wins happened to get this SPECIFIC case right
+// by accident (it never checked the second predicate); round 2's
+// equality-fold regressed it to "missing" in both field orders, which is
+// why this is fixed as a regression here rather than filed as a follow-up.
+//
+// The correct rule: if the perm masks are TOTALLY ORDERED by subset, the
+// axis value is the MINIMUM of the chain; otherwise -- genuinely
+// incomparable masks, as in the pre-existing
+// `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
+// regardless_of_field_order` test above ({w,a} vs {r}, neither subset of
+// the other) -- the fold correctly declines (`None`) and the row stays
+// "missing".
+//
+// What each test below actually discriminates (stated precisely, not by
+// aspiration): tests 1 and 2 are SATISFIED assertions over SUBSET-COMPARABLE
+// pairs. In each, the reversed-field-order half kills first-wins on its own
+// (`.find()` would pick the superset predicate on that order and compare it
+// to the required value via exact `==`, wrongly reporting missing); BOTH
+// orders of each kill the round-2 equality-fold regression under test here
+// (it declines whenever the two predicates differ at all, regardless of
+// order, which is why both are RED today). Test 2 additionally uses an
+// INDEPENDENT chain against a DIFFERENT required row and the dir-form call
+// site, so the fix cannot be a special case of test 1's specific superset.
+// Neither test 1 nor test 2 can discriminate a correct "subset chain ->
+// minimum" fold from a naive "fold via bitwise intersection, then compare
+// via ==" fold: for any pair where one mask is a subset of the other,
+// intersection(A, B) == min(A, B) by definition, so the two folds provably
+// agree on every input either test could construct -- no SATISFIED-subset
+// test can ever tell them apart. Test 3 below is the one that can: it uses
+// an INCOMPARABLE pair whose intersection happens to be non-empty and to
+// equal the required value, which is exactly the shape needed to separate
+// the two folds (the pre-existing incomparable-pair test referenced above
+// cannot do this either, since its {w,a}-vs-{r} pair intersects to EMPTY,
+// which also disagrees with the required value, so "decline" and "naive
+// intersection" coincidentally land on the same missing verdict there too).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_subset_comparable_perm_predicates_satisfies_v230409_regardless_of_field_order()
+ {
+    // {w,a} (the required V-230409 value) subset-of {r,w,x,a}: the
+    // conjunction `perm=wa AND perm=rwxa` collapses to `perm=wa`, which IS
+    // the required row, in BOTH field orders. Discriminates: the reversed
+    // order below (rwxa-first) on its own kills first-wins (it would pick
+    // rwxa, compare it to the required wa via exact equality, and wrongly
+    // report missing); both orders kill the round-2 equality-fold
+    // regression (it declines on any two differing predicates, regardless
+    // of which comes first). Does NOT discriminate a naive intersection
+    // fold from the correct minimum fold -- see the section doc comment
+    // above and test 3 below for why no SATISFIED-subset test can.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwxa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=rwxa are SUBSET-COMPARABLE ({{w,a}} subset-of \
+         {{r,w,x,a}}) -- audit_match_perm is monotone non-decreasing in its \
+         mask, so this conjunction collapses to the smaller mask (perm=wa) \
+         and must satisfy V-230409, not report missing: {diags_wa_first:?}"
+    );
+
+    let rules_rwxa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwxa -F perm=wa -k identity\n",
+    );
+    let diags_rwxa_first = w06(
+        &rules_rwxa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_rwxa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "reversing the field order (the superset predicate FIRST, the \
+         exact required value second) must produce the SAME satisfied \
+         verdict, not flip to missing: {diags_rwxa_first:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_a_different_subset_comparable_perm_chain_satisfies_v230410_regardless_of_field_order()
+ {
+    // A SECOND, independent subset chain against a DIFFERENT required row
+    // (V-230410/RHEL-08-030172, `/etc/sudoers.d`) exercised through the
+    // DIR-flavored call site (`dir_watch_equivalent_axes_match`), so the
+    // fix is pinned as "minimum of a subset chain" in general -- not as a
+    // special case of the {w,a}-subset-of-{r,w,x,a} pair above: {w,a} (the
+    // required value) subset-of {r,w,a} (a superset that adds ONLY 'r',
+    // never 'x' -- a genuinely different chain from V-230409's above).
+    // Discriminates exactly as test 1 above: the reversed order
+    // (superset-first) on its own kills first-wins; both orders kill the
+    // round-2 equality-fold regression. Also does NOT discriminate a naive
+    // intersection fold from the correct minimum fold, for the same
+    // structural reason (subset-comparable inputs make the two folds agree
+    // by definition) -- see test 3 below for the test that does.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "perm=wa AND perm=rwa are SUBSET-COMPARABLE ({{w,a}} subset-of \
+         {{r,w,a}}) -- this conjunction collapses to perm=wa and must \
+         satisfy V-230410, not report missing: {diags_wa_first:?}"
+    );
+
+    let rules_superset_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wa -k identity\n",
+    );
+    let diags_superset_first = w06(
+        &rules_superset_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_superset_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "reversing the field order must produce the SAME satisfied \
+         verdict, not flip to missing: {diags_superset_first:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_required_value_still_does_not_satisfy_v230409_regardless_of_field_order()
+ {
+    // THE test that discriminates "decline on incomparable masks" (correct)
+    // from "fold multiple -F perm= predicates via bitwise intersection,
+    // then compare via ==" (wrong, ungrounded): {r,w,a} and {w,x,a} are
+    // INCOMPARABLE -- neither is a subset of the other ('r' is only in the
+    // first, 'x' only in the second) -- so `audit_match_perm`'s
+    // monotonicity gives no single mask equivalent to their conjunction,
+    // and the fold must decline. Their bitwise INTERSECTION, however, is
+    // exactly {w,a} -- V-230409's required value -- so a naive
+    // intersection-fold would wrongly report this SATISFIED.
+    //
+    // Neither test 1 nor test 2 above can catch that bug: intersection
+    // provably equals the minimum on any SUBSET-COMPARABLE input, so those
+    // two tests can never tell the two folds apart (see the section doc
+    // comment above). Nor can the pre-existing
+    // `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
+    // regardless_of_field_order` test: its {w,a}-vs-{r} pair intersects to
+    // EMPTY, which also disagrees with the required {w,a}, so "decline" and
+    // "naive intersection" coincidentally land on the same missing verdict
+    // there too. This pair -- incomparable, but with a NON-EMPTY
+    // intersection that happens to equal a real required value -- is the
+    // only shape that actually separates the two folds.
+    //
+    // Consequently this test currently PASSES (is GREEN) under BOTH the
+    // pre-fix round-2 equality-fold (declines because {r,w,a} != {w,x,a})
+    // and the corrected monotone-min-or-decline fold (declines because the
+    // masks are incomparable) -- it is not a regression pin like tests 1
+    // and 2, but a forward guard: it exists so that whichever fix lands for
+    // the round-4 regression above, it cannot silently be (or become) an
+    // intersection fold without this test catching it.
+    let rules_rwa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_rwa_first = w06(
+        &rules_rwa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_rwa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=rwa AND perm=wxa are INCOMPARABLE ({{r,w,a}} vs {{w,x,a}}, \
+         neither a subset of the other) even though their intersection \
+         ({{w,a}}) equals the required V-230409 value -- a fold that \
+         answers via bitwise intersection would wrongly credit this; the \
+         correct fold declines (no single equivalent watch exists for an \
+         incomparable pair) and V-230409 must stay missing: \
+         {diags_rwa_first:?}"
+    );
+
+    let rules_wxa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wxa -F perm=rwa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wxa -F perm=rwa -k identity\n",
+    );
+    let diags_wxa_first = w06(
+        &rules_wxa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        diags_wxa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "reversing the field order must produce the SAME missing verdict: \
+         {diags_wxa_first:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ATL round 5 (issue #601 follow-up, adversarial MISS-1): `perm_axis_bits`
+// demands a TOTAL ORDER (every pair pairwise subset-comparable) where the
+// kernel conjunction only requires the predicate set to have a MINIMUM (one
+// element that is a subset of every other element). The two conditions
+// coincide at |S| == 2 -- exactly why every round-4 test above, all
+// two-predicate, missed this -- but diverge at |S| >= 3: a set can have a
+// minimum while also containing an incomparable PAIR that never touches the
+// minimum. `{w,a}, {r,w,a}, {w,x,a}` has minimum `{w,a}` (a subset of both
+// other elements), yet `{r,w,a}` and `{w,x,a}` are themselves incomparable
+// ('r' only in the first, 'x' only in the second). The current pairwise loop
+// finds that one incomparable pair and declines the WHOLE conjunction --
+// a bogus "missing" finding on a genuinely compliant ruleset, reproduced
+// end-to-end against the real shipped RHEL8_REQUIRED V-230409/V-230410 rows,
+// through both `watch_equivalent_axes_match` and
+// `dir_watch_equivalent_axes_match`, and both field orders.
+//
+// The correct rule: fold to a CANDIDATE minimum first, then verify that
+// candidate really is a subset of EVERY element in the set; only then is the
+// fold licensed. "Total order" is a strictly stronger, unnecessary condition.
+//
+// The tests below also fence the fix against a tempting-but-wrong repair:
+// deleting the pairwise loop and keeping only the running min-fold (with no
+// final re-verification) returns a LOCALLY minimal element, not a true
+// minimum, whenever the set has no minimum at all --
+// `path_syscall_form_with_wa_and_rw_does_not_satisfy_v230409` below is the
+// case that catches it.
+//
+// Framing note: every `does_not_satisfy` assertion below documents the
+// CURRENT posture (decline when no minimum exists), not a claim that
+// declining is provably correct -- `audit_match_perm`'s monotonicity is
+// silent on an incomparable set; declining is the conservative choice.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_with_a_perm_chain_that_has_a_minimum_but_is_not_a_total_order_satisfies_v230409_regardless_of_field_order()
+ {
+    // {w,a}, {r,w,a}, {w,x,a}: {w,a} (the required V-230409 value) is a
+    // subset of BOTH other elements, so the conjunction has a MINIMUM and
+    // collapses to it -- even though {r,w,a} and {w,x,a} are themselves
+    // INCOMPARABLE ('r' only in the first, 'x' only in the second), so this
+    // three-element set is NOT totally ordered. RED today for BOTH orders
+    // (the pairwise loop scans every pair regardless of which element the
+    // source text lists first, so it finds the incomparable {r,w,a}/{w,x,a}
+    // pair and declines either way); must go GREEN once the fold checks for
+    // a minimum rather than a total order.
+    let rules_min_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_min_first = w06(
+        &rules_min_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=rwa AND perm=wxa: {{w,a}} is a subset of both \
+         {{r,w,a}} and {{w,x,a}}, so the conjunction has a minimum ({{w,a}}) \
+         even though {{r,w,a}} and {{w,x,a}} are themselves incomparable -- \
+         this must satisfy V-230409 (demanding a TOTAL ORDER is a stronger, \
+         wrong condition), not report missing: {diags_min_first:?}"
+    );
+
+    let rules_min_last = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_min_last = w06(
+        &rules_min_last,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_last
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "the SAME three predicates with the minimum ({{w,a}}) listed LAST \
+         (after the two incomparable elements) must produce the SAME \
+         satisfied verdict, not flip to missing: {diags_min_last:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_with_a_perm_chain_that_has_a_minimum_but_is_not_a_total_order_satisfies_v230410_regardless_of_field_order()
+ {
+    // The Dir-flavored twin of the test above, through
+    // `dir_watch_equivalent_axes_match` against V-230410/RHEL-08-030172
+    // (`/etc/sudoers.d`): the same three-predicate, minimum-exists-but-not-
+    // totally-ordered set, exercised through the OTHER call site so the fix
+    // cannot be a special case of the path arm alone.
+    let rules_min_first = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F perm=rwa -F perm=wxa -k identity\n",
+    );
+    let diags_min_first = w06(
+        &rules_min_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "perm=wa AND perm=rwa AND perm=wxa via the dir-form call site: the \
+         same minimum-exists-but-not-totally-ordered set as V-230409 above, \
+         must satisfy V-230410, not report missing: {diags_min_first:?}"
+    );
+
+    let rules_min_last = parse(
+        "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=rwa -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_min_last = w06(
+        &rules_min_last,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_min_last
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030172")),
+        "the minimum listed LAST must produce the SAME satisfied verdict \
+         through the dir-form call site too: {diags_min_last:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_rw_does_not_satisfy_v230409() {
+    // {w,a} and {r,w} are INCOMPARABLE (neither a subset of the other: 'a'
+    // only in the first, 'r' only in the second) -- this set has NO
+    // minimum, so nothing licenses folding the conjunction to a single
+    // mask. Per the framing note above (section doc comment), the current
+    // documented posture is to decline when no minimum exists; V-230409
+    // stays missing under that posture.
+    //
+    // This is the test that separates the CORRECT fix (compute a candidate
+    // minimum, then verify it really is a subset of every element) from a
+    // tempting-but-wrong one (delete the pairwise total-order loop and keep
+    // only the running min-fold, with no final verification pass): a naive
+    // running fold over `[wa, rw]` starts at `wa`, checks whether `rw` is a
+    // subset of `wa` (it is not -- 'r' is only in `rw`), so `wa` is NEVER
+    // challenged again and the fold returns `Some({w,a})` -- wrongly
+    // crediting V-230409 even though `{w,a}` is not a subset of `{r,w}` and
+    // the pair has no real minimum. Only a final verification step (checking
+    // the candidate against every element) catches this.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rw -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rw -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=rw are INCOMPARABLE ({{w,a}} vs {{r,w}}, neither a \
+         subset of the other) so the set has no minimum -- V-230409 must \
+         stay missing under the documented decline-when-no-minimum posture: \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_ra_does_not_satisfy_v230409() {
+    // {w,a} and {r,a} are INCOMPARABLE ('w' only in the first, 'r' only in
+    // the second); no minimum exists, so V-230409 stays missing under the
+    // documented decline-when-no-minimum posture.
+    //
+    // This pair isolates the WRITE conjunct of `perm_bits_is_subset`
+    // (its `(!a.write || b.write)` term): `{w,a}` has write, `{r,a}` does
+    // not, and every other conjunct already agrees (both lack exec; both
+    // have attr; read is vacuously satisfied since `{w,a}` lacks read).
+    // Deleting the `!` on the write conjunct (a round-5 mutation survivor)
+    // turns `is_subset(wa, ra)` from `false` to `true`, which defeats the
+    // total-order decline and lets the min-fold wrongly settle on `wa` --
+    // flipping this test's verdict from missing to satisfied.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=ra -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=ra -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=ra are INCOMPARABLE ({{w,a}} vs {{r,a}}, neither a \
+         subset of the other) so V-230409 must stay missing: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_and_wx_does_not_satisfy_v230409() {
+    // {w,a} and {w,x} are INCOMPARABLE ('a' only in the first, 'x' only in
+    // the second); no minimum exists, so V-230409 stays missing under the
+    // documented decline-when-no-minimum posture.
+    //
+    // This pair isolates the ATTR conjunct of `perm_bits_is_subset`
+    // (its `(!a.attr || b.attr)` term): both share write; read and exec
+    // are vacuously satisfied (the deciding side lacks the bit in each
+    // case); only attr disagrees (`{w,a}` has it, `{w,x}` does not).
+    // Deleting the `!` on the attr conjunct (a round-5 mutation survivor)
+    // turns `is_subset(wa, wx)` from `false` to `true`, defeating the
+    // total-order decline and letting the min-fold wrongly settle on `wa`
+    // -- flipping this test's verdict from missing to satisfied.
+    let rules = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wx -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wx -k identity\n",
+    );
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+        "perm=wa AND perm=wx are INCOMPARABLE ({{w,a}} vs {{w,x}}, neither a \
+         subset of the other) so V-230409 must stay missing: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exec_conjunct_order_dependently()
+ {
+    // {w,a} subset-of {w,x,a} (adds only 'x'): the conjunction collapses to
+    // {w,a}, which IS V-230409's required value -- already SATISFIED under
+    // the current (pre-round-5) code, since a two-element chain is trivially
+    // a total order. This test exists to pin FINDING 3: deleting the WHOLE
+    // `&& (!a.exec || b.exec)` conjunct from `perm_bits_is_subset` survives
+    // the entire frozen suite as of round 4 ("remove a conjunct" is not a
+    // `cargo mutants` operator, so no gate run will ever report it).
+    //
+    // The `wa`-FIRST order is the one that actually catches it: the running
+    // min-fold starts at `wa` (min), then considers `wxa` as a candidate --
+    // `is_subset(wxa, wa)` must be `false` (wxa's exec bit is not in wa) to
+    // keep `min` at `wa`. Deleting the exec conjunct makes
+    // `is_subset(wxa, wa)` wrongly evaluate to `true` (read/write/attr all
+    // still agree), so `min` becomes `wxa` instead, and the fold returns
+    // `Some({w,x,a})` -- which does NOT equal the required `{w,a}` --
+    // flipping this test's verdict from satisfied to missing.
+    let rules_wa_first = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=wxa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=wxa -k identity\n",
+    );
+    let diags_wa_first = w06(
+        &rules_wa_first,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_wa_first
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "perm=wa AND perm=wxa: {{w,a}} subset-of {{w,x,a}} collapses to \
+         {{w,a}}, which is V-230409's required value: {diags_wa_first:?}"
+    );
+
+    // The REVERSED order (`wxa` first) does NOT, on its own, catch the
+    // dropped-exec-conjunct mutant: the fold starts at `wxa` (min), then
+    // considers `wa` as a candidate -- `is_subset(wa, wxa)` is `true` both
+    // with and without the exec conjunct (`wa`'s exec bit is already false,
+    // so that term is vacuously true either way), so `min` becomes `wa`
+    // regardless of the mutant. This assertion exists only to confirm
+    // order-independence of the CORRECT verdict, not to pin FINDING 3 a
+    // second time.
+    let rules_reversed = parse(
+        "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n\
+         -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n",
+    );
+    let diags_reversed = w06(
+        &rules_reversed,
+        LintOptions::default(),
+        Some(TargetVersion::Rhel8),
+    );
+    assert!(
+        !diags_reversed
+            .iter()
+            .any(|d| d.message.contains("RHEL-08-030171")),
+        "reversing the field order must produce the SAME satisfied verdict: \
+         {diags_reversed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 9m lane 1 (fixed in passing alongside this lane's #601 work, at
+// the user's ruling): the SAME field-name-only fail-open as #600's Path/Perm
+// axes, but on the Arch axis of `is_pure_path_watch_shaped`/
+// `is_pure_dir_watch_shaped`'s allowed-field-set conjunct
+// (`AuditField::Arch | AuditField::Key => true`, "(with any op)"). Measured
+// at the CLI (`--target rhel8`) before this fix: `-a always,exit -F
+// path=/etc/sudoers -F perm=wa -F arch>=b64 -k identity` gets BOTH an au-E02
+// "invalid operator" error (arch's own operator legality is a SEPARATE
+// lint's job, unaffected by this fix) AND a wrongly-SATISFIED verdict on
+// V-230409/RHEL-08-030171 -- the rule never loads at the kernel level.
+//
+// Grounding: a userspace-only `audit_rule_fieldpair_data()` probe (no
+// netlink -- the function only builds an in-memory `struct
+// audit_rule_data`; the netlink-sending function is the separate,
+// never-called `audit_add_rule_data()`) against the installed
+// `audit-libs-4.1.4-1.fc44.x86_64`:
+//
+//   arch=b64, arch!=b64                              -> rc  0  (both LOAD)
+//   arch<b64, arch>b64, arch<=b64, arch>=b64,
+//   arch&b64, arch&=b64                              -> rc -13 (refused)
+//
+// The committed EL differential corpus (`tests/corpus/auditd-oracle/
+// el{8,9,10}.tsv`) has no row exercising a non-`=` arch operator at all
+// (every `arch` occurrence in all three TSVs is `arch=b64`) and neither
+// `XFAIL-ISSUES.md` nor `PROVENANCE.md` documents this axis, so the above
+// libaudit measurement is this section's grounding, not a corpus citation.
+// See `src/lints/stig_required.rs`'s `ARCH_REJECT_OPS` doc comment (both
+// `pure_path_watch_shape_tests` and `pure_dir_watch_shape_tests` modules)
+// for the same grounding restated next to the direct unit-test pin.
+//
+// `Ne` is the one non-`Eq` operator that MUST stay accepted (rc 0) -- the
+// fences below pin that a correct fix gates on `Eq || Ne`, not `Eq` alone.
+// Key stays fully operator-blind (no grounded reason to gate it -- libaudit
+// accepts `key!=`/`key>=`/`key&`, all rc 0, measured separately): the
+// fences below also pin that the arch fix does not accidentally start
+// gating Key too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_arch_rejected_operator_does_not_satisfy_v230409_sudoers() {
+    // Every operator libaudit REJECTS on `-F arch=` (measured rc -13 above):
+    // a candidate spelling any of these in place of the well-formed
+    // `arch=b64` never loads at the kernel level and must not satisfy
+    // V-230409/RHEL-08-030171.
+    for op in [">=", "<", ">", "<=", "&", "&="] {
+        let line =
+            format!("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch{op}b64 -k identity\n");
+        let rules = parse(&line);
+        let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+            "a -F arch{op}b64 rule can never load at the kernel level (rc \
+             -13) and must not satisfy V-230409: {diags:?} (line: {line:?})"
+        );
+    }
+}
+
+#[test]
+fn dir_syscall_form_arch_rejected_operator_does_not_satisfy_v230410_sudoers_d() {
+    // The Dir-flavored twin, against V-230410/RHEL-08-030172.
+    for op in [">=", "<", ">", "<=", "&", "&="] {
+        let line =
+            format!("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch{op}b64 -k identity\n");
+        let rules = parse(&line);
+        let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+            "a -F arch{op}b64 rule can never load at the kernel level (rc \
+             -13) and must not satisfy V-230410: {diags:?} (line: {line:?})"
+        );
+    }
+}
+
+#[test]
+fn path_syscall_form_arch_not_equal_still_satisfies_v230409_sudoers() {
+    // GREEN fence: `arch!=b64` is the one non-`Eq` operator libaudit still
+    // LOADS (rc 0, measured above) -- a fix that gates arch on `Eq` alone
+    // (rather than `Eq || Ne`) would wrongly turn this into a "missing"
+    // verdict.
+    let rules = parse("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch!=b64 -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a -F arch!=b64 rule DOES load at the kernel level (rc 0) and must \
+         still satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_arch_not_equal_still_satisfies_v230410_sudoers_d() {
+    // The Dir-flavored twin of the fence above.
+    let rules = parse("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch!=b64 -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a -F arch!=b64 rule DOES load at the kernel level (rc 0) and must \
+         still satisfy V-230410: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_key_relational_operator_does_not_disqualify_v230409_sudoers() {
+    // GREEN fence: Key stays fully operator-blind (`effective_key` reads
+    // only `.value`, never `.op`; libaudit accepts `key>=` fine, rc 0,
+    // measured separately -- no grounded reason to gate it). A fix that
+    // over-broadly tightens the whole `Arch | Key => true` arm (rather than
+    // leaving Key on its own unconditional arm) would wrongly turn this
+    // into a "missing" verdict.
+    let rules =
+        parse("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch=b64 -F key>=identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a -F key>=identity predicate must not disqualify the path-watch \
+         shape -- Key stays operator-blind: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_key_relational_operator_does_not_disqualify_v230410_sudoers_d() {
+    // The Dir-flavored twin of the fence above.
+    let rules =
+        parse("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch=b64 -F key>=identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a -F key>=identity predicate must not disqualify the dir-watch \
+         shape -- Key stays operator-blind: {diags:?}"
     );
 }

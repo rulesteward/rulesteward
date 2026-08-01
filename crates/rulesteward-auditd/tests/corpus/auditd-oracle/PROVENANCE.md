@@ -476,18 +476,22 @@ list.
 ### Positive control changed (`control-reject`)
 
 The first draft's `control-reject` rule was `-a always,exit -F perm=zz -S
-execve` - loud and REJECT on the real oracle, but RuleSteward's OWN parser also
-accepts it (`-F perm=` values are stored as an unvalidated string, no `rwxa`
-letter-set check), which means this same row is ALSO a product-divergence row.
-A positive control must never double as an XFAIL: if it did, a broken harness
-and a real divergence would be indistinguishable. The rule moved to
-`-a always,exit -F nosuchfield=1 -S execve` (loud REJECT, `-F unknown field:
-nosuchfield`, on BOTH sides - RuleSteward's own field-name table also has no
-`nosuchfield` entry, so this can never become an XFAIL). The original rule's
-divergence is still grounded, now under its own id: `f-perm-invalid-letter`
-(an XFAIL, not a control).
+execve` - loud and REJECT on the real oracle, but AT THE TIME RuleSteward's
+OWN parser also accepted it (`-F perm=` values were stored as an unvalidated
+string, no `rwxa` letter-set check), which meant this same row was ALSO a
+product-divergence row. A positive control must never double as an XFAIL: if
+it did, a broken harness and a real divergence would be indistinguishable.
+The rule moved to `-a always,exit -F nosuchfield=1 -S execve` (loud REJECT,
+`-F unknown field: nosuchfield`, on BOTH sides - RuleSteward's own field-name
+table also has no `nosuchfield` entry, so this can never become an XFAIL).
+The original rule's divergence was captured under its own id,
+`f-perm-invalid-letter` (an XFAIL, not a control) - since closed: #601's
+other half (session 9m lane 1) added the `rwxa` letter-set check to
+`parse_field_filter`, so RuleSteward's parser now agrees with the real
+oracle on this row and `f-perm-invalid-letter` is no longer in `XFAIL` (see
+the divergence tally below).
 
-### Product/oracle divergences: 20 XFAIL ids (see `auditd_corpus_oracle.rs`'s
+### Product/oracle divergences: 17 XFAIL ids (see `auditd_corpus_oracle.rs`'s
 `XFAIL` for the full per-id reasons)
 
 - **7 quote-stripping** (deliberate parser leniency, `parser.rs:277-287`):
@@ -500,23 +504,31 @@ divergence is still grounded, now under its own id: `f-perm-invalid-letter`
   `k-cap-invalid-shorter-line`.
 - **2 `-F` value typing missing** (#491): `iss491-neg-pers`,
   `iss491-neg-devminor`.
-- **1 `-F perm=` letter validation missing** (#601's other half):
-  `f-perm-invalid-letter`.
 - **1 unknown syscall name accepted** (new finding, not predicted in this
   lane's original 16-id estimate): `s-unknown-syscall` - the parser accepts
   any string as a `-S` syscall name with no table lookup.
-- **3 product too STRICT** (the opposite direction - real auditctl accepts,
-  the parser rejects; open parser gaps #584/#601, not lint-coverage
-  questions): `iss584-backslash-escaped-space` (auditctl's `preprocess()`
+- **1 product too STRICT** (the opposite direction - real auditctl accepts,
+  the parser rejects; an open parser gap, #584, not a lint-coverage
+  question): `iss584-backslash-escaped-space` (auditctl's `preprocess()`
   rewrites a backslash-escaped space before tokenizing; the parser has no such
-  preprocessing), `iss601-uppercase-perm-all`, `iss601-uppercase-perm-mixed`
-  (`parse_perms` only matches lowercase `rwxa`).
+  preprocessing).
 - **2 delete-form rules unsupported** (round-3, post-implementation
   adversarial review MISS 1 - see above): `w-delete-watch` (`-W`),
   `d-delete-syscall` (`-d`) - the parser has NO delete-form dispatch arm at
   all, only the add-shaped subset of `auditctl`'s grammar.
 
-None of these 20 are caught by an existing `au-E02`/`E04`/`E05` lint: `au-E02`
+Two ids that WERE on this list are now closed, session 9m lane 1 (#601, both
+halves): `f-perm-invalid-letter` (see "Positive control changed" above -
+`-F perm=` now gets the same letter-set check as `-p`) and
+`iss601-uppercase-perm-all`/`iss601-uppercase-perm-mixed` (`parse_perms` now
+case-folds before matching `rwxa`, so `-p WA`/`-p Wa` parse instead of
+rejecting; these two rows moved OUT of the "product too STRICT" bucket
+above, which is why it is 1 id, not 3). Their corpus rows still exist in
+`el8.tsv`/`el9.tsv`/`el10.tsv` (the real oracle's verdict on those lines did
+not change); only RuleSteward's own parser verdict did, so all three rows now
+compare as AGREEMENT rather than divergence.
+
+None of these 17 are caught by an existing `au-E02`/`E04`/`E05` lint: `au-E02`
 validates operator legality (is an operator valid for a field's TYPE), `au-E05`
 is the KERNEL-side bitmask-operator sibling to that same question, and
 `au-E04` validates field-vs-filter-list legality (is this FIELD legal on the

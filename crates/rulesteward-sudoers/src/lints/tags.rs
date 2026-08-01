@@ -1921,20 +1921,22 @@ mod w06_tests {
     /// The fixture is written WITHOUT a space after the comma
     /// (`bob,ALL ...`, not `bob, ALL ...`) for the same reason as
     /// `hash_digits_uid_subject_after_comma_is_not_a_comment` in
-    /// `parser.rs`: `classify_user_spec`/`split_first_word` treats the
-    /// first whitespace-run as the boundary of the whole `User_List`, a
-    /// documented Phase-0 simplification. A comma followed by a space
-    /// (`bob, ALL ALL=(ALL) ALL`) introduces a whitespace-run before the
-    /// `=`, so the parser splits the `User_List` at that inner space and
-    /// garbles the spec; keeping the user list one whitespace-word
-    /// (`bob,ALL`) sidesteps that gap without touching the parser. The
-    /// spaced form therefore remains a KNOWN false negative until a parser
-    /// follow-up issue lands proper comma-aware `User_List` tokenization;
-    /// this test only pins the membership-vs-exact-equality reading above,
-    /// not the parser's tolerance for whitespace inside a comma list. The
-    /// DISA grounding above (the unanchored `grep -iw` returns the line
-    /// regardless of internal whitespace; membership semantics) is
-    /// unchanged by this fixture adjustment.
+    /// `parser.rs`: at the time this test was first written,
+    /// `classify_user_spec` split the pre-`=` text with `split_first_word`,
+    /// which treated the first whitespace-run as the boundary of the whole
+    /// `User_List` and would have garbled the spaced spelling. Issue #538
+    /// (Gap B) fixed this: `classify_user_spec` now calls the
+    /// comma-continuation-aware `split_user_list` instead, so the spaced
+    /// form (`bob, ALL ALL=(ALL) ALL`) parses correctly too and fires
+    /// `sudo-W06` the same as the unspaced form - see
+    /// `tests/iss538_parser_gaps.rs`'s
+    /// `gap_b_w06_fires_on_a_spaced_user_list_granting_all`, which pins that
+    /// directly. The fixture here is left unspaced anyway: the point of
+    /// THIS test is solely the membership-vs-exact-equality reading above,
+    /// not the parser's whitespace tolerance, which is covered separately by
+    /// the #538 tests. The DISA grounding above (the unanchored `grep -iw`
+    /// returns the line regardless of internal whitespace; membership
+    /// semantics) is unchanged by this fixture choice.
     #[test]
     fn w06_fires_for_multi_subject_line_containing_all() {
         assert_eq!(

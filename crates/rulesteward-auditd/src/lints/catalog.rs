@@ -33,7 +33,7 @@ pub const AU_CODES: &[LintCode] = &[
     LintCode {
         code: "au-E03",
         severity: Severity::Error,
-        description: "load-aborting duplicate: a structurally identical earlier rule makes auditctl -R abort, so every later rule silently fails to load",
+        description: "load-aborting duplicate: an earlier rule the kernel treats as identical makes auditctl -R abort, so every later rule silently fails to load",
     },
     LintCode {
         code: "au-E04",

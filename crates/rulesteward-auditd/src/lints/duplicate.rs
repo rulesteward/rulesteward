@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use rulesteward_core::{Diagnostic, Severity};
 
-use crate::ast::{AuditRule, LocatedRule};
+use crate::ast::{AuditField, AuditRule, FieldFilter, LocatedRule};
 use crate::lints::normalize::canonical_key;
 use crate::lints::value::LintOptions;
 
@@ -88,13 +88,88 @@ fn rules_eexist_equal(first: &AuditRule, later: &AuditRule) -> bool {
             list_a == list_b
                 && action_a == action_b
                 && syscalls_eq
-                && fields_a == fields_b
+                && fields_eexist_equal(fields_a, fields_b)
                 && field_compares_a == field_compares_b
                 && key_a == key_b
                 && !prepend_b // later rule must also be -a (not -A)
         }
         _ => first == later,
     }
+}
+
+/// EEXIST field-LIST equality: POSITIONAL (index-by-index, same length),
+/// mirroring `audit_compare_rule`'s `for (i = 0; i < a->field_count; i++)`
+/// loop (`kernel/auditfilter.c`) -- field ORDER still fully distinguishes
+/// rules exactly as the module doc's "fields ... compared POSITIONALLY, so
+/// a field-order swap is NOT an EEXIST (au-W01)" note requires; this helper
+/// does not sort or set-compare the list, only relax VALUE equality
+/// per-element. The only relaxation from a plain positional `==` is on a
+/// `Perm` field's value: see [`perm_field_values_eexist_equal`]. Every
+/// other field type keeps exact positional spelling comparison, unchanged
+/// from the previous `fields_a == fields_b` this replaces.
+fn fields_eexist_equal(a: &[FieldFilter], b: &[FieldFilter]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.field == y.field
+                && x.op == y.op
+                && if x.field == AuditField::Perm {
+                    perm_field_values_eexist_equal(&x.value, &y.value)
+                } else {
+                    x.value == y.value
+                }
+        })
+}
+
+/// EEXIST value equality for a single `-F perm=` field (session 9m lane 1,
+/// round 3 ATL, issues #600/#601). The kernel's `audit_compare_rule`
+/// (`kernel/auditfilter.c`) compares `a->fields[i].val != b->fields[i].val`
+/// -- the ALREADY-PARSED bitmask, never the spelling -- and
+/// `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every `-F
+/// perm=` letter and ORs it into that bitmask before the rule is ever sent
+/// to the kernel, so `perm=wa`/`perm=aw`/`perm=WA` are the SAME
+/// `fields[i].val` and EEXIST: exactly the "kernel compares the converted
+/// value, not the spelling" argument [`rules_eexist_equal`]'s `syscalls_eq`
+/// already makes for `-S`. Falls back to exact (trimmed) string comparison
+/// if EITHER side fails to parse as `rwxa` letters, rather than treating two
+/// differently-unparseable spellings as vacuously equal -- this can only
+/// happen for a `-F perm!=...`-shaped predicate (a non-`=` operator skips
+/// this crate's letter-set parse validation), which real auditctl rejects
+/// at load before ever reaching a kernel EEXIST comparison in the first
+/// place, so the fallback is a conservative "never happens in practice"
+/// safety net, not a modeled kernel behavior.
+///
+/// Deliberately a local reimplementation (not shared with
+/// `parser::parse_perms`, `stig_required::perm_bits_from_field_value`, or
+/// `value::classify::PermMask`) -- each call site's fix stays scoped to its
+/// own file; the grammar is small and stable (4 letters, `permtab.h:28-31`).
+fn perm_field_values_eexist_equal(a: &str, b: &str) -> bool {
+    match (perm_field_bits(a), perm_field_bits(b)) {
+        (Some(ba), Some(bb)) => ba == bb,
+        _ => a.trim() == b.trim(),
+    }
+}
+
+/// Fold a `-F perm=` field value into its `AUDIT_PERM_*` bitmask, ASCII-case-
+/// folded per `lib/libaudit.c`'s `audit_rule_fieldpair_data` (`switch
+/// (tolower((unsigned char)v[i])) { case 'r': ... }`). `None` for any
+/// character outside `rwxa` -- see [`perm_field_values_eexist_equal`] for
+/// how that case is handled.
+fn perm_field_bits(raw: &str) -> Option<u8> {
+    const READ: u8 = 0b0001;
+    const WRITE: u8 = 0b0010;
+    const EXEC: u8 = 0b0100;
+    const ATTR: u8 = 0b1000;
+    let mut bits = 0u8;
+    for ch in raw.trim().chars() {
+        bits |= match ch.to_ascii_lowercase() {
+            'r' => READ,
+            'w' => WRITE,
+            'x' => EXEC,
+            'a' => ATTR,
+            _ => return None,
+        };
+    }
+    Some(bits)
 }
 
 /// au-W01 / au-E03 duplicate-rule pass over the concatenated load-order stream.
@@ -115,17 +190,21 @@ pub fn w01(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
                 first_seen.insert(key, located);
             }
             Some(first) => {
-                // Later occurrence: classify severity by structural equality (excluding prepend).
-                // au-E03: structurally identical (rules_eexist_equal is true, excluding prepend)
-                //   -> auditctl -R aborts (EEXIST, auditctl.c:1680-1686).
-                // au-W01: canonical-equal but NOT structurally identical (field-order
+                // Later occurrence: classify severity by KERNEL-identity (excluding prepend).
+                // au-E03: the kernel treats the two as the same rule (rules_eexist_equal
+                //   is true, excluding prepend) -> auditctl -R aborts (EEXIST,
+                //   auditctl.c:1680-1686). NOTE this is deliberately WIDER than
+                //   `AuditRule::PartialEq`: a `-F perm=` field's value is compared as an
+                //   order-free, case-folded rwxa bitmask, so `perm=wa` and `perm=aw` are
+                //   kernel-identical while their spellings differ.
+                // au-W01: canonical-equal but NOT kernel-identical (field-order
                 //   swapped, syscall-order swapped, -a vs -A, or prepend differs)
                 //   -> kernel does not EEXIST; loads but is redundant waste.
                 let (sev, code, msg) = if rules_eexist_equal(&first.rule, &located.rule) {
                     let msg = format!(
                         "load-aborting duplicate of {first_file}:{first_line}: \
-                        structurally identical rule causes auditctl -R to abort, \
-                        so every later rule silently fails to load \
+                        the kernel treats this rule as identical to that one, \
+                        so auditctl -R aborts and every later rule silently fails to load \
                         (auditctl.c:1680-1686, audit 3bfa048)",
                         first_file = first.file.display(),
                         first_line = first.line,

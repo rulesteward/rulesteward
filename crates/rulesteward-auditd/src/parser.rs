@@ -423,17 +423,38 @@ fn parse_watch_rule(tokens: &[String], lineno: usize) -> Result<AuditRule, Parse
 }
 
 fn parse_perms(s: &str, lineno: usize) -> Result<PermBits, ParseError> {
+    // Real auditctl's audit_setup_perms (src/auditctl.c) checks length BEFORE
+    // it examines any letter: `len = strlen(opt); if (len > 4) { ...; return
+    // -1; }`. That's the same `return -1` the invalid-letter arm below uses,
+    // so a too-long value (even one built entirely from valid letters, e.g.
+    // "rwxar") must reject exactly like an invalid letter would (issue #601
+    // ATL follow-up, MISS-1).
+    if s.len() > 4 {
+        return Err(ParseError {
+            line: lineno,
+            message: format!("permission '{s}' is too long"),
+        });
+    }
     let mut perms = PermBits::default();
     for ch in s.chars() {
-        match ch {
+        // Real auditctl case-folds `-p` permission letters (`src/auditctl.c:343`
+        // `audit_setup_perms` calls tolower() on each byte before matching --
+        // NOT lib/libaudit.c, which is the `-F perm=` tolower() site mirrored
+        // below; the length-check comment immediately above this loop already
+        // cites `src/auditctl.c` correctly, only this tolower() attribution
+        // was wrong); `-p WA` and `-p wa` are the same rule (issue #601 half
+        // A). ASCII fold only, matching the C `tolower` on a byte -- mirrors
+        // `perm_bits_from_field_value` (`lints/stig_required.rs`), which
+        // already folds the same way for `-F perm=`.
+        match ch.to_ascii_lowercase() {
             'r' => perms.read = true,
             'w' => perms.write = true,
             'x' => perms.exec = true,
             'a' => perms.attr = true,
-            other => {
+            _ => {
                 return Err(ParseError {
                     line: lineno,
-                    message: format!("unknown perm char '{other}' in -p '{s}'"),
+                    message: format!("unknown perm char '{ch}' in -p '{s}'"),
                 });
             }
         }
@@ -588,6 +609,36 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
             let value_str = &spec[pos + op_str.len()..];
             let field = parse_audit_field(field_str)
                 .ok_or_else(|| err(&format!("unknown field '{field_str}'")))?;
+            // #601 half B: real auditctl validates the `-F perm=` letter set
+            // against `rwxa` (case-insensitively) and rejects anything else
+            // ("Permission can only contain  'rwxa'"). But the kernel/
+            // libaudit rejects a non-`=` `-F perm` predicate on the OPERATOR
+            // first (`-EAU_OPEQ`, before it ever examines the letters), so
+            // the letter check is gated on `op == CompareOp::Eq` (orchestrator
+            // RULING, 2026-07-30): `-F perm!=zz` and friends still parse so
+            // `au-E02` can report the illegal operator.
+            if field == AuditField::Perm && *op == CompareOp::Eq {
+                // libaudit's audit_rule_fieldpair_data (lib/libaudit.c) checks
+                // length BEFORE the letter loop: `len = strlen(v); if (len > 4)
+                // return -EAU_STRTOOLONG;` -- a distinct diagnostic from the
+                // letter-set rejection below (issue #601 ATL follow-up,
+                // MISS-2). Gated on the same `op == Eq` condition as the
+                // letter check: a non-`=` operator returns -EAU_OPEQ before
+                // libaudit ever reaches the length check.
+                if value_str.len() > 4 {
+                    return Err(err(&format!(
+                        "-F perm value '{value_str}' is too long (must be at most 4 chars)"
+                    )));
+                }
+                for ch in value_str.chars() {
+                    if !matches!(ch.to_ascii_lowercase(), 'r' | 'w' | 'x' | 'a') {
+                        return Err(err(&format!(
+                            "invalid perm char '{ch}' in -F perm value '{value_str}' \
+                             (must be one of 'rwxa')"
+                        )));
+                    }
+                }
+            }
             return Ok(FieldFilter {
                 field,
                 op: op.clone(),

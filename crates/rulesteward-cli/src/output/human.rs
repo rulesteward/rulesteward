@@ -34,10 +34,78 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// ariadne 0.6 indexes its `Source` by CHARACTER offset, but our `Span` is a
 /// BYTE range into the source. Convert byte offsets to char offsets so the
 /// caret lands correctly (and renders at all) when the source contains
-/// multibyte UTF-8 before the span. Falls back to the raw byte value if an
-/// offset is not a char boundary (should not happen for parser-produced spans).
+/// multibyte UTF-8 before the span.
+///
+/// `to_char` is TOTAL (defined for every `usize`, including a mid-character
+/// offset or an offset past `source.len()`) and MONOTONE NON-DECREASING in
+/// its argument. It counts char-START indices strictly below `b`, which means
+/// a mid-character offset rounds UP to the index of the character it falls
+/// inside of, and any offset past `source.len()` saturates at
+/// `source.chars().count()` rather than passing through unchanged. Because
+/// both endpoints of the span go through this same total, monotone function,
+/// `span.start <= span.end` implies the converted span is also ordered - that
+/// is a theorem, not a clamp applied after the fact.
+///
+/// This matters because the previous implementation converted each endpoint
+/// independently via `source.get(..b)` and fell back to the raw BYTE value
+/// whenever an endpoint was not a char boundary (issue #595). A span whose
+/// `start` was mid-character and whose `end` was boundary-aligned then kept a
+/// large byte value on one side and shrank to a small char count on the
+/// other, inverting the span. `ariadne::Label::new` asserts
+/// `span.start() <= span.end()` and aborts the process when that happens, so
+/// the operator saw a hard panic instead of a diagnostic.
+///
+/// `to_char(b)`, for `b` at or past `source.len()`, is `source.chars().count()`
+/// by definition (saturation) - `b.min(source.len())` folds that case into the
+/// same walk rather than branching on it: `is_char_boundary(source.len())` is
+/// always `true`, so the clamp alone makes the saturating arm total. For `b`
+/// strictly inside the source, `to_char(b)` equals `source[..q].chars().count()`
+/// where `q` is the smallest char boundary `>= b`, found by advancing `q` one
+/// byte at a time until `source.is_char_boundary(q)` holds (at most 3 steps
+/// past a mid-character `b`, since a UTF-8 scalar is at most 4 bytes): `q` is
+/// `b` itself when `b` is already a boundary, or the start of the NEXT scalar
+/// when `b` lands mid-character. This is the same total, monotone, round-up
+/// mapping the previous walk computed one char at a time - see
+/// `mid_character_offset_rounds_up_to_the_next_char_boundary` below for the
+/// byte-by-byte derivation of WHY a boundary-scan-then-prefix-count agrees
+/// with "count char starts strictly below `b`" at every offset, including
+/// mid-character ones.
+///
+/// This replaces `source.char_indices().take_while(|(i, _)| *i < b).count()`
+/// (#595 perf follow-up), which fully DECODED every scalar below `b` - each
+/// step assembling a `char`'s scalar value from 1-4 bytes - to answer a
+/// question that only needs to know where chars START, not what they decode
+/// to. `str::chars().count()` has a dedicated fast path in the standard
+/// library that counts non-continuation bytes directly without assembling
+/// scalar values. `Chars` being a concrete (non-generic) type does NOT by
+/// itself keep that fast path out of this crate's own codegen: `Chars::count`
+/// and the `count::count_chars` it forwards to are both `#[inline]`, and an
+/// `#[inline]` function's MIR is exported cross-crate and instantiated into
+/// the CALLING crate's CGU at the CALLER's opt-level regardless of whether
+/// the function is generic (verified against `core::str::iter`/`count` at
+/// `$(rustc --print sysroot)/lib/rustlib/src/rust/library/core/src/str/` on
+/// 1.97.0). What actually stays a call into the pre-optimized prebuilt
+/// `libcore` is one level further down: `do_count_chars` (the SWAR chunked
+/// variant used for longer inputs) and `char_count_general_case` (the
+/// short-input / head-tail fallback) are NEITHER of them `#[inline]`, so
+/// those two are what is not re-monomorphised into this crate at ITS OWN
+/// opt-level. That distinction is what actually matters at `opt-level = 0`
+/// (this crate's dev/test profile): a hand-written byte-counting loop written
+/// IN this crate is still compiled unoptimized and was measured, isolated
+/// from `render()`'s own overhead, at a materially smaller but still real
+/// speedup over the decode loop it replaced - real, but not enough headroom
+/// to clear this file's tail/head ratio gate with margin. Routing the actual
+/// counting through `str::chars().count()` was measured (in the same
+/// isolated harness) to close that remaining gap, cutting the decode loop's
+/// ~12.8x (release) / ~1000x (dev) per-byte cost down to roughly 1.0x-1.6x.
 fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
-    let to_char = |b: usize| source.get(..b).map_or(b, |s| s.chars().count());
+    let to_char = |b: usize| {
+        let mut q = b.min(source.len());
+        while !source.is_char_boundary(q) {
+            q += 1;
+        }
+        source[..q].chars().count()
+    };
     to_char(span.start)..to_char(span.end)
 }
 
@@ -233,7 +301,7 @@ mod tests {
     /// general form covering ariadne's SGR color codes) from `s`.
     ///
     /// `render()`'s ariadne path colors its output whenever `color_enabled()`
-    /// (human.rs:57) is true, which happens whenever the CALLING PROCESS's
+    /// is true, which happens whenever the CALLING PROCESS's
     /// own stdout is a real terminal - including `cargo test` run
     /// interactively (not piped/CI-captured). An exact-byte `assert_eq!`
     /// pin taken against raw `render()` output is therefore fragile: it
@@ -378,7 +446,7 @@ mod tests {
         )
         .with_source_id("same.rules");
 
-        // Strip ANSI before comparing: `color_enabled()` (human.rs:57) is
+        // Strip ANSI before comparing: `color_enabled()` is
         // true whenever THIS test process's own stdout is a real terminal
         // (e.g. `cargo test` run interactively), which would otherwise
         // inject SGR color codes and break an exact-byte pin for reasons
@@ -790,6 +858,133 @@ mod tests {
     }
 
     #[test]
+    fn human_render_cost_independent_of_span_position_within_source() {
+        // #595 perf regression harness for `byte_span_to_char_span`'s
+        // CONSTANT factor, distinct from the two scaling harnesses above
+        // (which pin diagnostic COUNT and sources-map SIZE). Same source,
+        // same finding COUNT (24), same total source size (~50,008 bytes,
+        // `synthetic_source_with_spans(50_000, 24)` above) - the ONLY thing
+        // that differs between the two measured groups is WHERE in the
+        // source the spans sit: the FIRST 24 of the ~1316 generated spans
+        // (byte offsets 23..903, the first ~1.8% of the file - see
+        // `synthetic_source_with_spans`'s doc comment above for the
+        // per-line layout) vs the LAST 24 (byte offsets ~49096..49999, the
+        // tail of the file).
+        //
+        // `byte_span_to_char_span`'s current body (see its doc comment
+        // above) walks forward from the offset to the next char boundary,
+        // then calls `source[..q].chars().count()` on the resulting
+        // boundary-aligned prefix - so its cost is still O(endpoint
+        // offset): converting a tail-anchored span still counts roughly
+        // 50x more of the source than converting a head-anchored one.
+        // `render()`'s other per-diagnostic work (the per-source_id
+        // `Source` cache lookup, `Label`/`Report` construction, writing
+        // the snippet) does not depend on WHERE in the file the span
+        // sits, so this harness isolates the conversion's own
+        // offset-dependent cost from render()'s constant overhead.
+        //
+        // This test was written (953917b, #595) against a DIFFERENT,
+        // EARLIER body: `source.char_indices().take_while(|(i, _)| *i <
+        // b).count()`, a per-char scalar decode loop with no vectorized
+        // fast path, which fully re-assembled every UTF-8 scalar below
+        // the offset. That body shipped in 132aa23 and was replaced in
+        // 9871215 by the boundary-scan-plus-`chars().count()` body
+        // described above (see `byte_span_to_char_span`'s outer doc
+        // comment for why `chars().count()` is cheaper - it forwards to a
+        // chunked, non-continuation-byte count already compiled into a
+        // pre-optimized std, unlike a hand-written loop written IN this
+        // crate, which stays unoptimized at this crate's own opt-level).
+        // This harness now guards against a REGRESSION back to that
+        // older, decode-heavy shape rather than pinning a defect in
+        // today's code.
+        //
+        // Observed against the OLD `char_indices().take_while(...).count()`
+        // body (953917b, single-environment measurement): tail/head ratio
+        // ~6.9x-13.5x. Observed against the semantically identical
+        // `chars().count()`-based replacement (both are total, monotone
+        // mappings that agree on every char boundary, and every offset in
+        // this ASCII source IS a char boundary - just decode-cost
+        // cheaper): ~1.0x-1.6x.
+        //
+        // Remeasured more thoroughly since, on the development host in
+        // the debug profile (what `just test` and CI run), 2026-07-31:
+        // the OLD body (a stale build) ran 7.70x-26.34x tail/head over 30
+        // iterations - a clean FAIL of the 4x gate below. The CURRENT
+        // body ran 0.62x-1.95x over 75 iterations across three load
+        // regimes: idle (max 1.89x), 48-way CPU oversubscription (max
+        // 1.95x), and pinned to 2 CPUs against 8 competing spinners (max
+        // 1.44x).
+        //
+        // This is a wall-clock ratio, not a deterministic pin, so its
+        // trustworthiness comes from two-sided discrimination, not from
+        // the absolute numbers: roughly 2x of margin separates the 4x
+        // gate from both the fast case's observed ceiling and the slow
+        // case's observed floor, and `min_duration_over(_, 3)` keeps
+        // each measured rep in the 25-80ms range - large enough that
+        // scheduler/GC/page-fault noise does not dominate it.
+        //
+        // The 4x gate is intentionally STRICTER than the two sibling
+        // scaling tests above, which both use 6x (see
+        // `human_render_diagnostic_count_on_one_source_scales_sublinearly`'s
+        // RATIO-check rationale). No documented reason was found for 4x
+        // specifically over 6x beyond 953917b's own note that "the 4x
+        // gate sits with wide margin on both sides" of the measured
+        // fast/slow ranges; the 2026-07-31 remeasurement above confirms
+        // that margin holds, and if anything is larger than originally
+        // observed.
+        let (source, spans) = synthetic_source_with_spans(50_000, 24);
+        let mut sources = BTreeMap::new();
+        sources.insert("scaling.rules".to_string(), source);
+
+        let head_diags: Vec<Diagnostic> = spans[..24]
+            .iter()
+            .enumerate()
+            .map(|(i, span)| {
+                Diagnostic::new(
+                    Severity::Warning,
+                    "fapd-W03",
+                    span.clone(),
+                    "scaling probe",
+                    "scaling.rules",
+                    i + 1,
+                    1,
+                )
+                .with_source_id("scaling.rules")
+            })
+            .collect();
+        let tail_diags: Vec<Diagnostic> = spans[spans.len() - 24..]
+            .iter()
+            .enumerate()
+            .map(|(i, span)| {
+                Diagnostic::new(
+                    Severity::Warning,
+                    "fapd-W03",
+                    span.clone(),
+                    "scaling probe",
+                    "scaling.rules",
+                    i + 1,
+                    1,
+                )
+                .with_source_id("scaling.rules")
+            })
+            .collect();
+
+        let t_head = min_duration_over(|| drop(render(&head_diags, &sources)), 3);
+        let t_tail = min_duration_over(|| drop(render(&tail_diags, &sources)), 3);
+
+        assert!(
+            t_tail < t_head * 4,
+            "24 diagnostics anchored at the TAIL of the source took {t_tail:?}, vs \
+             {t_head:?} for 24 diagnostics of the SAME count anchored at the HEAD of \
+             the SAME source (ratio {:.1}x) - expected < 4x; byte_span_to_char_span's \
+             conversion cost should not depend on how far into the source a span sits \
+             (#595 perf regression: see byte_span_to_char_span's doc comment \
+             and the comment above)",
+            t_tail.as_secs_f64() / t_head.as_secs_f64()
+        );
+    }
+
+    #[test]
     fn format_controls_maps_every_framework_and_joins_multiple() {
         // Direct pin on format_controls: empty -> "" (byte-identical), each
         // framework's label, the alias arm, and the ", " join for multiple
@@ -1077,8 +1272,119 @@ mod tests {
         assert_eq!(cspan.end, char_end, "char end must match");
     }
 
+    /// The caret-column pin (session 9m lane 4, issue #595): assert the RENDERED
+    /// column against a value derived BY HAND from the source layout.
+    ///
+    /// GREEN before and after the #595 fix, deliberately.
+    ///
+    /// Be precise about what this test does and does not discriminate. The
+    /// obvious overstatement - "this is what a monotone-but-wrong replacement
+    /// fails" - is mechanically FALSE here. This test's span is `44..49` and
+    /// BOTH endpoints are char boundaries, so every candidate mapping agrees:
+    ///
+    /// ```text
+    /// byte span:           44..49
+    /// ceil walk (the fix): 35..40      old byte-fallback: 35..40
+    /// floor walk:          35..40      clamp on the old:  35..40
+    /// ```
+    ///
+    /// A clamp is a NO-OP on a span that is already ordered and boundary
+    /// aligned, and floor and ceil agree on every boundary offset, so all four
+    /// render the identical header `t.rules:2:22`. The pins that actually
+    /// separate the mapping families are the offset tables in
+    /// `mid_character_offset_rounds_up_to_the_next_char_boundary`, which probe
+    /// MID-character offsets; this test cannot do that job and does not claim to.
+    ///
+    /// What it genuinely catches, and what no property in this file catches:
+    ///
+    /// - **byte-vs-char confusion.** A mapping that handed ariadne the raw byte
+    ///   offset would pass 44 for a source of only 43 characters. Be exact about
+    ///   how that surfaces HERE: ariadne resolves nothing and renders `?:?`, so
+    ///   the test fails on the third bullet below rather than on a caret that
+    ///   moved. (The sibling e2e in `tests/e2e_sysctl_lint.rs` is where the same
+    ///   confusion does move a visible column, to `:2:10`.)
+    /// - **a boundary-offset off-by-one.** Any variant that shifts every
+    ///   boundary offset up by one - the pre-`450b16e` body admitted one by
+    ///   widening its `take_while` predicate to `*i <= b`, and the current
+    ///   boundary walk would admit one by counting the prefix past `q` rather
+    ///   than up to it - renders column 23 instead of 22. Such a variant stays
+    ///   total and monotone, so it is invisible to every ordering, totality and
+    ///   saturation property. This is the one that needs the exact column.
+    /// - **a snippet that silently fails to render at all.**
+    ///
+    /// The observable is ariadne's own bracket header,
+    /// `[ <source_id>:<line>:<col> ]` (`ariadne-0.6.0/src/write.rs:280`), whose
+    /// `col` is counted in CHARACTERS (`write.rs:262-269`). The multi-source
+    /// cache pin earlier in this file asserts the same header shape
+    /// (`\u{256d}\u{2500}[ a.rules:1:20 ]`), so the format is already pinned
+    /// twice over.
+    ///
+    /// Layout, derived by hand:
+    ///
+    /// ```text
+    /// line 1: "# \u{1F600} \u{65E5}\u{672C}\u{8A9E} notes"
+    /// line 2: "allow exe=/usr/bin/x trust=1"
+    /// ```
+    ///
+    /// Line 1 carries a 4-byte emoji plus three 3-byte CJK scalars: 13 bytes of
+    /// multibyte for 4 characters. That gap is the point - any byte-vs-char
+    /// confusion in `byte_span_to_char_span` moves the column asserted below.
+    ///
+    /// Line 2 is pure ASCII, so its 1-based CHARACTER columns are:
+    ///
+    /// ```text
+    /// a1 l2 l3 o4 w5 _6 e7 x8 e9 =10 /11 u12 s13 r14 /15 b16 i17 n18 /19 x20 _21 t22
+    /// ```
+    ///
+    /// so `trust` begins at character column 22 of line 2, and the header must
+    /// read `t.rules:2:22`. The value is derived from the layout, NOT copied
+    /// from a test run: copying observed output converts the assertion into a
+    /// snapshot of whatever the code does, bug included.
+    #[test]
+    fn human_ariadne_header_column_is_char_counted_with_multibyte_before_the_line() {
+        let source = "# \u{1f600} \u{65e5}\u{672c}\u{8a9e} notes\nallow exe=/usr/bin/x trust=1\n";
+        let byte_start = source.find("trust").expect("trust present");
+        let mut sources = BTreeMap::new();
+        sources.insert("t.rules".to_string(), source.to_string());
+        let d = Diagnostic::new(
+            Severity::Error,
+            "fapd-E01",
+            byte_start..byte_start + "trust".len(),
+            "trust attribute is not permitted here",
+            "t.rules",
+            2,
+            22,
+        )
+        .with_source_id("t.rules");
+
+        // Strip ANSI first: `color_enabled()` is true whenever this test
+        // process's own stdout is a real terminal, so an unstripped pin passes
+        // in CI and fails under a pty for reasons unrelated to #595.
+        let out = strip_ansi(&render(&[d], &sources));
+
+        assert!(
+            out.contains("\u{256d}\u{2500}[ t.rules:2:22 ]"),
+            "ariadne's header must place the caret at character column 22 of \
+             line 2 despite 13 bytes of multibyte on line 1; got: {out:?}"
+        );
+        assert!(
+            out.contains('\u{2500}'),
+            "the caret box must render at all (ariadne silently omits the whole \
+             snippet when it cannot locate the span); got: {out:?}"
+        );
+        assert!(
+            out.contains("allow exe=/usr/bin/x trust=1"),
+            "the underlined source line must appear verbatim; got: {out:?}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // Layer-2 property tests for `byte_span_to_char_span`.
+    //
+    // Properties 1-3 predate issue #595 and are ASCII-only by construction;
+    // properties 4-6 (added by session 9m lane 4) are the multibyte ones that
+    // pin the defect. Do not narrow 4-6 back to boundary-aligned or in-bounds
+    // offsets: that restriction IS the bug.
     //
     // Properties:
     // 1. For ASCII-only source, the char span equals the byte span (identity).
@@ -1086,14 +1392,114 @@ mod tests {
     //    <= the byte offset (multibyte chars compress the char index).
     // 3. For any source and char-boundary byte offset b, char offset ==
     //    source[..b].chars().count().
+    // 4. (#595) For ANY source, multibyte included, and ANY ORDERED byte span -
+    //    boundary-aligned or not, in bounds or not - the converted char span is
+    //    still ORDERED. This is the direct pin on the panic: `ariadne::Label::new`
+    //    asserts `start <= end` (ariadne-0.6.0/src/lib.rs:145) and aborts the
+    //    process in the DEFAULT renderer when it does not hold.
+    // 5. (#595) Totality: a DEGENERATE byte span `b..b` converts to a degenerate
+    //    char span, for every `b` including mid-character and past-the-end.
+    // 6. (#595) Saturation: every offset past `source.len()` maps to
+    //    `source.chars().count()`, not to itself.
     // -----------------------------------------------------------------
 
     mod proptest_byte_to_char {
         use super::super::byte_span_to_char_span;
         use proptest::prelude::*;
 
+        /// How far past `source.len()` the generated offsets reach.
+        ///
+        /// 5 clears the widest UTF-8 scalar (4 bytes) plus one, so an
+        /// out-of-bounds offset is always genuinely out of bounds rather than
+        /// merely inside the final character.
+        const OOB_SLACK: usize = 5;
+
+        /// One piece of generated source text, one arm per UTF-8 length class
+        /// the renderer has to survive. Contains no `\n`: the source builder
+        /// below owns line structure.
+        ///
+        /// | class          | scalar(s)                      | UTF-8 bytes |
+        /// |----------------|--------------------------------|-------------|
+        /// | CJK            | U+65E5, U+672C, U+8A9E         | 3           |
+        /// | combining mark | `e` + U+0301 (COMBINING ACUTE) | 1 + 2       |
+        /// | 4-byte emoji   | U+1F600                        | 4           |
+        /// | ASCII filler   | `[a-z0-9 =:.]`                 | 1           |
+        ///
+        /// Each class earns its place. CJK is the class issue #595 reproduces
+        /// with. The combining mark is one grapheme cluster spanning two
+        /// scalars, so it fails any "count graphemes" mistake. The 4-byte emoji
+        /// is the ONLY class with three distinct interior byte offsets, so an
+        /// off-by-one that first appears at interior offset +3 is invisible to a
+        /// 3-byte-only alphabet. ASCII filler keeps ordinary runs in the mix so
+        /// the properties are not exclusively about exotic input.
+        fn multibyte_piece() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("\u{65e5}".to_string()),
+                Just("\u{672c}".to_string()),
+                Just("\u{8a9e}".to_string()),
+                Just("e\u{301}".to_string()),
+                Just("\u{1f600}".to_string()),
+                "[a-z0-9 =:.]{1,4}",
+            ]
+        }
+
+        /// A multi-line source built from [`multibyte_piece`], optionally
+        /// opening with a UTF-8 BOM and optionally CLOSING with a trailing
+        /// `\n` after its last line.
+        ///
+        /// U+FEFF (3 bytes) is generated ONLY at offset 0, the one position it
+        /// is meaningful and the one position the fapolicyd parser treats
+        /// specially when computing `body_start_in_file`
+        /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
+        ///
+        /// Round 2 (issue #595): every source this generator produced used to
+        /// end in `\n` unconditionally, so `byte_span_to_char_span`'s
+        /// boundary scan always found a non-continuation byte (the newline)
+        /// before reaching `source.len()`, and no case here ever drove that
+        /// scan all the way to the end of the source. `trailing_newline`
+        /// closes that gap: when false and the last line's own last scalar
+        /// is multibyte, the source's final byte is itself a continuation
+        /// byte, so the scan must reach `source.len()` before finding a
+        /// boundary - the same end-of-source case the hand-written
+        /// `mid_character_offset_rounds_up_to_the_next_char_boundary` unit
+        /// test's final-scalar block pins exactly.
+        fn multibyte_source() -> impl Strategy<Value = String> {
+            let line =
+                prop::collection::vec(multibyte_piece(), 1..4).prop_map(|pieces| pieces.concat());
+            (
+                any::<bool>(),
+                prop::collection::vec(line, 1..6),
+                any::<bool>(),
+            )
+                .prop_map(|(leading_bom, lines, trailing_newline)| {
+                    let mut src = String::new();
+                    if leading_bom {
+                        src.push('\u{feff}');
+                    }
+                    let last = lines.len() - 1;
+                    for (i, line) in lines.into_iter().enumerate() {
+                        src.push_str(&line);
+                        if i != last || trailing_newline {
+                            src.push('\n');
+                        }
+                    }
+                    src
+                })
+        }
+
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(512))]
+            // `failure_persistence: None`: a failing property here would
+            // otherwise write `crates/rulesteward-cli/proptest-regressions/`,
+            // a path that is not gitignored and sits outside this lane's owned
+            // set, so it could be neither committed nor ignored cleanly. Nothing
+            // is lost - the shrunk input is in the panic message, and the
+            // interesting offsets are pinned explicitly by the unit test below
+            // rather than left to a saved seed.
+            #![proptest_config(ProptestConfig {
+                cases: 512,
+                failure_persistence: None,
+                ..ProptestConfig::default()
+            })]
 
             // Property 1: ASCII-only source: byte span == char span.
             // For any ASCII string and two in-bounds offsets, the conversion
@@ -1143,6 +1549,311 @@ mod tests {
                 prop_assert_eq!(cspan.start, expected_chars,
                     "char offset for byte {} must be {} in {:?}",
                     b, expected_chars, src);
+            }
+
+            // Property 4 (T1a, issue #595): ORDERING is preserved.
+            //
+            // The property whose absence let #595 through. Properties 1-3 are
+            // all ASCII-only, and none of them relates `to_char(start)` to
+            // `to_char(end)` for `start != end` - two independent gaps, and a
+            // multibyte generator alone would not have closed the second.
+            //
+            // The generator deliberately draws offsets that are NOT char
+            // boundaries and offsets past the end of the source. Restricting
+            // either one is exactly the assumption the defect lives in: a
+            // non-boundary `start` takes the `map_or` fallback and keeps its
+            // raw BYTE value while a boundary `end` converts to a (smaller)
+            // CHAR count, and the resulting span is inverted.
+            #[test]
+            fn multibyte_ordered_byte_span_stays_ordered(
+                src in multibyte_source(),
+                p in 0usize..4096,
+                q in 0usize..4096,
+            ) {
+                let hi = src.len() + OOB_SLACK;
+                let a = p % (hi + 1);
+                let b = q % (hi + 1);
+                let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                let cspan = byte_span_to_char_span(&(start..end), &src);
+                prop_assert!(
+                    cspan.start <= cspan.end,
+                    "ordered byte span {}..{} over {:?} converted to the INVERTED \
+                     char span {}..{}; ariadne::Label::new asserts start <= end \
+                     and aborts the process when it does not hold",
+                    start, end, src, cspan.start, cspan.end
+                );
+            }
+
+            // Property 5 (T1b, issue #595): TOTALITY.
+            //
+            // GREEN before AND after the fix - it describes behavior the old
+            // function already had, and exists so a later rewrite that reaches
+            // for slicing (`&source[..b]`, which PANICS on a non-boundary
+            // offset) cannot land quietly. A degenerate input span must stay
+            // degenerate, which is strictly stronger than "does not panic".
+            #[test]
+            fn degenerate_byte_span_stays_degenerate(
+                src in multibyte_source(),
+                p in 0usize..4096,
+            ) {
+                let hi = src.len() + OOB_SLACK;
+                let b = p % (hi + 1);
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(
+                    cspan.start, cspan.end,
+                    "degenerate byte span {}..{} over {:?} must stay degenerate, got {}..{}",
+                    b, b, src, cspan.start, cspan.end
+                );
+            }
+
+            // Property 6 (T1d, issue #595): SATURATION past the end.
+            //
+            // An out-of-bounds byte offset maps to the source's total char
+            // count, not to itself. The old function returned the raw byte
+            // value here (`source.get(..b)` is `None` past the end), which is
+            // both larger than any real char offset and, paired with an
+            // in-bounds `end`, one of the two ways to invert the span.
+            #[test]
+            fn out_of_bounds_offset_saturates_at_char_count(
+                src in multibyte_source(),
+                over in 1usize..=OOB_SLACK,
+            ) {
+                let b = src.len() + over;
+                let expected = src.chars().count();
+                let cspan = byte_span_to_char_span(&(b..b), &src);
+                prop_assert_eq!(
+                    cspan.start, expected,
+                    "byte offset {} is past the end of {:?} ({} bytes) and must \
+                     saturate at its {} chars, got {}",
+                    b, src, src.len(), expected, cspan.start
+                );
+            }
+        }
+
+        /// T1c (issue #595): the EXACT mapping at a mid-character offset.
+        ///
+        /// A unit test, not a property: the ordering properties above pin that
+        /// the mapping is monotone, and this pins WHICH monotone mapping it is.
+        /// Both are needed - a monotone-but-wrong mapping satisfies every
+        /// ordering assertion and still moves the caret.
+        ///
+        /// Byte layout of `"\u{65e5}\u{672c}\u{8a9e}\n"`, derived by hand (three
+        /// CJK scalars at 3 bytes each, then a 1-byte newline):
+        ///
+        /// ```text
+        /// byte:   0  1  2 | 3  4  5 | 6  7  8 | 9
+        /// scalar: U+65E5    U+672C    U+8A9E    U+000A
+        /// char:   0         1         2         3
+        /// ```
+        ///
+        /// Char START indices are therefore {0, 3, 6, 9}, and `to_char(b)`
+        /// counts the char starts STRICTLY BELOW `b`:
+        ///
+        /// ```text
+        /// to_char(0)  = |{}|           = 0
+        /// to_char(3)  = |{0}|          = 1
+        /// to_char(4)  = |{0, 3}|       = 2   <- byte 4 is mid-character
+        /// to_char(5)  = |{0, 3}|       = 2   <- byte 5 is mid-character
+        /// to_char(6)  = |{0, 3}|       = 2
+        /// to_char(9)  = |{0, 3, 6}|    = 3
+        /// to_char(10) = |{0, 3, 6, 9}| = 4   <- == src.chars().count()
+        /// ```
+        ///
+        /// So the span `4..6` - issue #595's own reproduction, which the old
+        /// function mapped to the inverted `4..2` - maps to `2..2`.
+        ///
+        /// Byte 4 lies INSIDE the scalar starting at byte 3 (char index 1) and
+        /// maps to 2, the index of the FOLLOWING character. That is ROUND-UP,
+        /// not floor. Round-down would be equally total and equally monotone;
+        /// this test records round-up as a DECISION rather than leaving it an
+        /// accident a later cleanup can silently flip. What is NOT arbitrary,
+        /// and is the whole point, is that both endpoints go through the SAME
+        /// total monotone function and so can never take different branches.
+        ///
+        /// Every expected value above is derived from the byte layout, not read
+        /// off a test run: copying observed output would pin whatever the code
+        /// does, including whatever it does wrong.
+        ///
+        /// # The offset TABLES are load-bearing; the headline assertion is not
+        ///
+        /// Do not trim the tables below as redundant with the `4..6 -> 2..2`
+        /// assertion. They are what kills the CLAMP family, and the headline
+        /// assertion on its own does not.
+        ///
+        /// A clamp such as `let s = old(start); let e = old(end); s.min(e)..e`
+        /// is exactly the repair issue #595's own "suggested fix direction"
+        /// proposes. On the reproduction span it computes `old(4) = 4`,
+        /// `old(6) = 2`, `min(4, 2) = 2`, and returns `2..2` - it PASSES the
+        /// headline assertion. What catches it is the table rows at bytes 4 and
+        /// 5, which probe the DEGENERATE span `b..b`: clamping an endpoint
+        /// against an identical endpoint is a no-op, so the raw byte value 4
+        /// shows through where 2 is required.
+        ///
+        /// Precisely: the tables are the ONLY thing that catches the SATURATING
+        /// variant (the one that also maps past-the-end offsets to the char
+        /// count). The literal sketch above, which leaves out-of-bounds offsets
+        /// passing through as raw bytes, is additionally killed by property 6.
+        /// So "only the tables" is true of the harder variant and not of the
+        /// weaker one - which is precisely why the tables cannot be trimmed.
+        ///
+        /// That is also why a clamp is the wrong shape in the first place. It
+        /// relocates the caret to a position no evidence supports and leaves the
+        /// reader unable to tell "the span was fine" from "the span was garbage
+        /// and I hid it". A total, monotone mapping needs no clamp: the ordering
+        /// is a theorem, not a repair.
+        #[test]
+        fn mid_character_offset_rounds_up_to_the_next_char_boundary() {
+            let src = "\u{65e5}\u{672c}\u{8a9e}\n";
+            assert_eq!(
+                src.len(),
+                10,
+                "three 3-byte CJK scalars plus a 1-byte newline"
+            );
+            assert_eq!(src.chars().count(), 4, "four scalars");
+            assert!(!src.is_char_boundary(4), "byte 4 must be mid-character");
+            assert!(!src.is_char_boundary(5), "byte 5 must be mid-character");
+
+            assert_eq!(
+                byte_span_to_char_span(&(4..6), src),
+                2..2,
+                "issue #595's reproduction span 4..6 must map to the ORDERED 2..2, \
+                 not the inverted 4..2 the byte-fallback produced"
+            );
+
+            // The full mapping, not just the reproduction's two endpoints. This
+            // is what separates the intended round-up walk from any other
+            // monotone mapping; it is what kills the clamp family (see the doc
+            // comment); and it is what makes a `<` -> `<=` off-by-one in the
+            // walk's predicate observable (that mutation moves to_char(3) from
+            // 1 to 2).
+            for (b, expected) in [
+                (0usize, 0usize),
+                (3, 1),
+                (4, 2),
+                (5, 2),
+                (6, 2),
+                (9, 3),
+                (10, 4),
+            ] {
+                let cspan = byte_span_to_char_span(&(b..b), src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) must be {expected} (char starts are 0, 3, 6, 9)"
+                );
+            }
+
+            // The 4-byte class, pinned exactly rather than merely generated.
+            //
+            // The multibyte alphabet includes U+1F600 specifically because it is
+            // the only class with THREE distinct interior byte offsets, so an
+            // off-by-one that first appears at interior offset +3 is invisible
+            // to a 3-byte-only alphabet. Properties 4/5/6 do generate it, but
+            // they assert ordering, degeneracy and saturation - none of which is
+            // sensitive to WHICH monotone mapping was chosen. Without the rows
+            // below, that stated rationale would be undischarged: the emoji
+            // would be generated and its exact mapping never checked.
+            //
+            // Byte layout of "\u{1F600}\u{65E5}\n", derived by hand:
+            //
+            //   byte:   0  1  2  3 | 4  5  6 | 7
+            //   scalar: U+1F600      U+65E5    U+000A
+            //   char:   0            1         2
+            //
+            // Char START indices are {0, 4, 7}, so counting the starts strictly
+            // below b gives 1 for every one of the emoji's interior offsets
+            // (1, 2, 3) AND for byte 4 - the emoji rounds up to the index of the
+            // following character, exactly as the 3-byte case does at +1/+2.
+            let emoji_src = "\u{1f600}\u{65e5}\n";
+            assert_eq!(
+                emoji_src.len(),
+                8,
+                "a 4-byte emoji, a 3-byte CJK, a newline"
+            );
+            assert_eq!(emoji_src.chars().count(), 3, "three scalars");
+            for b in [1usize, 2, 3] {
+                assert!(
+                    !emoji_src.is_char_boundary(b),
+                    "byte {b} must be interior to the 4-byte scalar"
+                );
+            }
+            for (b, expected) in [
+                (0usize, 0usize),
+                (1, 1),
+                (2, 1),
+                (3, 1),
+                (4, 1),
+                (5, 2),
+                (7, 2),
+                (8, 3),
+            ] {
+                let cspan = byte_span_to_char_span(&(b..b), emoji_src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) over a 4-byte scalar must be {expected} \
+                     (char starts are 0, 4, 7)"
+                );
+            }
+
+            // The FINAL-SCALAR case (round 2, issue #595): a source that does
+            // NOT end in `\n` and whose LAST scalar is multibyte.
+            //
+            // Every table above ends its source with a 1-byte `\n`, which is
+            // itself a char boundary, so `byte_span_to_char_span`'s boundary
+            // scan always finds one before reaching `source.len()`. None of
+            // those tables ever drives the scan all the way to the very end
+            // of the source - the one place a scan starting past every char
+            // boundary must still terminate correctly. This case closes that
+            // gap: the source's very last byte is itself a continuation
+            // byte, so converting an offset inside the final scalar forces
+            // the scan to walk to `source.len()` before it finds a boundary.
+            //
+            // This table was added (d4154fe, #595) against an EARLIER body
+            // that scanned by indexing `bytes[q]` directly and stopped on a
+            // `q < len` guard; under a `q <= len` mutant that body panicked
+            // here with an index-out-of-bounds ("the len is 6 but the index
+            // is 6"), because `q` reached `len` while the guard still
+            // admitted one more index. `450b16e` replaced that scan with
+            // `source.is_char_boundary(q)`, which is total for every `q` up
+            // to and including `source.len()` - so the panic shape this
+            // table was written to reach can no longer occur by
+            // construction, and its remaining job is coverage of the
+            // end-of-source arm, not a guard against that specific mutant.
+            //
+            // Byte layout of `"ab\u{1F600}"`, derived by hand: two 1-byte
+            // ASCII chars, then a 4-byte emoji, with NOTHING after it.
+            //
+            //   byte:   0  1 | 2  3  4  5
+            //   scalar: a  b   U+1F600
+            //   char:   0  1   2
+            //
+            // Char START indices are {0, 1, 2}. Bytes 3, 4 and 5 are INTERIOR
+            // continuation bytes of the final (and only) multibyte scalar -
+            // the source's very last byte (index 5) is itself a continuation
+            // byte, so walking from any of 3/4/5 drives `q` up to `len` (6)
+            // without ever meeting a non-continuation byte to stop on first.
+            let final_scalar_src = "ab\u{1f600}";
+            assert_eq!(
+                final_scalar_src.len(),
+                6,
+                "two ASCII bytes plus a 4-byte emoji, no trailing newline"
+            );
+            assert_eq!(final_scalar_src.chars().count(), 3, "three scalars");
+            for b in [3usize, 4, 5] {
+                assert!(
+                    !final_scalar_src.is_char_boundary(b),
+                    "byte {b} must be interior to the final emoji scalar"
+                );
+            }
+            for (b, expected) in [(2usize, 2usize), (3, 3), (4, 3), (5, 3), (6, 3)] {
+                let cspan = byte_span_to_char_span(&(b..b), final_scalar_src);
+                assert_eq!(
+                    cspan.start, expected,
+                    "to_char({b}) over a final multibyte scalar with no trailing \
+                     newline must be {expected} (char starts are 0, 1, 2); bytes \
+                     3-5 drive the scan all the way to len (6) with no boundary \
+                     found before that point - the end-of-source case none of \
+                     the tables above ever exercise"
+                );
             }
         }
     }

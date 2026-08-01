@@ -220,6 +220,104 @@ pub enum Tag {
     NoSetenv,
 }
 
+/// The keyword of an `=`-form `Option_Spec` in a `Cmnd_Spec`.
+///
+/// The set is CLOSED, exactly like [`Tag`]'s. `man 5 sudoers` (sudo 1.9.17p2,
+/// the same upstream release as the corpus el9/el10 images; rendered page lines
+/// 652-666, read 2026-07-30) gives:
+///
+/// ```text
+/// Cmnd_Spec    ::= Runas_Spec? Option_Spec* (Tag_Spec ':')* Cmnd
+/// Option_Spec  ::= (SELinux_Spec | Date_Spec | Timeout_Spec | Chdir_Spec | Chroot_Spec)
+/// SELinux_Spec ::= ('ROLE=role' | 'TYPE=type')
+/// Date_Spec    ::= ('NOTBEFORE=timestamp' | 'NOTAFTER=timestamp')
+/// Timeout_Spec ::= 'TIMEOUT=timeout'
+/// Chdir_Spec   ::= 'CWD=directory'
+/// Chroot_Spec  ::= 'CHROOT=directory'
+/// ```
+///
+/// That block lists seven keywords, but it is INCOMPLETE as a description of
+/// what the shipping parser ACCEPTS, and the parser is the better primary
+/// source for acceptance. Live `visudo -c -f -` on this host (sudo 1.9.17p2,
+/// `visudo grammar version 50`, probed 2026-07-30) accepts three more, and
+/// `cvtsudoers -f json` reports each as a real `Options` entry rather than as
+/// command text:
+///
+/// ```text
+/// alice ALL = PRIVS=x /bin/ls              rc 0   Options [{"privs":"x"}]
+/// alice ALL = LIMITPRIVS=y /bin/ls         rc 0   Options [{"limitprivs":"y"}]
+/// alice ALL = APPARMOR_PROFILE=p /bin/ls   rc 0   Options [{"apparmor_profile":"p"}]
+/// ```
+///
+/// so the real set is TEN. It is still genuinely CLOSED, not open: on the same
+/// host `alice ALL = BOGUSKEY=z /bin/ls` is rc 1 (`syntax error`), so an
+/// unknown `WORD=VALUE` is not an option. The set must therefore NOT be
+/// generalised to "any `WORD=VALUE` prefix": `alice ALL = /usr/bin/env FOO=bar`
+/// is valid sudoers (rc 0) and `cvtsudoers -f json` reports it as the SINGLE
+/// command `"/usr/bin/env FOO=bar"` with the `=` intact, so a keyword-free
+/// matcher would corrupt a real command line.
+///
+/// Adding an ELEVENTH keyword requires a new cited primary source here, on the
+/// same footing as the probe above; guessing one is forbidden.
+///
+/// Matching is CASE-SENSITIVE, like [`Tag`]'s: live probes on host sudo
+/// 1.9.17p2 (2026-07-30) show `timeout=30` and `Timeout=30` are BOTH rc 1
+/// (`expected a fully-qualified path name` - sudo read them as a command word),
+/// while `TIMEOUT=30` is rc 0 and becomes an `Options` entry.
+///
+/// Note the grammar's ORDER: `Option_Spec*` precedes `(Tag_Spec ':')*`. Live on
+/// the same host, `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` is rc 0 while the
+/// reversed `alice ALL = NOEXEC: TIMEOUT=30 /bin/ls` is rc 1 (`syntax error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmndOptionKey {
+    /// `ROLE=role` (`SELinux_Spec`).
+    Role,
+    /// `TYPE=type` (`SELinux_Spec`).
+    Type,
+    /// `NOTBEFORE=timestamp` (`Date_Spec`).
+    NotBefore,
+    /// `NOTAFTER=timestamp` (`Date_Spec`).
+    NotAfter,
+    /// `TIMEOUT=timeout` (`Timeout_Spec`).
+    Timeout,
+    /// `CWD=directory` (`Chdir_Spec`).
+    Cwd,
+    /// `CHROOT=directory` (`Chroot_Spec`).
+    Chroot,
+    /// `PRIVS=privset` (Solaris privileges). Absent from the man page's
+    /// `Option_Spec` block; accepted by the shipping parser (probe above).
+    Privs,
+    /// `LIMITPRIVS=privset` (Solaris limit privileges). Absent from the man
+    /// page's `Option_Spec` block; accepted by the shipping parser.
+    LimitPrivs,
+    /// `APPARMOR_PROFILE=profile`. Absent from the man page's `Option_Spec`
+    /// block; accepted by the shipping parser.
+    AppArmorProfile,
+}
+
+/// One `=`-form `Option_Spec` written on a `Cmnd_Spec`: its keyword plus the RAW
+/// source value (everything after the `=`, up to the next un-quoted,
+/// un-escaped whitespace - NOT simply "the next whitespace": the value may
+/// itself be double-quoted or backslash-escaped (`CWD="/tmp/a b"`,
+/// `CWD=/tmp/a\ b`; no `man 5 sudoers` passage documents `Option_Spec` value
+/// quoting - grounded only by live `visudo -c -f -` probes, see
+/// `parser::skip_value_leading_whitespace`'s doc comment), in which case the
+/// quoted/escaped whitespace is part of the value, not its end).
+///
+/// The value is kept as WRITTEN, never coerced or unescaped/unquoted.
+/// `cvtsudoers -f json` renders `TIMEOUT=30` as the JSON number `30` and
+/// dequotes a quoted value, but the AST is a faithful record of the source
+/// token, so this holds the string `"30"` (or `"\"/tmp/a b\""`, quotes
+/// retained) - the same choice [`RunasSpec`] makes for its raw comma-split
+/// members.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CmndOption {
+    /// Which of the ten accepted `Option_Spec` keywords was written.
+    pub key: CmndOptionKey,
+    /// The raw value text after the `=`, verbatim.
+    pub value: String,
+}
+
 /// A run-as spec: `(runas_users)` or `(runas_users:runas_groups)`.
 ///
 /// Both lists are RAW comma-split tokens (trimmed); an absent list is an empty
@@ -260,6 +358,21 @@ pub enum CmndItem {
 pub struct CmndSpec {
     /// The run-as spec, if a `(...)` group preceded this command.
     pub runas: Option<RunasSpec>,
+    /// The `=`-form options written on this command, in SOURCE order. Field
+    /// order here mirrors the `sudoers(5)` grammar's own
+    /// `Runas_Spec? Option_Spec* (Tag_Spec ':')* Cmnd` ordering.
+    ///
+    /// No projector in [`crate::oracle`] reads this yet (both sides of the L3
+    /// differential compare users / hosts / commands only), so capturing the
+    /// options does NOT by itself close the option-erasure axis - that needs a
+    /// third `StructureProjection` axis, deliberately out of scope. What it
+    /// buys is twofold: consuming the `KEY=value` token here stops an option
+    /// from CORRUPTING the `commands` axis, which IS compared; and retaining
+    /// the value (not just recognizing the keyword) lets the frozen test
+    /// suite prove the value was actually PARSED rather than merely
+    /// recognized and discarded, since whole-`Vec` equality on this field is
+    /// the only assertion that can tell the two apart.
+    pub options: Vec<CmndOption>,
     /// The explicit tags written on this command (NOT inheritance-resolved).
     pub tags: Vec<Tag>,
     /// The command (the reserved `ALL` or a named item / alias reference).
