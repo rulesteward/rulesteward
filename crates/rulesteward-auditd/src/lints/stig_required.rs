@@ -1535,9 +1535,13 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// == CompareOp::Eq` field-presence arm), and there must be EXACTLY ONE Path
 /// predicate, not "at least one" (its trailing `fields.iter().filter(|f|
 /// f.field == AuditField::Path).count() == 1` guard) -- closing the fail-open where
-/// a rule spelled `-F path!=` / `-F perm!=` or naming `-F path=` more than
-/// once (`-EAU_OPEQ`; `audit_to_watch` returns `-EINVAL` when `krule->watch`
-/// is already set -- neither loads on a real host) was still credited as
+/// a rule spelled `-F perm!=` (`lib/libaudit.c`'s `AUDIT_PERM` case returns
+/// `-EAU_OPEQ` for any op but `=`), or `-F path!=` (a KERNEL-side rejection,
+/// not libaudit's: `kernel/audit_watch.c`'s `audit_to_watch` rejects any
+/// non-`=` operator on an `AUDIT_WATCH` predicate -- `-EAU_OPEQ` is a
+/// libaudit-only code and does not apply to path), or naming `-F path=` more
+/// than once (`audit_to_watch` returns `-EINVAL` when `krule->watch` is
+/// already set) -- none of these load on a real host -- was still credited as
 /// path-watch shaped. Both shape tests are mutually exclusive (a field set
 /// that is all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
 /// unless it has neither a `path` nor a `dir` predicate, which both shape
@@ -1730,11 +1734,20 @@ fn is_pure_path_watch_shaped(
             // predicate, and `lib/libaudit.c`'s AUDIT_PERM case returns
             // -EAU_OPEQ for any op but `=`.
             AuditField::Path | AuditField::Perm => f.op == CompareOp::Eq,
-            // `arch`'s own operator restriction is au-E02's job, not this
-            // shape test's; `-F key=` unifies with `-k` via `effective_key`
-            // (the key axis is handled separately), so its presence (with
-            // any op) never disqualifies the shape either.
-            AuditField::Arch | AuditField::Key => true,
+            // Session 9m lane 1: `-F arch=`/`-F arch!=` are the only two
+            // operators `lib/libaudit.c`'s AUDIT_ARCH case loads (measured
+            // rc 0 against the installed audit-libs-4.1.4; every other
+            // `CompareOp` variant returns rc -13) -- see
+            // `pure_path_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment
+            // for the full probe. A candidate spelling any other operator
+            // never loads at the kernel level and must not be credited as
+            // path-watch shaped.
+            AuditField::Arch => matches!(f.op, CompareOp::Eq | CompareOp::Ne),
+            // `-F key=` unifies with `-k` via `effective_key` (the key axis
+            // is handled separately), and libaudit accepts every operator on
+            // AUDIT_FILTERKEY (measured rc 0 for `key!=`/`key>=`/`key&`), so
+            // its presence (with any op) never disqualifies the shape.
+            AuditField::Key => true,
             _ => false,
         })
         // #600 (mirrors dir twin's MISS-4): EXACTLY one Path predicate, not
@@ -1816,11 +1829,18 @@ fn is_pure_dir_watch_shaped(
         && fields.iter().all(|f| match f.field {
             // MISS-1/MISS-3: `-F dir=`/`-F perm=` only ever LOAD with `=`.
             AuditField::Dir | AuditField::Perm => f.op == CompareOp::Eq,
-            // `arch`'s own operator restriction is au-E02's job, not this
-            // shape test's; MISS-2: `-F key=` unifies with `-k` via
-            // `effective_key` (the key axis is handled separately), so its
-            // presence (with any op) never disqualifies the shape either.
-            AuditField::Arch | AuditField::Key => true,
+            // Session 9m lane 1 (mirrors the path-flavored twin's identical
+            // fix): `-F arch=`/`-F arch!=` are the only two operators
+            // libaudit's AUDIT_ARCH case loads (measured rc 0; every other
+            // `CompareOp` variant returns rc -13) -- see
+            // `pure_dir_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment for
+            // the full probe.
+            AuditField::Arch => matches!(f.op, CompareOp::Eq | CompareOp::Ne),
+            // MISS-2: `-F key=` unifies with `-k` via `effective_key` (the
+            // key axis is handled separately), and libaudit accepts every
+            // operator on AUDIT_FILTERKEY, so its presence (with any op)
+            // never disqualifies the shape.
+            AuditField::Key => true,
             _ => false,
         })
         // MISS-4: EXACTLY one Dir predicate, not "at least one".
