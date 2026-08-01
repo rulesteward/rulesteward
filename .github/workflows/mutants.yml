@@ -27,22 +27,22 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: ubuntu-latest
-    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~182
+    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~183
     # mutants serially; most are caught fast, a few run the full --test-workspace
     # suite (~100s) to completion, so a shard finishes well inside 2h (measured
     # 2026-07-30 on run 30519128558: 40-44 min/shard at 170-171 mutants each,
-    # which scales to roughly 47 min at the current 182/shard -- still inside
+    # which scales to roughly 48 min at the current 183/shard -- still inside
     # the ceiling, but re-measure rather than extrapolate if the total grows
     # much further).
     # A timed-out shard fails the gate (exit 3) the same as a survivor, so keep
     # headroom.
     timeout-minutes: 120
     strategy:
-      # Shard the full mutant suite (~3629 mutants) into 20 shards (the
+      # Shard the full mutant suite (~3666 mutants) into 20 shards (the
       # GitHub-hosted concurrent-job cap, so the whole run starts at once).
       # Why 20 (not fewer): the gate runs --test-workspace (every mutant
       # re-runs the whole workspace suite, slow) and -j1 (below) runs them
-      # serially, so ~182 mutants/shard keeps each JOB inside the 2h ceiling
+      # serially, so ~183 mutants/shard keeps each JOB inside the 2h ceiling
       # at a measured 40-44 min -- 8 shards x ~430 mutants serial would blow it.
       # The total is a DERIVED number, not a fixed one: re-run
       # `cargo mutants --list | wc -l` and update it whenever examine_globs or
@@ -54,6 +54,11 @@ jobs:
       # 9m's own lanes landed: this number goes stale every time src/ grows,
       # including within the very session that last corrected it, which is why
       # the instruction is to re-derive it rather than to trust what it says.
+      # Re-measured again 2026-08-01 at 3666, after three files that carried
+      # real logic and were listed in no glob were added to examine_globs. The
+      # non-vacuity assertion on the run step below is the mechanical backstop
+      # for the failure this comment can only warn about: a shard that generates
+      # zero mutants now fails instead of reporting a clean slice.
       # The shard count appears in THREE places that must stay in sync: the
       # job `name:` (/20), this matrix list (0..19), and the `--shard k/20`
       # denominator on the cargo-mutants line. A 24->20 edit that missed the
@@ -126,4 +131,36 @@ jobs:
       #                   the per-PR scoped runs pass an explicit --test-package and
       #                   must keep the cheaper default scoping.
       - name: cargo mutants
-        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true
+        run: |
+          set -uo pipefail
+          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true
+          rc=$?
+
+          # NON-VACUITY ASSERTION. rc is the gate, but rc alone cannot tell a
+          # clean shard from a shard that tested NOTHING: both exit 0 and both
+          # print no survivors. Every way this workflow can silently stop
+          # gating produces exactly that -- a file outside examine_globs, a
+          # shard denominator that disagrees with the matrix (which already
+          # dropped ~17% of mutants once, #216), or a config the runner did not
+          # pick up. So the shard proves it saw something before its 0 counts.
+          MO=mutants.out
+          if [ ! -d "${MO}" ]; then
+            echo "::error::shard ${{ matrix.shard }}: no mutants.out - cargo-mutants never ran"
+            exit 2
+          fi
+          c=$(wc -l < "${MO}/caught.txt" 2>/dev/null || echo 0)
+          m=$(wc -l < "${MO}/missed.txt" 2>/dev/null || echo 0)
+          t=$(wc -l < "${MO}/timeout.txt" 2>/dev/null || echo 0)
+          u=$(wc -l < "${MO}/unviable.txt" 2>/dev/null || echo 0)
+          echo "shard ${{ matrix.shard }}: caught=${c} missed=${m} timeout=${t} unviable=${u} rc=${rc}"
+          if [ "$((c + m + t + u))" -eq 0 ]; then
+            echo "::error::shard ${{ matrix.shard }} generated ZERO mutants. A green here means nothing."
+            echo "Usual causes: the shard denominator disagrees with the matrix list,"
+            echo "or examine_globs no longer matches any source file."
+            exit 2
+          fi
+          if [ "$((c + m + t))" -eq 0 ]; then
+            echo "::error::shard ${{ matrix.shard }}: every mutant was UNVIABLE (${u}); nothing was actually tested."
+            exit 2
+          fi
+          exit "${rc}"

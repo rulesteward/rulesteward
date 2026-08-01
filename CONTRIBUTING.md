@@ -140,15 +140,15 @@ that made `just diff-fapolicyd` report success while checking nothing (#572).
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a
 new harness, do not copy one of them: add a lane to the frozen table in
-`scripts/rs-oracle-diff.sh`, which all three delegate to.** The older LIVE
-recipes (`just diff-sshd`,
-`just fapolicyd-probe-check`) predate this contract and `exit 0` on missing
-prerequisites, so `diff-sshd` remains the model for the two-tier SHAPE but not
-for this rc table - its offline tier is what makes its skip survivable, since
-the assertion still runs without docker. Retrofitting the older recipes is a
-behavior change to shipped tooling, so it was deliberately not done inside the
-branch that wrote this contract. Owner decision (2026-07-25): grandfather them
-and retrofit under its own issue.
+`scripts/rs-oracle-diff.sh`, which all three delegate to.** The two older LIVE
+recipes (`just diff-sshd`, `just fapolicyd-probe-check`) predated this contract
+and `exit 0`d on missing prerequisites. They were grandfathered by owner decision
+on 2026-07-25 and **retrofitted on 2026-08-01**: both now `exit 3` on a missing
+docker binary and on missing images, with `RS_ORACLE_REQUIRED=1` promoting that
+to `2`. All four skip paths were verified in both modes against a PATH with no
+docker and against a docker stub whose `image inspect` fails, with a live
+docker-present run as the negative control. Every LIVE recipe in the repo now
+implements the rc table; there is no remaining `exit 0` skip.
 
 The 9k-1 recipes also demonstrate the shape that keeps the two tiers from
 drifting apart: the drift check is not a second implementation of "does the

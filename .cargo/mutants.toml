@@ -242,6 +242,36 @@ examine_globs = [
     # where workspace feature unification enables it) - without it the gated
     # test binary compiles EMPTY and the gate passes vacuously.
     "crates/rulesteward-selinux-sys/src/lib.rs",
+    # (session 9n) Three files that carry real logic and were in NO glob above.
+    # Unlike format.rs, ast.rs, the stub crates and the CLI glue, none of them is
+    # named in the "Excludes" list at the top of this file or in exclude_re
+    # below. They were simply never added, which is the allowlist failure mode
+    # this file warns about in three separate comments.
+    #
+    # Measured 2026-08-01 with `cargo mutants --list`, config present vs absent:
+    # 3629 mutants over 133 files with this config, 4180 over 158 without it.
+    # The 25-file gap is 22 deliberate exclusions plus these 3. Adding them takes
+    # the total to 3666 (+37, +1.0%), which at 20 shards is well under a minute
+    # per shard. A fourth candidate, parser/error.rs, is NOT here: all 7 of its
+    # mutants live in `rich_to_diagnostic`, which exclude_re already excludes by
+    # name with a written rationale. That was caught only because the measured
+    # count came back 3666 where 3673 was predicted; the file-level view alone
+    # would have added a line whose comment was false on arrival.
+    #
+    # The measurement also REFUTES the 9n review's "123 of 274 source files are
+    # ungated", which motivated a proposed examine_globs -> exclude_globs flip.
+    # That denominator counts test files, which are deliberately never mutated;
+    # cargo-mutants itself sees 158 source files, and this config already HAS an
+    # exclude_globs section, so the two are used together rather than as
+    # alternatives. The flip was NOT made: it would gate the 16 CLI glue files
+    # excluded here with a stated rationale, at a measured +15% CI cost, to fix 3
+    # files that three lines fix. If the allowlist's silently-ungated-by-default
+    # shape is to be fixed structurally, the cheap form is a guard asserting that
+    # every crates/*/src/**.rs is either listed here or named in an exclusion,
+    # not a denylist.
+    "crates/rulesteward-core/src/span.rs",
+    "crates/rulesteward-fapolicyd/src/load_order.rs",
+    "crates/rulesteward-fapolicyd/src/version.rs",
 ]
 
 exclude_globs = [

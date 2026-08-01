@@ -512,11 +512,17 @@ diff-sshd:
     set -uo pipefail
     if ! command -v docker >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - need docker + the sshd-probe{8,9,10} images (build from tools/sshd-probe-update/dockerfiles/<n>/)" >&2
-        exit 0
+        # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+        # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+        # weeks while checking nothing (#572). RS_ORACLE_REQUIRED=1 promotes 3->2,
+        # so a box that is supposed to have the oracle cannot skip silently.
+        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
+        exit 3
     fi
     if ! docker image inspect sshd-probe8 sshd-probe9 sshd-probe10 >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - sshd-probe8/9/10 images not found; build each from tools/sshd-probe-update/dockerfiles/<n>/Dockerfile (docker build -t sshd-probe<n> ...)" >&2
-        exit 0
+        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
+        exit 3
     fi
     cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- check
 
@@ -566,11 +572,16 @@ fapolicyd-probe-check:
     set -uo pipefail
     if ! command -v docker >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images (see CLAUDE.md 'Differential verification')" >&2
-        exit 0
+        # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+        # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+        # weeks while checking nothing (#572). RS_ORACLE_REQUIRED=1 promotes 3->2.
+        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
+        exit 3
     fi
     if ! docker image inspect fapolicyd8 fapolicyd9 fapolicyd10 >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - fapolicyd8/9/10 docker images not found; pull or build them first (see CLAUDE.md 'Differential verification')" >&2
-        exit 0
+        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
+        exit 3
     fi
     cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- check
 
