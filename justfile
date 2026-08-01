@@ -496,9 +496,11 @@ selinux-stig-derive product="all":
 
 # (#372) Drift-check the sshd E01/E04/W04 lint tables against a LIVE sshd daemon by
 # probing the Rocky 8/9/10 + openssh-server images. Same nested-tool pattern
-# (tools/sshd-probe-update, OUT of `just ci`). The LIVE recipes skip gracefully (exit 0)
-# when docker or the images are absent; the weekly sshd-probe-drift workflow builds the
-# images and runs the live check in CI.
+# (tools/sshd-probe-update, OUT of `just ci`). `diff-sshd` skips with rc 3 when docker
+# or the images are absent, promoted to rc 2 when the oracle is declared required
+# (RS_ORACLE_REQUIRED / RS_REQUIRE_SSHD); `sshd-probe-derive` is a print-only helper and
+# still exits 0. The weekly sshd-probe-drift workflow builds the images and runs the
+# live check in CI.
 #
 # diff-sshd             : LIVE - probe the sshd-probe{8,9,10} images; exit 1 on drift.
 # diff-sshd-offline     : OFFLINE - drift-check against the committed daemon fixtures
@@ -510,19 +512,33 @@ selinux-stig-derive product="all":
 diff-sshd:
     #!/usr/bin/env bash
     set -uo pipefail
+    # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+    # weeks while checking nothing (#572), so a box that is supposed to have the
+    # oracle must not be able to skip silently.
+    #
+    # The 3->2 promotion is DELEGATED, never rewritten inline. An inline
+    # `[ "${RS_ORACLE_REQUIRED:-0}" != "0" ]` was written here first and was
+    # wrong in both directions, measured: it cannot see the per-lane
+    # RS_REQUIRE_SSHD (so a CI job that requires only this lane got rc 3, a
+    # silent skip - #572's own shape), and it treats `false`/`no`/`off`/blank as
+    # truthy. scripts/rs-oracle-required.sh is the single fail-closed parse, and
+    # its own header says why there must not be a second copy of it.
+    skip_or_fail() {
+        bash scripts/rs-oracle-required.sh SSHD
+        case "$?" in
+        0) exit 2 ;;
+        1) exit 3 ;;
+        *) echo "diff-sshd: rs-oracle-required.sh SSHD gave an unexpected exit; refusing to guess whether the oracle is required" >&2; exit 2 ;;
+        esac
+    }
     if ! command -v docker >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - need docker + the sshd-probe{8,9,10} images (build from tools/sshd-probe-update/dockerfiles/<n>/)" >&2
-        # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
-        # `just diff-fapolicyd` exited 0 with this exact shape of message for six
-        # weeks while checking nothing (#572). RS_ORACLE_REQUIRED=1 promotes 3->2,
-        # so a box that is supposed to have the oracle cannot skip silently.
-        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
-        exit 3
+        skip_or_fail
     fi
     if ! docker image inspect sshd-probe8 sshd-probe9 sshd-probe10 >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - sshd-probe8/9/10 images not found; build each from tools/sshd-probe-update/dockerfiles/<n>/Dockerfile (docker build -t sshd-probe<n> ...)" >&2
-        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
-        exit 3
+        skip_or_fail
     fi
     cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- check
 
@@ -555,10 +571,11 @@ sshd-probe-derive product="all":
 # fapolicyd8/9/10 images directly (see this repo's CLAUDE.md "Differential
 # verification" section - these images are NOT built by this tool, unlike
 # tools/sshd-probe-update's dockerfiles/, since fapolicyd already ships on them). Same
-# nested-tool pattern (tools/fapolicyd-probe-update, OUT of `just ci`). The LIVE recipes
-# skip gracefully (exit 0) when docker or the images are absent; the offline recipe
-# replays the committed daemon-probe fixtures (no docker) and is what the PR-gate
-# workflow runs.
+# nested-tool pattern (tools/fapolicyd-probe-update, OUT of `just ci`). `fapolicyd-probe-check`
+# skips with rc 3 when docker or the images are absent, promoted to rc 2 when the oracle
+# is declared required (RS_ORACLE_REQUIRED / RS_REQUIRE_FAPOLICYD); `fapolicyd-probe-derive`
+# is a print-only helper and still exits 0. The offline recipe replays the committed
+# daemon-probe fixtures (no docker) and is what the PR-gate workflow runs.
 #
 # fapolicyd-probe-check          : LIVE - probe fapolicyd8/9/10; exit 1 on drift.
 # fapolicyd-probe-check-offline  : OFFLINE - drift-check against the committed
@@ -570,18 +587,26 @@ sshd-probe-derive product="all":
 fapolicyd-probe-check:
     #!/usr/bin/env bash
     set -uo pipefail
+    # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+    # weeks while checking nothing (#572). The 3->2 promotion is delegated to the
+    # single fail-closed parse rather than re-tested inline; see diff-sshd's
+    # skip_or_fail for the two measured ways the inline form was wrong.
+    skip_or_fail() {
+        bash scripts/rs-oracle-required.sh FAPOLICYD
+        case "$?" in
+        0) exit 2 ;;
+        1) exit 3 ;;
+        *) echo "fapolicyd-probe-check: rs-oracle-required.sh FAPOLICYD gave an unexpected exit; refusing to guess whether the oracle is required" >&2; exit 2 ;;
+        esac
+    }
     if ! command -v docker >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images (see CLAUDE.md 'Differential verification')" >&2
-        # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
-        # `just diff-fapolicyd` exited 0 with this exact shape of message for six
-        # weeks while checking nothing (#572). RS_ORACLE_REQUIRED=1 promotes 3->2.
-        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
-        exit 3
+        skip_or_fail
     fi
     if ! docker image inspect fapolicyd8 fapolicyd9 fapolicyd10 >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - fapolicyd8/9/10 docker images not found; pull or build them first (see CLAUDE.md 'Differential verification')" >&2
-        if [ "${RS_ORACLE_REQUIRED:-0}" != "0" ]; then exit 2; fi
-        exit 3
+        skip_or_fail
     fi
     cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- check
 

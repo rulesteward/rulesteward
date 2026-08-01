@@ -51,11 +51,15 @@ MO="$WT/mutants.out"
 if [ ! -d "$MO" ]; then echo "GATE-ERROR: no mutants.out - nothing ran"; tail -30 "$OUT/run.out"; exit 2; fi
 
 # Vacuity guard 1: something was actually mutated.
-total=$(grep -c '"' "$MO/caught.txt" 2>/dev/null; true)
-c=$(wc -l < "$MO/caught.txt" 2>/dev/null || echo 0)
-m=$(wc -l < "$MO/missed.txt" 2>/dev/null || echo 0)
-t=$(wc -l < "$MO/timeout.txt" 2>/dev/null || echo 0)
-u=$(wc -l < "$MO/unviable.txt" 2>/dev/null || echo 0)
+#
+# `wc -l < f 2>/dev/null` does NOT suppress the error it looks like it does:
+# redirections apply left to right, so the input redirection fails and prints
+# before `2>/dev/null` is installed. Count the file by name instead.
+countlines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
+c=$(countlines "$MO/caught.txt")
+m=$(countlines "$MO/missed.txt")
+t=$(countlines "$MO/timeout.txt")
+u=$(countlines "$MO/unviable.txt")
 echo "MUTANTS: caught=$c missed=$m timeout=$t unviable=$u"
 if [ "$((c + m + t))" -eq 0 ]; then
   echo "GATE-ERROR: VACUOUS - zero viable mutants tested. A green here means nothing."
@@ -74,21 +78,61 @@ fi
 # and cargo-mutants will never mutate those; failing on them would make the
 # gate unusable and would be the fastest route to someone deleting it.
 #
+# That reasoning stopped one step short, and the first review of this file
+# caught it: `**/tests/**` is in .cargo/mutants.toml `exclude_globs`, so an
+# integration-test file is a .rs file that cargo-mutants DELIBERATELY never
+# mutates. Demanding coverage for it rc-2s on the shape every TDD lane
+# produces (impl hunk + the frozen test file it makes green), with a message
+# telling the operator to add the path to `examine_globs` - which cannot work,
+# because exclude_globs wins. Fail-closed, but unusable, which is the same
+# route to deletion by another name.
+#
+# So the partition is three-way, not two-way:
+#   mutated          - the guard is satisfied for this file.
+#   out of scope     - unmutated AND under a tests/ directory. Reported, not
+#                      fatal; the coupling to exclude_globs is deliberate and
+#                      is why `/tests/` is named here literally rather than a
+#                      glob engine being reimplemented.
+#   unexplained      - unmutated and NOT excluded by design. Still fatal: this
+#                      is the mangled-diff and outside-examine_globs case.
+# ...and if NOTHING changed was mutated, the run proved nothing even when every
+# unmutated file was explainable, so that is fatal too.
+#
 # The loop reads from a process substitution rather than a pipe on purpose: a
-# piped `while` runs in a subshell, so `unmutated` would be discarded at `done`
-# and this guard would silently become decorative a second time.
+# piped `while` runs in a subshell, so the accumulators would be discarded at
+# `done` and this guard would silently become decorative a second time.
 echo "--- changed files vs mutated files ---"
 unmutated=""
+outofscope=""
+mutated_any=0
 while read -r f; do
   [ -n "$f" ] || continue
-  n=$(cat "$MO/caught.txt" "$MO/missed.txt" "$MO/timeout.txt" 2>/dev/null | grep -cF "$f")
-  echo "  $f -> $n mutants"
-  [ "$n" -eq 0 ] && unmutated="$unmutated $f"
+  # Anchored at a path boundary and at the `:` cargo-mutants writes after the
+  # file, so `a.rs` cannot be credited by a mutant in `xa.rs`. Left-anchored to
+  # `^` OR `/` rather than `^` alone: whether the outcome files are repo- or
+  # crate-relative depends on where the caller cd'd to, and a too-strict anchor
+  # would turn that difference into a spurious GATE-ERROR.
+  n=$(cat "$MO/caught.txt" "$MO/missed.txt" "$MO/timeout.txt" 2>/dev/null | grep -cE "(^|/)${f//./\\.}:")
+  if [ "$n" -gt 0 ]; then
+    echo "  $f -> $n mutants"
+    mutated_any=1
+  elif [ "$f" != "${f#tests/}" ] || [ "$f" != "${f/\/tests\//}" ]; then
+    echo "  $f -> 0 mutants (SKIPPED: out of mutation scope, .cargo/mutants.toml exclude_globs '**/tests/**')"
+    outofscope="$outofscope $f"
+  else
+    echo "  $f -> 0 mutants"
+    unmutated="$unmutated $f"
+  fi
 done < <(grep -E '^\+\+\+ b/.*\.rs$' "$OUT/impl.diff" | sed 's|^+++ b/||')
 if [ -n "$unmutated" ]; then
   echo "GATE-ERROR:$unmutated not among the mutated files - this lane's change was never tested."
   echo "  Usual causes: the file is outside .cargo/mutants.toml examine_globs, or"
   echo "  --in-diff was handed a rewritten diff (use 'rtk proxy git diff')."
+  exit 2
+fi
+if [ "$mutated_any" -eq 0 ]; then
+  echo "GATE-ERROR: no changed Rust file was mutated - every changed .rs file is"
+  echo "  out of mutation scope ($outofscope), so this run proved nothing about the change."
   exit 2
 fi
 

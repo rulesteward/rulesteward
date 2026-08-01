@@ -558,6 +558,24 @@ assert_mentions_zero_files "case13_empty_tree_is_vacuous"
 
 run_case "case14_missing_path_is_error" "${TMPROOT}/case14-does-not-exist" 2
 
+# The floor must be PER DIRECTORY, not a global total. With one populated
+# argument and one empty one the total is non-zero, so a global floor reports a
+# clean pass while the second argument was never scanned at all -- the same
+# "nothing fired looks like nothing ran" confusion the floor exists to prevent,
+# moved one level up. `just ci` passes a single directory today, so this is
+# latent rather than live; it is pinned here so it stays fixed.
+mkdir -p "${TMPROOT}/case15/empty-crates"
+case15_out="${TMPROOT}/case15_one_empty_dir_among_several_is_vacuous.out"
+case15_rc=0
+"${GATE}" "${TMPROOT}/case3/crates" "${TMPROOT}/case15/empty-crates" \
+    >"${case15_out}" 2>&1 || case15_rc=$?
+if [[ "${case15_rc}" -eq 2 ]]; then
+    note_pass "case15_one_empty_dir_among_several_is_vacuous (exit 2)"
+else
+    note_fail "case15_one_empty_dir_among_several_is_vacuous: expected exit 2, got ${case15_rc}"
+    sed 's/^/    | /' "${case15_out}" || true
+fi
+
 echo ""
 echo "----------------------------------------"
 echo "${pass} passed, ${fail} failed"

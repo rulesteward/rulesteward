@@ -83,6 +83,31 @@ case "${STUB_DIFF_KIND:-rust}" in
     printf ' crates/x/src/parser.rs | 2 +-\n'
     printf ' 1 file changed, 1 insertion(+), 1 deletion(-)\n'
     ;;
+  srcandtest)
+    # The shape EVERY TDD lane produces: an impl hunk plus the frozen test file
+    # it makes green. `**/tests/**` is in .cargo/mutants.toml exclude_globs, so
+    # the test file is DELIBERATELY never mutated. A per-file coverage guard
+    # that does not know this rc-2s on the gate's primary input, and tells the
+    # operator to add `crates/*/tests/**` to examine_globs -- which cannot work,
+    # because exclude_globs wins.
+    printf 'diff --git a/crates/x/src/parser.rs b/crates/x/src/parser.rs\n'
+    printf -- '--- a/crates/x/src/parser.rs\n'
+    printf -- '+++ b/crates/x/src/parser.rs\n'
+    printf '@@ -1 +1 @@\n-old\n+new\n'
+    printf 'diff --git a/crates/x/tests/lint_w01.rs b/crates/x/tests/lint_w01.rs\n'
+    printf -- '--- a/crates/x/tests/lint_w01.rs\n'
+    printf -- '+++ b/crates/x/tests/lint_w01.rs\n'
+    printf '@@ -1 +1 @@\n-old\n+new\n'
+    ;;
+  testonly)
+    # Only an excluded test file changed. Skipping it as out-of-scope must NOT
+    # leave the gate with nothing to say: no changed Rust file was mutated, so
+    # this run proved nothing and is still an error.
+    printf 'diff --git a/crates/x/tests/lint_w01.rs b/crates/x/tests/lint_w01.rs\n'
+    printf -- '--- a/crates/x/tests/lint_w01.rs\n'
+    printf -- '+++ b/crates/x/tests/lint_w01.rs\n'
+    printf '@@ -1 +1 @@\n-old\n+new\n'
+    ;;
   empty) : ;;
 esac
 exit 0
@@ -209,6 +234,15 @@ run_all_cases() {
     run_case case7_scratch_honours_tmpdir 0 '-' \
         STUB_DIFF_KIND=rust STUB_MUTANTS_KIND=clean STUB_CARGO_RC=0
     assert_no_hardcoded_tmp case7_scratch_honours_tmpdir
+
+    # An excluded test file alongside a mutated src file must not fail the gate,
+    # and must not be silently dropped either: it is reported as out of scope.
+    run_case case8_excluded_test_file_beside_a_mutated_src_file_exits_0 0 'out of mutation scope' \
+        STUB_DIFF_KIND=srcandtest STUB_MUTANTS_KIND=clean STUB_CARGO_RC=0
+
+    # ...but if EVERY changed Rust file is out of scope, the run proved nothing.
+    run_case case9_every_changed_rs_out_of_scope_exits_2 2 'no changed Rust file was mutated' \
+        STUB_DIFF_KIND=testonly STUB_MUTANTS_KIND=otherfile STUB_CARGO_RC=0
 }
 
 # The gate must not write its scratch to a hardcoded /tmp path. The per-UID
@@ -312,7 +346,14 @@ run_positive_control changed-file-not-mutated-guard \
     '/^if \[ -n "\$unmutated" \]/,/^fi$/d' \
     case3_target_file_absent_from_caught_and_missed_exits_2
 
+# The second half of the three-way partition. Downgrading an out-of-scope file
+# from fatal to reported is only safe BECAUSE this guard still refuses a run in
+# which nothing changed was mutated; without a control, that safety is a claim.
+run_positive_control nothing-changed-was-mutated-guard \
+    '/^if \[ "\$mutated_any" -eq 0 \]/,/^fi$/d' \
+    case9_every_changed_rs_out_of_scope_exits_2
+
 printf '\nrs-mutation-gate-test: %d cases passed, %d positive controls\n' \
-    "${BASELINE_PASS}" 3
+    "${BASELINE_PASS}" 4
 echo "RS-MUTATION-GATE TEST PASSED"
 exit 0

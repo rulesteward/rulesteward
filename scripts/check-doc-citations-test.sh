@@ -89,6 +89,14 @@ run_all_cases() {
 
     run_case case8_no_citations_at_all_is_vacuous 2 'scanned 0 citations' \
         '// nothing to see here'
+
+    # The historical hatch must apply to the citation it PRECEDES, not to every
+    # citation on a line that happens to contain the word somewhere. Otherwise
+    # any comment mentioning the old anything silently exempts a live dead
+    # citation - and this gate is destined for `just ci`, where that is a
+    # permanent blind spot rather than a one-off miss.
+    run_case case9_historical_word_far_from_the_citation_does_not_exempt 1 'OUT-OF-RANGE' \
+        '// the old parser is gone now; see target.rs:99 for the shape'
 }
 
 GATE_UNDER_TEST="${GATE}"

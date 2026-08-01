@@ -248,13 +248,22 @@ done < <(
 # any green is trusted. Both sibling guards (check-codes-count.sh,
 # check-no-mnt-paths.sh) already carry this floor; this one did not, which made
 # it the single `just ci` gate that passes silently on an empty tree.
-if [[ "${scanned}" -eq 0 ]]; then
-    echo "check-dac-guard: ERROR - zero *.rs files scanned under: ${dirs[*]}" >&2
-    echo "  The gate looks for *.rs beneath a src/ or tests/ path. Zero matches" >&2
-    echo "  means the layout moved or the target is wrong, not that the tree is" >&2
-    echo "  clean, so this is a tool error (exit 2) rather than a pass." >&2
-    exit 2
-fi
+#
+# Asserted PER DIRECTORY, not on the total. A global floor is satisfied by any
+# one populated argument, so `check-dac-guard.sh populated/ empty/` would report
+# a clean pass having never scanned the second tree - the same confusion the
+# floor exists to prevent, one level up. `just ci` passes a single directory, so
+# the global form was latent rather than live, which is exactly why it needs a
+# test rather than a reader noticing.
+for d in "${dirs[@]}"; do
+    if [[ "$(find "${d}" -type f -name '*.rs' \( -path '*/src/*' -o -path '*/tests/*' \) -print 2>/dev/null | wc -l)" -eq 0 ]]; then
+        echo "check-dac-guard: ERROR - zero *.rs files scanned under: ${d}" >&2
+        echo "  The gate looks for *.rs beneath a src/ or tests/ path. Zero matches" >&2
+        echo "  means the layout moved or the target is wrong, not that the tree is" >&2
+        echo "  clean, so this is a tool error (exit 2) rather than a pass." >&2
+        exit 2
+    fi
+done
 
 if [[ "${found_violation}" -eq 1 ]]; then
     printf '%s' "${report}"
@@ -268,4 +277,10 @@ if [[ "${found_violation}" -eq 1 ]]; then
     exit 1
 fi
 
+# The success line carries the count, per CONTRIBUTING.md's "assert the count, do
+# not merely print it" rule - the assertion is the per-directory floor above;
+# this makes the number the operator actually sees in the CI log, so a green with
+# an implausibly small count is visible rather than indistinguishable from a
+# healthy one.
+echo "check-dac-guard: OK (0 violations, ${scanned} files scanned)"
 exit 0

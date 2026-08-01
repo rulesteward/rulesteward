@@ -65,6 +65,10 @@ jobs:
       # denominator silently dropped shards 20-23's mutants (~17%) from the
       # gate (#216) -- round-robin assigns mutant i to shard i%DENOMINATOR,
       # and no job ran those residues.
+      # Two of the three are now checked mechanically: the run step compares
+      # `strategy.job-total` (this list's length) against the denominator and
+      # fails the shard on a mismatch. The job `name:` is cosmetic and is the
+      # one copy still kept in sync by hand.
       # fail-fast MUST stay false: a survivor (or any non-zero shard exit) must
       # not cancel its siblings -- otherwise the other shards' results are lost
       # and the run surfaces as "canceled".
@@ -133,30 +137,56 @@ jobs:
       - name: cargo mutants
         run: |
           set -uo pipefail
-          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true
-          rc=$?
+
+          # DENOMINATOR ASSERTION -- and it must come FIRST, before any mutant
+          # is run, because it is the only check here that can see #216.
+          #
+          # #216's direction was matrix [0..19] against `--shard k/24`: every one
+          # of the 20 jobs still gets a non-empty round-robin slice, so all 20 go
+          # green with a healthy mutant count while residues 20-23 are never
+          # tested at all. The count assertion below is therefore BLIND to it --
+          # it only catches the opposite direction, where cargo-mutants already
+          # errors on k >= n. Comparing the denominator against the matrix size
+          # is the one mechanical check that covers the real failure.
+          if [ "${{ strategy.job-total }}" -ne 20 ]; then
+            echo "::error::matrix has ${{ strategy.job-total }} jobs but --shard uses denominator 20;"
+            echo "residues ${{ strategy.job-total }}..19 (or 20..) would never be tested. Fix the job name:, the matrix list, and the --shard denominator together."
+            exit 2
+          fi
+
+          # errexit is ON here: GitHub's default `run:` shell on Linux is
+          # `bash -e {0}`, and `set -uo pipefail` does not clear it. Without the
+          # `|| rc=$?` the step would abort at the cargo line on any non-zero
+          # exit and everything below -- including the diagnostics that explain
+          # WHY a shard failed -- would be dead code on exactly the runs that
+          # need it.
+          rc=0
+          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true || rc=$?
 
           # NON-VACUITY ASSERTION. rc is the gate, but rc alone cannot tell a
           # clean shard from a shard that tested NOTHING: both exit 0 and both
-          # print no survivors. Every way this workflow can silently stop
-          # gating produces exactly that -- a file outside examine_globs, a
-          # shard denominator that disagrees with the matrix (which already
-          # dropped ~17% of mutants once, #216), or a config the runner did not
-          # pick up. So the shard proves it saw something before its 0 counts.
+          # print no survivors. What this proves is narrow and worth stating
+          # exactly: THIS SHARD TESTED SOMETHING. It catches a file dropping out
+          # of examine_globs, a config the runner did not pick up, and a shard
+          # that generated nothing -- not a denominator mismatch, which is the
+          # assertion above.
           MO=mutants.out
           if [ ! -d "${MO}" ]; then
             echo "::error::shard ${{ matrix.shard }}: no mutants.out - cargo-mutants never ran"
             exit 2
           fi
-          c=$(wc -l < "${MO}/caught.txt" 2>/dev/null || echo 0)
-          m=$(wc -l < "${MO}/missed.txt" 2>/dev/null || echo 0)
-          t=$(wc -l < "${MO}/timeout.txt" 2>/dev/null || echo 0)
-          u=$(wc -l < "${MO}/unviable.txt" 2>/dev/null || echo 0)
+          # `wc -l < f 2>/dev/null` does not suppress the error it appears to:
+          # redirections apply left to right, so a missing file prints before
+          # 2>/dev/null is installed. Test for the file instead.
+          countlines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
+          c=$(countlines "${MO}/caught.txt")
+          m=$(countlines "${MO}/missed.txt")
+          t=$(countlines "${MO}/timeout.txt")
+          u=$(countlines "${MO}/unviable.txt")
           echo "shard ${{ matrix.shard }}: caught=${c} missed=${m} timeout=${t} unviable=${u} rc=${rc}"
           if [ "$((c + m + t + u))" -eq 0 ]; then
             echo "::error::shard ${{ matrix.shard }} generated ZERO mutants. A green here means nothing."
-            echo "Usual causes: the shard denominator disagrees with the matrix list,"
-            echo "or examine_globs no longer matches any source file."
+            echo "Usual cause: examine_globs no longer matches any source file."
             exit 2
           fi
           if [ "$((c + m + t))" -eq 0 ]; then

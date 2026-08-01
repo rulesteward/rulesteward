@@ -20,14 +20,25 @@
 # mechanically decidable and is the reviewer's job (see the doc-truth axis in
 # .claude/agents/spec-reviewer.md).
 #
-# ESCAPE HATCH: prefix the citation with `old`, `former`, `previously`, `pre-<sha>`, or
-# put `doc-citation-exempt: <reason>` anywhere on the line. Deliberately citing a
-# deleted file as history is legitimate; the marker makes it reviewable.
+# ESCAPE HATCH: put `old`, `former`, `previously` or `pre-<sha>` in the ONE OR TWO
+# tokens immediately before the citation ("the old foo.rs:12"), or put
+# `doc-citation-exempt: <reason>` anywhere on the line. Deliberately citing a deleted
+# file as history is legitimate; the marker makes it reviewable. The positional
+# restriction on the word-list is deliberate: matched anywhere on the line, a comment
+# mentioning the old anything exempts every citation on it.
 #
 # Exit: 0 clean, 1 violation, 2 the instrument could not run (no tracked files, or
 # zero citations scanned - either means it checked nothing and must not report clean).
 set -uo pipefail
-root="${1:-$PWD}"
+# Resolved to an ABSOLUTE path. The same string is later handed to `git ls-files`
+# as cwd and to os.path.join, so a relative argument would resolve a second time
+# against the already-changed cwd and raise FileNotFoundError. Python exits 1 on
+# an uncaught traceback, and rc 1 in this repo's table means "violation" - a tool
+# error reported as a finding.
+root="$(cd "${1:-$PWD}" 2>/dev/null && pwd)" || {
+    echo "check-doc-citations: cannot enter '${1:-$PWD}'" >&2
+    exit 2
+}
 cd "$root" || exit 2
 
 python3 - "$root" <<'PY'
@@ -63,7 +74,12 @@ for p in rs:
                 # and report a tool error instead of a pass.
                 scanned += 1
                 if EXEMPT_LINE.search(line): continue
-                if EXEMPT_PREFIX.search(line[:m.start()]): continue
+                # Only the two tokens IMMEDIATELY before the citation, not the
+                # whole prefix. The documented hatch is "prefix the citation
+                # with old/former/...", and searching the entire left side means
+                # `// the old parser is gone; see live.rs:9999` silently exempts
+                # a citation the sentence is not talking about.
+                if EXEMPT_PREFIX.search(' '.join(line[:m.start()].split()[-2:])): continue
                 ref = m.group(1); hi = max(int(m.group(2)), int(m.group(3) or m.group(2)))
                 c = [x for x in tracked if x == ref or x.endswith('/'+ref)]
                 if not c:
