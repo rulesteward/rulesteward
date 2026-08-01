@@ -872,10 +872,11 @@ fn project_ast_marks_negation_on_commands() {
         plain.commands, negated_path.commands
     );
 
-    // `parser.rs:936` compares the raw token literally against `ALL`, so
-    // `!ALL` parses as `CmndItem::Cmnd("!ALL")`, never `CmndItem::All` -
-    // confirmed directly against `parser::parse`. The mark must still be
-    // recovered from that raw `Cmnd` token.
+    // `parser.rs`'s `parse_cmnd_spec` compares the raw token literally
+    // against `ALL` (`cmnd_token == "ALL"`), so `!ALL` parses as
+    // `CmndItem::Cmnd("!ALL")`, never `CmndItem::All` - confirmed directly
+    // against `parser::parse`. The mark must still be recovered from that
+    // raw `Cmnd` token.
     let negated_all = project_ast(&file_for(CmndItem::Cmnd("!ALL".to_string())));
     assert_eq!(
         negated_all.commands,

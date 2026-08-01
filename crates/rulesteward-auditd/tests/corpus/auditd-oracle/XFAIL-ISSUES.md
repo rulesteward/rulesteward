@@ -88,28 +88,43 @@ Corpus rows: `rocky9-field-compare` (existing scenario, re-grounded),
 
 ---
 
-## Comment to add to #601 (auditd permission-letter handling)
+## Comment to add to #601 (auditd permission-letter handling) - CLOSED, session 9m lane 1
 
-**Additional #601 divergence found by the Lane A (session 9k-1) differential
-corpus:**
+**Both #601 divergences below are now fixed. This entry is queued as a
+CLOSING comment on #601, not a new-divergence report.**
 
 The original #601 finding was that real `auditctl` accepts UPPERCASE
 permission letters (`-w /path -p WA`) where RuleSteward's `parse_perms` only
-matches lowercase `rwxa` - a product-too-STRICT gap (tracked, still open;
-corpus ids `iss601-uppercase-perm-all` / `iss601-uppercase-perm-mixed`).
+matched lowercase `rwxa` - a product-too-STRICT gap (corpus ids
+`iss601-uppercase-perm-all` / `iss601-uppercase-perm-mixed`). Session 9m
+lane 1 fixed it: `parse_perms` now case-folds before matching `rwxa`, so
+`-p WA` / `-p Wa` parse instead of rejecting.
 
-This session's regrounding found the OTHER half of the same validation
-surface, this time product-too-LENIENT: **`-F perm=` field-filter values are
-not validated against the `rwxa` letter set at all.** `-a always,exit -F
-perm=zz -S execve -k fpermbad` is rejected by the real daemon
-(`Permission can only contain  'rwxa'`, loud and non-silent) but accepted by
-RuleSteward (the `-F perm=` value is stored as an unvalidated string in
-`parse_field_filter`). This is a DIFFERENT code path from the watch-flag `-p`
-case (which correctly rejects an invalid letter today, see
-`p-invalid-lower`/`p-invalid-upper` in the corpus, both non-divergent) - the
-`-F` field-filter path has no equivalent validation.
+The Lane A (session 9k-1) differential-corpus regrounding had also found the
+OTHER half of the same validation surface, product-too-LENIENT: **`-F perm=`
+field-filter values were not validated against the `rwxa` letter set at
+all.** `-a always,exit -F perm=zz -S execve -k fpermbad` is rejected by the
+real daemon (`Permission can only contain  'rwxa'`, loud and non-silent) but
+was accepted by RuleSteward (the `-F perm=` value was stored as an
+unvalidated string in `parse_field_filter`) - a different code path from the
+watch-flag `-p` case (which already correctly rejected an invalid letter, see
+`p-invalid-lower`/`p-invalid-upper` in the corpus, both non-divergent).
+Session 9m lane 1 fixed this half too: `parse_field_filter` now validates the
+`perm=` value against the same `rwxa` letter set at parse time.
 
-Corpus row: `f-perm-invalid-letter`.
+Both fixes closed the divergence: `iss601-uppercase-perm-all`,
+`iss601-uppercase-perm-mixed`, and `f-perm-invalid-letter` are no longer in
+the `XFAIL` const array in `auditd_corpus_oracle.rs`. **Their corpus rows
+were NOT deleted** - all three are still present in
+`el8.tsv`/`el9.tsv`/`el10.tsv` (the real oracle's verdict on those lines never
+changed); only RuleSteward's own parser verdict changed, so all three rows
+now compare as AGREEMENT rather than divergence. See `PROVENANCE.md`'s
+"Positive control changed" section and its XFAIL divergence tally for the
+same closure recorded from the corpus side.
+
+Corpus rows: `iss601-uppercase-perm-all`, `iss601-uppercase-perm-mixed`,
+`f-perm-invalid-letter` (all three now non-divergent; none remain in
+`XFAIL`).
 
 ---
 

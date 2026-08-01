@@ -2087,8 +2087,8 @@ fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
 
 // ---------------------------------------------------------------------------
 // ATL round 7 (round-6 adversarial MISS-1, USER RULING): the Syscall-vs-
-// Syscall arm (`fields_match_excluding_key` -> `multiset_eq`, `stig_required.
-// rs:2035-2073`) never folds `-F perm=` PREDICATE MULTIPLICITY at all --
+// Syscall arm (`fields_match_excluding_key`'s `multiset_eq` fallback) never
+// folds `-F perm=` PREDICATE MULTIPLICITY at all --
 // rounds 4-5 taught `perm_axis_bits` to fold a chain of `-F perm=` predicates
 // to their minimum (subset partial order, `audit_match_perm`'s monotonicity),
 // but wired it into the Watch-vs-Syscall/Dir-vs-Syscall arms ONLY. So a
@@ -2102,12 +2102,13 @@ fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
 // makes for the other two arms.
 //
 // USER RULING (this round, in direct response to the finding above): extend
-// the fold to the Syscall-vs-Syscall arm. The locked matcher spec
-// (`rules_match`'s doc comment, `:1337-1345`) says to compare `-F` fields "as
-// a SET - same size", but its grounding cite (Part C.1/C.5) is about ORDER,
-// not multiplicity -- duplicate-predicate semantics were never actually
-// decided by that line. The arm already folds perm VALUE identity (rounds
-// 2-3, the `syscall_vs_syscall_perm_*` tests above).
+// the fold to the Syscall-vs-Syscall arm. The locked matcher spec (the
+// `w06_with_baseline` "Grounded matcher spec" doc comment, which points to
+// `rules_match`'s doc comment for the full grounding) says to compare `-F`
+// fields "as a SET - same size", but its grounding cite (Part C.1/C.5) is
+// about ORDER, not multiplicity -- duplicate-predicate semantics were never
+// actually decided by that line. The arm already folds perm VALUE identity
+// (rounds 2-3, the `syscall_vs_syscall_perm_*` tests above).
 //
 // The reviewer separately warned that a GENERIC "dedupe `-F` predicates
 // before `multiset_eq`" repair would be WRONG: duplicate `-F path=` (and
