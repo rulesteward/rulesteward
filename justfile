@@ -98,7 +98,7 @@ instrument-test:
     ran=0
     for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
-             check-no-mnt-paths rs-mutation-gate; do
+             check-no-mnt-paths rs-mutation-gate check-doc-citations; do
         bash "scripts/${t}-test.sh"
         rc=$?
         ran=$((ran + 1))
@@ -117,10 +117,10 @@ instrument-test:
     for f in scripts/*.sh; do
         case "${f}" in *-test.sh) ;; *) guards=$((guards + 1)) ;; esac
     done
-    [ "${guards}" -eq 8 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 8 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    [ "${guards}" -eq 9 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 9 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
     # (2) The loop itself must have run. A typo'd list that iterates zero times
     # would otherwise report clean, which is the very defect being gated.
-    [ "${ran}" -eq 8 ] || { echo "instrument-test: ran ${ran} suites, expected 8" >&2; fail=1; }
+    [ "${ran}" -eq 9 ] || { echo "instrument-test: ran ${ran} suites, expected 9" >&2; fail=1; }
     echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
     [ "${fail}" -eq 0 ]
 
