@@ -1174,15 +1174,23 @@ fn gap_a_comma_inside_a_quoted_option_value_does_not_split_the_cmnd_spec_list() 
 /// exactly what round 1 does to four of these) would otherwise report clean.
 ///
 /// The two round-6 cases (glued to a preceding `,` and to a preceding `)`)
-/// are a KNOWN-OPEN #538 defect: commit ec11a15's attempted fix was
-/// narrow-reverted because it regressed real `visudo`-accepted input
-/// elsewhere (a false `sudo-F01` fatal, and silently swallowed
-/// grants/aliases). See the section comment above
+/// were a KNOWN-OPEN #538 defect through commit ec11a15's narrow-reverted
+/// attempted fix (it regressed real `visudo`-accepted input elsewhere: a
+/// false `sudo-F01` fatal, and silently swallowed grants/aliases). Commit
+/// `2de19ea` closed this properly: retiring the position-BLIND
+/// `is_option_value_quote_opener`/`word_immediately_before` pair and
+/// recording each option value's quote span inline, at the same
+/// position-ANCHORED point (`preceding_token`/`tok_start`) the `'='` arm's
+/// own `is_option_eq` check already used, resolves exactly the
+/// two-recognizer disagreement the section comment above
 /// `option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value`
-/// later in this file for the full grounding and the pre-existing substrate
-/// defects a real fix must address first.
+/// describes. Both cases are ordinary passing rows below now (measured: FAIL
+/// at `93ef75b`, PASS from `2de19ea` onward, re-confirmed at current HEAD
+/// 2026-07-31); see that test (no longer `#[ignore]`d) for the fuller
+/// history. A narrower #538 subclass - a comma INSIDE a quoted option value,
+/// unrelated to any glued spelling - remains open; see the "KNOWN-OPEN #538
+/// defects" section later in this file.
 #[test]
-#[ignore = "known-open #538 defect (round-6 cases only); round-6 fix reverted (ec11a15)"]
 fn no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token() {
     let cases = [
         "alice ALL = CWD=\"/a,b\" /bin/ls\n",
@@ -1200,22 +1208,24 @@ fn no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token() {
         // Same defect across a host-group separator - rc 0, TWO User_Specs,
         // h1's `Commands [{"command":"/bin/ls"}]`.
         "alice h1 = CWD=/a\"b /bin/ls : h2 = ALL\n",
-        // Round 6: an Option_Spec keyword GLUED to a preceding `,` -
-        // `word_immediately_before` (round 5) splits on WHITESPACE ONLY, so it
-        // reads the preceding word as `/bin/true,CWD` rather than `CWD` and the
-        // quote never opens an enclosing span. `visudo -c -f -` rc 0,
-        // `cvtsudoers -f json` reports TWO Cmnd_Specs (`/bin/true`, and
-        // `runcwd=/a,b` + `/bin/ls`); today's code yields THREE, with an empty
-        // `Cmnd("")` in the middle. See
+        // Round 6: an Option_Spec keyword GLUED to a preceding `,` - the
+        // since-retired `word_immediately_before` (round 5) split on
+        // WHITESPACE ONLY, so it read the preceding word as `/bin/true,CWD`
+        // rather than `CWD` and the quote never opened an enclosing span.
+        // `visudo -c -f -` rc 0, `cvtsudoers -f json` reports TWO Cmnd_Specs
+        // (`/bin/true`, and `runcwd=/a,b` + `/bin/ls`); before commit
+        // `2de19ea` this code yielded THREE, with an empty `Cmnd("")` in the
+        // middle. Fixed since `2de19ea`. See
         // `option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command`
-        // below for the full AST pin.
+        // below (no longer `#[ignore]`d) for the full AST pin.
         "alice ALL = /bin/true,CWD=\"/a,b\" /bin/ls\n",
         // Round 6: the same defect glued to a preceding `)` instead of `,`.
         // `visudo -c -f -` rc 0, `cvtsudoers -f json` reports ONE Cmnd_Spec
-        // (runas root, `runcwd=/a,b`, `/bin/ls`); today's code yields TWO, the
-        // first an empty `Cmnd("")`. See
+        // (runas root, `runcwd=/a,b`, `/bin/ls`); before commit `2de19ea`
+        // this code yielded TWO, the first an empty `Cmnd("")`. Fixed since
+        // `2de19ea`. See
         // `option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list`
-        // below for the full AST pin.
+        // below (no longer `#[ignore]`d) for the full AST pin.
         "alice ALL = (root)CWD=\"/a,b\" /bin/ls\n",
     ];
     for src in cases {
@@ -2653,24 +2663,23 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 }
 
 // ===========================================================================
-// KNOWN-OPEN #538 defects (round 6 fix reverted).
+// KNOWN-OPEN #538 defects (round 6 fix reverted) -- PARTIALLY CLOSED.
 // ===========================================================================
 //
-// Every `#[ignore]`d test below (and `no_cmnd_spec_from_a_valid_line_carries_
-// an_empty_command_token` earlier in this file) pins a GENUINELY OPEN #538
-// defect, verified against real `visudo` 1.9.17p2 (`visudo -c -f -` and
+// This section originally held two independent round-6 defect classes, both
+// verified against real `visudo` 1.9.17p2 (`visudo -c -f -` and
 // `cvtsudoers -f json`, this host, 2026-07-31). They are not stale or
 // speculative: each input below IS accepted (rc 0) by real sudo, and the
 // AST/diagnostic shape each test asserts IS what real sudo's own tooling
 // reports for that input.
 //
 // Commit ec11a15 ("9m lane 3 round 6: glued option keywords + the ','
-// arm's missing guard (#538)") attempted to fix these by (1) widening
+// arm's missing guard (#538)") attempted to fix BOTH classes by (1) widening
 // `word_immediately_before`'s boundary set from whitespace-only to also
 // include `)`, `,`, and `=`, and (2) guarding `split_top_level_segments`'s
 // `','` arm with `i >= tok_start`, mirroring its `')'` sibling. Both changes
-// were NARROW-REVERTED (this commit) because they introduced two confirmed
-// regressions against the real `visudo` oracle:
+// were NARROW-REVERTED (commit 50594c4) because they introduced two
+// confirmed regressions against the real `visudo` oracle:
 //   * a FALSE `sudo-F01` fatal on a valid line with NO comma at all in the
 //     option value (`alice ALL = CWD="/a b"/bin/ls, (root:grp) /bin/su`,
 //     real visudo rc 0), which disproves the ','-arm guard's stated premise;
@@ -2678,46 +2687,73 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 //     `NOPASSWD: ALL` grant vanishing with no diagnostic at all) on inputs
 //     shaped like `Cmnd_Alias A = /bin/echo X=CWD="/a : B = /bin/su"`.
 //
-// The underlying blockers are two PRE-EXISTING substrate defects, neither of
-// which a narrow revert (or the reverted fix) addresses:
-//   * `option_value_end` scans PAST a closing option-value quote to the next
-//     whitespace, instead of ending the value AT the closing quote;
-//   * `is_option_value_quote_opener` (via `word_immediately_before`) matches
-//     the LAST WORD before an `=` and is POSITION-BLIND, while the `'='`
+// Two PRE-EXISTING substrate defects underlay the two round-6 symptoms:
+//   * `is_option_value_quote_opener` (via `word_immediately_before`) matched
+//     the LAST WORD before an `=` and was POSITION-BLIND, while the `'='`
 //     arm's own recognizer (`preceding_token`/`tok_start`) does a
-//     WHOLE-SPAN, POSITION-ANCHORED match -- the two disagree about where an
-//     `Option_Spec` keyword starts for any glued spelling, and any fix that
-//     reconciles them by widening one side alone (as ec11a15 did) reopens
-//     exactly the two regressions above.
+//     WHOLE-SPAN, POSITION-ANCHORED match -- the two disagreed about where
+//     an `Option_Spec` keyword starts for any glued spelling. CLOSED: commit
+//     `2de19ea` ("position-anchor the option-value quote opener") retired
+//     `is_option_value_quote_opener`/`word_immediately_before` outright and
+//     now records each option value's quote span inline, at the same
+//     position-anchored point `is_option_eq` already used, rather than
+//     patching the position-blind side with another boundary character (as
+//     ec11a15's reverted attempt did). The "Round 6 (ATL round 6)" tests
+//     immediately below this section, plus
+//     `no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token`'s two
+//     round-6 cases earlier in this file, are ordinary passing (no longer
+//     `#[ignore]`d) rows since `2de19ea` (measured: FAIL at `93ef75b`, PASS
+//     from `2de19ea` onward, re-confirmed at current HEAD 2026-07-31).
+//   * `split_top_level_segments`'s `','` arm has no guard against a comma
+//     INSIDE a quoted option value re-arming `tok_start` mid-value (its
+//     `')'` and `':'` sibling arms each have one). STILL OPEN: the "Round 6,
+//     second brief" tests further below (the `comma_inside_a_quoted_*` trio)
+//     remain `#[ignore]`d and pin it.
 //
-// A real fix must address the substrate (both bullets) first, not patch
-// around it with another positional guard.
+// A real fix for the remaining bullet must address the `','`-arm substrate,
+// not patch around it with another positional guard -- ec11a15's own
+// `i >= tok_start` guard was exactly that kind of patch, and it is what
+// regressed the two cases above.
 // ===========================================================================
 
 // ===========================================================================
-// Round 6 (ATL round 6): a REGRESSION introduced BY round 5.
+// Round 6 (ATL round 6): a REGRESSION introduced BY round 5 - FIXED by
+// commit 2de19ea (9m lane 3, later the same session).
 // ===========================================================================
 //
-// Round 5 narrowed `is_option_value_quote_opener`'s anchor from "any `=`
-// before the quote" to "an `Option_Spec` keyword's own `=`" (MISS-1's fix),
-// via a NEW helper, `word_immediately_before`, that computes "the word
-// before the `=`". That helper splits on WHITESPACE ONLY
+// Round 5 narrowed the (since-retired) `is_option_value_quote_opener`'s
+// anchor from "any `=` before the quote" to "an `Option_Spec` keyword's own
+// `=`" (MISS-1's fix), via a NEW helper, `word_immediately_before`, that
+// computed "the word before the `=`". That helper split on WHITESPACE ONLY
 // (`rsplit(char::is_whitespace)`, `parser.rs`). But the sibling `'='` arm of
 // `split_top_level_segments` computes the SAME concept - the keyword
 // preceding an `Option_Spec`'s own `=` - via `preceding_token`, whose
 // `tok_start` resets not just on whitespace but on `)`, `,` AND `=` too. The
-// two paths now disagree about where a keyword STARTS: `preceding_token`
-// sees `CWD` glued to a preceding `)`/`=`/`,`, while `word_immediately_before`
-// sees the whole glued run (`)CWD`, `=CWD`, `,CWD`) and `parse_option_key`
-// rejects it.
+// two paths disagreed about where a keyword STARTS: `preceding_token` saw
+// `CWD` glued to a preceding `)`/`=`/`,`, while `word_immediately_before`
+// saw the whole glued run (`)CWD`, `=CWD`, `,CWD`) and `parse_option_key`
+// rejected it.
 //
-// Consequence: an `Option_Spec` keyword GLUED to a preceding `)`, `=`, or `,`
-// (no whitespace) no longer opens its own value's quote span, so a colon or
-// comma INSIDE that quoted value is read as a genuine separator again -
-// `is_option_value_quote_opener` regresses to round 5's own MISS-1 failure
-// class for exactly this one spelling. `ALL=(ALL)` (no space before the
-// option keyword) is one of the most common real-world sudoers idioms, so
-// this is a live `sudo-F01` false positive on operator configs.
+// Consequence, through commit 50594c4 (when this section and the five tests
+// below were pinned and `#[ignore]`d): an `Option_Spec` keyword GLUED to a
+// preceding `)`, `=`, or `,` (no whitespace) did not open its own value's
+// quote span, so a colon or comma INSIDE that quoted value was read as a
+// genuine separator - `is_option_value_quote_opener` regressed to round 5's
+// own MISS-1 failure class for exactly this one spelling. `ALL=(ALL)` (no
+// space before the option keyword) is one of the most common real-world
+// sudoers idioms, so this was a live `sudo-F01` false positive on operator
+// configs.
+//
+// FIXED by commit `2de19ea` ("position-anchor the option-value quote
+// opener"): it retires `is_option_value_quote_opener`/`word_immediately_
+// before` entirely and records each option value's quote span inline, at
+// the same position-anchored point (`preceding_token`/`tok_start`) the
+// `'='` arm's own `is_option_eq` check already used - eliminating the
+// two-recognizer disagreement rather than widening one side's boundary set
+// (as ec11a15's reverted attempt did). All five tests below are ordinary
+// passing rows now (measured: FAIL at `93ef75b`, PASS from `2de19ea`
+// onward, re-confirmed at current HEAD 2026-07-31) and are no longer
+// `#[ignore]`d.
 //
 // All five inputs below are `visudo -c -f -` rc 0 on this host (sudo
 // 1.9.17p2, `visudo grammar version 50`, re-probed 2026-07-31), with the AST
@@ -2741,11 +2777,11 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 ///                 Commands [{"command":"/bin/ls"}]
 /// ```
 ///
-/// Today: `sudo-F01` fatal (the colon inside `"/a:b"` is misread as a
-/// top-level separator once the quote's opener is rejected, exactly MISS-1's
-/// mechanism, and the whole line is discarded `Malformed`).
+/// Before commit `2de19ea`: `sudo-F01` fatal (the colon inside `"/a:b"` was
+/// misread as a top-level separator once the quote's opener was rejected,
+/// exactly MISS-1's mechanism, and the whole line was discarded
+/// `Malformed`). Fixed since `2de19ea` (see the section comment above).
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value() {
     let src = "%wheel ALL=(ALL)CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2796,9 +2832,9 @@ fn option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value() {
 /// whitespace-delimited word is `ALL=CWD` - not `CWD` - so
 /// `parse_option_key` rejects it exactly as it does the `)`-glued spelling.)
 ///
-/// Today: `sudo-F01` fatal, same mechanism as the `)`-glued case above.
+/// Before commit `2de19ea`: `sudo-F01` fatal, same mechanism as the
+/// `)`-glued case above. Fixed since `2de19ea`.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value() {
     let src = "%wheel ALL=CWD=\"/a:b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2838,12 +2874,12 @@ fn option_keyword_glued_to_the_structural_equals_still_opens_its_quoted_value() 
 ///                 Commands [{"command":"/bin/ls"}]
 /// ```
 ///
-/// Today: `sudo-F01` fatal - the colon inside `"/a:b"` is still misread as a
-/// top-level separator even with no tag keyword anywhere on the line, which
-/// is what makes this the sharpest of the three F01 rows: the defect fires
-/// on the QUOTED VALUE's own interior colon, with no tag involved at all.
+/// Before commit `2de19ea`: `sudo-F01` fatal - the colon inside `"/a:b"` was
+/// misread as a top-level separator even with no tag keyword anywhere on the
+/// line, which is what made this the sharpest of the three F01 rows: the
+/// defect fired on the QUOTED VALUE's own interior colon, with no tag
+/// involved at all. Fixed since `2de19ea`.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural_equals() {
     let src = "alice ALL = (root)CWD=\"/a:b\" /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -2887,14 +2923,15 @@ fn option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural
 ///                 Commands [{"command":"/bin/ls"}]
 /// ```
 ///
-/// Today: TWO `Cmnd_Spec`s (`specs[0]` an empty `Cmnd("")`, `specs[1]` the
-/// garbage `Cmnd("b\" /bin/ls")`) and NO diagnostic at all - this is the
-/// SILENT face of the regression (also pinned by the general empty-command
-/// guard, `no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token`,
-/// which this test's input was added to above; this test additionally pins
-/// the exact expected values that guard does not check).
+/// Before commit `2de19ea`: TWO `Cmnd_Spec`s (`specs[0]` an empty
+/// `Cmnd("")`, `specs[1]` the garbage `Cmnd("b\" /bin/ls")`) and NO
+/// diagnostic at all - this was the SILENT face of the regression (also
+/// pinned by the general empty-command guard,
+/// `no_cmnd_spec_from_a_valid_line_carries_an_empty_command_token`, which
+/// this test's input was added to above; this test additionally pins the
+/// exact expected values that guard does not check). Fixed since
+/// `2de19ea`.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_not_split_the_cmnd_spec_list()
  {
     let src = "alice ALL = (root)CWD=\"/a,b\" /bin/ls\n";
@@ -2933,12 +2970,12 @@ fn option_keyword_glued_to_a_runas_close_paren_with_a_comma_in_its_value_does_no
 ///       [1] Options [{"runcwd":"/a,b"}]  Commands [{"command":"/bin/ls"}]
 /// ```
 ///
-/// Today: THREE `Cmnd_Spec`s (`specs[1]` an empty `Cmnd("")`, `specs[2]` the
-/// garbage `Cmnd("b\" /bin/ls")`) and NO diagnostic at all - also added to
-/// the general empty-command guard above; this test pins the exact expected
-/// two-spec shape that guard does not check.
+/// Before commit `2de19ea`: THREE `Cmnd_Spec`s (`specs[1]` an empty
+/// `Cmnd("")`, `specs[2]` the garbage `Cmnd("b\" /bin/ls")`) and NO
+/// diagnostic at all - also added to the general empty-command guard above;
+/// this test pins the exact expected two-spec shape that guard does not
+/// check. Fixed since `2de19ea`.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
 fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
     let src = "alice ALL = /bin/true,CWD=\"/a,b\" /bin/ls\n";
     let s = only_spec(src);

@@ -302,19 +302,27 @@
 //!    the public `parse` / `lint` entry points rather than this
 //!    differential).
 //!
-//!    A LATER, NARROWER #538 subclass (a glued `Option_Spec` keyword
-//!    interacting with a quoted-comma value across the comma/colon
-//!    splitters) is still OPEN and is UNRELATED to the four scenarios above:
-//!    a round-6 attempt at it (commit `ec11a15`) greened 9 tests but
-//!    regressed two confirmed cases against real `visudo` (a false
-//!    `sudo-F01` fatal on a comma-free option value, and a silently
-//!    swallowed grant/alias), and was narrow-reverted in commit `50594c4`.
-//!    The 9 tests that pinned that attempted fix are marked `#[ignore]` in
-//!    `tests/iss538_parser_gaps.rs` (search that file for `"known-open #538
-//!    defect"`) rather than deleted, so they remain executable
-//!    documentation of the still-open defect. A future session must NOT
-//!    read this module and conclude #538 can be closed: it is only
-//!    PARTIALLY fixed. For the record, the three FIXED gaps were:
+//!    A LATER, NARROWER #538 subclass (a glued `Option_Spec` keyword and/or
+//!    a comma INSIDE a quoted option value, each interacting with the
+//!    comma/colon splitters) was found later in the session, UNRELATED to
+//!    the four scenarios above. A round-6 attempt at both halves (commit
+//!    `ec11a15`) greened 9 tests but regressed two confirmed cases against
+//!    real `visudo` (a false `sudo-F01` fatal on a comma-free option value,
+//!    and a silently swallowed grant/alias), and was narrow-reverted in
+//!    commit `50594c4`, which left all 9 marked `#[ignore]`. The
+//!    glued-keyword half was then fixed properly by commit `2de19ea`
+//!    ("position-anchor the option-value quote opener"), which retires the
+//!    position-blind `is_option_value_quote_opener`/`word_immediately_before`
+//!    pair `ec11a15` had only patched around; 6 of the 9 tests are ordinary
+//!    passing rows since then. The remaining 3 (a comma inside a quoted
+//!    option value confusing the `','` arm of `split_top_level_segments`,
+//!    unrelated to any glued spelling) are STILL OPEN and remain marked
+//!    `#[ignore]` in `tests/iss538_parser_gaps.rs` (search that file for
+//!    `"known-open #538 defect"`) rather than deleted, so they remain
+//!    executable documentation of the still-open defect. A future session
+//!    must NOT read this module and conclude #538 can be closed: it is only
+//!    PARTIALLY fixed. For the record, the three FIXED gaps from the
+//!    original (pre-round-6) lane were:
 //!      - **Gap A** - the tag-parsing loop in `parser::parse_cmnd_spec` only
 //!        recognized `TAG:` syntax; an `=`-form `Option_Spec` (`ROLE=`,
 //!        `TYPE=`, `NOTBEFORE=`, `TIMEOUT=`, ...) has no colon, so the whole
@@ -506,9 +514,9 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// demonstrated here, and an xfail surviving its own fix would mean the fix
 /// was never demonstrated. The four scenarios are ordinary compared rows
 /// now, and they are the reason `L3_CLEAN_FLOOR` went 84 -> 95. A separate,
-/// narrower #538 subclass (glued `Option_Spec` keywords / quoted-comma
-/// values) remains OPEN and unrelated to these four scenarios - see the
-/// module doc's L3 section and the `#[ignore]`d tests in
+/// narrower #538 subclass (a comma INSIDE a quoted option value, unrelated
+/// to any glued spelling) remains OPEN and unrelated to these four
+/// scenarios - see the module doc's L3 section and the `#[ignore]`d tests in
 /// `tests/iss538_parser_gaps.rs`; #538 as a whole is NOT closed by this fix.
 ///
 /// Deletion is also forced rather than stylistic: the xfail branch below
