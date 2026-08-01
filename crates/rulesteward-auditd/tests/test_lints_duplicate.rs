@@ -7,17 +7,24 @@
 //!
 //! # Severity boundary (owner decision, session 6a PRIOR ANSWERS)
 //!
-//! * **au-E03 (Error)** -- the later rule is STRUCTURALLY IDENTICAL to the
-//!   earlier one: `AuditRule::PartialEq` is true (same field order, same `-S`
-//!   syscall order, same `-a`/`-A` prepend flag, same `-k` key).  This is
-//!   exactly what `auditctl -R` aborts on with kernel `EEXIST`
-//!   (`auditctl.c:1680-1686`, audit 3bfa048): `fclose(f); return -1` -- every
-//!   rule after the duplicate silently fails to load.
+//! * **au-E03 (Error)** -- the kernel treats the later rule as THE SAME RULE as
+//!   the earlier one: `AuditRule::PartialEq` is true (same field order, same
+//!   `-S` syscall order, same `-a`/`-A` prepend flag, same `-k` key), EXCEPT
+//!   that a `-F perm=` field's VALUE is compared as an order-free, case-folded
+//!   `rwxa` bitmask (`duplicate::perm_field_values_eexist_equal`).  So
+//!   `-F perm=wa` and `-F perm=aw` are kernel-identical and fire E03 even
+//!   though their value strings differ and `PartialEq` is therefore false --
+//!   see `perm_letter_order_flip_duplicate_fires_e03` and
+//!   `perm_letter_case_flip_duplicate_fires_e03` below.  This is exactly what
+//!   `auditctl -R` aborts on with kernel `EEXIST` (`auditctl.c:1680-1686`,
+//!   audit 3bfa048): `fclose(f); return -1` -- every rule after the duplicate
+//!   silently fails to load.
 //!
-//! * **au-W01 (Warning)** -- `canonical_key`-equal but NOT `PartialEq`-equal
-//!   (field order swapped, syscall order swapped, `-a` vs `-A`, or `-p` letter
-//!   order different).  The kernel does NOT EEXIST on these; they load but are
-//!   redundant waste.
+//! * **au-W01 (Warning)** -- `canonical_key`-equal but NOT kernel-identical
+//!   (field order swapped, syscall order swapped, `-a` vs `-A`, or a WATCH's
+//!   `-p` letter order different -- that axis goes through
+//!   `normalize::perm_letters`, not the `-F perm=` bitmask fold above).  The
+//!   kernel does NOT EEXIST on these; they load but are redundant waste.
 //!
 //! # Grounding citations
 //!

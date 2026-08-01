@@ -190,17 +190,21 @@ pub fn w01(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
                 first_seen.insert(key, located);
             }
             Some(first) => {
-                // Later occurrence: classify severity by structural equality (excluding prepend).
-                // au-E03: structurally identical (rules_eexist_equal is true, excluding prepend)
-                //   -> auditctl -R aborts (EEXIST, auditctl.c:1680-1686).
-                // au-W01: canonical-equal but NOT structurally identical (field-order
+                // Later occurrence: classify severity by KERNEL-identity (excluding prepend).
+                // au-E03: the kernel treats the two as the same rule (rules_eexist_equal
+                //   is true, excluding prepend) -> auditctl -R aborts (EEXIST,
+                //   auditctl.c:1680-1686). NOTE this is deliberately WIDER than
+                //   `AuditRule::PartialEq`: a `-F perm=` field's value is compared as an
+                //   order-free, case-folded rwxa bitmask, so `perm=wa` and `perm=aw` are
+                //   kernel-identical while their spellings differ.
+                // au-W01: canonical-equal but NOT kernel-identical (field-order
                 //   swapped, syscall-order swapped, -a vs -A, or prepend differs)
                 //   -> kernel does not EEXIST; loads but is redundant waste.
                 let (sev, code, msg) = if rules_eexist_equal(&first.rule, &located.rule) {
                     let msg = format!(
                         "load-aborting duplicate of {first_file}:{first_line}: \
-                        structurally identical rule causes auditctl -R to abort, \
-                        so every later rule silently fails to load \
+                        the kernel treats this rule as identical to that one, \
+                        so auditctl -R aborts and every later rule silently fails to load \
                         (auditctl.c:1680-1686, audit 3bfa048)",
                         first_file = first.file.display(),
                         first_line = first.line,

@@ -451,9 +451,9 @@ pub enum AuditdCommand {
     /// Semantic ruleset lint (#193)
     ///
     /// Statically analyzes an audit ruleset for semantic problems no load-time
-    /// check reports: duplicate rules across rules.d/ files (au-W01), a
-    /// structurally identical earlier rule that makes `auditctl -R` abort the
-    /// load so every later rule silently fails to load (au-E03), rules
+    /// check reports: duplicate rules across rules.d/ files (au-W01), an
+    /// earlier rule the kernel treats as identical, which makes `auditctl -R`
+    /// abort the load so every later rule silently fails (au-E03), rules
     /// shadowed by an earlier broader rule (au-W02), rules unreachable after
     /// the `-e 2` lock line (au-E01), exclude/never rules suppressing events an
     /// always rule intends to record (au-W03), comparison operators that
