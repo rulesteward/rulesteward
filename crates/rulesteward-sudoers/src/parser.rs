@@ -687,11 +687,14 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     the char after a backslash is skipped;
 ///   * when `skip_tag_colons` (user-specs only), the `NOPASSWD:` / `PASSWD:` tag
 ///     colon - recognised because the token immediately before it (the text back to
-///     the last `,` / `=` / `)` / consumed colon, with whitespace irrelevant) is a
-///     [`Tag`] keyword. Alias defs carry no tags, so they pass `false`. An
-///     `Option_Spec`'s own `=` puts that boundary after the option's VALUE rather
-///     than after the `=`, so `TIMEOUT=30 NOEXEC:` still leaves `NOEXEC` alone in
-///     the span (#538 gap C - see the `'='` arm).
+///     the last `,` / `)` / consumed colon / structural or genuine-option `=`, with
+///     whitespace irrelevant) is a [`Tag`] keyword. Alias defs carry no tags, so
+///     they pass `false`. A genuine `Option_Spec`'s own `=` puts that boundary
+///     after the option's VALUE rather than after the `=`, so `TIMEOUT=30 NOEXEC:`
+///     still leaves `NOEXEC` alone in the span (#538 gap C - see the `'='` arm); a
+///     REJECTED `=` (a command argument's own) leaves the boundary where it
+///     already was rather than re-arming it mid-argument (9m round 2 fix - see the
+///     `'='` arm).
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // Byte-range PAIRS of every value-ENCLOSING quoted span in `s`, built
     // INCREMENTALLY by the `'='` arm below, exactly when it recognizes the
@@ -709,11 +712,16 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
-    // boundary (`,` / `=` / `)` / a consumed colon - NOT whitespace, so a tag keyword
-    // spaced away from its colon is still recognised). Used only to spot a tag keyword
-    // sitting just before a colon. An `Option_Spec`'s `=` moves this past the option's
-    // whole `KEY=value` token rather than just past the `=`, so it can land at
-    // `s.len()`; every read goes through `preceding_token`, which clamps.
+    // boundary (`,` / `)` / a consumed colon / the structural `Host_List =
+    // Cmnd_Spec_List` `=` / a genuine `Option_Spec`'s own `=` - NOT whitespace, so a
+    // tag keyword spaced away from its colon is still recognised, and NOT a
+    // REJECTED `=` (a command argument's own, possibly chained: `X=CWD=...`; 9m
+    // round 2 fix, #538): leaving it untouched on a rejection means a LATER `=` in
+    // the same argument still measures its preceding token from the run's true last
+    // boundary instead of from mid-argument. Used only to spot a tag keyword
+    // sitting just before a colon. A genuine `Option_Spec`'s `=` moves this past the
+    // option's whole `KEY=value` token rather than just past the `=`, so it can land
+    // at `s.len()`; every read goes through `preceding_token`, which clamps.
     let mut tok_start = 0usize;
     let mut depth: i32 = 0;
     let mut escaped = false;
@@ -801,21 +809,32 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // for the same reason: the candidate is the single token since the last
                 // boundary (no `Option_Spec` keyword contains whitespace, so an exact
                 // match already implies one word). A command's own `KEY=value` ARGUMENT
-                // has a multi-word span (`"/usr/bin/env TIMEOUT"`) and keeps the old
-                // boundary behavior - which is what real sudo does: on this host
-                // (1.9.17p2, 2026-07-30) `cvtsudoers -f json` reads
-                // `alice h1 = /bin/echo NOPASSWD : h2 = ALL` as TWO host groups with the
-                // first command `"/bin/echo NOPASSWD"`, i.e. once the command word has
-                // begun, a later tag keyword is an ARGUMENT and the colon really does
-                // separate. Requiring `in_cmnd_list` keeps the structural `=` itself
-                // (span `"alice ALL"`, or `"ALL"` after a `,`) out of the candidate set.
-                // `preceding_token` already trims, so whitespace BEFORE this `=`
-                // (`CWD = 30`) is tolerated for free; whitespace AFTER it is NOT
-                // (#538 - see the `skip_value_leading_whitespace` call below).
+                // has a multi-word span (`"/usr/bin/env TIMEOUT"`) and is REJECTED here -
+                // which is what real sudo does: on this host (1.9.17p2, 2026-07-30)
+                // `cvtsudoers -f json` reads `alice h1 = /bin/echo NOPASSWD : h2 = ALL`
+                // as TWO host groups with the first command `"/bin/echo NOPASSWD"`, i.e.
+                // once the command word has begun, a later tag keyword is an ARGUMENT and
+                // the colon really does separate. Requiring `in_cmnd_list` keeps the
+                // structural `=` itself (span `"alice ALL"`, or `"ALL"` after a `,`) out
+                // of the candidate set. `preceding_token` already trims, so whitespace
+                // BEFORE this `=` (`CWD = 30`) is tolerated for free; whitespace AFTER it
+                // is NOT (#538 - see the `skip_value_leading_whitespace` call below).
+                //
+                // A REJECTED `=` must NOT advance `tok_start` unless it IS the structural
+                // `Host_List = Cmnd_Spec_List` `=` itself - the one rejection excluded by
+                // the `in_cmnd_list` gate rather than by the keyword check, and a genuine
+                // token-list boundary that must still be skipped. Any OTHER rejected `=`
+                // is a command argument's own (possibly chained, `X=CWD=...`) and leaves
+                // `tok_start` where it already was, so a LATER `=` in the same argument
+                // still measures its preceding token from the run's true last boundary
+                // rather than from mid-argument - round 1 advanced `tok_start` on EVERY
+                // rejection, so a chained second `=` (`X=CWD=...`) measured its own
+                // preceding token as just `"CWD"` and was wrongly accepted as a genuine
+                // leading option (9m round 2 fix, #538).
                 let is_option_eq =
                     in_cmnd_list && parse_option_key(preceding_token(s, tok_start, i)).is_some();
                 let after_eq = i + c.len_utf8();
-                tok_start = if is_option_eq {
+                if is_option_eq {
                     // The value may itself be double-quoted or backslash-escaped
                     // (`CWD="/a b"`, `CWD=/a\ b`; #538 gap A/C), so a bare
                     // "next whitespace" scan would land INSIDE the value when it
@@ -838,10 +857,10 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     if let Some(span) = quoted_value_span(s, value_start) {
                         quotes.push(span);
                     }
-                    option_value_end(s, value_start)
-                } else {
-                    after_eq
-                };
+                    tok_start = option_value_end(s, value_start);
+                } else if !in_cmnd_list {
+                    tok_start = after_eq;
+                }
                 // Only the FIRST top-level `=` of a host-group is the structural
                 // `Host_List = Cmnd_Spec_List` separator; it opens the command list and
                 // arms the first `Cmnd_Spec`'s runas position. A later `=` is an option's
@@ -1272,17 +1291,24 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // every OTHER purpose, exactly as before; the only thing
                 // added is recording a quote span when the value the `=`
                 // introduces really is an option's own.
+                //
+                // A REJECTED `=` must leave `tok_start` untouched - unlike the
+                // sibling splitter, THIS one has no structural `=` in its domain at
+                // all (see `tok_start`'s declaration comment above), so there is no
+                // exception here: round 1 advanced `tok_start` on EVERY rejection,
+                // so a command argument with a SECOND `=` (`X=CWD=...`) measured
+                // that second `=`'s preceding token as just `"CWD"` from the first
+                // rejection's landing point and was wrongly accepted as a genuine
+                // leading option (9m round 2 fix, #538).
                 let is_option_eq = parse_option_key(preceding_token(s, tok_start, i)).is_some();
-                let after_eq = i + c.len_utf8();
-                tok_start = if is_option_eq {
+                if is_option_eq {
+                    let after_eq = i + c.len_utf8();
                     let value_start = skip_value_leading_whitespace(s, after_eq);
                     if let Some(span) = quoted_value_span(s, value_start) {
                         quotes.push(span);
                     }
-                    option_value_end(s, value_start)
-                } else {
-                    after_eq
-                };
+                    tok_start = option_value_end(s, value_start);
+                }
                 at_spec_start = false;
             }
             _ => at_spec_start = false,
