@@ -77,14 +77,86 @@ no-mnt-guard:
 capture-guard:
     bash scripts/check-capture-writes.sh
 
+# Self-test EVERY instrument in scripts/. An unverified instrument is the exact
+# failure this contract exists to prevent: a gate that reports clean having
+# scanned nothing is indistinguishable downstream from a real pass.
+#
+# This SUPERSEDES `oracle-harness-test` in `just ci` and runs a superset of it
+# (that recipe stays callable on its own for the four differential suites). Three
+# suites - check-dac-guard-test, check-codes-count-test, check-no-mnt-paths-test,
+# 99 KB carrying this project's explicitly named anti-vacuity positive controls -
+# were reachable from no recipe or workflow at all, so the anti-vacuity behaviour
+# of two of the three `just ci` lint guards was unverified on every commit.
+#
+# Pure bash: no cargo, no docker, no network.
+instrument-test:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # Never chain with && - a short-circuit hides which one failed, and rc is the
+    # gate here, not the transcript.
+    fail=0
+    ran=0
+    for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
+             check-capture-writes check-dac-guard check-codes-count \
+             check-no-mnt-paths rs-mutation-gate; do
+        bash "scripts/${t}-test.sh"
+        rc=$?
+        ran=$((ran + 1))
+        echo "instrument-test: ${t}-test rc=${rc}"
+        [ "${rc}" -eq 0 ] || fail=1
+    done
+    # ANTI-VACUITY on this recipe itself, in two directions.
+    #
+    # (1) Every guard in scripts/ must appear in the list above, so adding a guard
+    # without a self-test fails HERE rather than going unverified for weeks.
+    # Counted with a shell glob rather than `ls | grep -v`: a count derived through
+    # a filter is not evidence, and this project's own command wrapper rewrites a
+    # mid-pipeline grep and changes the number (measured while writing this recipe,
+    # which reported 16 guards where there are 8).
+    guards=0
+    for f in scripts/*.sh; do
+        case "${f}" in *-test.sh) ;; *) guards=$((guards + 1)) ;; esac
+    done
+    [ "${guards}" -eq 8 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 8 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    # (2) The loop itself must have run. A typo'd list that iterates zero times
+    # would otherwise report clean, which is the very defect being gated.
+    [ "${ran}" -eq 8 ] || { echo "instrument-test: ran ${ran} suites, expected 8" >&2; fail=1; }
+    echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
+    [ "${fail}" -eq 0 ]
+
+# Per-manifest gate for the workspace-EXCLUDED tools/* crates. `cargo --workspace`
+# cannot see them, but six CI workflows build them with --locked. In 9j a branch
+# was pushed with `# acked-verify` on a green `just ci` while three tools/* --locked
+# builds that CI gates were broken; it was caught 27 minutes later by an ad-hoc
+# per-manifest run, not by a gate. (#603)
+tools-gate:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    rc=0
+    n=0
+    for m in tools/*/Cargo.toml; do
+      [ -f "${m}" ] || continue
+      n=$((n + 1))
+      cargo fmt --manifest-path "${m}" --all -- --check || rc=1
+      cargo clippy --manifest-path "${m}" --all-targets --locked -- -D warnings || rc=1
+      cargo test --manifest-path "${m}" --locked || rc=1
+    done
+    # Zero manifests means the layout moved, not that everything passed.
+    [ "${n}" -gt 0 ] || { echo "tools-gate VACUOUS: 0 manifests found under tools/" >&2; exit 2; }
+    echo "tools-gate: ${n} manifests checked, rc=${rc}"
+    exit "${rc}"
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + capture-guard + oracle-harness-test + test + cov).
-ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard oracle-harness-test test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard +
+# no-mnt-guard + capture-guard + instrument-test + tools-gate + test + cov).
+# `instrument-test` runs a SUPERSET of `oracle-harness-test`, so the latter is not
+# listed here; it remains callable on its own.
+ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard instrument-test tools-gate test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:

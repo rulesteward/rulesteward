@@ -526,9 +526,48 @@ else
     sed 's/^/    | /' "${case7_out}" || true
 fi
 
+# ---------------------------------------------------------------------------
+# Cases 13 and 14: the anti-vacuity floor.
+#
+# Every other case here asks "given files, does the gate judge them correctly?".
+# These two ask the question that outranks it: "did the gate look at anything at
+# all?" A scanner pointed at an empty tree, or at a path that does not exist,
+# finds no violations and exits 0, which is byte-identical to a clean tree. That
+# is not a hypothetical: `just ci` calls this gate with a hardcoded path, and a
+# rename, a bad `-C`, or a layout change turns the gate into a no-op that still
+# prints nothing and still passes.
+#
+# Its two siblings (check-codes-count.sh, check-no-mnt-paths.sh) both carry a
+# `scanned=0` floor and both exit 2 here. This gate was the one that did not.
+# rc 2 is "tool error", matching the sibling contract; rc 1 stays reserved for a
+# real convention violation.
+# ---------------------------------------------------------------------------
+assert_mentions_zero_files() {
+    local name="$1"
+    local out="${TMPROOT}/${name}.out"
+    if grep -qi "zero .*files\|no .*files" "${out}" 2>/dev/null; then
+        note_pass "${name}: message says nothing was scanned"
+    else
+        note_fail "${name}: message does not say why (got: $(cat "${out}" 2>/dev/null || echo '<no output>'))"
+    fi
+}
+
+mkdir -p "${TMPROOT}/case13/crates"
+run_case "case13_empty_tree_is_vacuous" "${TMPROOT}/case13/crates" 2
+assert_mentions_zero_files "case13_empty_tree_is_vacuous"
+
+run_case "case14_missing_path_is_error" "${TMPROOT}/case14-does-not-exist" 2
+
 echo ""
 echo "----------------------------------------"
 echo "${pass} passed, ${fail} failed"
+
+# A suite that ran nothing must not report clean. This is the same floor the
+# cases above added to the gate, applied to the harness that checks it.
+if [[ "${pass}" -eq 0 && "${fail}" -eq 0 ]]; then
+    echo "SUITE ERROR: zero cases ran" >&2
+    exit 2
+fi
 if [[ "${fail}" -gt 0 ]]; then
     echo ""
     echo "Failures:"
