@@ -795,10 +795,15 @@ fn parse_audit_field_all_arms_recognized() {
     ];
 
     for (field_name, expected_variant) in cases {
-        // Build a minimal parseable syscall rule containing `-F <field>=0`.
-        // Using `=0` as the value works for all field types for parsing purposes
-        // (the parser stores value as a String; semantic validation is separate).
-        let rule_str = format!("-a always,exit -S execve -F {field_name}=0");
+        // Build a minimal parseable syscall rule containing `-F <field>=<value>`.
+        // `0` works as a filler value for every field EXCEPT `perm`: #601 half
+        // B added letter-set ('rwxa') validation to `-F perm=`'s value
+        // specifically, so `perm=0` now correctly rejects. `wa` is used there
+        // instead so this generic field-name sweep does not trip that
+        // unrelated, field-specific validation; every other field's value
+        // remains unvalidated (the parser stores it as a plain String).
+        let value = if *field_name == "perm" { "wa" } else { "0" };
+        let rule_str = format!("-a always,exit -S execve -F {field_name}={value}");
         let rules = parse_rules_str(&rule_str).unwrap_or_else(|e| {
             panic!("field '{field_name}' failed to parse: {e:?}\n  rule: {rule_str}")
         });
@@ -1071,4 +1076,309 @@ fn parse_action_possible_recognized() {
         }
         other => panic!("expected Syscall, got {other:?}"),
     }
+}
+
+// --------------------------------------------------------------------------
+// #601 half A: `-p` permission letters case-fold
+// --------------------------------------------------------------------------
+//
+// Real auditctl case-folds `-p` letters (corpus rows `iss601-uppercase-perm-
+// all` / `iss601-uppercase-perm-mixed`, `tests/corpus/auditd-oracle/
+// el8.tsv:44-45`, el9/el10 identical: rc=1, empty stdout, stderr `Error
+// sending add rule data request (Operation not permitted)` -- the ACCEPT
+// probe per `src/oracle.rs:153-164`, proving the line PARSED). This lane's
+// `parse_perms` (`src/parser.rs`) now case-folds via
+// `ch.to_ascii_lowercase()` before matching `rwxa`, closing what was an open
+// parser gap (#601); the two tests below pin that fix.
+
+/// `-p WA` (uppercase) must fold to the same `PermBits` as `-p wa`.
+/// Grounded: corpus row `iss601-uppercase-perm-all`. Asserting the
+/// individual BITS (not merely "it parses") kills a mutant that accepts
+/// uppercase letters but drops a bit.
+#[test]
+fn watch_perms_uppercase_all_folds_to_lowercase() {
+    let rules = parse_ok("-w /etc/passwd -p WA -k q4");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(!perms.read, "R must not be set");
+            assert!(perms.write, "W must fold to write");
+            assert!(!perms.exec, "X must not be set");
+            assert!(perms.attr, "A must fold to attr");
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// `-p Wa` (mixed case) folds the same way. Grounded: corpus row
+/// `iss601-uppercase-perm-mixed`.
+#[test]
+fn watch_perms_mixed_case_folds() {
+    let rules = parse_ok("-w /etc/passwd -p Wa -k q5");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(!perms.read, "R must not be set");
+            assert!(perms.write, "W must fold to write");
+            assert!(!perms.exec, "X must not be set");
+            assert!(perms.attr, "A must fold to attr");
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// All four letters uppercase (`-p RWXA`) sets all four bits. Guards against
+/// a fold that only handles the two letters ('w'/'a') the corpus happens to
+/// exercise.
+#[test]
+fn watch_perms_uppercase_all_four_letters() {
+    let rules = parse_ok("-w /etc -p RWXA");
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        AuditRule::Watch { perms, .. } => {
+            assert!(perms.read, "R must fold to read");
+            assert!(perms.write, "W must fold to write");
+            assert!(perms.exec, "X must fold to exec");
+            assert!(perms.attr, "A must fold to attr");
+        }
+        other => panic!("expected Watch, got {other:?}"),
+    }
+}
+
+/// An INVALID (not merely uppercase) permission letter must still be
+/// rejected, on both the lowercase and uppercase spellings. Grounded: corpus
+/// rows `p-invalid-lower` / `p-invalid-upper`
+/// (`tests/corpus/auditd-oracle/el9.tsv:58-59`) -- real auditctl rejects both
+/// (rc=1, empty stdout/stderr, a silent add-shaped reject per
+/// `classify_capture` step 5). A fold implemented as "strip non-rwxa
+/// characters" instead of "lowercase then match rwxa" would wrongly accept
+/// these. The message-content check is case-insensitive: the ground truth
+/// only requires the offending LETTER be named, not a specific casing of it
+/// in the diagnostic.
+#[test]
+fn watch_perms_invalid_letter_still_rejects_either_case() {
+    let lower = parse_err("-w /etc/passwd -p z -k pinvlow");
+    assert!(
+        lower
+            .iter()
+            .any(|e| e.message.to_ascii_lowercase().contains('z')),
+        "lowercase invalid letter 'z' must be named in the error; got: {lower:?}"
+    );
+    let upper = parse_err("-w /etc/passwd -p Z -k pinvup");
+    assert!(
+        upper
+            .iter()
+            .any(|e| e.message.to_ascii_lowercase().contains('z')),
+        "uppercase invalid letter 'Z' must be named in the error; got: {upper:?}"
+    );
+}
+
+/// ATL round (issue #601 follow-up, MISS-1): a `-p` argument longer than 4
+/// characters must be rejected even when every individual character is a
+/// valid perm letter. Grounded: audit-userspace `src/auditctl.c`'s
+/// `audit_setup_perms` checks LENGTH before it examines any letter --
+/// `len = strlen(opt); if (len > 4) { audit_msg(LOG_ERR, "permission %s is
+/// too long", opt); return -1; }` -- the SAME `return -1` the invalid-letter
+/// arm uses, i.e. the same rc=1 / empty-stdout / empty-stderr silent
+/// add-shaped reject the corpus already pins as `p-invalid-lower`
+/// (`tests/corpus/auditd-oracle/el8.tsv`). `parse_perms`'s case-fold mirrored
+/// `tolower()` from that function but not the `len > 4` guard three lines
+/// above it -- every frozen `-p` test above uses 1-4 letters, so the domain
+/// was narrowed to "case" but never "length". A 5-letter value built
+/// ENTIRELY from valid letters (`rwxar`, `wwaaa` -- every letter individually
+/// legal, some just repeated) parses clean today and `au-W06` credits it as
+/// satisfying V-230409/RHEL-08-030171 -- a fail-open in a compliance
+/// control. The 4-letter boundary is pinned on the OTHER side by
+/// `watch_rwxa_all_perm_bits` (above, in this file) and
+/// `watch_perms_uppercase_all_four_letters` (immediately above), so an
+/// implementer cannot satisfy this test by rejecting every `-p` value.
+#[test]
+fn watch_perms_five_letters_rejected_even_all_valid_letters() {
+    let rwxar = parse_err("-w /etc/passwd -p rwxar -k plong");
+    assert!(
+        !rwxar.is_empty(),
+        "-p rwxar (5 letters, all individually valid) must be rejected -- \
+         real auditctl's audit_setup_perms checks length before letters; \
+         a 4-letter value must still parse (see watch_rwxa_all_perm_bits)"
+    );
+
+    let wwaaa = parse_err("-w /etc/passwd -p wwaaa -k plong2");
+    assert!(
+        !wwaaa.is_empty(),
+        "-p wwaaa (5 letters, all individually valid, some repeated) must \
+         also be rejected"
+    );
+}
+
+// --------------------------------------------------------------------------
+// #601 half B: `-F perm=` letter-set validation
+// --------------------------------------------------------------------------
+//
+// Real auditctl rejects an invalid `-F perm=` letter set (corpus row
+// `f-perm-invalid-letter`, `tests/corpus/auditd-oracle/el9.tsv:60`: rc=1,
+// empty stdout, stderr `Permission can only contain  'rwxa'` -- matched by
+// `KNOWN_PARSE_COMPLAINTS`'s `"Permission can only contain"` substring,
+// `src/oracle.rs:237-242`). This lane's `parse_field_filter`
+// (`src/parser.rs`) now validates the letter set (when the operator is `=`;
+// see the RULING below) via the same `rwxa` check, closing what was an open
+// parser gap (#601's other half); the tests below pin that fix.
+//
+// RULING (orchestrator, 2026-07-30): the letter-set check is gated on the
+// comparison OPERATOR -- only `-F perm=VALUE` (op `=`) is letter-checked.
+// `-F perm!=VALUE` (and every other operator) keeps parsing unvalidated so
+// `au-E02` can report the illegal operator, matching real auditctl's own
+// diagnostic ORDER (the kernel rejects the operator, `-EAU_OPEQ`, before it
+// ever examines the letters).
+
+/// `-F perm=zz` must be a parse error (the corpus row's exact rule text).
+/// Also drives a MIXED value (`-F perm=wz`, one valid letter then one
+/// invalid) so an implementation checking only `value.chars().next()` -- and
+/// so accepting `wz` while rejecting `zz` -- cannot pass: every character
+/// must be checked, not just the first.
+///
+/// The message-content assertion below is DECORATIVE, not a message-shape
+/// pin, and its weakness is deliberate rather than an oversight: every `-F`
+/// parse error is wrapped as `` in -F '{spec}': {msg} `` (`src/parser.rs`,
+/// `parse_field_filter`'s `err` closure) and `spec` here is literally
+/// `perm=zz` (or `perm=wz`), so the wrapper ALONE already contains "perm"
+/// and the offending value regardless of what the letter-set check's own
+/// `{msg}` says -- it constrains the implementer's wording not at all. The
+/// assertion doing the real work is `!errors.is_empty()`: that these two
+/// values fail to parse at all. The message check is kept only so a future
+/// implementation that routes this case through some OTHER error path
+/// (e.g. misclassifying it as an unknown-field error) still surfaces a
+/// spec/value-bearing message for whoever reads the failure output.
+#[test]
+fn field_filter_perm_invalid_letter_rejects() {
+    let errors = parse_err("-a always,exit -F perm=zz -S execve -k fpermbad");
+    assert!(!errors.is_empty(), "-F perm=zz must produce a parse error");
+    assert!(
+        errors[0].message.contains("perm") && errors[0].message.contains("zz"),
+        "error message must name 'perm' and the offending value 'zz'; got: {:?}",
+        errors[0].message
+    );
+
+    let mixed = parse_err("-a always,exit -F perm=wz -S execve -k fpermmixed");
+    assert!(
+        !mixed.is_empty(),
+        "-F perm=wz (one valid letter, one invalid) must also produce a \
+         parse error -- guards against a first-character-only check"
+    );
+}
+
+/// Valid `-F perm=` letter sets (including the uppercase spelling) must
+/// still parse. The uppercase case is the coupling with the `-p` fold: the
+/// `-F` check must case-fold too, or
+/// `dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d`
+/// (`tests/test_lints_stig_required.rs`) goes RED.
+#[test]
+fn field_filter_perm_valid_letters_still_parse() {
+    parse_ok("-a always,exit -F perm=wa -S execve");
+    parse_ok("-a always,exit -F perm=rwxa -S execve");
+    parse_ok("-a always,exit -F perm=WA -S execve");
+}
+
+/// Pins DECISION 1/the orchestrator RULING: `-F perm` predicates using ANY
+/// operator other than `=` must PARSE -- the letter check does not apply.
+/// `au-E02` (not this parser check) is what reports the illegal operator on
+/// these lines; see `e02_perm_ne_is_error` / `e02_perm_greater_is_error` /
+/// `e02_perm_bitand_eq_is_error` / `e02_perm_bitand_is_error`
+/// (`tests/test_lints_operator_validity.rs:569,575,582,588`). Every non-`=`
+/// operator is driven, not just `!=`: a gate written `op != CompareOp::Ne`
+/// (instead of `op == CompareOp::Eq`) would pass a `!=`-only test while
+/// wrongly rejecting `-F perm>zz` as a parse error -- the "too strict"
+/// direction the ruling explicitly forbids.
+#[test]
+fn field_filter_perm_operator_gating_pin() {
+    parse_ok("-a always,exit -S openat -F perm!=zz");
+    parse_ok("-a always,exit -S openat -F perm<zz");
+    parse_ok("-a always,exit -S openat -F perm>zz");
+    parse_ok("-a always,exit -S openat -F perm<=zz");
+    parse_ok("-a always,exit -S openat -F perm>=zz");
+    parse_ok("-a always,exit -S openat -F perm&zz");
+    parse_ok("-a always,exit -S openat -F perm&=zz");
+}
+
+/// `-F perm=` (empty value, zero letters) parses today, mirroring
+/// `parse_perms("")`.
+///
+/// This is a KNOWN, FILED divergence, not an ungrounded pin: real
+/// `auditctl`'s `audit_rule_fieldpair_data` (`lib/libaudit.c`) rejects an
+/// EMPTY value for every `-F` field before the field-specific switch is ever
+/// reached (`if (*v == 0) return -EAU_FIELDVALMISSING;`, message "-F missing
+/// value after operation for", `lib/errormsg.h`), so `auditctl -R` aborts the
+/// file on this line. `RuleSteward`'s parser currently accepts it. USER RULING
+/// (session 9m lane 1, round 2 ATL): the behavior stays UNCHANGED in this
+/// lane; the divergence is tracked as issue #613, which explicitly asks
+/// whoever picks it up to INVERT this test (to `parse_err`) rather than
+/// delete it. See #613 for the full grounding and the emptiness/whitespace
+/// boundary scoping.
+#[test]
+fn field_filter_perm_empty_value_unchanged() {
+    parse_ok("-a always,exit -S openat -F perm=");
+}
+
+/// Scope pin: the new letter-set check applies to `AuditField::Perm` ONLY,
+/// not to every `-F` value. `pers`/`devminor` stay unvalidated (these are
+/// XFAIL corpus ids `iss491-neg-pers` / `iss491-neg-devminor`, tracked by
+/// #491, out of this lane's scope).
+#[test]
+fn field_filter_non_perm_values_are_still_unvalidated() {
+    parse_ok("-a always,exit -S openat -F pers=-1");
+    parse_ok("-a always,exit -F devminor=-1 -S openat");
+}
+
+/// ATL round (issue #601 follow-up, MISS-2): a `-F perm=` value longer than 4
+/// characters must be rejected even when every individual character is a
+/// valid perm letter. Grounded: libaudit's `audit_rule_fieldpair_data`
+/// (`lib/libaudit.c`, v3.0.7:1689, v3.1.5:1812, v4.0.3:1832) checks LENGTH
+/// before the letter loop `field_filter_perm_invalid_letter_rejects` (above)
+/// already pins: `case AUDIT_PERM: ... else if (op != AUDIT_EQUAL) return
+/// -EAU_OPEQ; else { len = strlen(v); if (len > 4) return -EAU_STRTOOLONG;
+/// ... default: return -EAU_PERMRWXA; }` -- `EAU_STRTOOLONG` ("String value
+/// too long", `lib/errormsg.h:50,89`) is a DISTINCT diagnostic from
+/// `EAU_PERMRWXA` (`:53,92`), the one the letter-set check already covers.
+/// `field_filter_perm_invalid_letter_rejects` only exercises values
+/// containing an invalid LETTER (`zz`, `wz`); a too-long value built
+/// entirely from VALID letters (`rwxar`, `wwaaa`) is a genuinely independent
+/// gap -- letter-set and length are independent assertions in the real
+/// parser, and only the former was pinned. Use all-valid letters that are
+/// merely too long: a `perm=zzzzz`-style reject is over-determined by the
+/// letter check alone and proves nothing about length. `perm=rwxa` (4
+/// letters) stays the positive control, pinned by
+/// `field_filter_perm_valid_letters_still_parse` above.
+#[test]
+fn field_filter_perm_too_long_rejects_even_all_valid_letters() {
+    let rwxar = parse_err("-a always,exit -S execve -F perm=rwxar");
+    assert!(
+        !rwxar.is_empty(),
+        "-F perm=rwxar (5 letters, all individually valid) must be \
+         rejected -- libaudit checks length before letters; a 4-letter \
+         value must still parse (see field_filter_perm_valid_letters_still_parse)"
+    );
+
+    let wwaaa = parse_err("-a always,exit -S execve -F perm=wwaaa");
+    assert!(
+        !wwaaa.is_empty(),
+        "-F perm=wwaaa (5 letters, all individually valid, some repeated) \
+         must also be rejected"
+    );
+}
+
+/// CRITICAL companion to the length check above: it must be gated on the
+/// operator the SAME way the letter-set check already is
+/// (`field_filter_perm_operator_gating_pin` above, pinning the orchestrator
+/// RULING under DECISION 1). libaudit's `AUDIT_PERM` case returns
+/// `-EAU_OPEQ` for any op but `=` BEFORE it ever reaches the length check
+/// (see the case arm quoted above: the `op != AUDIT_EQUAL` branch returns
+/// first), so the length check is UNREACHABLE for a non-`=` operator in the
+/// real daemon. `-F perm!=rwxar` (too long, but op is `!=`) must therefore
+/// still PARSE, so `au-E02` can report the illegal operator -- an
+/// implementer who bolts the length check on unconditionally (ungated on
+/// the operator) would wrongly turn this into a parse error and silence
+/// `au-E02` here, exactly the mistake `field_filter_perm_operator_gating_pin`
+/// already guards against for the letter-set check.
+#[test]
+fn field_filter_perm_too_long_operator_gating_pin() {
+    parse_ok("-a always,exit -S openat -F perm!=rwxar");
 }

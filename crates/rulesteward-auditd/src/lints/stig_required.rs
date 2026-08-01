@@ -1522,24 +1522,28 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// genuinely distinct from `-F path=`'s SINGLE-INODE watch. "Pure dir-watch
 /// shape" (the structural test [`is_pure_dir_watch_shaped`], the Dir-flavored
 /// twin of [`is_pure_path_watch_shaped`]) applies the SAME test with `dir`
-/// swapped in for `path`, plus two guards the path twin does NOT yet have: an
-/// EMPTY `-S` syscall list, the `always,exit` list/action pair, no `-C`
-/// field-comparisons, `-F` predicates limited to `dir`/`perm`/`arch`/`key`,
-/// EXACTLY ONE `dir` predicate present (using `=`), and any `perm` predicate
-/// present also using `=` (see [`is_pure_dir_watch_shaped`]'s doc comment for
-/// the full ATL-round grounding of the operator/multiplicity/key-membership
-/// refinements).
+/// swapped in for `path`: an EMPTY `-S` syscall list, the `always,exit`
+/// list/action pair, no `-C` field-comparisons, `-F` predicates limited to
+/// `dir`/`perm`/`arch`/`key`, EXACTLY ONE `dir` predicate present (using
+/// `=`), and any `perm` predicate present also using `=` (see
+/// [`is_pure_dir_watch_shaped`]'s doc comment for the full ATL-round
+/// grounding of the operator/multiplicity/key-membership refinements).
 ///
-/// NOT SYMMETRIC, deliberately, pending issue #600: the operator guard
-/// (`=`-only) and the exactly-one-predicate guard were added to the DIR twin
-/// only, because #571's scope was the dir-shape arm. The path twin still
-/// accepts `-F path!=` / `-F perm!=` and more than one `-F path=`, none of
-/// which can load on a real host (`-EAU_OPEQ`; `audit_to_watch` returns
-/// `-EINVAL` when `krule->watch` is already set). That is over-crediting, so
-/// do NOT read the path twin's laxness as intentional permissiveness -- it is
-/// an untightened copy, tracked on #600. The
-/// two shape tests are mutually exclusive (a field set that is
-/// all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
+/// SYMMETRIC as of issue #600 (this lane): the path twin
+/// [`is_pure_path_watch_shaped`] carries the SAME two guards -- Path/Perm
+/// predicates must use `=` (its `AuditField::Path | AuditField::Perm => f.op
+/// == CompareOp::Eq` field-presence arm), and there must be EXACTLY ONE Path
+/// predicate, not "at least one" (its trailing `fields.iter().filter(|f|
+/// f.field == AuditField::Path).count() == 1` guard) -- closing the fail-open where
+/// a rule spelled `-F perm!=` (`lib/libaudit.c`'s `AUDIT_PERM` case returns
+/// `-EAU_OPEQ` for any op but `=`), or `-F path!=` (a KERNEL-side rejection,
+/// not libaudit's: `kernel/audit_watch.c`'s `audit_to_watch` rejects any
+/// non-`=` operator on an `AUDIT_WATCH` predicate -- `-EAU_OPEQ` is a
+/// libaudit-only code and does not apply to path), or naming `-F path=` more
+/// than once (`audit_to_watch` returns `-EINVAL` when `krule->watch` is
+/// already set) -- none of these load on a real host -- was still credited as
+/// path-watch shaped. Both shape tests are mutually exclusive (a field set
+/// that is all-of-`{path,perm,arch,key}` cannot also be all-of-`{dir,perm,arch,key}`
 /// unless it has neither a `path` nor a `dir` predicate, which both shape
 /// tests' presence guards reject), so a rule is never credited by both arms
 /// at once. `-F dir=`/`-F path=` are NEVER unified with each other, in either
@@ -1688,22 +1692,47 @@ fn normalize_watch_path(path: &str) -> &str {
 
 /// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure path-watch" -- the
 /// shape a classic `-w path -p perms -k key` compiles down to at the kernel
-/// level (see [`rules_match`]'s doc comment for the full grounding). This is
-/// a purely structural test on the rule's own fields/syscalls/list/action, no
+/// level (see [`rules_match`]'s doc comment for the full grounding). A
+/// purely structural test on the rule's own fields/syscalls/list/action, no
 /// per-V-number special-casing: an EMPTY `-S` list, the `always,exit`
-/// list/action pair, no `-C` field-comparisons, and every `-F` predicate one
-/// of `path`/`perm`/`arch`/`key` (with at least one `path` predicate present,
-/// so an empty field set does not vacuously pass). A rule with a non-empty
-/// `-S` list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
-/// subj_type=crond_t`) fails this test and has no watch-equivalent form.
-/// `key` is allowed here despite never being named in the doc comment's
-/// "path-watch shape" description above: it is NOT a location/perm axis at
-/// all, so its presence must never disqualify the shape (fixed alongside the
+/// list/action pair, no `-C` field-comparisons, every `-F` predicate one of
+/// `path`/`perm`/`arch`/`key`, EXACTLY ONE `path` predicate present (not "at
+/// least one" -- see the MISS-4 grounding below, so an empty field set does
+/// not vacuously pass), and any `path`/`perm` predicate present using the
+/// `=` operator (see the MISS-1/MISS-3 grounding below). A rule with a
+/// non-empty `-S` list or any OTHER `-F` field (e.g. V-279936's `-S execve
+/// -F subj_type=crond_t`) fails this test and has no watch-equivalent form.
+/// `key` is allowed here despite never being named in the "path-watch shape"
+/// description above: it is NOT a location/perm axis at all, so its
+/// presence must never disqualify the shape (fixed alongside the
 /// dir-flavored twin's identical bug, issue #571 MISS-2b, ATL round, session
-/// 9j lane 8) -- `-k KEY` and `-F key=KEY` are the SAME rule
-/// (`auditctl`'s `setopt()` builds `-F key=%s` from `-k`'s argument before
-/// calling `audit_rule_fieldpair_data`, lib/libaudit.c), and the key axis is
-/// already handled separately by [`effective_key`]/[`fields_match_excluding_key`].
+/// 9j lane 8) -- `-k KEY` and `-F key=KEY` are the SAME rule (`auditctl`'s
+/// `setopt()` builds `-F key=%s` from `-k`'s argument before calling
+/// `audit_rule_fieldpair_data`, lib/libaudit.c), and the key axis is already
+/// handled separately by [`effective_key`]/[`fields_match_excluding_key`].
+///
+/// Grounding for the two guards above, mirroring the dir-flavored twin
+/// [`is_pure_dir_watch_shaped`]'s doc comment:
+/// - **MISS-1/MISS-3 (operator blindness, fail-open, issue #600):** `-F
+///   path!=X`/`-F perm!=X` (or any of `< > <= >= & &=`) never load at the
+///   kernel level -- `kernel/audit_watch.c`'s `audit_to_watch` rejects any
+///   operator but `=` on an `AUDIT_WATCH` predicate, and `lib/libaudit.c`'s
+///   `AUDIT_PERM` case returns `-EAU_OPEQ` for any op but `=` -- so such a
+///   rule has no kernel-level meaning to be path-watch-equivalent to. `arch`
+///   picked up the SAME gate afterwards, also under #600 (session 9m lane
+///   1): `-F arch=`/`-F arch!=` are the only two operators libaudit's
+///   `AUDIT_ARCH` case loads (measured rc 0; every other `CompareOp` variant
+///   returns rc -13 against the installed audit-libs-4.1.4) -- see
+///   `pure_path_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment for the
+///   full probe. `au-E02` independently flags the same invalid `arch`
+///   operator as an Error diagnostic under its own userspace-parser model;
+///   that stays a SEPARATE concern from this shape test.
+/// - **MISS-4 (Path multiplicity, order-dependent verdict, issue #600):**
+///   `audit_to_watch` returns `-EINVAL` once a rule's watch pointer is
+///   already set -- one location watch per rule is a hard kernel limit -- so
+///   a rule naming `-F path=` MORE THAN ONCE never loads either. Requiring
+///   EXACTLY one Path predicate here fixes the false-accept.
+///
 /// Measured regression this fixed: `RHEL10_REQUIRED`'s `/etc/sudoers.d` row
 /// (V-281155/RHEL-10-500690, `stig_required.rs`, spelled `-F key=identity`)
 /// wrongly reported a classic `-w /etc/sudoers.d/ -p wa -k identity` watch as
@@ -1717,19 +1746,45 @@ fn is_pure_path_watch_shaped(
     fields: &[crate::ast::FieldFilter],
     field_compares: &[crate::ast::FieldComparison],
 ) -> bool {
-    use crate::ast::{Action, AuditField, FilterList};
+    use crate::ast::{Action, AuditField, CompareOp, FilterList};
 
     *list == FilterList::Exit
         && *action == Action::Always
         && syscalls.is_empty()
         && field_compares.is_empty()
-        && fields.iter().all(|f| {
-            matches!(
-                f.field,
-                AuditField::Path | AuditField::Perm | AuditField::Arch | AuditField::Key
-            )
+        && fields.iter().all(|f| match f.field {
+            // #600 (mirrors dir twin's MISS-1/MISS-3): `-F path=`/`-F perm=`
+            // only ever LOAD with `=` -- `kernel/audit_watch.c`'s
+            // `audit_to_watch` rejects any other operator on an AUDIT_WATCH
+            // predicate, and `lib/libaudit.c`'s AUDIT_PERM case returns
+            // -EAU_OPEQ for any op but `=`.
+            AuditField::Path | AuditField::Perm => f.op == CompareOp::Eq,
+            // Session 9m lane 1: `-F arch=`/`-F arch!=` are the only two
+            // operators `lib/libaudit.c`'s AUDIT_ARCH case loads (measured
+            // rc 0 against the installed audit-libs-4.1.4; every other
+            // `CompareOp` variant returns rc -13) -- see
+            // `pure_path_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment
+            // for the full probe. A candidate spelling any other operator
+            // never loads at the kernel level and must not be credited as
+            // path-watch shaped.
+            AuditField::Arch => matches!(f.op, CompareOp::Eq | CompareOp::Ne),
+            // `-F key=` unifies with `-k` via `effective_key` (the key axis
+            // is handled separately), and libaudit accepts every operator on
+            // AUDIT_FILTERKEY (measured rc 0 for `key!=`/`key>=`/`key&`), so
+            // its presence (with any op) never disqualifies the shape.
+            AuditField::Key => true,
+            _ => false,
         })
-        && fields.iter().any(|f| f.field == AuditField::Path)
+        // #600 (mirrors dir twin's MISS-4): EXACTLY one Path predicate, not
+        // "at least one" -- `audit_to_watch` returns -EINVAL once a rule's
+        // watch pointer is already set, so a rule naming `-F path=` more
+        // than once never loads either. `count() == 1` subsumes the old
+        // presence check (`0 != 1`).
+        && fields
+            .iter()
+            .filter(|f| f.field == AuditField::Path)
+            .count()
+            == 1
 }
 
 /// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure dir-watch" -- the
@@ -1763,9 +1818,16 @@ fn is_pure_path_watch_shaped(
 ///   returns `-EAU_OPEQ` for any op but `=` (verified rc=-29 against the
 ///   installed audit-4.1.4 libaudit) -- a rule spelled with any other
 ///   operator on either field NEVER LOADS at the kernel level at all, so it
-///   has no kernel-level meaning to be dir-watch-equivalent to. `arch`'s own
-///   operator restriction (`=`/`!=` only) is a DIFFERENT lint's job (au-E02)
-///   and irrelevant to whether the rule is dir-watch SHAPED.
+///   has no kernel-level meaning to be dir-watch-equivalent to. `arch` picked
+///   up the SAME gate afterwards, also under #600 (session 9m lane 1): see
+///   the `AuditField::Arch` match arm below, which now accepts only `=`/`!=`
+///   (`lib/libaudit.c`'s `AUDIT_ARCH` case; measured rc 0 for both, rc -13 for
+///   every other `CompareOp` variant against the installed audit-libs-4.1.4)
+///   -- so `arch`'s operator is no longer irrelevant to this shape test.
+///   `au-E02` independently flags the same invalid `arch` operator as an
+///   Error diagnostic under its own userspace-parser model; that stays a
+///   DIFFERENT lint's concern, just not the reason `arch` is excluded here
+///   any more.
 /// - **MISS-2 (Key membership, false "missing"):** the ORIGINAL version did
 ///   not allow `AuditField::Key` in the field set at all, so a candidate
 ///   spelled `-F key=` instead of `-k` fell OUTSIDE the shape and reported a
@@ -1799,11 +1861,18 @@ fn is_pure_dir_watch_shaped(
         && fields.iter().all(|f| match f.field {
             // MISS-1/MISS-3: `-F dir=`/`-F perm=` only ever LOAD with `=`.
             AuditField::Dir | AuditField::Perm => f.op == CompareOp::Eq,
-            // `arch`'s own operator restriction is au-E02's job, not this
-            // shape test's; MISS-2: `-F key=` unifies with `-k` via
-            // `effective_key` (the key axis is handled separately), so its
-            // presence (with any op) never disqualifies the shape either.
-            AuditField::Arch | AuditField::Key => true,
+            // Session 9m lane 1 (mirrors the path-flavored twin's identical
+            // fix): `-F arch=`/`-F arch!=` are the only two operators
+            // libaudit's AUDIT_ARCH case loads (measured rc 0; every other
+            // `CompareOp` variant returns rc -13) -- see
+            // `pure_dir_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment for
+            // the full probe.
+            AuditField::Arch => matches!(f.op, CompareOp::Eq | CompareOp::Ne),
+            // MISS-2: `-F key=` unifies with `-k` via `effective_key` (the
+            // key axis is handled separately), and libaudit accepts every
+            // operator on AUDIT_FILTERKEY, so its presence (with any op)
+            // never disqualifies the shape.
+            AuditField::Key => true,
             _ => false,
         })
         // MISS-4: EXACTLY one Dir predicate, not "at least one".
@@ -1826,21 +1895,19 @@ fn watch_equivalent_axes_match(
 ) -> bool {
     use crate::ast::AuditField;
 
-    let syscall_path = syscall_fields
+    let Some(sp) = syscall_fields
         .iter()
         .find(|f| f.field == AuditField::Path)
-        .map(|f| f.value.as_str());
-    let syscall_perm = syscall_fields
-        .iter()
-        .find(|f| f.field == AuditField::Perm)
-        .map(|f| f.value.as_str());
-
-    let (Some(sp), Some(sperm)) = (syscall_path, syscall_perm) else {
+        .map(|f| f.value.as_str())
+    else {
         return false;
     };
 
-    normalize_watch_path(watch_path) == normalize_watch_path(sp)
-        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+    let Some(sperm_bits) = perm_axis_bits(syscall_fields) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sp) && sperm_bits == *watch_perms
 }
 
 /// Compare a `Watch`'s `path`/`perms` against a (structurally pure-dir-watch,
@@ -1863,21 +1930,161 @@ fn dir_watch_equivalent_axes_match(
 ) -> bool {
     use crate::ast::AuditField;
 
-    let syscall_dir = syscall_fields
+    let Some(sd) = syscall_fields
         .iter()
         .find(|f| f.field == AuditField::Dir)
-        .map(|f| f.value.as_str());
-    let syscall_perm = syscall_fields
-        .iter()
-        .find(|f| f.field == AuditField::Perm)
-        .map(|f| f.value.as_str());
-
-    let (Some(sd), Some(sperm)) = (syscall_dir, syscall_perm) else {
+        .map(|f| f.value.as_str())
+    else {
         return false;
     };
 
-    normalize_watch_path(watch_path) == normalize_watch_path(sd)
-        && perm_bits_from_field_value(sperm).as_ref() == Some(watch_perms)
+    let Some(sperm_bits) = perm_axis_bits(syscall_fields) else {
+        return false;
+    };
+
+    normalize_watch_path(watch_path) == normalize_watch_path(sd) && sperm_bits == *watch_perms
+}
+
+/// Fold a syscall rule's `-F perm=` predicate(s) into a single [`PermBits`]
+/// value for the watch-equivalence axis compare, or `None` if they cannot
+/// represent one. Multiple `Perm` predicates CONJOIN at the kernel level
+/// (`kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once
+/// PER `AUDIT_PERM` field and ANDs the per-field results via `if (!result)
+/// return 0;`), and `audit_match_perm` is MONOTONE NON-DECREASING in its
+/// `mask` argument: every branch reduces to `mask & <event-determined
+/// constant>` (`AUDITSC_NATIVE`/`AUDITSC_COMPAT` return 1 on the first set
+/// bit of `mask` that lands in the event's syscall class; `AUDITSC_OPEN`/
+/// `AUDITSC_OPENAT`/`AUDITSC_OPENAT2` return `mask & ACC_MODE(...)` (the
+/// three differ only in which `argv` slot holds the open flags -- `open()`'s
+/// own `argv[1]`, `openat()`'s `argv[2]`, or `openat2()`'s `argv[2]`
+/// `struct open_how`); `AUDITSC_EXECVE` returns
+/// `mask & AUDIT_PERM_EXEC`; `AUDITSC_SOCKETCALL` returns `(mask &
+/// AUDIT_PERM_WRITE) && ...`). So for two masks `m1 subset-of m2`,
+/// `match(m1)` implies `match(m2)` for every event, and a conjunction of
+/// `-F perm=` predicates whose SET HAS A MINIMUM -- one element that is a
+/// subset of every other element, NOT the strictly stronger "every pair is
+/// subset-comparable" (a total order) -- reduces to exactly that minimum
+/// (smallest/strictest) element: for any comparable pair `X subset-of Y`,
+/// `match(X) AND match(Y) == match(X)`, and a set with a minimum `m`
+/// satisfies `match(m) AND match(other) == match(m)` for every `other` in
+/// the set, so the whole conjunction collapses to `match(m)`. A total order
+/// is a SUFFICIENT special case of "has a minimum" (the least element of a
+/// totally ordered set is a minimum by definition), not the general
+/// condition (ATL round 5, issue #601 follow-up): `{w,a}, {r,w,a}, {w,x,a}`
+/// has minimum `{w,a}` even though `{r,w,a}` and `{w,x,a}` are themselves
+/// incomparable, so the set is not totally ordered yet still collapses.
+///
+/// Requiring bitwise EQUALITY of every predicate (this function's round-2
+/// shape, an earlier round of this lane) was an over-correction: it correctly stopped two
+/// DIFFERENT predicates being credited by picking "whichever comes first"
+/// (the original bug both call sites -- [`watch_equivalent_axes_match`] and
+/// [`dir_watch_equivalent_axes_match`] -- shared; issue #601 ATL follow-up,
+/// MISS-3), but "different" is not the same as "incomparable": it also
+/// declined a genuinely-equivalent subset-comparable pair like `perm=wa` +
+/// `perm=rwxa`, which collapses to `perm=wa` even though the two values
+/// differ (round-4 regression fix, issue #601/#600 ATL).
+///
+/// A predicate set that has NO MINIMUM at all (e.g. `perm=rwa` + `perm=wxa`:
+/// `r` only in the first, `x` only in the second -- a two-element set, so
+/// "no minimum" and "not pairwise subset-comparable" coincide here) declines
+/// (`None`) rather than folding to the set's bitwise INTERSECTION.
+/// Intersection is the WRONG fold for such a set: `perm=r AND perm=w` is
+/// satisfiable on an `O_RDWR` open (`ACC_MODE` sets both the read and write
+/// bits for that open), while `intersection({r}, {w})` is empty and
+/// `match(empty)` is never true. Intersection and minimum only coincide when
+/// the set already has a minimum, which is exactly why no SATISFIED-subset
+/// test can discriminate the two folds -- see the
+/// `path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_
+/// required_value_...` test for the incomparable-but-intersects-nonempty
+/// case that does. Declining when no minimum exists is the CONSERVATIVE
+/// choice here, not a provably correct one in general: `audit_match_perm`'s
+/// monotonicity is silent on a set with no minimum, so a genuinely
+/// satisfiable conjunction may still be reported missing.
+///
+/// Returns `None` for zero `Perm` predicates (no axis to compare), if any
+/// predicate's value fails to parse as perm-bit letters, or if any `Perm`
+/// predicate uses an operator other than `=` (see the operator-gate
+/// paragraph below).
+///
+/// **Operator gate (ATL round 8, issue #601 followup, a regression
+/// introduced by round 7's own fix):** a `-F perm=` predicate only ever
+/// LOADS with the `=` operator
+/// -- `lib/libaudit.c`'s `AUDIT_PERM` case in `audit_rule_fieldpair_data()`
+/// returns `-EAU_OPEQ` for any other operator (measured rc -29 against the
+/// installed audit-4.1.4 libaudit for `!=`, `>=`, `<`, `&`, `&=`, checked
+/// BEFORE the letters are validated -- a bad letter set is a DIFFERENT code,
+/// -14). A rule spelling a non-`=` perm operator therefore never reaches the
+/// kernel at all and has no perm-axis VALUE to fold into. This function
+/// declines (`None`) the instant it sees one, rather than silently
+/// selecting/stripping it by field NAME alone regardless of operator (the
+/// round-7 fold's bug): field-name-only selection let an illegal operator
+/// ride along invisibly and get credited as satisfying a `=`-spelled
+/// requirement, a fail-open. Declining routes the whole compare back to the
+/// unfolded [`multiset_eq`] in [`fields_match_excluding_key`], which
+/// requires `a.op == b.op` per predicate and so correctly reports a non-`=`
+/// candidate as not matching a `=`-spelled requirement. This mirrors the
+/// identical guard already on the Watch-vs-Syscall and Dir-vs-Syscall arms
+/// ([`is_pure_path_watch_shaped`]/[`is_pure_dir_watch_shaped`]'s
+/// `AuditField::Path | AuditField::Perm => f.op == CompareOp::Eq`, issue
+/// #600) -- this function is unreachable with a non-`Eq` `Perm` predicate
+/// from either of those two call sites, since both already require their
+/// own pure-watch-shape check (which enforces the same `Eq`-only rule) to
+/// pass before calling here, so the gate is a true no-op for them and only
+/// changes behavior for its third caller, the Syscall-vs-Syscall arm in
+/// [`fields_match_excluding_key`], which previously had no operator guard at
+/// all.
+fn perm_axis_bits(syscall_fields: &[crate::ast::FieldFilter]) -> Option<crate::ast::PermBits> {
+    use crate::ast::{AuditField, CompareOp};
+
+    if syscall_fields
+        .iter()
+        .any(|f| f.field == AuditField::Perm && f.op != CompareOp::Eq)
+    {
+        return None;
+    }
+
+    let perm_bits: Vec<crate::ast::PermBits> = syscall_fields
+        .iter()
+        .filter(|f| f.field == AuditField::Perm)
+        .map(|f| perm_bits_from_field_value(f.value.as_str()))
+        .collect::<Option<Vec<_>>>()?;
+
+    // Fold to a CANDIDATE minimum via a running left-to-right scan (a
+    // predicate becomes the new candidate whenever it is a subset of the
+    // current candidate), then VERIFY below that the candidate really is a
+    // subset of every element before trusting it. The verification pass is
+    // load-bearing, not a formality: a bare running fold with no re-check
+    // returns a LOCALLY minimal element whenever the set has no true
+    // minimum -- e.g. `perm=wa` then `perm=rw`: `rw` is not a subset of
+    // `wa`, so `wa` is never unseated and the fold would return `Some(wa)`
+    // even though `{w,a}` is not actually a subset of `{r,w}`. Only a set
+    // that genuinely HAS a minimum (see the doc comment above) licenses the
+    // fold at all.
+    let mut min_iter = perm_bits.iter();
+    let mut min = min_iter.next()?.clone();
+    for candidate in min_iter {
+        if perm_bits_is_subset(candidate, &min) {
+            min = candidate.clone();
+        }
+    }
+
+    // The running fold above only ever compares a candidate against the
+    // CURRENT min, never against every element seen so far -- so it can
+    // land on a value that is locally undefeated but not a true minimum.
+    // This pass is the actual minimum check: reject unless `min` is a
+    // subset of every predicate in the set.
+    if perm_bits.iter().any(|b| !perm_bits_is_subset(&min, b)) {
+        return None;
+    }
+
+    Some(min)
+}
+
+/// `a`'s permission bits are a subset of `b`'s: every bit set in `a` is also
+/// set in `b`. The subset partial order [`perm_axis_bits`] folds a chain of
+/// `-F perm=` predicates across.
+fn perm_bits_is_subset(a: &crate::ast::PermBits, b: &crate::ast::PermBits) -> bool {
+    (!a.read || b.read) && (!a.write || b.write) && (!a.exec || b.exec) && (!a.attr || b.attr)
 }
 
 /// Parse a `-F perm=` field VALUE (e.g. `"wa"`) into `PermBits`, mirroring
@@ -1919,26 +2126,78 @@ fn perm_bits_from_field_value(raw: &str) -> Option<crate::ast::PermBits> {
 /// spuriously fail on "field set size mismatch" even when the key values
 /// unify). A set (not ordered) compare per the locked field-order-insensitive
 /// decision (grounding Part C.1).
+///
+/// Perm-multiplicity fold (ATL round 7, issue #601, USER RULING): a
+/// `-F perm=` predicate CHAIN conjoins idempotently at the kernel level (see
+/// [`perm_axis_bits`]'s doc comment - already wired into the Watch-vs-Syscall
+/// and Dir-vs-Syscall arms), so this is the ONLY field this function folds
+/// across multiplicity; every other `-F` field (in particular `path`/`dir`,
+/// which never load a second time at the kernel level at all - see
+/// [`is_pure_path_watch_shaped`]'s MISS-4 grounding) keeps the strict,
+/// multiplicity-sensitive [`multiset_eq`] compare below unchanged. Purely
+/// ADDITIVE: the fold only engages when BOTH sides' `-F perm=` predicates
+/// fold to an actual minimum. [`perm_axis_bits`] returns `None` both for zero
+/// `Perm` predicates and for a predicate SET WITH NO MINIMUM (e.g.
+/// `perm=rwa` + `perm=wxa` - its own doc comment's example: incomparable,
+/// neither a subset of the other); either side landing in `None` falls
+/// straight through to the ORIGINAL, untouched `multiset_eq` compare over
+/// every field including `Perm`, so a pair that matches TODAY keeps
+/// matching - e.g. two byte-identical rules each carrying `-F perm=rwa -F
+/// perm=wxa` still match via that unchanged per-predicate multiset compare,
+/// even though `perm_axis_bits` declines (`None`) on both sides.
+///
+/// **Operator gate (ATL round 8, issue #601 followup):** [`perm_axis_bits`]
+/// ALSO returns `None` for a side carrying any `Perm` predicate whose
+/// operator is not `=` (a non-`=` perm predicate never loads at the kernel
+/// level at all, per that function's doc comment). The same "either side
+/// `None` falls through to unfolded `multiset_eq`" rule handles this case
+/// too, and here it is exactly what is wanted: `multiset_eq`'s per-predicate
+/// `field_eq` closure below requires `a.op == b.op`, so a candidate's
+/// illegal-operator `Perm` predicate can never raw-compare-equal to a
+/// required row's `=`-spelled one, correctly reporting the required line as
+/// missing instead of silently crediting it.
 fn fields_match_excluding_key(
     required: &[crate::ast::FieldFilter],
     candidate: &[crate::ast::FieldFilter],
     opts: LintOptions,
 ) -> bool {
+    use crate::ast::AuditField;
+
     let rf: Vec<&crate::ast::FieldFilter> = required
         .iter()
-        .filter(|f| f.field != crate::ast::AuditField::Key)
+        .filter(|f| f.field != AuditField::Key)
         .collect();
     let cf: Vec<&crate::ast::FieldFilter> = candidate
         .iter()
-        .filter(|f| f.field != crate::ast::AuditField::Key)
+        .filter(|f| f.field != AuditField::Key)
         .collect();
-    multiset_eq(&rf, &cf, |a, b| {
+
+    let field_eq = |a: &&crate::ast::FieldFilter, b: &&crate::ast::FieldFilter| {
         a.field == b.field && a.op == b.op && {
             let ft = super::field_type::field_type(&a.field);
             super::value::canonical_value(ft, &a.value, opts)
                 == super::value::canonical_value(ft, &b.value, opts)
         }
-    })
+    };
+
+    if let (Some(r_perm), Some(c_perm)) = (perm_axis_bits(required), perm_axis_bits(candidate)) {
+        if r_perm != c_perm {
+            return false;
+        }
+        let rf: Vec<&crate::ast::FieldFilter> = rf
+            .iter()
+            .filter(|f| f.field != AuditField::Perm)
+            .copied()
+            .collect();
+        let cf: Vec<&crate::ast::FieldFilter> = cf
+            .iter()
+            .filter(|f| f.field != AuditField::Perm)
+            .copied()
+            .collect();
+        return multiset_eq(&rf, &cf, field_eq);
+    }
+
+    multiset_eq(&rf, &cf, field_eq)
 }
 
 /// Multiset equality: same length, and every element of `a` has a distinct
@@ -1963,28 +2222,34 @@ fn multiset_eq<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> bool {
 /// NOT filtered through [`watch_equivalent_axes_match`] (which is the only
 /// caller reachable from the public `w06`/`w06_with_baseline` API).
 ///
-/// # Why this can't be pinned at the public-API level (mutation-gate report,
-/// session 9e-wave2c pipeline P2 round 3)
+/// # Why this can't be pinned (fully) at the public-API level (mutation-gate
+/// report, session 9e-wave2c pipeline P2 round 3; extended for issue #600)
 ///
-/// `cargo mutants` flagged `:1609:42 - replace == with !=` (the
-/// `fields.iter().any(|f| f.field == AuditField::Path)` guard) as a survivor.
-/// It cannot be killed through `w06`/`w06_with_baseline`: EVERY caller of
-/// [`is_pure_path_watch_shaped`] immediately follows it with
-/// [`watch_equivalent_axes_match`], which independently re-derives path
-/// presence via its OWN `.find(|f| f.field == AuditField::Path)` (and
-/// likewise for `Perm`) and returns `false` whenever either is absent. Proof
-/// by cases on the mutated `==`/`!=` divergence (only possible when `fields`
-/// contains ALL-Path-no-other, or ALL-non-Path-no-Path): both divergent
-/// shapes are missing either a Path or a Perm predicate, so
-/// `watch_equivalent_axes_match` independently forces `false` regardless of
-/// what `is_pure_path_watch_shaped` decided -- the observable `rules_match`
-/// result is IDENTICAL under the mutant and the original for every reachable
-/// input. Testing the private function directly (the standard Rust pattern
-/// for a helper with no other observable surface) is the only way to pin the
-/// "at least one Path predicate present" guard's own correctness -- it
-/// exists to reject a vacuously-empty-of-Path field set per this function's
-/// doc comment ("with at least one path predicate present, so an empty field
-/// set does not vacuously pass").
+/// `cargo mutants` originally flagged the field-presence guard as a
+/// survivor: EVERY caller of [`is_pure_path_watch_shaped`] immediately
+/// follows it with [`watch_equivalent_axes_match`], which independently
+/// re-derives path presence via its OWN `.find(|f| f.field ==
+/// AuditField::Path)` (and likewise for `Perm`) and returns `false`
+/// whenever either is absent -- so the observable `rules_match` result is
+/// IDENTICAL under a presence-only mutant and the original for every
+/// reachable input.
+///
+/// Issue #600 replaced the original `fields.iter().any(|f| f.field ==
+/// AuditField::Path)` guard with `fields.iter().filter(|f| f.field ==
+/// AuditField::Path).count() == 1` (mirroring [`is_pure_dir_watch_shaped`]'s
+/// MISS-4 fix -- `count() == 1` subsumes the old presence check: `0 != 1`)
+/// and added an operator guard, `Path | Perm => f.op == CompareOp::Eq`
+/// (mirroring MISS-1/MISS-3). The "at least one" half of `count() == 1`
+/// stays unobservable through `w06` for the same reason as the deleted
+/// `.any(..)` guard. The "exactly one, not more" half is only PARTLY
+/// unobservable: a rule with two `-F path=` predicates IS distinguishable
+/// through `w06` (see the sibling integration test
+/// `path_syscall_form_with_two_path_predicates_does_not_satisfy_v230409_
+/// regardless_of_field_order`), mirroring the note in
+/// [`pure_dir_watch_shape_tests`]'s own docstring. Testing the private
+/// function directly (the standard Rust pattern for a helper with no other
+/// observable surface) remains the sharper, most localized pin for every
+/// guard added here.
 #[cfg(test)]
 mod pure_path_watch_shape_tests {
     use super::is_pure_path_watch_shaped;
@@ -1998,15 +2263,25 @@ mod pure_path_watch_shape_tests {
         }
     }
 
+    fn field_with_op(f: AuditField, value: &str, op: CompareOp) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op,
+            value: value.to_string(),
+        }
+    }
+
     #[test]
     fn perm_and_arch_without_any_path_predicate_is_not_path_watch_shaped() {
         // Every OTHER conjunct passes (always,exit / empty -S / empty -C /
-        // every field is one of Path|Perm|Arch), but there is NO Path
-        // predicate at all -- Perm and Arch alone must NOT count as
-        // "path-watch shaped". Kills the `:1609:42 == -> !=` mutant
-        // directly: the mutant's `any(|f| f.field != Path)` evaluates `true`
-        // here (both Perm and Arch differ from Path), wrongly returning
-        // `true` for a field set that names no path at all.
+        // every field is one of Path|Perm|Arch, all using `=`), but there is
+        // NO Path predicate at all -- Perm and Arch alone must NOT count as
+        // "path-watch shaped". Pins the "at least one" half of the
+        // `fields.iter().filter(|f| f.field ==
+        // AuditField::Path).count() == 1` guard (issue #600): a mutant
+        // widening `count() == 1` to `count() >= 0` (or deleting the
+        // conjunct outright) would wrongly return `true` for a field set
+        // that names no path at all.
         let fields = vec![
             field(AuditField::Perm, "wa"),
             field(AuditField::Arch, "b32"),
@@ -2032,6 +2307,235 @@ mod pure_path_watch_shape_tests {
             is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
             "path+perm+arch, empty -S, empty -C must be path-watch shaped"
         );
+    }
+
+    #[test]
+    fn dir_field_alone_is_not_path_watch_shaped() {
+        // Mirrors `path_field_alone_is_not_dir_watch_shaped` in the dir
+        // twin's module: a Dir field is not in the {Path,Perm,Arch,Key}
+        // allowed set, so a dir-only field list must never be path-watch
+        // shaped.
+        let fields = vec![field(AuditField::Dir, "/etc/sudoers.d")];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a Dir-only field set must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn path_and_dir_together_is_not_path_watch_shaped() {
+        // Test-adequacy strengthening mirroring
+        // `dir_and_path_together_is_not_dir_watch_shaped`: a Dir-only field
+        // set (see `dir_field_alone_is_not_path_watch_shaped` above) already
+        // fails both the allowed-field-set conjunct and the "has exactly one
+        // Path predicate" conjunct, so it alone cannot distinguish the real
+        // allowed set (Path|Perm|Arch|Key) from an over-broad one
+        // (Path|Dir|Perm|Arch). This test adds a Path predicate ALONGSIDE
+        // the Dir predicate so the "has exactly one Path predicate" conjunct
+        // is satisfied too, and only a correct allowed-field-set conjunct
+        // can still reject it.
+        let fields = vec![
+            field(AuditField::Dir, "/etc/sudoers.d"),
+            field(AuditField::Path, "/etc/sudoers.d"),
+            field(AuditField::Perm, "wa"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "a field set containing BOTH Path and Dir must not be path-watch \
+             shaped -- Dir is not in the {{Path,Perm,Arch,Key}} allowed set"
+        );
+    }
+
+    /// Every non-`Eq` `CompareOp` variant. `CompareOp` has 8 variants total
+    /// (`Eq Ne Lt Gt Le Ge BitAnd BitAndEq`, `ast.rs`); a guard written as
+    /// `op != CompareOp::Ne` (instead of `op == CompareOp::Eq`) would pass a
+    /// `!=`-only test while wrongly accepting e.g. `>=` or `&=`. Looping
+    /// over all seven here (rather than pinning `Ne` alone) closes that
+    /// whole mutant class in one sweep, for BOTH `path_predicate_with_non_
+    /// equal_operator_is_not_path_watch_shaped` and its Perm-side twin below.
+    const NON_EQ_OPS: [CompareOp; 7] = [
+        CompareOp::Ne,
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
+    #[test]
+    fn path_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
+        // #600 MISS-1 analog: `kernel/audit_watch.c`'s `audit_to_watch`
+        // rejects any op but `=` on an AUDIT_WATCH (`path`) predicate at the
+        // kernel level (mirroring AUDIT_DIR's -EINVAL) -- ALL non-`=` operators,
+        // not just `!=` (see `NON_EQ_OPS`'s doc comment). This is the ONLY
+        // net for the Path axis: `au-E02` deliberately leaves `-F path>=`/
+        // `-F path&0x1`/etc. CLEAN
+        // (`e02_path_relational_and_bitmask_all_clean`,
+        // `tests/test_lints_operator_validity.rs:717`, grounded at
+        // `libaudit.c:1804-1811` -- userspace has no operator check on
+        // AUDIT_WATCH at all), so unlike Perm there is no downstream lint
+        // to catch a mutant that only rejects `!=`.
+        for op in NON_EQ_OPS {
+            let fields = vec![
+                field_with_op(AuditField::Path, "/etc/sudoers", op.clone()),
+                field(AuditField::Perm, "wa"),
+                field(AuditField::Arch, "b32"),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "a Path predicate using {op:?} must not be path-watch shaped"
+            );
+        }
+    }
+
+    #[test]
+    fn perm_predicate_with_non_equal_operator_is_not_path_watch_shaped() {
+        // #600 MISS-3 analog, the Perm side: `lib/libaudit.c`'s AUDIT_PERM
+        // case returns -EAU_OPEQ for any op but `=` (verified rc=-29
+        // against the installed audit-4.1.4 libaudit). ALL non-`=` operators
+        // swept, same reasoning as the Path twin above.
+        for op in NON_EQ_OPS {
+            let fields = vec![
+                field(AuditField::Path, "/etc/sudoers"),
+                field_with_op(AuditField::Perm, "wa", op.clone()),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "a Perm predicate using {op:?} must not be path-watch shaped"
+            );
+        }
+    }
+
+    #[test]
+    fn arch_ne_and_key_ne_are_still_path_watch_shaped() {
+        // #600 (session 9m lane 1) split the old unconditional `Arch | Key
+        // => true` arm in two: Arch now requires `matches!(f.op,
+        // CompareOp::Eq | CompareOp::Ne)` (see `ARCH_REJECT_OPS` ~80 lines
+        // below for the sweep of operators that arm now REJECTS), while Key
+        // is untouched and still accepts ANY operator (`-F key=` unifies
+        // with `-k` via `effective_key` regardless of operator -- see the
+        // module doc comment on `is_pure_dir_watch_shaped`). This test
+        // therefore only pins the ONE non-`Eq` operator that still passes
+        // for Arch, `Ne`; a mutant tightening the Arch arm to require bare
+        // `=` would turn this RED.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Perm, "wa"),
+            field_with_op(AuditField::Arch, "b32", CompareOp::Ne),
+            field_with_op(AuditField::Key, "identity", CompareOp::Ne),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "Arch/Key predicates with != must still be path-watch shaped: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn two_path_predicates_is_not_path_watch_shaped() {
+        // #600 MISS-4 analog: `audit_to_watch` returns -EINVAL once a
+        // rule's watch pointer is already set -- one location watch per
+        // rule is a hard kernel limit, so a rule naming -F path= twice
+        // never loads either. Pins `count() == 1` against a `>= 1` mutant.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Path, "/tmp/nope"),
+            field(AuditField::Perm, "wa"),
+        ];
+        assert!(
+            !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "two Path predicates must not be path-watch shaped"
+        );
+    }
+
+    #[test]
+    fn two_perm_predicates_is_still_path_watch_shaped() {
+        // ATL round (issue #601 follow-up, MISS-3): unlike Path (kernel
+        // `audit_to_watch` returns -EINVAL once a rule's watch pointer is
+        // already set -- one location watch per rule is a hard limit), the
+        // kernel has NO such limit on AUDIT_PERM predicates:
+        // `kernel/auditsc.c`'s `audit_filter_rules` calls
+        // `audit_match_perm(ctx, f->val)` once PER Perm field and ANDs the
+        // results, so a rule naming `-F perm=` twice LOADS FINE at the
+        // kernel level -- it just means something more restrictive than a
+        // single `-p X` watch, not "never loads" the way two `-F path=`
+        // predicates do. This shape test must therefore NOT reject a
+        // multi-Perm field set the way it rejects a multi-Path one: doing
+        // so would also wrongly reject an IDENTICAL duplicate (`perm=wa`
+        // twice), which genuinely IS equivalent to a single `-p wa` watch
+        // and must stay credited (see the integration-level positive
+        // control `path_syscall_form_with_identical_duplicate_perm_
+        // predicates_still_satisfies_v230409_sudoers`,
+        // tests/test_lints_stig_required.rs). Whether two Perm predicates
+        // are actually VALUE-equivalent to the required watch's perms is a
+        // question for `watch_equivalent_axes_match`, not this shape test.
+        let fields = vec![
+            field(AuditField::Path, "/etc/sudoers"),
+            field(AuditField::Perm, "wa"),
+            field(AuditField::Perm, "r"),
+        ];
+        assert!(
+            is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+            "two Perm predicates (even with DIFFERENT values) must still be \
+             path-watch shaped -- the kernel loads multiple Perm predicates \
+             fine, unlike Path; rejecting them here would also wrongly \
+             reject an identical-duplicate perm pair"
+        );
+    }
+
+    /// Every `CompareOp` variant libaudit REJECTS on an `-F arch=` predicate
+    /// (session 9m lane 1, mirrors #600's `NON_EQ_OPS` sweep above, one arm
+    /// narrower): unlike Path/Perm/Dir, Arch is NOT `Eq`-only -- measured
+    /// directly against the installed `audit-libs-4.1.4-1.fc44.x86_64` via a
+    /// userspace-only `audit_rule_fieldpair_data()` probe (no netlink; the
+    /// function only builds an in-memory `struct audit_rule_data`, never
+    /// calls the netlink-sending `audit_add_rule_data()`):
+    ///
+    ///   arch=b64, arch!=b64          -> rc  0  (both LOAD)
+    ///   arch<b64, arch>b64, arch<=b64,
+    ///   arch>=b64, arch&b64, arch&=b64 -> rc -13 (refused)
+    ///
+    /// `Ne` is deliberately EXCLUDED from this set (it is the one non-`Eq`
+    /// operator that still loads) -- see the untouched
+    /// `arch_ne_and_key_ne_are_still_path_watch_shaped`
+    /// test above, which already pins `Ne` staying accepted. A guard written
+    /// as `op == CompareOp::Eq` (rather than `op == Eq || op == Ne`) would
+    /// wrongly reject `Ne` too and turn that test RED; a guard that accepts
+    /// any op at all (the pre-fix `Arch | Key => true` arm) accepts every
+    /// variant here and fails every case below.
+    const ARCH_REJECT_OPS: [CompareOp; 6] = [
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
+    #[test]
+    fn arch_predicate_with_rejected_operator_is_not_path_watch_shaped() {
+        // Session 9m lane 1 (fixed in passing alongside this lane's #601
+        // work, at the user's ruling): the pre-fix `Arch | Key => true` arm
+        // matched Arch by field NAME only, with no operator check at all
+        // ("(with any op)" in that arm's old comment) -- a candidate
+        // spelling `-F arch>=b64` (or any of `ARCH_REJECT_OPS`) never loads
+        // at the kernel level (measured rc -13 above) but was still credited
+        // as path-watch shaped, a fail-open on the arch axis distinct from
+        // the already-fixed Path/Perm axes (#600) and Key axis (which stays
+        // deliberately op-blind, see the test above).
+        for op in ARCH_REJECT_OPS {
+            let fields = vec![
+                field(AuditField::Path, "/etc/sudoers"),
+                field(AuditField::Perm, "wa"),
+                field_with_op(AuditField::Arch, "b64", op.clone()),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "an Arch predicate using {op:?} never loads at the kernel \
+                 level (rc -13, measured against audit-libs-4.1.4) and must \
+                 not be path-watch shaped: {fields:?}"
+            );
+        }
     }
 }
 
@@ -2062,6 +2566,14 @@ mod pure_dir_watch_shape_tests {
         FieldFilter {
             field: f,
             op: CompareOp::Eq,
+            value: value.to_string(),
+        }
+    }
+
+    fn field_with_op(f: AuditField, value: &str, op: CompareOp) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op,
             value: value.to_string(),
         }
     }
@@ -2135,5 +2647,41 @@ mod pure_dir_watch_shape_tests {
             "a field set containing BOTH Path and Dir must not be dir-watch \
              shaped -- Path is not in the {{Dir,Perm,Arch,Key}} allowed set"
         );
+    }
+
+    /// The Dir-flavored twin of `pure_path_watch_shape_tests::ARCH_REJECT_OPS`
+    /// (session 9m lane 1) -- same six rejected operators, same measured rc
+    /// -13 grounding (see that constant's doc comment for the full probe).
+    const ARCH_REJECT_OPS: [CompareOp; 6] = [
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
+    #[test]
+    fn arch_predicate_with_rejected_operator_is_not_dir_watch_shaped() {
+        // The Dir-flavored twin of
+        // `pure_path_watch_shape_tests::arch_predicate_with_rejected_operator_
+        // is_not_path_watch_shaped` (session 9m lane 1, fixed in passing
+        // alongside this lane's #601 work, at the user's ruling): the
+        // pre-fix `Arch | Key => true` arm on this dir-flavored twin has the
+        // IDENTICAL field-name-only bug, so it needs the identical fix and
+        // the identical pin.
+        for op in ARCH_REJECT_OPS {
+            let fields = vec![
+                field(AuditField::Dir, "/etc/sudoers.d"),
+                field(AuditField::Perm, "wa"),
+                field_with_op(AuditField::Arch, "b64", op.clone()),
+            ];
+            assert!(
+                !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "an Arch predicate using {op:?} never loads at the kernel \
+                 level (rc -13, measured against audit-libs-4.1.4) and must \
+                 not be dir-watch shaped: {fields:?}"
+            );
+        }
     }
 }

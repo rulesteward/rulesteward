@@ -122,11 +122,15 @@ const EXPECTED_TARGETS: &[&str] = &["el8", "el9", "el10"];
 /// real oracle must ACCEPT and one it must REJECT, each with non-silent
 /// evidence. `control-reject`'s RULE changed in this amendment (see
 /// `capture_auditd.sh`): the old `-F perm=zz` doubled as a product-divergence
-/// row (`RuleSteward`'s parser does not validate `-F perm=` letter sets
-/// either), which means a broken harness and a real XFAIL would have been
-/// indistinguishable. `-F nosuchfield=1` is loud on the real oracle AND
-/// rejected by `RuleSteward`'s own field-name table, so product and oracle
-/// AGREE - this can never become an XFAIL.
+/// row AT THE TIME (`RuleSteward`'s parser did not validate `-F perm=`
+/// letter sets either), which meant a broken harness and a real XFAIL would
+/// have been indistinguishable. `-F nosuchfield=1` is loud on the real
+/// oracle AND rejected by `RuleSteward`'s own field-name table, so product
+/// and oracle AGREE - this can never become an XFAIL. (#601's other half,
+/// session 9m lane 1, has since added that letter-set check, so the old
+/// `-F perm=zz` rule would no longer double this way -- see the corpus's
+/// own `f-perm-invalid-letter` id and `PROVENANCE.md`'s "Positive control
+/// changed" section for the closed-out divergence.)
 const CONTROL_ACCEPT_ID: &str = "control-accept";
 const CONTROL_REJECT_ID: &str = "control-reject";
 
@@ -139,7 +143,7 @@ const CONTROL_REJECT_ID: &str = "control-reject";
 /// target must fail the suite, not go quiet.
 ///
 /// Every entry states whether it is a genuine blind spot (nothing downstream
-/// catches it) or covered elsewhere; none of these 20 are caught by an
+/// catches it) or covered elsewhere; none of these 17 are caught by an
 /// existing `au-E02`/`E04`/`E05` lint: `au-E02` validates operator legality
 /// (is `>=` allowed for this field's TYPE), `au-E05` is the KERNEL-side
 /// bitmask-operator sibling to that same operator question, and `au-E04`
@@ -237,20 +241,6 @@ const XFAIL: &[(&str, &str)] = &[
         "#491 -F devminor=-1, same non-negative requirement as pers. \
          Genuine blind spot.",
     ),
-    // --- -F perm= letter validation (#601's other half): real auditctl
-    // validates -F perm='s value against the letter set 'rwxa'; the parser
-    // stores any string. This is the row the control-reject id used to
-    // carry - moved off the control because a positive control must never
-    // double as a divergence (see CONTROL_REJECT_ID's doc above).
-    (
-        "f-perm-invalid-letter",
-        "#601 -F perm=zz: real auditctl rejects an invalid permission \
-         letter set ('Permission can only contain 'rwxa''); the parser \
-         performs no letter-set validation on -F perm= values (distinct \
-         from the -p watch-flag validation in parse_perms, which DOES \
-         reject invalid letters - see p-invalid-lower/p-invalid-upper \
-         below, which are NOT XFAILs). Genuine blind spot.",
-    ),
     // --- Unknown syscall name (new finding, beyond this lane's original
     // 16-id estimate): the parser accepts ANY string as a -S syscall name
     // with no table lookup; real auditctl validates the name via
@@ -275,17 +265,6 @@ const XFAIL: &[(&str, &str)] = &[
          parser's naive split_whitespace has no such preprocessing and \
          rejects on the stray trailing token. Open parser gap, tracked by \
          #584.",
-    ),
-    (
-        "iss601-uppercase-perm-all",
-        "#601, product too STRICT: real auditctl accepts uppercase \
-         permission letters (WA); parse_perms only matches lowercase rwxa. \
-         Open parser gap, tracked by #601.",
-    ),
-    (
-        "iss601-uppercase-perm-mixed",
-        "#601, product too STRICT: same gap as iss601-uppercase-perm-all, \
-         mixed-case 'Wa'. Open parser gap, tracked by #601.",
     ),
     (
         "w-delete-watch",
