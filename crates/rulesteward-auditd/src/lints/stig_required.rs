@@ -2425,6 +2425,61 @@ mod pure_path_watch_shape_tests {
              reject an identical-duplicate perm pair"
         );
     }
+
+    /// Every `CompareOp` variant libaudit REJECTS on an `-F arch=` predicate
+    /// (session 9m lane 1, mirrors #600's `NON_EQ_OPS` sweep above, one arm
+    /// narrower): unlike Path/Perm/Dir, Arch is NOT `Eq`-only -- measured
+    /// directly against the installed `audit-libs-4.1.4-1.fc44.x86_64` via a
+    /// userspace-only `audit_rule_fieldpair_data()` probe (no netlink; the
+    /// function only builds an in-memory `struct audit_rule_data`, never
+    /// calls the netlink-sending `audit_add_rule_data()`):
+    ///
+    ///   arch=b64, arch!=b64          -> rc  0  (both LOAD)
+    ///   arch<b64, arch>b64, arch<=b64,
+    ///   arch>=b64, arch&b64, arch&=b64 -> rc -13 (refused)
+    ///
+    /// `Ne` is deliberately EXCLUDED from this set (it is the one non-`Eq`
+    /// operator that still loads) -- see the untouched
+    /// `arch_and_key_with_non_equal_operators_are_still_path_watch_shaped`
+    /// test above, which already pins `Ne` staying accepted. A guard written
+    /// as `op == CompareOp::Eq` (rather than `op == Eq || op == Ne`) would
+    /// wrongly reject `Ne` too and turn that test RED; a guard that accepts
+    /// any op at all (the pre-fix `Arch | Key => true` arm) accepts every
+    /// variant here and fails every case below.
+    const ARCH_REJECT_OPS: [CompareOp; 6] = [
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
+    #[test]
+    fn arch_predicate_with_rejected_operator_is_not_path_watch_shaped() {
+        // Session 9m lane 1 (fixed in passing alongside this lane's #601
+        // work, at the user's ruling): the pre-fix `Arch | Key => true` arm
+        // matched Arch by field NAME only, with no operator check at all
+        // ("(with any op)" in that arm's old comment) -- a candidate
+        // spelling `-F arch>=b64` (or any of `ARCH_REJECT_OPS`) never loads
+        // at the kernel level (measured rc -13 above) but was still credited
+        // as path-watch shaped, a fail-open on the arch axis distinct from
+        // the already-fixed Path/Perm axes (#600) and Key axis (which stays
+        // deliberately op-blind, see the test above).
+        for op in ARCH_REJECT_OPS {
+            let fields = vec![
+                field(AuditField::Path, "/etc/sudoers"),
+                field(AuditField::Perm, "wa"),
+                field_with_op(AuditField::Arch, "b64", op.clone()),
+            ];
+            assert!(
+                !is_pure_path_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "an Arch predicate using {op:?} never loads at the kernel \
+                 level (rc -13, measured against audit-libs-4.1.4) and must \
+                 not be path-watch shaped: {fields:?}"
+            );
+        }
+    }
 }
 
 /// Direct unit tests for [`is_pure_dir_watch_shaped`]'s OWN return value, the
@@ -2454,6 +2509,14 @@ mod pure_dir_watch_shape_tests {
         FieldFilter {
             field: f,
             op: CompareOp::Eq,
+            value: value.to_string(),
+        }
+    }
+
+    fn field_with_op(f: AuditField, value: &str, op: CompareOp) -> FieldFilter {
+        FieldFilter {
+            field: f,
+            op,
             value: value.to_string(),
         }
     }
@@ -2527,5 +2590,41 @@ mod pure_dir_watch_shape_tests {
             "a field set containing BOTH Path and Dir must not be dir-watch \
              shaped -- Path is not in the {{Dir,Perm,Arch,Key}} allowed set"
         );
+    }
+
+    /// The Dir-flavored twin of `pure_path_watch_shape_tests::ARCH_REJECT_OPS`
+    /// (session 9m lane 1) -- same six rejected operators, same measured rc
+    /// -13 grounding (see that constant's doc comment for the full probe).
+    const ARCH_REJECT_OPS: [CompareOp; 6] = [
+        CompareOp::Lt,
+        CompareOp::Gt,
+        CompareOp::Le,
+        CompareOp::Ge,
+        CompareOp::BitAnd,
+        CompareOp::BitAndEq,
+    ];
+
+    #[test]
+    fn arch_predicate_with_rejected_operator_is_not_dir_watch_shaped() {
+        // The Dir-flavored twin of
+        // `pure_path_watch_shape_tests::arch_predicate_with_rejected_operator_
+        // is_not_path_watch_shaped` (session 9m lane 1, fixed in passing
+        // alongside this lane's #601 work, at the user's ruling): the
+        // pre-fix `Arch | Key => true` arm on this dir-flavored twin has the
+        // IDENTICAL field-name-only bug, so it needs the identical fix and
+        // the identical pin.
+        for op in ARCH_REJECT_OPS {
+            let fields = vec![
+                field(AuditField::Dir, "/etc/sudoers.d"),
+                field(AuditField::Perm, "wa"),
+                field_with_op(AuditField::Arch, "b64", op.clone()),
+            ];
+            assert!(
+                !is_pure_dir_watch_shaped(&FilterList::Exit, &Action::Always, &[], &fields, &[]),
+                "an Arch predicate using {op:?} never loads at the kernel \
+                 level (rc -13, measured against audit-libs-4.1.4) and must \
+                 not be dir-watch shaped: {fields:?}"
+            );
+        }
     }
 }

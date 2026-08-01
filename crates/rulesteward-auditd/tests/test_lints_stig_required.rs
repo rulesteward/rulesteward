@@ -4213,3 +4213,139 @@ fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exe
          {diags_reversed:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session 9m lane 1 (fixed in passing alongside this lane's #601 work, at
+// the user's ruling): the SAME field-name-only fail-open as #600's Path/Perm
+// axes, but on the Arch axis of `is_pure_path_watch_shaped`/
+// `is_pure_dir_watch_shaped`'s allowed-field-set conjunct
+// (`AuditField::Arch | AuditField::Key => true`, "(with any op)"). Measured
+// at the CLI (`--target rhel8`) before this fix: `-a always,exit -F
+// path=/etc/sudoers -F perm=wa -F arch>=b64 -k identity` gets BOTH an au-E02
+// "invalid operator" error (arch's own operator legality is a SEPARATE
+// lint's job, unaffected by this fix) AND a wrongly-SATISFIED verdict on
+// V-230409/RHEL-08-030171 -- the rule never loads at the kernel level.
+//
+// Grounding: a userspace-only `audit_rule_fieldpair_data()` probe (no
+// netlink -- the function only builds an in-memory `struct
+// audit_rule_data`; the netlink-sending function is the separate,
+// never-called `audit_add_rule_data()`) against the installed
+// `audit-libs-4.1.4-1.fc44.x86_64`:
+//
+//   arch=b64, arch!=b64                              -> rc  0  (both LOAD)
+//   arch<b64, arch>b64, arch<=b64, arch>=b64,
+//   arch&b64, arch&=b64                              -> rc -13 (refused)
+//
+// The committed EL differential corpus (`tests/corpus/auditd-oracle/
+// el{8,9,10}.tsv`) has no row exercising a non-`=` arch operator at all
+// (every `arch` occurrence in all three TSVs is `arch=b64`) and neither
+// `XFAIL-ISSUES.md` nor `PROVENANCE.md` documents this axis, so the above
+// libaudit measurement is this section's grounding, not a corpus citation.
+// See `src/lints/stig_required.rs`'s `ARCH_REJECT_OPS` doc comment (both
+// `pure_path_watch_shape_tests` and `pure_dir_watch_shape_tests` modules)
+// for the same grounding restated next to the direct unit-test pin.
+//
+// `Ne` is the one non-`Eq` operator that MUST stay accepted (rc 0) -- the
+// fences below pin that a correct fix gates on `Eq || Ne`, not `Eq` alone.
+// Key stays fully operator-blind (no grounded reason to gate it -- libaudit
+// accepts `key!=`/`key>=`/`key&`, all rc 0, measured separately): the
+// fences below also pin that the arch fix does not accidentally start
+// gating Key too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_syscall_form_arch_rejected_operator_does_not_satisfy_v230409_sudoers() {
+    // Every operator libaudit REJECTS on `-F arch=` (measured rc -13 above):
+    // a candidate spelling any of these in place of the well-formed
+    // `arch=b64` never loads at the kernel level and must not satisfy
+    // V-230409/RHEL-08-030171.
+    for op in [">=", "<", ">", "<=", "&", "&="] {
+        let line =
+            format!("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch{op}b64 -k identity\n");
+        let rules = parse(&line);
+        let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("RHEL-08-030171") && d.message.contains("is missing")),
+            "a -F arch{op}b64 rule can never load at the kernel level (rc \
+             -13) and must not satisfy V-230409: {diags:?} (line: {line:?})"
+        );
+    }
+}
+
+#[test]
+fn dir_syscall_form_arch_rejected_operator_does_not_satisfy_v230410_sudoers_d() {
+    // The Dir-flavored twin, against V-230410/RHEL-08-030172.
+    for op in [">=", "<", ">", "<=", "&", "&="] {
+        let line =
+            format!("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch{op}b64 -k identity\n");
+        let rules = parse(&line);
+        let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("RHEL-08-030172") && d.message.contains("is missing")),
+            "a -F arch{op}b64 rule can never load at the kernel level (rc \
+             -13) and must not satisfy V-230410: {diags:?} (line: {line:?})"
+        );
+    }
+}
+
+#[test]
+fn path_syscall_form_arch_not_equal_still_satisfies_v230409_sudoers() {
+    // GREEN fence: `arch!=b64` is the one non-`Eq` operator libaudit still
+    // LOADS (rc 0, measured above) -- a fix that gates arch on `Eq` alone
+    // (rather than `Eq || Ne`) would wrongly turn this into a "missing"
+    // verdict.
+    let rules = parse("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch!=b64 -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a -F arch!=b64 rule DOES load at the kernel level (rc 0) and must \
+         still satisfy V-230409: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_arch_not_equal_still_satisfies_v230410_sudoers_d() {
+    // The Dir-flavored twin of the fence above.
+    let rules = parse("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch!=b64 -k identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a -F arch!=b64 rule DOES load at the kernel level (rc 0) and must \
+         still satisfy V-230410: {diags:?}"
+    );
+}
+
+#[test]
+fn path_syscall_form_key_relational_operator_does_not_disqualify_v230409_sudoers() {
+    // GREEN fence: Key stays fully operator-blind (`effective_key` reads
+    // only `.value`, never `.op`; libaudit accepts `key>=` fine, rc 0,
+    // measured separately -- no grounded reason to gate it). A fix that
+    // over-broadly tightens the whole `Arch | Key => true` arm (rather than
+    // leaving Key on its own unconditional arm) would wrongly turn this
+    // into a "missing" verdict.
+    let rules =
+        parse("-a always,exit -F path=/etc/sudoers -F perm=wa -F arch=b64 -F key>=identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030171")),
+        "a -F key>=identity predicate must not disqualify the path-watch \
+         shape -- Key stays operator-blind: {diags:?}"
+    );
+}
+
+#[test]
+fn dir_syscall_form_key_relational_operator_does_not_disqualify_v230410_sudoers_d() {
+    // The Dir-flavored twin of the fence above.
+    let rules =
+        parse("-a always,exit -F dir=/etc/sudoers.d -F perm=wa -F arch=b64 -F key>=identity\n");
+    let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
+    assert!(
+        !diags.iter().any(|d| d.message.contains("RHEL-08-030172")),
+        "a -F key>=identity predicate must not disqualify the dir-watch \
+         shape -- Key stays operator-blind: {diags:?}"
+    );
+}
