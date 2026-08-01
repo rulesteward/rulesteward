@@ -23,7 +23,7 @@ pub enum FieldValue {
     /// field, a malformed or out-of-range number). Compares only by exact
     /// spelling.
     Opaque,
-    /// A `-F perm=` (or `-p`) value that parses as a `rwxa` permission-letter
+    /// A `-F perm=` value that parses as a `rwxa` permission-letter
     /// set on a [`FieldType::Perm`] field, folded into an order-free bitmask
     /// (session 9m lane 1, round 3 ATL, issues #600/#601). `lib/libaudit.c`'s
     /// `audit_rule_fieldpair_data` case-folds every character
@@ -53,7 +53,7 @@ impl FieldValue {
     }
 }
 
-/// A parsed `-F perm=` / `-p` permission-letter set, folded into a 4-bit
+/// A parsed `-F perm=` permission-letter set, folded into a 4-bit
 /// order-free bitmask matching `AUDIT_PERM_READ`/`WRITE`/`EXEC`/`ATTR`
 /// (`permtab.h:28-31`). A newtype rather than reusing `crate::ast::PermBits`:
 /// that type is not `Copy`/`Eq`, both of which `FieldValue` needs. `pub`
@@ -172,9 +172,13 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
         FieldType::Numeric | FieldType::NumericEqNe => {
             parse_u64_base0(v).map_or(FieldValue::Opaque, FieldValue::Unsigned)
         }
-        // -F perm= / -p: fold rwxa letters into an order-free bitmask
-        // (session 9m lane 1, round 3 ATL). Falls back to Opaque for a
-        // value that fails to parse as perm letters -- see PermMask::parse.
+        // -F perm=: fold rwxa letters into an order-free bitmask (session 9m
+        // lane 1, round 3 ATL). Falls back to Opaque for a value that fails to
+        // parse as perm letters -- see PermMask::parse. A WATCH's -p never
+        // reaches here: FieldType::Perm comes only from AuditField::Perm
+        // (field_type.rs), and a watch's perms travel as PermBits through
+        // normalize::perm_letters instead. `to_letters` documents why the two
+        // independent paths still agree on a canonical spelling.
         FieldType::Perm => PermMask::parse(v).map_or(FieldValue::Opaque, FieldValue::Perm),
         // Every other string / special-grammar field: never numerically folded.
         FieldType::String
