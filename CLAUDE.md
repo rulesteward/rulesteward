@@ -85,7 +85,11 @@ command, the measured version triple, and the Lane A netlink safety rules.
   canary.** Audit netlink is NOT namespaced, so a container that can reach it
   mutates the HOST ruleset. Never `--privileged`, never `--network host`, never
   `-v /:/host`. The canary is a status READ with zero blast radius: if it SUCCEEDS,
-  netlink is live and the capture must refuse with rc 3.
+  netlink is live and the capture must refuse with **rc 2**, never rc 3. rc 3 means
+  "precondition unmet, a legitimate skip" (CONTRIBUTING "Exit codes"), and
+  `rs-oracle-diff.sh` honours it as a skip on any box without `RS_ORACLE_REQUIRED=1`.
+  Encoding a host-mutation safety abort as rc 3 would convert a fail-closed stop into
+  a silent pass. rc 2 is a tool/environment error and is never promoted to a skip.
 - Without the capability `auditctl` bails BEFORE parsing, so a valid and an invalid
   rule are byte-identical (`rc 4`, `You must be root to run this program.`). With
   it, the canary still gets EPERM and a valid rule's add is refused with
@@ -100,7 +104,12 @@ command, the measured version triple, and the Lane A netlink safety rules.
   `-F perm=zz` and `-F nosuchfield=1` do emit complaints. The same `-p zz` passed
   DIRECTLY does print `Permission z isn't supported`, which is how #601's truth
   table was recorded - so `-p zz` cannot be the reject-side positive control under
-  `-R`. Use `-F perm=zz`.
+  `-R`. Use `-F nosuchfield=1`, which is the `control-reject` scenario
+  `capture_auditd.sh` actually ships. `-F perm=zz` was the original choice and had to
+  move off: a positive control must not double as a product-divergence row, and
+  RuleSteward's own parser accepted `perm=zz` at the time, so a broken control and a
+  real XFAIL were indistinguishable. It survives as its own grounding scenario
+  (`f-perm-invalid-letter`), which both sides now reject; it is not the control.
 - `-R` is still the correct oracle: a rules FILE reaches the kernel via
   `augenrules` -> `auditctl -R` -> `audit_strsplit` (splits only on the literal
   space byte, quotes are literal), and that raw reader IS the subject of #584.
@@ -155,6 +164,11 @@ demand via `ToolSearch`.
 - `github` - GitHub issue / PR / release operations. Prefer over the `gh` CLI for
   GitHub ops (issue read/write, pull_request_read, create/merge PR, list_issues);
   plain `git` and `rtk gh` stay fine for local and read-only use.
+  **Always pass `owner: "rulesteward"`, `repo: "rulesteward"` explicitly.** Do not
+  infer the owner from `get_me`, which returns the account name (`ErstBlack`): 12 of
+  53 GitHub MCP calls in the 2026-07-17..31 window passed the account as owner and all
+  12 returned 404. Those failures are why the `gh` CLI displaced the MCP 210 calls to
+  53, against a standing preference for the MCP.
 - `claude-mem` (mcp-search) - cross-session memory / search. Use to recall prior
   sessions' decisions and findings before re-deriving them.
 
@@ -204,7 +218,7 @@ Make use of /superpowers skills whenever feasible.
 
 - **Spec + research lives in `.private-docs/`** - a gitignored symlink to `/home/runner/rulesteward-docs/`. Not in the GitHub repo. Start every session by reading `.private-docs/rulesteward-cli-tool-spec.md` (the v0.2 spec) and any `handoff-session-N.md` for the current milestone.
 - **Locked design decisions** are enumerated in spec §3 (19 of them). Do not re-litigate. If you find evidence contradicting one, surface it as `[QUESTION FOR USER]` and pause.
-- **Status:** `v0.1.0` shipped 2026-06-02; now targeting **v0.2** (the active spec). Implemented crates: `-core`, `-fapolicyd` (the only lint backend today), `-sink`, `-cli`. `-selinux` / `-auditd` / `-license` are placeholder stubs.
+- **Status:** deliberately NOT hardcoded here. A pinned version and backend list sat in this line from v0.1 through v0.7 without anyone noticing, in a file loaded into every session. Read it from the repo instead: shipped version = newest `git tag`, working version = `[workspace.package] version` in `Cargo.toml`, live backend set = `ls crates/`. The active milestone tracker is issue #499.
 - **Crate plan** (per spec §17.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`, MSRV `1.88` (workspace `rust-version`; dev/release stay on latest stable via `rust-toolchain.toml`).
 - **Locked crates:** parser `chumsky = "0.13"` + `ariadne = "0.6"`; LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
 - **Distribution target:** `x86_64-unknown-linux-musl` static binary.
@@ -212,13 +226,46 @@ Make use of /superpowers skills whenever feasible.
 - **Commits are user-authored only. Never add `Co-Authored-By: Claude` or any AI-attribution trailer.** Branch + PR for every change; no commits to `main` directly.
 - **No telemetry. Read-only by default.** Every write/mutation flag must be opt-in.
 
+# Operating facts (measured 2026-07-17..31, session 9n retrospective)
+
+Each of these cost real time or shipped a real defect. They are here because narrative
+memory demonstrably failed to prevent the repeat.
+
+- **Every fan-out dispatch prompt sets `TMPDIR=/mnt/side-projects/<session-id>/tmp`.**
+  The per-UID `/tmp` tmpfs quota, not the filesystem, is what fills: `df` reports the
+  filesystem and will look healthy while every shell dies. Exhaustion caused 80 of one
+  session's 146 unique errors (55%), and the identical failure was already in the bug
+  log from 17 days earlier under a mis-scoped title.
+- **`dangerouslyDisableSandbox` is per-command, not per-session.** Set it only on the
+  one call that needs it. Measured: after a single NFS-git diagnosis it was carried by
+  123 of 348 main-loop Bash calls (35%), including `rm -rf` cleanups. More than a third
+  of a session's calls carrying it means the allowlist needs fixing, not the flag.
+- **Analyze, review, audit, advise, recommend and investigate are READ-ONLY verbs.**
+  A task phrased with one of them does not authorize an edit. One "advise" task
+  produced an unrequested `Edit` downgrading a third-party plugin's model tier; the
+  only thing that stopped it was a permission prompt.
+- **Fix-then-sweep.** No parser, reader or predicate defect closes its issue until a
+  `git grep -n '<primitive>'` sweep of every call site is PASTED into the issue, with
+  each site marked fixed, clean, or filed as #N. An issue closed without the pasted
+  sweep gets reopened. 31 of 62 escaped defects in the window were the 2nd to 5th call
+  site of a defect already fixed once.
+- **Fidelity audit every second milestone.** Report-only, surface-scoped rather than
+  diff-scoped, against a pinned SHA in a detached worktree with its own
+  `CARGO_TARGET_DIR`, including a regression-census lane. One such audit was the sole
+  first-finder of 16 of 62 escapes (26%), including the only Critical, which had been
+  shipping for roughly 51 days. Skipping a scheduled one requires a recorded operator
+  decision, not silence.
+
 # Parallel Development Protocol + reusable artifacts
 
 The project's parallel-development discipline is now captured as reusable artifacts
-(built 2026-05-29). Note: the `.claude/` artifacts below are LOCAL-ONLY (`.claude` is
-gitignored), so a fresh clone or CI run will not have them; they live on the working
-machine. The protocol doc lives in the gitignored docs tree (its own repo). Load these
-when a milestone fans out 2+ independent features:
+(built 2026-05-29). Note on where these live, because the previous wording was wrong in
+a way that mattered: `.claude` is gitignored IN THIS REPO and is a symlink to
+`/home/runner/rulesteward-docs/.claude`, so a fresh clone or CI run will not have the
+artifacts below. They are NOT disposable local scratch, though - **24 of them are
+git-tracked in the docs repo**. Editing `.claude/**` dirties a tracked working tree in
+the OTHER repository and has to be committed there. The protocol doc lives in the same
+docs tree. Load these when a milestone fans out 2+ independent features:
 
 - **Protocol (frozen design):** `.private-docs/orchestration/parallel-orchestration-protocol.md`
   (in the gitignored docs tree). The source of truth for the barrier / HALT / Phase-0
