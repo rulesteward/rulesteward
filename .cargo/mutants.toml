@@ -135,7 +135,9 @@ examine_globs = [
     # and it sat outside the allowlist since it was written, so its gate had
     # never run at all -- the same vacuous-allowlist lesson as sarif.rs above,
     # and the file where #595's inverted-span panic lives. Sized before
-    # enabling: 21 mutants.
+    # enabling: 21 mutants (23 as of 2026-07-31, after session 9m's later lanes
+    # grew the file -- a sizing note goes stale the moment the file changes, so
+    # re-derive with `cargo mutants --list` rather than trusting either number).
     "crates/rulesteward-cli/src/output/human.rs",
     # auditd logic modules (filled by pipeline P2):
     "crates/rulesteward-auditd/src/parser.rs",
