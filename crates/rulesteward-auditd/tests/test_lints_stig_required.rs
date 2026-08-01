@@ -1910,19 +1910,22 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall-vs-Syscall `-F perm=` identity is a RAW STRING COMPARE (session 9m
-// lane 1, round 2 ATL) -- unlike the Watch-vs-Syscall fold pinned by the two
-// tests just above (which case/order-folds via
-// `perm_axis_bits`/`perm_bits_from_field_value` because the CANDIDATE is a
-// `Watch`), a required row that is ITSELF `Syscall`-shaped (not
-// pure-path-watch-shaped, e.g. because it also restricts `-F auid=`) is
+// Syscall-vs-Syscall `-F perm=` identity WAS a RAW STRING COMPARE prior to
+// round 3's fix (session 9m lane 1, round 2-3 ATL) -- unlike the
+// Watch-vs-Syscall fold pinned by the two tests just above (which
+// case/order-folds via `perm_axis_bits`/`perm_bits_from_field_value` because
+// the CANDIDATE is a `Watch`), a required row that is ITSELF `Syscall`-shaped
+// (not pure-path-watch-shaped, e.g. because it also restricts `-F auid=`) is
 // compared via `fields_match_excluding_key`, whose per-field value equality
-// is `super::value::canonical_value(ft, ..)` (`stig_required.rs:1985`).
-// `classify.rs` buckets `FieldType::Perm` into `FieldValue::Opaque`, and
-// `canonical_value`'s `Opaque` arm is `Cow::Borrowed(raw.trim())`
-// (`canonical.rs:57`) -- a raw string compare, so `-F perm=X` vs
-// `-F perm=x` (case) and `-F perm=xa` vs `-F perm=ax` (order) wrongly
-// compare as DIFFERENT.
+// is `super::value::canonical_value(ft, ..)` (called from that function's
+// `field_eq` closure). PRIOR to round 3, `classify.rs` bucketed
+// `FieldType::Perm` into `FieldValue::Opaque`, and `canonical_value`'s
+// `Opaque` arm is `Cow::Borrowed(raw.trim())` -- a raw string compare, so
+// `-F perm=X` vs `-F perm=x` (case) and `-F perm=xa` vs `-F perm=ax` (order)
+// wrongly compared as DIFFERENT. Round 3 added a `FieldValue::Perm(PermMask)`
+// variant (`classify.rs`/`canonical.rs`) that folds `-F perm=` into an
+// order-free bitmask instead, so `fields_match_excluding_key` now folds both
+// spellings together and the four tests below are all GREEN.
 //
 // Grounding: `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
 // `-F perm=` character before OR-ing it into a bitmask (`case AUDIT_PERM:
@@ -1938,7 +1941,7 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
 // (`stig_required.rs:186-189`), deliberately `Syscall`-only (the `-F auid=`
 // restriction takes it outside `is_pure_path_watch_shaped`, per this file's
 // existing `dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_
-// watch_shaped` doc comment) -- so it exercises the broken
+// watch_shaped` doc comment) -- so it exercises the (pre-round-3, now fixed)
 // Syscall-vs-Syscall arm, not the already-fixed Watch-vs-Syscall fold two
 // tests above.
 // ---------------------------------------------------------------------------
@@ -2028,7 +2031,7 @@ fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
 // (`value/classify.rs:107`) that folds every bitmask to a constant string
 // (or whose `&`/`!=` bit tests are flipped to `|`/`^`/`==`) would make
 // `classify.rs`'s `canonical_value` -- and so `fields_match_excluding_key`
-// (`stig_required.rs:1985`) -- treat every perm value as equal, wrongly
+// (whose `field_eq` closure calls it) -- treat every perm value as equal, wrongly
 // crediting V-230412/RHEL-08-030190 for a candidate whose perms are simply
 // wrong. The two pairs below each toggle exactly one AUDIT_PERM bit
 // (READ=1, WRITE=2, EXEC=4, ATTR=8, `classify.rs:72-75`) relative to the
@@ -2328,14 +2331,15 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 8 (issue #601, regression introduced by commit 64ef6c7): a
+// ATL round 8 (issue #601, a regression introduced by round 7's own fix): a
 // FAIL-OPEN on the OPERATOR axis, distinct from the VALUE axis the round-7
-// fold section above pins. `perm_axis_bits` (`stig_required.rs:1954`)
-// selects `-F perm=` predicates with `.filter(|f| f.field ==
-// AuditField::Perm)` and never inspects `f.op` at all -- the round-7 fix
-// wired that op-blind selection straight into the Syscall-vs-Syscall arm of
-// `fields_match_excluding_key`. So an ILLEGAL OPERATOR on a `-F perm=`
-// predicate (one the kernel/libaudit would refuse to load at all) becomes
+// fold section above pins. `perm_axis_bits` (`stig_required.rs`, before its
+// operator-gate paragraph was added) selected `-F perm=` predicates with
+// `.filter(|f| f.field == AuditField::Perm)` and never inspected `f.op` at
+// all -- the round-7 fix wired that op-blind selection straight into the
+// Syscall-vs-Syscall arm of `fields_match_excluding_key`. So an ILLEGAL
+// OPERATOR on a `-F perm=` predicate (one the kernel/libaudit would refuse
+// to load at all) becomes
 // INVISIBLE to the matcher: the fold strips it by field NAME only, the same
 // way it strips a legal `-F perm=` predicate, and the candidate is wrongly
 // credited as satisfying the requirement. Direction: FAIL-OPEN --
@@ -4103,7 +4107,7 @@ fn path_syscall_form_with_wa_and_ra_does_not_satisfy_v230409() {
     // documented decline-when-no-minimum posture.
     //
     // This pair isolates the WRITE conjunct of `perm_bits_is_subset`
-    // (`stig_required.rs:1978`, column 29): `{w,a}` has write, `{r,a}` does
+    // (its `(!a.write || b.write)` term): `{w,a}` has write, `{r,a}` does
     // not, and every other conjunct already agrees (both lack exec; both
     // have attr; read is vacuously satisfied since `{w,a}` lacks read).
     // Deleting the `!` on the write conjunct (a round-5 mutation survivor)
@@ -4131,7 +4135,7 @@ fn path_syscall_form_with_wa_and_wx_does_not_satisfy_v230409() {
     // documented decline-when-no-minimum posture.
     //
     // This pair isolates the ATTR conjunct of `perm_bits_is_subset`
-    // (`stig_required.rs:1978`, column 77): both share write; read and exec
+    // (its `(!a.attr || b.attr)` term): both share write; read and exec
     // are vacuously satisfied (the deciding side lacks the bit in each
     // case); only attr disagrees (`{w,a}` has it, `{w,x}` does not).
     // Deleting the `!` on the attr conjunct (a round-5 mutation survivor)

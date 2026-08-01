@@ -1529,7 +1529,7 @@ fn effective_key(rule: &crate::ast::AuditRule) -> Option<&str> {
 /// [`is_pure_dir_watch_shaped`]'s doc comment for the full ATL-round
 /// grounding of the operator/multiplicity/key-membership refinements).
 ///
-/// SYMMETRIC as of commit db6da54 (this lane, issue #600): the path twin
+/// SYMMETRIC as of issue #600 (this lane): the path twin
 /// [`is_pure_path_watch_shaped`] carries the SAME two guards -- Path/Perm
 /// predicates must use `=` (its `AuditField::Path | AuditField::Perm => f.op
 /// == CompareOp::Eq` field-presence arm), and there must be EXACTLY ONE Path
@@ -1692,22 +1692,47 @@ fn normalize_watch_path(path: &str) -> &str {
 
 /// Whether a `Syscall` rule's shape is STRUCTURALLY a "pure path-watch" -- the
 /// shape a classic `-w path -p perms -k key` compiles down to at the kernel
-/// level (see [`rules_match`]'s doc comment for the full grounding). This is
-/// a purely structural test on the rule's own fields/syscalls/list/action, no
+/// level (see [`rules_match`]'s doc comment for the full grounding). A
+/// purely structural test on the rule's own fields/syscalls/list/action, no
 /// per-V-number special-casing: an EMPTY `-S` list, the `always,exit`
-/// list/action pair, no `-C` field-comparisons, and every `-F` predicate one
-/// of `path`/`perm`/`arch`/`key` (with at least one `path` predicate present,
-/// so an empty field set does not vacuously pass). A rule with a non-empty
-/// `-S` list or any OTHER `-F` field (e.g. V-279936's `-S execve -F
-/// subj_type=crond_t`) fails this test and has no watch-equivalent form.
-/// `key` is allowed here despite never being named in the doc comment's
-/// "path-watch shape" description above: it is NOT a location/perm axis at
-/// all, so its presence must never disqualify the shape (fixed alongside the
+/// list/action pair, no `-C` field-comparisons, every `-F` predicate one of
+/// `path`/`perm`/`arch`/`key`, EXACTLY ONE `path` predicate present (not "at
+/// least one" -- see the MISS-4 grounding below, so an empty field set does
+/// not vacuously pass), and any `path`/`perm` predicate present using the
+/// `=` operator (see the MISS-1/MISS-3 grounding below). A rule with a
+/// non-empty `-S` list or any OTHER `-F` field (e.g. V-279936's `-S execve
+/// -F subj_type=crond_t`) fails this test and has no watch-equivalent form.
+/// `key` is allowed here despite never being named in the "path-watch shape"
+/// description above: it is NOT a location/perm axis at all, so its
+/// presence must never disqualify the shape (fixed alongside the
 /// dir-flavored twin's identical bug, issue #571 MISS-2b, ATL round, session
-/// 9j lane 8) -- `-k KEY` and `-F key=KEY` are the SAME rule
-/// (`auditctl`'s `setopt()` builds `-F key=%s` from `-k`'s argument before
-/// calling `audit_rule_fieldpair_data`, lib/libaudit.c), and the key axis is
-/// already handled separately by [`effective_key`]/[`fields_match_excluding_key`].
+/// 9j lane 8) -- `-k KEY` and `-F key=KEY` are the SAME rule (`auditctl`'s
+/// `setopt()` builds `-F key=%s` from `-k`'s argument before calling
+/// `audit_rule_fieldpair_data`, lib/libaudit.c), and the key axis is already
+/// handled separately by [`effective_key`]/[`fields_match_excluding_key`].
+///
+/// Grounding for the two guards above, mirroring the dir-flavored twin
+/// [`is_pure_dir_watch_shaped`]'s doc comment:
+/// - **MISS-1/MISS-3 (operator blindness, fail-open, issue #600):** `-F
+///   path!=X`/`-F perm!=X` (or any of `< > <= >= & &=`) never load at the
+///   kernel level -- `kernel/audit_watch.c`'s `audit_to_watch` rejects any
+///   operator but `=` on an `AUDIT_WATCH` predicate, and `lib/libaudit.c`'s
+///   `AUDIT_PERM` case returns `-EAU_OPEQ` for any op but `=` -- so such a
+///   rule has no kernel-level meaning to be path-watch-equivalent to. `arch`
+///   picked up the SAME gate afterwards, also under #600 (session 9m lane
+///   1): `-F arch=`/`-F arch!=` are the only two operators libaudit's
+///   `AUDIT_ARCH` case loads (measured rc 0; every other `CompareOp` variant
+///   returns rc -13 against the installed audit-libs-4.1.4) -- see
+///   `pure_path_watch_shape_tests::ARCH_REJECT_OPS`'s doc comment for the
+///   full probe. `au-E02` independently flags the same invalid `arch`
+///   operator as an Error diagnostic under its own userspace-parser model;
+///   that stays a SEPARATE concern from this shape test.
+/// - **MISS-4 (Path multiplicity, order-dependent verdict, issue #600):**
+///   `audit_to_watch` returns `-EINVAL` once a rule's watch pointer is
+///   already set -- one location watch per rule is a hard kernel limit -- so
+///   a rule naming `-F path=` MORE THAN ONCE never loads either. Requiring
+///   EXACTLY one Path predicate here fixes the false-accept.
+///
 /// Measured regression this fixed: `RHEL10_REQUIRED`'s `/etc/sudoers.d` row
 /// (V-281155/RHEL-10-500690, `stig_required.rs`, spelled `-F key=identity`)
 /// wrongly reported a classic `-w /etc/sudoers.d/ -p wa -k identity` watch as
@@ -1793,9 +1818,16 @@ fn is_pure_path_watch_shaped(
 ///   returns `-EAU_OPEQ` for any op but `=` (verified rc=-29 against the
 ///   installed audit-4.1.4 libaudit) -- a rule spelled with any other
 ///   operator on either field NEVER LOADS at the kernel level at all, so it
-///   has no kernel-level meaning to be dir-watch-equivalent to. `arch`'s own
-///   operator restriction (`=`/`!=` only) is a DIFFERENT lint's job (au-E02)
-///   and irrelevant to whether the rule is dir-watch SHAPED.
+///   has no kernel-level meaning to be dir-watch-equivalent to. `arch` picked
+///   up the SAME gate afterwards, also under #600 (session 9m lane 1): see
+///   the `AuditField::Arch` match arm below, which now accepts only `=`/`!=`
+///   (`lib/libaudit.c`'s `AUDIT_ARCH` case; measured rc 0 for both, rc -13 for
+///   every other `CompareOp` variant against the installed audit-libs-4.1.4)
+///   -- so `arch`'s operator is no longer irrelevant to this shape test.
+///   `au-E02` independently flags the same invalid `arch` operator as an
+///   Error diagnostic under its own userspace-parser model; that stays a
+///   DIFFERENT lint's concern, just not the reason `arch` is excluded here
+///   any more.
 /// - **MISS-2 (Key membership, false "missing"):** the ORIGINAL version did
 ///   not allow `AuditField::Key` in the field set at all, so a candidate
 ///   spelled `-F key=` instead of `-k` fell OUTSIDE the shape and reported a
@@ -1943,7 +1975,7 @@ fn dir_watch_equivalent_axes_match(
 /// incomparable, so the set is not totally ordered yet still collapses.
 ///
 /// Requiring bitwise EQUALITY of every predicate (this function's round-2
-/// shape, commit e89ea30) was an over-correction: it correctly stopped two
+/// shape, an earlier round of this lane) was an over-correction: it correctly stopped two
 /// DIFFERENT predicates being credited by picking "whichever comes first"
 /// (the original bug both call sites -- [`watch_equivalent_axes_match`] and
 /// [`dir_watch_equivalent_axes_match`] -- shared; issue #601 ATL follow-up,
@@ -1974,8 +2006,9 @@ fn dir_watch_equivalent_axes_match(
 /// predicate uses an operator other than `=` (see the operator-gate
 /// paragraph below).
 ///
-/// **Operator gate (ATL round 8, issue #601 followup, regression in commit
-/// 64ef6c7):** a `-F perm=` predicate only ever LOADS with the `=` operator
+/// **Operator gate (ATL round 8, issue #601 followup, a regression
+/// introduced by round 7's own fix):** a `-F perm=` predicate only ever
+/// LOADS with the `=` operator
 /// -- `lib/libaudit.c`'s `AUDIT_PERM` case in `audit_rule_fieldpair_data()`
 /// returns `-EAU_OPEQ` for any other operator (measured rc -29 against the
 /// installed audit-4.1.4 libaudit for `!=`, `>=`, `<`, `&`, `&=`, checked
@@ -2375,13 +2408,17 @@ mod pure_path_watch_shape_tests {
     }
 
     #[test]
-    fn arch_and_key_with_non_equal_operators_are_still_path_watch_shaped() {
-        // Pins the deliberate `Arch | Key => true` arm (any operator
-        // allowed): arch's own operator restriction is au-E02's job, and
-        // `-F key=` unifies with `-k` via `effective_key` regardless of
-        // operator -- see the dir twin's identical arm and the module doc
-        // comment on `is_pure_dir_watch_shaped`. A mutant tightening this
-        // arm to require `=` would wrongly reject a well-formed rule.
+    fn arch_ne_and_key_ne_are_still_path_watch_shaped() {
+        // #600 (session 9m lane 1) split the old unconditional `Arch | Key
+        // => true` arm in two: Arch now requires `matches!(f.op,
+        // CompareOp::Eq | CompareOp::Ne)` (see `ARCH_REJECT_OPS` ~80 lines
+        // below for the sweep of operators that arm now REJECTS), while Key
+        // is untouched and still accepts ANY operator (`-F key=` unifies
+        // with `-k` via `effective_key` regardless of operator -- see the
+        // module doc comment on `is_pure_dir_watch_shaped`). This test
+        // therefore only pins the ONE non-`Eq` operator that still passes
+        // for Arch, `Ne`; a mutant tightening the Arch arm to require bare
+        // `=` would turn this RED.
         let fields = vec![
             field(AuditField::Path, "/etc/sudoers"),
             field(AuditField::Perm, "wa"),
@@ -2460,7 +2497,7 @@ mod pure_path_watch_shape_tests {
     ///
     /// `Ne` is deliberately EXCLUDED from this set (it is the one non-`Eq`
     /// operator that still loads) -- see the untouched
-    /// `arch_and_key_with_non_equal_operators_are_still_path_watch_shaped`
+    /// `arch_ne_and_key_ne_are_still_path_watch_shaped`
     /// test above, which already pins `Ne` staying accepted. A guard written
     /// as `op == CompareOp::Eq` (rather than `op == Eq || op == Ne`) would
     /// wrongly reject `Ne` too and turn that test RED; a guard that accepts

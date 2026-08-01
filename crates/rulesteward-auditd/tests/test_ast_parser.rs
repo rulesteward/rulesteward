@@ -1086,9 +1086,10 @@ fn parse_action_possible_recognized() {
 // all` / `iss601-uppercase-perm-mixed`, `tests/corpus/auditd-oracle/
 // el8.tsv:44-45`, el9/el10 identical: rc=1, empty stdout, stderr `Error
 // sending add rule data request (Operation not permitted)` -- the ACCEPT
-// probe per `src/oracle.rs:153-164`, proving the line PARSED). Today
-// `parse_perms` (`src/parser.rs:425-442`) matches only the lowercase
-// literals, so these two rows are open parser gaps (#601).
+// probe per `src/oracle.rs:153-164`, proving the line PARSED). This lane's
+// `parse_perms` (`src/parser.rs`) now case-folds via
+// `ch.to_ascii_lowercase()` before matching `rwxa`, closing what was an open
+// parser gap (#601); the two tests below pin that fix.
 
 /// `-p WA` (uppercase) must fold to the same `PermBits` as `-p wa`.
 /// Grounded: corpus row `iss601-uppercase-perm-all`. Asserting the
@@ -1217,9 +1218,10 @@ fn watch_perms_five_letters_rejected_even_all_valid_letters() {
 // `f-perm-invalid-letter`, `tests/corpus/auditd-oracle/el9.tsv:60`: rc=1,
 // empty stdout, stderr `Permission can only contain  'rwxa'` -- matched by
 // `KNOWN_PARSE_COMPLAINTS`'s `"Permission can only contain"` substring,
-// `src/oracle.rs:237-242`). Today `parse_field_filter`
-// (`src/parser.rs:579-600`) stores `-F perm=` values verbatim with zero
-// letter-set validation, so this is an open parser gap (#601's other half).
+// `src/oracle.rs:237-242`). This lane's `parse_field_filter`
+// (`src/parser.rs`) now validates the letter set (when the operator is `=`;
+// see the RULING below) via the same `rwxa` check, closing what was an open
+// parser gap (#601's other half); the tests below pin that fix.
 //
 // RULING (orchestrator, 2026-07-30): the letter-set check is gated on the
 // comparison OPERATOR -- only `-F perm=VALUE` (op `=`) is letter-checked.
@@ -1268,7 +1270,7 @@ fn field_filter_perm_invalid_letter_rejects() {
 /// still parse. The uppercase case is the coupling with the `-p` fold: the
 /// `-F` check must case-fold too, or
 /// `dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d`
-/// (`tests/test_lints_stig_required.rs:2762`) goes RED.
+/// (`tests/test_lints_stig_required.rs`) goes RED.
 #[test]
 fn field_filter_perm_valid_letters_still_parse() {
     parse_ok("-a always,exit -F perm=wa -S execve");

@@ -122,11 +122,15 @@ const EXPECTED_TARGETS: &[&str] = &["el8", "el9", "el10"];
 /// real oracle must ACCEPT and one it must REJECT, each with non-silent
 /// evidence. `control-reject`'s RULE changed in this amendment (see
 /// `capture_auditd.sh`): the old `-F perm=zz` doubled as a product-divergence
-/// row (`RuleSteward`'s parser does not validate `-F perm=` letter sets
-/// either), which means a broken harness and a real XFAIL would have been
-/// indistinguishable. `-F nosuchfield=1` is loud on the real oracle AND
-/// rejected by `RuleSteward`'s own field-name table, so product and oracle
-/// AGREE - this can never become an XFAIL.
+/// row AT THE TIME (`RuleSteward`'s parser did not validate `-F perm=`
+/// letter sets either), which meant a broken harness and a real XFAIL would
+/// have been indistinguishable. `-F nosuchfield=1` is loud on the real
+/// oracle AND rejected by `RuleSteward`'s own field-name table, so product
+/// and oracle AGREE - this can never become an XFAIL. (#601's other half,
+/// session 9m lane 1, has since added that letter-set check, so the old
+/// `-F perm=zz` rule would no longer double this way -- see the corpus's
+/// own `f-perm-invalid-letter` id and `PROVENANCE.md`'s "Positive control
+/// changed" section for the closed-out divergence.)
 const CONTROL_ACCEPT_ID: &str = "control-accept";
 const CONTROL_REJECT_ID: &str = "control-reject";
 

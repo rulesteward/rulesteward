@@ -197,24 +197,26 @@ fn repeated_syscall_duplicate_fires_e03() {
 // ---------------------------------------------------------------------------
 // Test 2c / 2d: `-F perm=` letter ORDER and CASE flip -- au-E03 (load-aborting)
 //
-// Session 9m lane 1, round 2 ATL. `canonical_key` (`normalize.rs:70`) folds a
-// `Syscall` rule's field VALUES through `super::value::canonical_value`, and
-// `classify.rs` buckets `FieldType::Perm` into `FieldValue::Opaque`, whose
-// `canonical_value` arm is `Cow::Borrowed(raw.trim())` (`canonical.rs:57`) --
-// a raw string compare. So `-F perm=wa` and `-F perm=aw` (order-swapped), or
-// `-F perm=wa` and `-F perm=WA` (case-flipped), get DIFFERENT canonical keys
-// even though `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
-// `-F perm=` character (`tolower((unsigned char)v[i])`) and ORs the letters
-// into one bitmask (`wa`/`aw`/`WA` all produce `AUDIT_PERM_WRITE|
-// AUDIT_PERM_ATTR`), so the kernel's `audit_compare_rule`
-// (`kernel/auditfilter.c`) sees byte-identical fields, `audit_add_rule`
-// returns `-EEXIST`, and `auditctl -R` aborts the file exactly as this
-// module's own au-E03 message already describes ("every later rule silently
-// fails to load"). The miss is UPSTREAM of `rules_eexist_equal`
-// (`duplicate.rs:47`): the two rules never even reach it, because they get
-// different `canonical_key`s and so are never grouped as "the same rule" by
-// `w01`'s `first_seen` map in the first place -- today this pair produces
-// ZERO findings, not a misclassified severity.
+// Session 9m lane 1, round 2-3 ATL. `canonical_key` (`normalize.rs:70`) folds
+// a `Syscall` rule's field VALUES through `super::value::canonical_value`.
+// PRIOR to round 3's fix, `classify.rs` bucketed `FieldType::Perm` into
+// `FieldValue::Opaque`, whose `canonical_value` arm is a raw string compare
+// (`Cow::Borrowed(raw.trim())`) -- so `-F perm=wa` and `-F perm=aw`
+// (order-swapped), or `-F perm=wa` and `-F perm=WA` (case-flipped), got
+// DIFFERENT canonical keys even though `lib/libaudit.c`'s
+// `audit_rule_fieldpair_data` case-folds every `-F perm=` character
+// (`tolower((unsigned char)v[i])`) and ORs the letters into one bitmask
+// (`wa`/`aw`/`WA` all produce `AUDIT_PERM_WRITE|AUDIT_PERM_ATTR`), so the
+// kernel's `audit_compare_rule` (`kernel/auditfilter.c`) sees byte-identical
+// fields, `audit_add_rule` returns `-EEXIST`, and `auditctl -R` aborts the
+// file exactly as this module's own au-E03 message already describes
+// ("every later rule silently fails to load"). Round 3 (`classify.rs`/
+// `canonical.rs`) added a `FieldValue::Perm(PermMask)` variant that folds
+// `-F perm=` into an order-free bitmask (falling back to the old `Opaque`
+// path only when the value does not parse as perm letters), so
+// `canonical_key` now folds both spellings together and the two tests below
+// are GREEN: each fires exactly one au-E03, not the zero findings the
+// pre-round-3 code produced.
 // ---------------------------------------------------------------------------
 
 #[test]
