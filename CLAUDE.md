@@ -136,8 +136,11 @@ command, the measured version triple, and the Lane A netlink safety rules.
 
 # MCP Servers - tool-augmented lookups
 
-Prefer these over training-recall or hand-rolled `gh`/`curl` sequences (see also
-`~/.claude/rules/skills-plugins-mcp.md`). These are developer-machine plugins
+Reach for these over training-recall or hand-rolled `gh`/`curl` sequences. Where a
+server has a MECHANICAL trigger, it is stated on that server's bullet rather than
+left as a preference: "prefer X" has no moment at which it fires, and measurably
+did not. The full trigger table is in `~/.claude/rules/skills-plugins-mcp.md`.
+These are developer-machine plugins
 (`enabledPlugins`), not a committed repo `.mcp.json` - this is by design (#288;
 see the Parallel Development Protocol section for the rationale). Schemas load on
 demand via `ToolSearch`.
@@ -153,10 +156,23 @@ demand via `ToolSearch`.
 - `context7` - broader library / framework / CLI docs (`resolve-library-id` then
   `query-docs`). docsrs is sharper for Rust crates; context7 for cross-ecosystem.
 - `serena` - Rust symbol navigation / LSP-backed find-symbol, references, and
-  symbol-scoped edits.
-- `github` - GitHub issue / PR / release operations. Prefer over the `gh` CLI for
-  GitHub ops (issue read/write, pull_request_read, create/merge PR, list_issues);
+  symbol-scoped edits. **Mechanical trigger: call `find_referencing_symbols`
+  BEFORE renaming a symbol, before changing a signature, before claiming anything
+  is dead or unused, and as the first pass of the bounded SIBLING SWEEP.** It is
+  the only installed tool that resolves MACRO-GENERATED and RE-EXPORTED uses;
+  `grep` matches the text of a call site and so cannot see a use that no text
+  spells out. Grep is still the right SECOND pass, for strings, comments and docs
+  that serena does not resolve.
+- `github` - GitHub issue / PR / release operations. Reach for it over the `gh`
+  CLI for GitHub ops (`pull_request_read`, create/merge PR, `list_issues`);
   plain `git` and `rtk gh` stay fine for local and read-only use.
+  **Issue writes are the exception, and the two directions point OPPOSITE ways:**
+  CREATING an issue works via MCP `issue_write` and is blocked via `gh issue
+  create`; CLOSING or editing an issue the agent did not create is blocked via
+  MCP and goes through `gh issue close`, and then only when the user asked for
+  the close in their own words (an approved plan listing "close #N" does not
+  satisfy the classifier). A one-line "issue writes are blocked, use gh" is worse
+  than nothing here: it routes creation to the tool that is blocked for creation.
   **Always pass `owner: "rulesteward"`, `repo: "rulesteward"` explicitly.** Do not
   infer the owner from `get_me`, which returns the account name (`ErstBlack`): 12 of
   53 GitHub MCP calls in the 2026-07-17..31 window passed the account as owner and all
@@ -279,8 +295,14 @@ docs tree. Load these when a milestone fans out 2+ independent features:
 **Adversarial Testing Loop (post-implementation):** after a feature first reaches GREEN
 and before spec/idiomatic review, run the named loop: (1) an impl-AWARE adversarial
 review (the `adversarial-impl-reviewer` agent reads the REAL impl + diff for an input the
-frozen tests miss; distinct from the impl-BLIND barrier reviewer) and (2) the mutation
-gate. Both route findings to the TEST-AUTHOR to STRENGTHEN tests (never weaken; the
+frozen tests miss; distinct from the impl-BLIND barrier reviewer), (1b) two narrow-lens
+plugin reviewers dispatched in PARALLEL with (1) - `comment-analyzer` for doc-truth and
+`silent-failure-hunter` for swallowed errors, both from `pr-review-toolkit`, both pinned
+`model: opus` because their frontmatter says `inherit` - and (2) the mutation
+gate. Step 1b adds a lens and cannot end the loop; only (1) and (2) decide dryness, and
+it carries a kill switch to re-check after two milestones (detail in
+`~/.claude/rules/parallel-orchestration.md`).
+All route findings to the TEST-AUTHOR to STRENGTHEN tests (never weaken; the
 implementer only makes them green); loop until both come up clean. Never trust a DONE
 report (4a / PR #118: the gate caught a test-author over-claiming a kill twice, only the
 mandatory RE-RUN surfaced it). Same step applies in single-pipeline work (same person may
