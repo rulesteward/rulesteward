@@ -3508,3 +3508,382 @@ fn all_ten_option_keywords_spelled_as_a_command_argument_do_not_mask_the_comma_s
         );
     }
 }
+
+// ===========================================================================
+// 9m round 2: the SAME regression, reached by a CHAINED `=`
+// ===========================================================================
+//
+// Round 1 (this file's section above) fixed the case where a command argument
+// merely SPELLED like an `Option_Spec` keyword sat directly after the command
+// word (`/bin/echo CWD="..."`): `preceding_token(s, tok_start, i)` since the
+// last boundary is the multi-word `"/bin/echo CWD"`, which can never
+// exact-match a bare keyword, so `is_option_eq` correctly comes back `false`.
+//
+// What round 1 left open: the `'='` arm's `false` branch
+// (`split_top_level_segments` and `split_cmnd_specs` both have one) resets
+// `tok_start` to `after_eq` - the byte right after THAT `=` - rather than
+// leaving it at the `Cmnd_Spec`'s own last real boundary. A command argument
+// containing a SECOND `=` therefore gets its anchor RE-ARMED mid-word: for
+// `/bin/echo X=CWD="..."`, the first `=` (after `X`) is correctly rejected
+// (`"/bin/echo X"` is multi-word), but `tok_start` then lands right after
+// that `=`, so the SECOND `=` (after `CWD`) measures its own preceding token
+// from THERE - `"CWD"`, a single word - and is wrongly recognized as a
+// genuine leading `Option_Spec`, exactly reproducing round 1's fail-open one
+// `=` later. This is not a hypothetical: round 1's own implementer flagged
+// the case as a theoretical edge with no test coverage; it reproduces
+// (`visudo -c -f -` rc 0 throughout) and is the same severity - a `NOPASSWD`
+// grant or a `Cmnd_Alias` definition silently disappears.
+//
+// # Grounding (visudo 1.9.17p2, `visudo grammar version 50`; live host probe
+// 2026-07-31 - `printf '%s\n' "<line>" | visudo -c -f -` (all rc 0) and the
+// same line through `cvtsudoers -f json`)
+//
+// Real sudo's command lexer does not care how many `=` a command argument
+// contains before the one spelled like a keyword - it splits the chained form
+// IDENTICALLY to round 1's directly-glued form, and identically whether the
+// keyword-spelled segment is `CWD=` or a non-keyword control `XWD=`:
+//
+// ```text
+// alice ALL = /bin/echo X=CWD="/a, NOPASSWD: /bin/su"
+//     cvtsudoers: TWO Cmnd_Specs
+//       1st -> Commands [{"command":"/bin/echo X=CWD=\"/a"}]
+//       2nd -> Options [{"authenticate":false}]
+//              Commands [{"command":"/bin/su\""}]
+// alice ALL = /bin/echo X=XWD="/a, NOPASSWD: /bin/su"
+//     cvtsudoers: IDENTICAL split, same shape
+//
+// alice h1 = /bin/echo X=CWD=" : h2 = /bin/su "y
+//     cvtsudoers: TWO User_Specs (h1, h2)
+//       h1 -> Commands [{"command":"/bin/echo X=CWD=\""}]
+//       h2 -> Commands [{"command":"/bin/su \"y"}]
+// alice h1 = /bin/echo X=XWD=" : h2 = /bin/su "y
+//     cvtsudoers: IDENTICAL split, same shape
+//
+// Cmnd_Alias A = /bin/echo X=CWD="/a : B = /bin/su"
+//     cvtsudoers: TWO Command_Aliases (both "unused" warnings only)
+//       A: [{"command":"/bin/echo X=CWD=\"/a"}]
+//       B: [{"command":"/bin/su\""}]
+// Cmnd_Alias A = /bin/echo X=XWD="/a : B = /bin/su"
+//     cvtsudoers: IDENTICAL split, same shape
+// ```
+//
+// All ten `parse_option_key` keywords were re-probed in the chained form
+// (`alice ALL = /bin/echo X=<KW>="/a, NOPASSWD: /bin/su"`, host probe
+// 2026-07-31): every one produces the same two-`Commands`-entry split as
+// `CWD` above via `cvtsudoers -f json`.
+//
+// # Over-correction fences
+//
+// A naive "only the very first token in the whole Cmnd_Spec can ever be an
+// option" fix would break legitimate configurations that chain MULTIPLE
+// genuine leading options, or that put a genuine leading option at the start
+// of a LATER Cmnd_Spec in a comma-separated list. Both are pinned below as
+// GREEN fences - they already pass today (the round 2 defect is specifically
+// the mis-anchor on a REJECTED `=`'s `false` branch, not on a correctly
+// accepted one) and must keep passing after the fix.
+//
+// A third candidate fence - a leading option written directly after a TAG
+// (`NOPASSWD: CWD="/a,b" /bin/su`) - was probed and is NOT a legitimate sudo
+// construct at all: `visudo -c -f -` (host probe 2026-07-31) rejects it
+// outright, `stdin:1:23: syntax error` pointing directly at `CWD` (and the
+// colon-face analog `alice h1 = NOPASSWD: CWD="/a : h2 = /bin/su "y` is
+// rejected the same way, `stdin:1:22: syntax error`). This matches the
+// grammar-order evidence already on `parse_cmnd_spec`'s own doc comment
+// (`Option_Spec*` precedes `(Tag_Spec ':')*`, never follows it - the reversed
+// `NOEXEC: TIMEOUT=30 /bin/ls` is also rc 1). There is therefore no
+// valid-sudo interpretation of "option after a tag" and so no masking
+// behavior to require here; asserting one would invent an answer with no
+// oracle behind it, which this brief explicitly rules out. What IS grounded
+// and worth pinning is that our own lenient splitter does not accidentally
+// grant this REJECTED position masking power either - see
+// `option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mask_it`
+// below, which is a documentation-and-stability test, not a fence against the
+// round 2 defect specifically (no chained `=` is even involved: `CWD` here
+// sees only ONE `=`, its own).
+
+/// The comma face: a command argument spelled `CWD=`, reached through a
+/// CHAINED `=` (`X=CWD=...`), must not mask a `,` inside its own quotes, and
+/// the hidden `NOPASSWD` grant must be visible to `sudo-W05`. A non-keyword
+/// control (`X=XWD=...`) proves the keyword spelling - not the chaining
+/// itself - is what flips the behavior: both lines are `visudo -c -f -` rc 0
+/// and `cvtsudoers -f json` splits them IDENTICALLY (see the section
+/// grounding above).
+#[test]
+fn chained_equals_command_argument_does_not_gain_the_option_values_pairing_power_across_a_comma() {
+    // Positive control: chaining through a non-keyword word already splits
+    // correctly today.
+    let control = "alice ALL = /bin/echo X=XWD=\"/a, NOPASSWD: /bin/su\"\n";
+    let control_specs = only_spec(control).host_groups[0].cmnd_specs.len();
+    assert_eq!(
+        control_specs, 2,
+        "positive control: a non-keyword `XWD=` chained after `X=` must \
+         already split on the comma"
+    );
+    assert_eq!(
+        w05_count(control),
+        1,
+        "positive control: the NOPASSWD grant must already be visible"
+    );
+
+    // The regression: the first `=` (after `X`) is correctly rejected as an
+    // option anchor - `"/bin/echo X"` is multi-word - but that rejection's
+    // `tok_start` reset re-arms the anchor right after it, so the SECOND `=`
+    // (after `CWD`) measures its own preceding token as just `"CWD"` and is
+    // wrongly recognized as a genuine leading option.
+    let src = "alice ALL = /bin/echo X=CWD=\"/a, NOPASSWD: /bin/su\"\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        2,
+        "a command argument merely SPELLED `CWD=`, reached through a chained \
+         `=`, must not gain an option value's quote-pairing power across the \
+         comma; got {specs:?}"
+    );
+    assert_eq!(
+        specs[0].cmnd,
+        CmndItem::Cmnd("/bin/echo X=CWD=\"/a".to_string())
+    );
+    assert!(
+        specs[0].tags.is_empty(),
+        "the first command carries no tag; got {:?}",
+        specs[0].tags
+    );
+    assert_eq!(specs[1].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[1].cmnd, CmndItem::Cmnd("/bin/su\"".to_string()));
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the NOPASSWD grant hidden behind the chained-equals quote-pairing \
+         bug must be visible to sudo-W05"
+    );
+}
+
+/// The colon face, host-group axis: the same chained `X=CWD=` command
+/// argument must not mask a top-level `:` and merge two host groups into
+/// one.
+#[test]
+fn chained_equals_command_argument_does_not_mask_the_segment_colon_across_a_host_group() {
+    let control = "alice h1 = /bin/echo X=XWD=\" : h2 = /bin/su \"y\n";
+    let control_groups = only_spec(control).host_groups.len();
+    assert_eq!(
+        control_groups, 2,
+        "positive control: a non-keyword `XWD=` chained after `X=` must \
+         already split the host groups"
+    );
+
+    let src = "alice h1 = /bin/echo X=CWD=\" : h2 = /bin/su \"y\n";
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "a command argument merely SPELLED `CWD=`, reached through a chained \
+         `=`, must not mask the segment colon between two host groups; got \
+         {:?}",
+        s.host_groups
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["h1".to_string()]);
+    assert_eq!(
+        s.host_groups[0].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/echo X=CWD=\"".to_string())
+    );
+    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+    assert_eq!(
+        s.host_groups[1].cmnd_specs[0].cmnd,
+        CmndItem::Cmnd("/bin/su \"y".to_string())
+    );
+}
+
+/// The colon face, alias-table axis: the chained `X=CWD=` command argument
+/// must not mask a `Cmnd_Alias` definition's `:` separator either - the
+/// hidden alias `B` would otherwise never be defined at all.
+#[test]
+fn chained_equals_command_argument_does_not_mask_the_alias_spec_colon() {
+    let control = "Cmnd_Alias A = /bin/echo X=XWD=\"/a : B = /bin/su\"\n";
+    let LineKind::Alias(control_alias) = first_kind(control) else {
+        panic!("expected an alias definition");
+    };
+    assert_eq!(
+        control_alias.specs.len(),
+        2,
+        "positive control: a non-keyword `XWD=` chained after `X=` must \
+         already split A and B"
+    );
+
+    let src = "Cmnd_Alias A = /bin/echo X=CWD=\"/a : B = /bin/su\"\n";
+    let kind = first_kind(src);
+    let LineKind::Alias(a) = kind else {
+        panic!("expected an alias definition, got {kind:?}");
+    };
+    assert_eq!(a.kind, AliasKind::Cmnd);
+    assert_eq!(
+        a.specs.len(),
+        2,
+        "a command argument merely SPELLED `CWD=`, reached through a chained \
+         `=`, must not mask the `:` separating A's and B's specs, hiding B's \
+         definition entirely; got {:?}",
+        a.specs
+    );
+    assert_eq!(a.specs[0].name, "A");
+    assert_eq!(a.specs[0].members, vec!["/bin/echo X=CWD=\"/a".to_string()]);
+    assert_eq!(a.specs[1].name, "B");
+    assert_eq!(a.specs[1].members, vec!["/bin/su\"".to_string()]);
+}
+
+/// Table-driven over the REAL keyword set (the same closed ten
+/// `parse_option_key` recognizes; re-enumerated here rather than trusting the
+/// sibling table above, per the brief - `ROLE`, `TYPE`, `NOTBEFORE`,
+/// `NOTAFTER`, `TIMEOUT`, `CWD`, `CHROOT`, `PRIVS`, `LIMITPRIVS`,
+/// `APPARMOR_PROFILE`): all ten must behave identically when reached through
+/// a chained `=` rather than a directly-glued one. Live host probe
+/// (2026-07-31) confirms `cvtsudoers -f json` splits every one of the ten
+/// identically to the `CWD` / `XWD` case documented in the section grounding
+/// above.
+#[test]
+fn all_ten_option_keywords_spelled_as_a_chained_equals_command_argument_do_not_mask_the_comma_separator()
+ {
+    let keywords = [
+        "ROLE",
+        "TYPE",
+        "NOTBEFORE",
+        "NOTAFTER",
+        "TIMEOUT",
+        "CWD",
+        "CHROOT",
+        "PRIVS",
+        "LIMITPRIVS",
+        "APPARMOR_PROFILE",
+    ];
+    for kw in keywords {
+        let src = format!("alice ALL = /bin/echo X={kw}=\"/a, NOPASSWD: /bin/su\"\n");
+        let specs = only_spec(&src).host_groups[0].cmnd_specs.len();
+        assert_eq!(
+            specs, 2,
+            "X={kw}= as a chained command argument must not mask the comma; \
+             got {specs} Cmnd_Specs"
+        );
+        assert_eq!(
+            w05_count(&src),
+            1,
+            "X={kw}=: the NOPASSWD grant hidden behind the chained-equals \
+             quote-pairing bug must be visible to sudo-W05"
+        );
+    }
+}
+
+/// Fence 1: multiple CHAINED leading options must still work. `TIMEOUT=30`
+/// is a genuine leading option (its `=` is correctly recognized, so
+/// `tok_start` advances past its whole value rather than through the `false`
+/// branch); `CWD="..."` immediately after it is the SECOND genuine leading
+/// option, and its quoted value must still mask the interior comma. Host
+/// probe (2026-07-31, `visudo -c -f -` rc 0): `cvtsudoers -f json` reports
+/// ONE `Cmnd_Spec` with `Options [{"runcwd":"/a,b"},{"command_timeout":30}]`
+/// (`cvtsudoers` pre-resolves and reorders; the AST keeps SOURCE order - see
+/// `ast::CmndOption` and `gap_a_selinux_role_and_type_options_leave_the_command_clean`).
+#[test]
+fn fence_multiple_chained_leading_options_still_mask_a_comma_in_the_second_values_quotes() {
+    let src = "alice ALL = TIMEOUT=30 CWD=\"/a,b\" /bin/ls\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        1,
+        "a genuine second leading option must not split on its own quoted \
+         comma; got {specs:?}"
+    );
+    assert_eq!(
+        specs[0].options,
+        vec![
+            CmndOption {
+                key: CmndOptionKey::Timeout,
+                value: "30".to_string(),
+            },
+            CmndOption {
+                key: CmndOptionKey::Cwd,
+                value: "\"/a,b\"".to_string(),
+            },
+        ],
+        "both options must survive, in source order, with CWD's quoted value \
+         kept whole; got {:?}",
+        specs[0].options
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+}
+
+/// Fence 2: a leading option at the START of the SECOND `Cmnd_Spec` in a
+/// comma-separated list is genuine (the comma splitter resets `at_spec_start`
+/// / `tok_start` at the top-level `,`) and must still mask its own quoted
+/// comma. Host probe (2026-07-31, `visudo -c -f -` rc 0): `cvtsudoers -f
+/// json` reports TWO `Cmnd_Specs`, the second carrying
+/// `Options [{"runcwd":"/a,b"}]` and `Commands [{"command":"/bin/su"}]`.
+#[test]
+fn fence_leading_option_in_the_second_cmnd_spec_of_a_comma_list_still_masks_its_own_comma() {
+    let src = "alice ALL = /bin/ls, CWD=\"/a,b\" /bin/su\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        2,
+        "the comma after /bin/ls is a genuine Cmnd_Spec separator; got \
+         {specs:?}"
+    );
+    assert!(
+        specs[0].options.is_empty(),
+        "the first spec has no leading option; got {:?}",
+        specs[0].options
+    );
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
+    assert_eq!(
+        specs[1].options,
+        opt(CmndOptionKey::Cwd, "\"/a,b\""),
+        "a leading option at the START of the SECOND Cmnd_Spec is genuine \
+         and must mask its own comma; got {:?}",
+        specs[1].options
+    );
+    assert_eq!(specs[1].cmnd, CmndItem::Cmnd("/bin/su".to_string()));
+}
+
+/// Not a round-2 chained-`=` fence (only ONE `=` appears, `CWD`'s own) - a
+/// documentation-and-stability check for the third candidate fence the brief
+/// raised ("leading option after a tag"), which turned out not to be valid
+/// sudo at all. `alice ALL = NOPASSWD: CWD="/a,b" /bin/su` is REJECTED by
+/// real sudo (host probe 2026-07-31: `visudo -c -f -` rc 1,
+/// `stdin:1:23: syntax error` pointing at `CWD`), matching the grammar-order
+/// evidence already on `parse_cmnd_spec`'s doc comment - an `Option_Spec` can
+/// never legitimately follow a `Tag_Spec`. So there is no masking behavior to
+/// require; what's pinned instead is that our own lenient comma splitter
+/// does not accidentally grant this invalid position masking power either -
+/// `parse_option_key(preceding_token(..))` sees the multi-word
+/// `"NOPASSWD: CWD"` (the splitter has no tag-colon awareness of its own, so
+/// the token run since the `Cmnd_Spec` start still includes the tag text) and
+/// correctly fails the exact-match, so the interior comma still splits and
+/// the `NOPASSWD` tag - recognized by `parse_cmnd_spec`'s own tag loop on the
+/// first resulting fragment - stays visible to `sudo-W05`.
+#[test]
+fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mask_it() {
+    let src = "alice ALL = NOPASSWD: CWD=\"/a,b\" /bin/su\n";
+    let s = only_spec(src);
+    let specs = &s.host_groups[0].cmnd_specs;
+    assert_eq!(
+        specs.len(),
+        2,
+        "the splitter has no tag-colon awareness, so `CWD=` right after a \
+         tag colon must not be mistaken for a genuine leading option; got \
+         {specs:?}"
+    );
+    assert_eq!(specs[0].tags, vec![Tag::NoPasswd]);
+    assert_eq!(specs[0].cmnd, CmndItem::Cmnd("CWD=\"/a".to_string()));
+    assert_eq!(specs[1].cmnd, CmndItem::Cmnd("b\" /bin/su".to_string()));
+    // TWO, not one: `for_each_nopasswd_command` (`lints/tags.rs`) folds NOPASSWD
+    // forward across a Cmnd_Spec_List in source order until an explicit PASSWD
+    // resets it (real sudoers tag-inheritance), and BOTH resulting fragments are
+    // non-ALL commands - spec[0]'s own explicit NOPASSWD fires it there, and
+    // spec[1] inherits that same running state and fires it again.
+    assert_eq!(
+        w05_count(src),
+        2,
+        "the NOPASSWD tag recognized ahead of the mis-split must still be \
+         visible to sudo-W05, and it inherits forward onto the second \
+         (mis-split) fragment too"
+    );
+}
