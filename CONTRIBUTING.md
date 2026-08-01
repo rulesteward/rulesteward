@@ -140,15 +140,30 @@ that made `just diff-fapolicyd` report success while checking nothing (#572).
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a
 new harness, do not copy one of them: add a lane to the frozen table in
-`scripts/rs-oracle-diff.sh`, which all three delegate to.** The older LIVE
-recipes (`just diff-sshd`,
-`just fapolicyd-probe-check`) predate this contract and `exit 0` on missing
-prerequisites, so `diff-sshd` remains the model for the two-tier SHAPE but not
-for this rc table - its offline tier is what makes its skip survivable, since
-the assertion still runs without docker. Retrofitting the older recipes is a
-behavior change to shipped tooling, so it was deliberately not done inside the
-branch that wrote this contract. Owner decision (2026-07-25): grandfather them
-and retrofit under its own issue.
+`scripts/rs-oracle-diff.sh`, which all three delegate to.** The two older LIVE
+recipes (`just diff-sshd`, `just fapolicyd-probe-check`) predated this contract
+and `exit 0`d on missing prerequisites. They were grandfathered by owner decision
+on 2026-07-25 and **retrofitted on 2026-08-01**: both now `exit 3` on a missing
+docker binary and on missing images, promoted to `2` when the oracle is declared
+required. That promotion is delegated to `scripts/rs-oracle-required.sh` rather
+than re-tested inline, so it honours the per-lane `RS_REQUIRE_<TOKEN>` as well as
+the global `RS_ORACLE_REQUIRED` and treats `false`/`no`/`off`/blank as
+off-switches. All four skip paths were verified in both modes against a PATH with
+no docker and against a docker stub whose `image inspect` fails, with a live
+docker-present run as the negative control.
+
+**Scope of that retrofit, stated exactly:** it covered the two `diff-*`-family
+LIVE ORACLE recipes and nothing else. Twenty-three `just` recipes still `exit 0`
+when a prerequisite is missing - eleven `*-derive` print-only helpers, where an
+exit-0 skip is defensible, and **twelve `*-check` network-drift recipes, where it
+is not**: `stig-check`, `cis-check`, `cis-check-latest`, `fapd-attr-check`,
+`sshd-stig-check`, `sshd-stig-check-pin`, `auditd-stig-check`,
+`auditd-stig-check-pin`, `auditd-msgtype-check`, `fapolicyd-stig-check`,
+`selinux-stig-check`, `sudoers-stig-check`. Those download a pinned STIG/CIS zip
+and drift-check against it; with `curl` or `unzip` absent they report success
+having checked nothing, which is #572's shape in a different subsystem. They are
+out of scope here only because they are a separate change with a separate
+verification surface, not because they are correct.
 
 The 9k-1 recipes also demonstrate the shape that keeps the two tiers from
 drifting apart: the drift check is not a second implementation of "does the

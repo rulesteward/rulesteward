@@ -27,22 +27,22 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: ubuntu-latest
-    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~182
+    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~183
     # mutants serially; most are caught fast, a few run the full --test-workspace
     # suite (~100s) to completion, so a shard finishes well inside 2h (measured
     # 2026-07-30 on run 30519128558: 40-44 min/shard at 170-171 mutants each,
-    # which scales to roughly 47 min at the current 182/shard -- still inside
+    # which scales to roughly 48 min at the current 183/shard -- still inside
     # the ceiling, but re-measure rather than extrapolate if the total grows
     # much further).
     # A timed-out shard fails the gate (exit 3) the same as a survivor, so keep
     # headroom.
     timeout-minutes: 120
     strategy:
-      # Shard the full mutant suite (~3629 mutants) into 20 shards (the
+      # Shard the full mutant suite (~3666 mutants) into 20 shards (the
       # GitHub-hosted concurrent-job cap, so the whole run starts at once).
       # Why 20 (not fewer): the gate runs --test-workspace (every mutant
       # re-runs the whole workspace suite, slow) and -j1 (below) runs them
-      # serially, so ~182 mutants/shard keeps each JOB inside the 2h ceiling
+      # serially, so ~183 mutants/shard keeps each JOB inside the 2h ceiling
       # at a measured 40-44 min -- 8 shards x ~430 mutants serial would blow it.
       # The total is a DERIVED number, not a fixed one: re-run
       # `cargo mutants --list | wc -l` and update it whenever examine_globs or
@@ -54,12 +54,21 @@ jobs:
       # 9m's own lanes landed: this number goes stale every time src/ grows,
       # including within the very session that last corrected it, which is why
       # the instruction is to re-derive it rather than to trust what it says.
+      # Re-measured again 2026-08-01 at 3666, after three files that carried
+      # real logic and were listed in no glob were added to examine_globs. The
+      # non-vacuity assertion on the run step below is the mechanical backstop
+      # for the failure this comment can only warn about: a shard that generates
+      # zero mutants now fails instead of reporting a clean slice.
       # The shard count appears in THREE places that must stay in sync: the
       # job `name:` (/20), this matrix list (0..19), and the `--shard k/20`
       # denominator on the cargo-mutants line. A 24->20 edit that missed the
       # denominator silently dropped shards 20-23's mutants (~17%) from the
       # gate (#216) -- round-robin assigns mutant i to shard i%DENOMINATOR,
       # and no job ran those residues.
+      # Two of the three are now checked mechanically: the run step compares
+      # `strategy.job-total` (this list's length) against the denominator and
+      # fails the shard on a mismatch. The job `name:` is cosmetic and is the
+      # one copy still kept in sync by hand.
       # fail-fast MUST stay false: a survivor (or any non-zero shard exit) must
       # not cancel its siblings -- otherwise the other shards' results are lost
       # and the run surfaces as "canceled".
@@ -126,4 +135,62 @@ jobs:
       #                   the per-PR scoped runs pass an explicit --test-package and
       #                   must keep the cheaper default scoping.
       - name: cargo mutants
-        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true
+        run: |
+          set -uo pipefail
+
+          # DENOMINATOR ASSERTION -- and it must come FIRST, before any mutant
+          # is run, because it is the only check here that can see #216.
+          #
+          # #216's direction was matrix [0..19] against `--shard k/24`: every one
+          # of the 20 jobs still gets a non-empty round-robin slice, so all 20 go
+          # green with a healthy mutant count while residues 20-23 are never
+          # tested at all. The count assertion below is therefore BLIND to it --
+          # it only catches the opposite direction, where cargo-mutants already
+          # errors on k >= n. Comparing the denominator against the matrix size
+          # is the one mechanical check that covers the real failure.
+          if [ "${{ strategy.job-total }}" -ne 20 ]; then
+            echo "::error::matrix has ${{ strategy.job-total }} jobs but --shard uses denominator 20;"
+            echo "residues ${{ strategy.job-total }}..19 (or 20..) would never be tested. Fix the job name:, the matrix list, and the --shard denominator together."
+            exit 2
+          fi
+
+          # errexit is ON here: GitHub's default `run:` shell on Linux is
+          # `bash -e {0}`, and `set -uo pipefail` does not clear it. Without the
+          # `|| rc=$?` the step would abort at the cargo line on any non-zero
+          # exit and everything below -- including the diagnostics that explain
+          # WHY a shard failed -- would be dead code on exactly the runs that
+          # need it.
+          rc=0
+          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true || rc=$?
+
+          # NON-VACUITY ASSERTION. rc is the gate, but rc alone cannot tell a
+          # clean shard from a shard that tested NOTHING: both exit 0 and both
+          # print no survivors. What this proves is narrow and worth stating
+          # exactly: THIS SHARD TESTED SOMETHING. It catches a file dropping out
+          # of examine_globs, a config the runner did not pick up, and a shard
+          # that generated nothing -- not a denominator mismatch, which is the
+          # assertion above.
+          MO=mutants.out
+          if [ ! -d "${MO}" ]; then
+            echo "::error::shard ${{ matrix.shard }}: no mutants.out - cargo-mutants never ran"
+            exit 2
+          fi
+          # `wc -l < f 2>/dev/null` does not suppress the error it appears to:
+          # redirections apply left to right, so a missing file prints before
+          # 2>/dev/null is installed. Test for the file instead.
+          countlines() { [ -f "$1" ] && wc -l <"$1" || echo 0; }
+          c=$(countlines "${MO}/caught.txt")
+          m=$(countlines "${MO}/missed.txt")
+          t=$(countlines "${MO}/timeout.txt")
+          u=$(countlines "${MO}/unviable.txt")
+          echo "shard ${{ matrix.shard }}: caught=${c} missed=${m} timeout=${t} unviable=${u} rc=${rc}"
+          if [ "$((c + m + t + u))" -eq 0 ]; then
+            echo "::error::shard ${{ matrix.shard }} generated ZERO mutants. A green here means nothing."
+            echo "Usual cause: examine_globs no longer matches any source file."
+            exit 2
+          fi
+          if [ "$((c + m + t))" -eq 0 ]; then
+            echo "::error::shard ${{ matrix.shard }}: every mutant was UNVIABLE (${u}); nothing was actually tested."
+            exit 2
+          fi
+          exit "${rc}"

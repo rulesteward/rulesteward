@@ -14,7 +14,7 @@ This project uses OpenWolf for context management. Read and follow .wolf/OPENWOL
 
 Canonical commands live in the `justfile` (each recipe mirrors a CI gate verbatim). `just --list` shows all.
 
-- `just ci` - full local gate in CI order: fmt + clippy + dac-guard + codes-guard + no-mnt-guard + test + cov. Run before every push.
+- `just ci` - full local gate in CI order: fmt + clippy + dac-guard + codes-guard + no-mnt-guard + capture-guard + instrument-test + tools-gate + test + cov. Run before every push. (`instrument-test` runs every gate script's own self-test; `tools-gate` runs fmt + clippy + test per manifest across the workspace-EXCLUDED `tools/*` crates, all `--locked`, which `just ci` otherwise never touches - it caught two stale tool lockfiles that six CI workflows build while `just ci` was green.)
 - `just fmt` / `just fmt-fix` - `cargo fmt --all --check` / apply. clippy does NOT enforce formatting; fmt is a separate gate.
 - `just clippy` - `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 - `just test` / `just cov` - workspace tests / llvm-cov with the 80% line floor.

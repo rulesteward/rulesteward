@@ -77,14 +77,86 @@ no-mnt-guard:
 capture-guard:
     bash scripts/check-capture-writes.sh
 
+# Self-test EVERY instrument in scripts/. An unverified instrument is the exact
+# failure this contract exists to prevent: a gate that reports clean having
+# scanned nothing is indistinguishable downstream from a real pass.
+#
+# This SUPERSEDES `oracle-harness-test` in `just ci` and runs a superset of it
+# (that recipe stays callable on its own for the four differential suites). Three
+# suites - check-dac-guard-test, check-codes-count-test, check-no-mnt-paths-test,
+# 99 KB carrying this project's explicitly named anti-vacuity positive controls -
+# were reachable from no recipe or workflow at all, so the anti-vacuity behaviour
+# of two of the three `just ci` lint guards was unverified on every commit.
+#
+# Pure bash: no cargo, no docker, no network.
+instrument-test:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # Never chain with && - a short-circuit hides which one failed, and rc is the
+    # gate here, not the transcript.
+    fail=0
+    ran=0
+    for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
+             check-capture-writes check-dac-guard check-codes-count \
+             check-no-mnt-paths rs-mutation-gate check-doc-citations; do
+        bash "scripts/${t}-test.sh"
+        rc=$?
+        ran=$((ran + 1))
+        echo "instrument-test: ${t}-test rc=${rc}"
+        [ "${rc}" -eq 0 ] || fail=1
+    done
+    # ANTI-VACUITY on this recipe itself, in two directions.
+    #
+    # (1) Every guard in scripts/ must appear in the list above, so adding a guard
+    # without a self-test fails HERE rather than going unverified for weeks.
+    # Counted with a shell glob rather than `ls | grep -v`: a count derived through
+    # a filter is not evidence, and this project's own command wrapper rewrites a
+    # mid-pipeline grep and changes the number (measured while writing this recipe,
+    # which reported 16 guards where there are 8).
+    guards=0
+    for f in scripts/*.sh; do
+        case "${f}" in *-test.sh) ;; *) guards=$((guards + 1)) ;; esac
+    done
+    [ "${guards}" -eq 9 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 9 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    # (2) The loop itself must have run. A typo'd list that iterates zero times
+    # would otherwise report clean, which is the very defect being gated.
+    [ "${ran}" -eq 9 ] || { echo "instrument-test: ran ${ran} suites, expected 9" >&2; fail=1; }
+    echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
+    [ "${fail}" -eq 0 ]
+
+# Per-manifest gate for the workspace-EXCLUDED tools/* crates. `cargo --workspace`
+# cannot see them, but six CI workflows build them with --locked. In 9j a branch
+# was pushed with `# acked-verify` on a green `just ci` while three tools/* --locked
+# builds that CI gates were broken; it was caught 27 minutes later by an ad-hoc
+# per-manifest run, not by a gate. (#603)
+tools-gate:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    rc=0
+    n=0
+    for m in tools/*/Cargo.toml; do
+      [ -f "${m}" ] || continue
+      n=$((n + 1))
+      cargo fmt --manifest-path "${m}" --all -- --check || rc=1
+      cargo clippy --manifest-path "${m}" --all-targets --locked -- -D warnings || rc=1
+      cargo test --manifest-path "${m}" --locked || rc=1
+    done
+    # Zero manifests means the layout moved, not that everything passed.
+    [ "${n}" -gt 0 ] || { echo "tools-gate VACUOUS: 0 manifests found under tools/" >&2; exit 2; }
+    echo "tools-gate: ${n} manifests checked, rc=${rc}"
+    exit "${rc}"
+
 # Build the static musl binary (requires musl-gcc + the rustup target).
 musl:
     CC_x86_64_unknown_linux_musl=musl-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
     cargo build --release --target x86_64-unknown-linux-musl --bin rulesteward --locked
 
-# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard + no-mnt-guard + capture-guard + oracle-harness-test + test + cov).
-ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard oracle-harness-test test cov
+# Run the full local CI gate in CI order (fmt + clippy + dac-guard + codes-guard +
+# no-mnt-guard + capture-guard + instrument-test + tools-gate + test + cov).
+# `instrument-test` runs a SUPERSET of `oracle-harness-test`, so the latter is not
+# listed here; it remains callable on its own.
+ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard instrument-test tools-gate test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
@@ -424,9 +496,11 @@ selinux-stig-derive product="all":
 
 # (#372) Drift-check the sshd E01/E04/W04 lint tables against a LIVE sshd daemon by
 # probing the Rocky 8/9/10 + openssh-server images. Same nested-tool pattern
-# (tools/sshd-probe-update, OUT of `just ci`). The LIVE recipes skip gracefully (exit 0)
-# when docker or the images are absent; the weekly sshd-probe-drift workflow builds the
-# images and runs the live check in CI.
+# (tools/sshd-probe-update, OUT of `just ci`). `diff-sshd` skips with rc 3 when docker
+# or the images are absent, promoted to rc 2 when the oracle is declared required
+# (RS_ORACLE_REQUIRED / RS_REQUIRE_SSHD); `sshd-probe-derive` is a print-only helper and
+# still exits 0. The weekly sshd-probe-drift workflow builds the images and runs the
+# live check in CI.
 #
 # diff-sshd             : LIVE - probe the sshd-probe{8,9,10} images; exit 1 on drift.
 # diff-sshd-offline     : OFFLINE - drift-check against the committed daemon fixtures
@@ -438,13 +512,33 @@ selinux-stig-derive product="all":
 diff-sshd:
     #!/usr/bin/env bash
     set -uo pipefail
+    # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+    # weeks while checking nothing (#572), so a box that is supposed to have the
+    # oracle must not be able to skip silently.
+    #
+    # The 3->2 promotion is DELEGATED, never rewritten inline. An inline
+    # `[ "${RS_ORACLE_REQUIRED:-0}" != "0" ]` was written here first and was
+    # wrong in both directions, measured: it cannot see the per-lane
+    # RS_REQUIRE_SSHD (so a CI job that requires only this lane got rc 3, a
+    # silent skip - #572's own shape), and it treats `false`/`no`/`off`/blank as
+    # truthy. scripts/rs-oracle-required.sh is the single fail-closed parse, and
+    # its own header says why there must not be a second copy of it.
+    skip_or_fail() {
+        bash scripts/rs-oracle-required.sh SSHD
+        case "$?" in
+        0) exit 2 ;;
+        1) exit 3 ;;
+        *) echo "diff-sshd: rs-oracle-required.sh SSHD gave an unexpected exit; refusing to guess whether the oracle is required" >&2; exit 2 ;;
+        esac
+    }
     if ! command -v docker >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - need docker + the sshd-probe{8,9,10} images (build from tools/sshd-probe-update/dockerfiles/<n>/)" >&2
-        exit 0
+        skip_or_fail
     fi
     if ! docker image inspect sshd-probe8 sshd-probe9 sshd-probe10 >/dev/null 2>&1; then
         echo "diff-sshd: prerequisites missing - sshd-probe8/9/10 images not found; build each from tools/sshd-probe-update/dockerfiles/<n>/Dockerfile (docker build -t sshd-probe<n> ...)" >&2
-        exit 0
+        skip_or_fail
     fi
     cargo run --quiet --manifest-path tools/sshd-probe-update/Cargo.toml -- check
 
@@ -477,10 +571,11 @@ sshd-probe-derive product="all":
 # fapolicyd8/9/10 images directly (see this repo's CLAUDE.md "Differential
 # verification" section - these images are NOT built by this tool, unlike
 # tools/sshd-probe-update's dockerfiles/, since fapolicyd already ships on them). Same
-# nested-tool pattern (tools/fapolicyd-probe-update, OUT of `just ci`). The LIVE recipes
-# skip gracefully (exit 0) when docker or the images are absent; the offline recipe
-# replays the committed daemon-probe fixtures (no docker) and is what the PR-gate
-# workflow runs.
+# nested-tool pattern (tools/fapolicyd-probe-update, OUT of `just ci`). `fapolicyd-probe-check`
+# skips with rc 3 when docker or the images are absent, promoted to rc 2 when the oracle
+# is declared required (RS_ORACLE_REQUIRED / RS_REQUIRE_FAPOLICYD); `fapolicyd-probe-derive`
+# is a print-only helper and still exits 0. The offline recipe replays the committed
+# daemon-probe fixtures (no docker) and is what the PR-gate workflow runs.
 #
 # fapolicyd-probe-check          : LIVE - probe fapolicyd8/9/10; exit 1 on drift.
 # fapolicyd-probe-check-offline  : OFFLINE - drift-check against the committed
@@ -492,13 +587,26 @@ sshd-probe-derive product="all":
 fapolicyd-probe-check:
     #!/usr/bin/env bash
     set -uo pipefail
+    # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
+    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
+    # weeks while checking nothing (#572). The 3->2 promotion is delegated to the
+    # single fail-closed parse rather than re-tested inline; see diff-sshd's
+    # skip_or_fail for the two measured ways the inline form was wrong.
+    skip_or_fail() {
+        bash scripts/rs-oracle-required.sh FAPOLICYD
+        case "$?" in
+        0) exit 2 ;;
+        1) exit 3 ;;
+        *) echo "fapolicyd-probe-check: rs-oracle-required.sh FAPOLICYD gave an unexpected exit; refusing to guess whether the oracle is required" >&2; exit 2 ;;
+        esac
+    }
     if ! command -v docker >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - need docker + the prebuilt fapolicyd{8,9,10} images (see CLAUDE.md 'Differential verification')" >&2
-        exit 0
+        skip_or_fail
     fi
     if ! docker image inspect fapolicyd8 fapolicyd9 fapolicyd10 >/dev/null 2>&1; then
         echo "fapolicyd-probe-check: prerequisites missing - fapolicyd8/9/10 docker images not found; pull or build them first (see CLAUDE.md 'Differential verification')" >&2
-        exit 0
+        skip_or_fail
     fi
     cargo run --quiet --manifest-path tools/fapolicyd-probe-update/Cargo.toml -- check
 
