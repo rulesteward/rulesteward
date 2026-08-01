@@ -1262,9 +1262,28 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 depth += 1;
                 at_spec_start = false;
             }
-            ')' => {
+            ')' if i >= tok_start => {
                 // `if depth > 0` only guards a malformed UNBALANCED `)` (visudo
                 // rejects it); for valid input depth is always >= 1 here.
+                //
+                // `i >= tok_start` (9m round 3, #538 gap C precedent): mirrors
+                // `split_top_level_segments`'s own `')'` arm guard exactly, for
+                // the identical reason. A `)` byte sitting INSIDE an
+                // `Option_Spec` value the `'='` arm above has already skipped
+                // past (`tok_start` now points AHEAD of `i`, e.g.
+                // `CHROOT="/a)CWD="`) is a literal value byte, not a runas
+                // close-paren, and must not drag the marker BACKWARD into the
+                // middle of that value: doing so let a keyword glued right
+                // after the stray `)` (`CWD=`) be wrongly read as a genuine
+                // option anchor, opening a bogus quote span that masked the
+                // real top-level comma (MISS-B), or, symmetrically, dragged
+                // `tok_start` back far enough that a GENUINE later option's
+                // `=` was measured against the wrong preceding token and
+                // wrongly REJECTED, spilling its value into ordinary command
+                // text where its own comma and tag colon were misread (MISS-C).
+                // When the guard fails, this `)` falls through to the `_` arm
+                // below, exactly like the sibling: `at_spec_start` still
+                // clears, but `depth` and `tok_start` are left untouched.
                 if depth > 0 {
                     depth -= 1;
                 }
