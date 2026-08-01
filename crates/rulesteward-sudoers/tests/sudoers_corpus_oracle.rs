@@ -295,12 +295,26 @@
 //!    `project_ast` agree with `project_cvtsudoers_json`?
 //!
 //!    Through session 9k-1 this layer carried four KNOWN #538 divergences as
-//!    `L3_XFAIL` entries. Session 9m is the lane that FIXES #538, so those
-//!    four entries and their `match` arms are gone: the four scenarios are
-//!    now ordinary compared rows, and #538's three gaps are pinned directly
-//!    by `tests/iss538_parser_gaps.rs` (which drives the public `parse` /
-//!    `lint` entry points rather than this differential). For the record,
-//!    the gaps were:
+//!    `L3_XFAIL` entries. Session 9m closed a SUBSET of #538: gaps A, B and C
+//!    below are fixed, so those four entries and their `match` arms are gone,
+//!    the four scenarios are now ordinary compared rows, and the three
+//!    gaps are pinned directly by `tests/iss538_parser_gaps.rs` (which drives
+//!    the public `parse` / `lint` entry points rather than this
+//!    differential).
+//!
+//!    A LATER, NARROWER #538 subclass (a glued `Option_Spec` keyword
+//!    interacting with a quoted-comma value across the comma/colon
+//!    splitters) is still OPEN and is UNRELATED to the four scenarios above:
+//!    a round-6 attempt at it (commit `ec11a15`) greened 9 tests but
+//!    regressed two confirmed cases against real `visudo` (a false
+//!    `sudo-F01` fatal on a comma-free option value, and a silently
+//!    swallowed grant/alias), and was narrow-reverted in commit `50594c4`.
+//!    The 9 tests that pinned that attempted fix are marked `#[ignore]` in
+//!    `tests/iss538_parser_gaps.rs` (search that file for `"known-open #538
+//!    defect"`) rather than deleted, so they remain executable
+//!    documentation of the still-open defect. A future session must NOT
+//!    read this module and conclude #538 can be closed: it is only
+//!    PARTIALLY fixed. For the record, the three FIXED gaps were:
 //!      - **Gap A** - the tag-parsing loop in `parser::parse_cmnd_spec` only
 //!        recognized `TAG:` syntax; an `=`-form `Option_Spec` (`ROLE=`,
 //!        `TYPE=`, `NOTBEFORE=`, `TIMEOUT=`, ...) has no colon, so the whole
@@ -485,12 +499,17 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 ///
 /// This table held four `Some(538)` entries through session 9k-1:
 /// `accept-selinux-role-type`, `accept-user-list-whitespace-bug`,
-/// `accept-notbefore` and `accept-timeout-option`. Session 9m FIXED #538, so
-/// they were deleted rather than widened or skipped - deleting the entry that
-/// pins a divergence IS how a fix is demonstrated here, and an xfail
-/// surviving its own fix would mean the fix was never demonstrated. The four
-/// scenarios are ordinary compared rows now, and they are the reason
-/// `L3_CLEAN_FLOOR` went 84 -> 95.
+/// `accept-notbefore` and `accept-timeout-option`. Session 9m fixed exactly
+/// the divergences these four entries pinned (#538 gaps A and B - see the
+/// module doc's L3 section), so they were deleted rather than widened or
+/// skipped - deleting the entry that pins a divergence IS how a fix is
+/// demonstrated here, and an xfail surviving its own fix would mean the fix
+/// was never demonstrated. The four scenarios are ordinary compared rows
+/// now, and they are the reason `L3_CLEAN_FLOOR` went 84 -> 95. A separate,
+/// narrower #538 subclass (glued `Option_Spec` keywords / quoted-comma
+/// values) remains OPEN and unrelated to these four scenarios - see the
+/// module doc's L3 section and the `#[ignore]`d tests in
+/// `tests/iss538_parser_gaps.rs`; #538 as a whole is NOT closed by this fix.
 ///
 /// Deletion is also forced rather than stylistic: the xfail branch below
 /// asserts `!matches` ("expected the KNOWN divergence, but the projections

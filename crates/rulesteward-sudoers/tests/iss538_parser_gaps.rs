@@ -8,24 +8,30 @@
 //! tests here and must be positive-controlled by SEPARATE reverts: reverting
 //! any one gap must redden that gap's tests and no other's.
 //!
-//! * **Gap A** - `parser::parse_cmnd_spec`'s tag loop recognizes only the
-//!   `TAG:` form. An `=`-form `Option_Spec` (`ROLE=`, `TYPE=`, `NOTBEFORE=`,
-//!   `TIMEOUT=`, ...) has no colon, so the loop breaks immediately and hands
-//!   the ENTIRE remainder to the command constructor: `ROLE=sysadm_r
-//!   TYPE=sysadm_t /usr/bin/vim` becomes ONE garbage `CmndItem::Cmnd` token
-//!   that matches no `Cmnd_Alias`, no reserved-`ALL` check and no path check.
-//! * **Gap B** - `parser::classify_user_spec` splits the pre-`=` text with
-//!   `split_first_word`, so a `User_List` containing internal whitespace is
-//!   truncated at its first space: `bob, ALL ALL=(ALL) ALL` yields
-//!   `users = ["bob"]` and `hosts = ["ALL ALL"]`, dropping the reserved `ALL`
-//!   principal and taking `sudo-W06` (the DISA finding for `ALL` in a
-//!   `User_List`) down with it.
-//! * **Gap C** - `parser::split_top_level_segments` resets its preceding-token
-//!   marker on every `=`, so an `Option_Spec`'s own `=` hides a following tag
-//!   keyword and the tag colon is mistaken for a top-level host-group
-//!   separator. `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` is thrown away as
-//!   `Malformed`. Found during this lane's satisfiability run; see the Gap C
-//!   section below for the full mechanism.
+//! * **Gap A** - `parser::parse_cmnd_spec`'s tag loop originally recognized
+//!   only the `TAG:` form. An `=`-form `Option_Spec` (`ROLE=`, `TYPE=`,
+//!   `NOTBEFORE=`, `TIMEOUT=`, ...) has no colon, so the loop broke
+//!   immediately and handed the ENTIRE remainder to the command constructor:
+//!   `ROLE=sysadm_r TYPE=sysadm_t /usr/bin/vim` became ONE garbage
+//!   `CmndItem::Cmnd` token that matched no `Cmnd_Alias`, no reserved-`ALL`
+//!   check and no path check. Fixed: `parse_cmnd_spec` now runs a separate
+//!   `Option_Spec*` loop before the tag loop, matching the grammar's
+//!   `Runas_Spec? Option_Spec* (Tag_Spec ':')* Cmnd` order.
+//! * **Gap B** - `parser::classify_user_spec` originally split the pre-`=`
+//!   text with `split_first_word`, so a `User_List` containing internal
+//!   whitespace was truncated at its first space: `bob, ALL ALL=(ALL) ALL`
+//!   yielded `users = ["bob"]` and `hosts = ["ALL ALL"]`, dropping the
+//!   reserved `ALL` principal and taking `sudo-W06` (the DISA finding for
+//!   `ALL` in a `User_List`) down with it. Fixed: `classify_user_spec` now
+//!   calls the comma-continuation-aware `split_user_list` instead.
+//! * **Gap C** - `parser::split_top_level_segments` originally reset its
+//!   preceding-token marker on every `=`, so an `Option_Spec`'s own `=` hid a
+//!   following tag keyword and the tag colon was mistaken for a top-level
+//!   host-group separator. `alice ALL = TIMEOUT=30 NOEXEC: /bin/ls` was
+//!   thrown away as `Malformed`. Found during this lane's satisfiability run.
+//!   Fixed: the `'='` arm now checks whether the token is an `Option_Spec`'s
+//!   own `=` and, if so, skips `tok_start` past the whole value instead of
+//!   resetting it; see the Gap C section below for the full mechanism.
 //!
 //! One test is named `gap_ac_` rather than `gap_a_` / `gap_c_`: it is the
 //! deliberate INTEGRATION of A and C and is not separably attributable. Every
@@ -613,9 +619,12 @@ fn gap_a_each_cmnd_spec_in_a_list_keeps_its_own_option() {
 /// `cvtsudoers -f json` (corpus `el9.json` / `el10.json`) reports
 /// `User_List [{"username":"bob"},{"username":"ALL"}]`,
 /// `Host_List [{"hostname":"ALL"}]`, `Commands [{"command":"ALL"}]`.
-/// Today our AST reports `users = ["bob"]` and `hosts = ["ALL ALL"]`: the
-/// reserved `ALL` principal is DROPPED and the two host tokens are merged into
-/// one whitespace-containing garbage token.
+/// Before the Gap B fix, our AST reported `users = ["bob"]` and
+/// `hosts = ["ALL ALL"]`: the reserved `ALL` principal was DROPPED and the
+/// two host tokens were merged into one whitespace-containing garbage token.
+/// Fixed: `split_user_list` now finds the true `User_List`/`Host_List`
+/// boundary across a comma-continued whitespace run; the assertions below
+/// pin the corrected shape.
 #[test]
 fn gap_b_comma_space_user_list_keeps_the_reserved_all_principal() {
     let s = only_spec("bob, ALL ALL=(ALL) ALL\n");
@@ -2040,12 +2049,11 @@ fn a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespa
     assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
 }
 
-/// MUTATION SURVIVOR: `parser.rs:892:13: delete match arm '\\' in
-/// unescaped_quote_positions` SURVIVES. Removing the `'\\' => escaped = true`
-/// arm makes an ESCAPED quote (`\"`) count as a real quote position, which
-/// re-pairs every later quote; `chunks_exact(2)` then silently drops a
-/// leftover odd element, which can flip a separator from "inside a clean
-/// region" to "outside" it.
+/// MUTATION SURVIVOR: deleting `unescaped_quote_positions`'s `'\\' => escaped
+/// = true` match arm SURVIVES. Removing that arm makes an ESCAPED quote
+/// (`\"`) count as a real quote position, which re-pairs every later quote;
+/// `chunks_exact(2)` then silently drops a leftover odd element, which can
+/// flip a separator from "inside a clean region" to "outside" it.
 ///
 /// This is the escape HALF of the user's "honor quotes and escapes" ruling
 /// for this lane, and until this test it was pinned by no assertion at all -
@@ -2100,24 +2108,28 @@ fn escaped_quote_inside_an_option_value_does_not_reopen_the_comma_separator() {
 // MISS-1 (round 5): an opener is anchored on ANY `=`, not on an OPTION `=`
 // ===========================================================================
 //
-// `enclosing_option_value_quote_spans` (parser.rs:963-981) tests
-// `bytes[open - 1] == b'='` with no check that the `=` is an `Option_Spec`'s
-// OWN `=`. A command-argument `=` glued to a `"` (`/bin/echo x="`) therefore
-// gets the same pairing power as a real `CWD="..."` opener, and wrongly pairs
-// with an unrelated LATER quote that merely closes a different command,
-// masking the real separator between them. This is NEW code from round 4
-// (`enclosing_option_value_quote_spans` did not exist before round 3); it is
-// a distinct mechanism from #612 (`classify_user_spec`'s quote-blind
-// `seg.find('=')`), and distinct from the comma face's sibling function
-// `split_cmnd_specs`, which has no `'='` arm at all.
+// `enclosing_option_value_quote_spans` originally tested
+// `bytes[open - 1] == b'='`, with no check that the `=` was an
+// `Option_Spec`'s OWN `=` (that check no longer exists in the shipping
+// code - it was replaced by `is_option_value_quote_opener`, which
+// additionally requires the word before the `=` to be a real `Option_Spec`
+// keyword). A command-argument `=` glued to a `"` (`/bin/echo x="`)
+// therefore GOT the same pairing power as a real `CWD="..."` opener under
+// the old check, and wrongly paired with an unrelated LATER quote that
+// merely closes a different command, masking the real separator between
+// them. This was NEW code from round 4 (`enclosing_option_value_quote_spans`
+// did not exist before round 3); it is a distinct mechanism from #612
+// (`classify_user_spec`'s quote-blind `seg.find('=')`), and distinct from
+// the comma face's sibling function `split_cmnd_specs`, which has no `'='`
+// arm at all.
 //
-// The mutation gate cannot find this: mutating `bytes[open - 1] == b'='` in
-// either direction is killed by EXISTING tests (`true` kills the two-quote
-// tests below it in this file; `false` kills the `CWD="/a:b"` masking
-// tests), because every existing two-quote test has its quote preceded by a
-// bare word (`x"`, `a"`), never by `=`. Only a quote preceded by `=` -- and
-// specifically a command-argument `=`, not an option's -- exercises the
-// missing check.
+// The mutation gate could not find this: mutating `bytes[open - 1] == b'='`
+// in either direction was killed by EXISTING tests (`true` kills the
+// two-quote tests below it in this file; `false` kills the `CWD="/a:b"`
+// masking tests), because every existing two-quote test had its quote
+// preceded by a bare word (`x"`, `a"`), never by `=`. Only a quote preceded
+// by `=` -- and specifically a command-argument `=`, not an option's --
+// exercised the missing check.
 
 /// ROOT CAUSE (round 5), comma-splitter face: a command-argument `=` glued to
 /// a `"` must not gain the option-value `=`'s pairing power across a comma.
@@ -2245,13 +2257,18 @@ fn command_argument_equals_glued_to_a_quote_does_not_mask_the_segment_colon() {
 ///     }
 /// ```
 ///
-/// Today the mispaired quotes swallow the `:` between `A`'s and `B`'s specs,
-/// so `classify_alias` sees only ONE top-level segment: `A = /bin/echo x=" :
-/// B = /bin/ls "y`. It splits that segment's OWN first `=` (giving name `A`),
-/// and since the member list is comma-split with no comma present, the whole
-/// remainder - INCLUDING the literal text `: B = /bin/ls "y` - becomes A's
-/// single member. Alias `B` is never defined at all, which feeds #331's
-/// undefined/dead-alias walk (`sudo-E01`/`W02`/`W03`) a corrupt alias table.
+/// Before this fix, the mispaired quotes swallowed the `:` between `A`'s and
+/// `B`'s specs, so `classify_alias` saw only ONE top-level segment: `A =
+/// /bin/echo x=" : B = /bin/ls "y`. It split that segment's OWN first `=`
+/// (giving name `A`), and since the member list is comma-split with no comma
+/// present, the whole remainder - INCLUDING the literal text `: B = /bin/ls
+/// "y` - became A's single member. Alias `B` was never defined at all, which
+/// fed #331's undefined/dead-alias walk (`sudo-E01`/`W02`/`W03`) a corrupt
+/// alias table. Fixed: `is_option_value_quote_opener` now requires the `=`
+/// before an opening quote to be an `Option_Spec` keyword's own `=`, not any
+/// `=`, so a command-argument `=` glued to a quote (`x="`) no longer gains
+/// an option value's pairing power; the assertions below pin the corrected
+/// two-spec split, shipped and verified (not reverted by `50594c4`).
 #[test]
 fn command_argument_equals_glued_to_a_quote_does_not_mask_the_alias_spec_colon() {
     let src = "Cmnd_Alias A = /bin/echo x=\" : B = /bin/ls \"y\n";
@@ -2276,15 +2293,21 @@ fn command_argument_equals_glued_to_a_quote_does_not_mask_the_alias_spec_colon()
 // MISS-2 (round 5): the option value is assumed to start right after `=`
 // ===========================================================================
 //
-// `split_leading_option` (parser.rs:1290-1302, `let value_start = eq + 1;`),
-// `option_value_end` (parser.rs:1007-1014), and the `'='` arm's
-// `tok_start = option_value_end(s, after_eq)` (parser.rs:818) all assume an
-// `Option_Spec` value's first byte sits IMMEDIATELY after the `=`. Real sudo
-// accepts whitespace on either side of an `Option_Spec`'s `=` (`man 5
-// sudoers` grants free-form tokenization around `=`); every FROZEN test in
-// this file writes it glued (`TIMEOUT=30`, `CWD="/a b"`). This is the third
-// `sudo-F01` FATAL false positive of the lane, and unlike MISS-1 it needs no
-// quotes at all.
+// `split_leading_option`, `option_value_end`, and the `'='` arm's
+// `tok_start = option_value_end(s, after_eq)` call all ORIGINALLY assumed an
+// `Option_Spec` value's first byte sat IMMEDIATELY after the `=`. The code
+// has since changed: `split_leading_option` now reads
+// `let value_start = skip_value_leading_whitespace(rest, eq + 1);`, and the
+// `'='` arm routes through the same helper before calling `option_value_end`
+// - see `skip_value_leading_whitespace`'s doc comment. Real sudo accepts
+// whitespace on either side of an `Option_Spec`'s `=`, but that tolerance is
+// grounded ONLY by live `visudo -c -f -` probes, never by `man 5 sudoers`
+// (which documents the glued `KEY=value` spelling only and states no general
+// whitespace tolerance around `=` - see `skip_value_leading_whitespace`'s
+// doc comment for the full grounding); every FROZEN test written before this
+// fix happened to write the value glued (`TIMEOUT=30`, `CWD="/a b"`). This
+// was the third `sudo-F01` FATAL false positive of the lane, and unlike
+// MISS-1 it needed no quotes at all.
 
 /// The sharpest MISS-2 face: a space AFTER the `=`, before a value that then
 /// precedes a TAG COLON, throws the whole line away.
@@ -2520,8 +2543,9 @@ fn option_keyword_with_trailing_space_before_the_equals_is_still_recognized_as_a
 // code's.
 // ===========================================================================
 
-/// MUTATION SURVIVOR: `parser.rs:1011:44: replace + with - in
-/// option_value_end` (`unquoted_value_end(s, close - 1)`) SURVIVES today.
+/// MUTATION SURVIVOR: mutating `option_value_end`'s
+/// `unquoted_value_end(s, close + 1)` call to `unquoted_value_end(s, close -
+/// 1)` (replace + with -) SURVIVES today.
 ///
 /// Verified NOT equivalent: `close - 1` starts the post-closing-quote scan
 /// ONE BYTE EARLY, landing on the byte immediately before the closing quote
@@ -2565,10 +2589,10 @@ fn trailing_space_before_the_closing_quote_of_an_option_value_is_kept_verbatim()
     assert_eq!(specs[0].cmnd, CmndItem::Cmnd("/bin/ls".to_string()));
 }
 
-/// MUTATION SURVIVOR (two, closed by one test): `parser.rs:1446:35: replace -
-/// with / in split_user_list` (`bytes[open / 1]` i.e. `bytes[open]`) and
-/// `parser.rs:1447:29: replace && with || in split_user_list` both SURVIVE
-/// today.
+/// MUTATION SURVIVOR (two, closed by one test): mutating `split_user_list`'s
+/// `bytes[open - 1]` to `bytes[open / 1]` (i.e. `bytes[open]`, replace - with
+/// /) and mutating its `prev != b',' && !prev.is_ascii_whitespace()` guard to
+/// use `||` in place of `&&` both SURVIVE today.
 ///
 /// Verified NOT equivalent, and the SAME input kills both: `bytes[open / 1]`
 /// makes `prev` the OPENING QUOTE BYTE ITSELF (`b'"'`) instead of the real

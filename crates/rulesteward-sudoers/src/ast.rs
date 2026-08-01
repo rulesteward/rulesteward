@@ -299,7 +299,9 @@ pub enum CmndOptionKey {
 /// source value (everything after the `=`, up to the next un-quoted,
 /// un-escaped whitespace - NOT simply "the next whitespace": the value may
 /// itself be double-quoted or backslash-escaped (`CWD="/tmp/a b"`,
-/// `CWD=/tmp/a\ b`; `man 5 sudoers` rendered page line 399), in which case the
+/// `CWD=/tmp/a\ b`; no `man 5 sudoers` passage documents `Option_Spec` value
+/// quoting - grounded only by live `visudo -c -f -` probes, see
+/// `parser::skip_value_leading_whitespace`'s doc comment), in which case the
 /// quoted/escaped whitespace is part of the value, not its end).
 ///
 /// The value is kept as WRITTEN, never coerced or unescaped/unquoted.
@@ -364,9 +366,12 @@ pub struct CmndSpec {
     /// differential compare users / hosts / commands only), so capturing the
     /// options does NOT by itself close the option-erasure axis - that needs a
     /// third `StructureProjection` axis, deliberately out of scope. What it
-    /// buys is that an option stops CORRUPTING the `commands` axis, which IS
-    /// compared, and that the value survives for a future lint instead of being
-    /// discarded on both sides of the comparison.
+    /// buys is twofold: consuming the `KEY=value` token here stops an option
+    /// from CORRUPTING the `commands` axis, which IS compared; and retaining
+    /// the value (not just recognizing the keyword) lets the frozen test
+    /// suite prove the value was actually PARSED rather than merely
+    /// recognized and discarded, since whole-`Vec` equality on this field is
+    /// the only assertion that can tell the two apart.
     pub options: Vec<CmndOption>,
     /// The explicit tags written on this command (NOT inheritance-resolved).
     pub tags: Vec<Tag>,
