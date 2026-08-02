@@ -1168,10 +1168,17 @@ fn unescaped_quote_positions(s: &str) -> Vec<usize> {
 ///     These DO deliberately mask a separator: a `User_List`/`Host_List`
 ///     principal may be quoted precisely to carry an `=` or a `:` of its own
 ///     (`alice "h:1" = NOPASSWD: ALL` is rc 0 with `Host_List ["h:1"]`), so
-///     [`split_top_level_segments`]'s `'='` arm consults this registry ONLY,
-///     and its `':'` arm consults both this and the option-value one above.
-///     The distinction from a command quote is WHERE it may open, not what it
-///     does once open.
+///     [`split_top_level_segments`]'s `':'` arm consults both this and the
+///     option-value one above. The distinction from a command quote is WHERE it
+///     may open, not what it does once open.
+///   * RUNAS spans, recorded by [`split_top_level_segments`]'s and
+///     [`split_cmnd_specs`]'s `'"' if depth > 0` arms, also via
+///     [`opens_principal`]. A quoted RUNAS principal is legal
+///     (`alice ALL = (root,"a)b") ...` is rc 0 with `runasusers ["root", "a)b"]`),
+///     so its bytes are literal too -- including a `)`, which no `depth` test can
+///     distinguish from the group's real closer. `split_top_level_segments`'s
+///     `'='` arm consults this AND the principal registry above; its `','` and
+///     `')'` arms consult this one.
 ///   * [`simple_quote_pairs`] -- ANY unescaped quote may open, with no
 ///     token-scoping at all (used by [`unquoted_whitespace_runs`] and
 ///     [`split_user_list`], which are already operating inside a region known
@@ -1299,10 +1306,13 @@ fn structural_eq(s: &str) -> Option<usize> {
 /// GLUED opener with an `=` INSIDE the quotes -- each half was covered, the
 /// intersection was not.
 ///
-/// The escape case never reaches here: both callers consume a `\`-escaped char
-/// before matching, so a `\"` is never offered as an opener.
+/// The escape case never reaches here: ALL FOUR call sites consume a
+/// `\`-escaped char before matching, so a `\"` is never offered as an opener.
+/// They are `split_top_level_segments`'s two `'"'` arms (principal and runas),
+/// `structural_eq`'s, and `split_cmnd_specs`'s.
 fn opens_principal(spans: &[(usize, usize)], i: usize) -> bool {
-    // Both callers scan forward and push a span only AFTER deciding to open it,
+    // All FOUR call sites scan forward and push a span only AFTER deciding to
+    // open it,
     // so every recorded span starts strictly before the cursor. Stated as an
     // assertion rather than a comment because it is what makes the `open < i`
     // -> `open <= i` mutant EQUIVALENT (the two differ only at `open == i`,
@@ -1608,13 +1618,16 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     // byte and must not be mistaken for the group's closer. Distinct from `quotes`
     // above, which tracks only `Option_Spec` VALUE spans.
     //
-    // Swept here rather than left until a witness appears. No input has yet been
-    // found where this splitter alone flips a grant: #650's truncation in
-    // `parse_cmnd_spec` intercepts every line with a quoted `)` in a runas list
-    // before this splitter's `tok_start` can matter, so the arm is currently
-    // MASKED rather than exercised, and its mutants survive accordingly. The
-    // unmodelled semantic is identical to the twin's, and fixing #650 is what
-    // will make this arm observable.
+    // No LINT-level input flips a grant through this splitter alone: #650's
+    // truncation in `parse_cmnd_spec` intercepts every line with a quoted `)` in
+    // a runas list before this splitter's `tok_start` can matter. That masking is
+    // a property of one CALLER, not of the splitter, so the arm is witnessed
+    // directly instead -- see `quoted_close_paren_in_a_runas_principal_keeps_the_
+    // option_value_anchor` and `a_depth_zero_quote_never_shields_a_later_runas_
+    // close_paren` in this file's test module, which call `split_cmnd_specs`
+    // itself. Both halves of the guard below are killed by them; nothing here is
+    // expected to survive the mutation gate. Do not read a survivor on this arm
+    // as normal.
     let mut runas_quotes: Vec<(usize, usize)> = Vec::new();
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
