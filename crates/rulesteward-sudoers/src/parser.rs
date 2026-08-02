@@ -3231,6 +3231,29 @@ mod tests {
     }
 
     #[test]
+    fn quoted_close_paren_in_a_runas_principal_keeps_the_option_value_anchor() {
+        // WITNESS for this splitter's `runas_quotes` guard. The lint-level face of
+        // this arm is masked by #650 (`parse_cmnd_spec`'s `after_open.find(')')`
+        // truncates the runas token before the split can matter), so no CLI input
+        // observes it and its mutants survive the diff-scoped gate. Calling the
+        // splitter directly bypasses that masking.
+        //
+        // `alice ALL = (root,"a)b") CWD="/x,y" /bin/ls, NOPASSWD: /bin/su` is
+        // `visudo -c -f -` rc 0 with TWO `Cmnd_Spec`s (sudo 1.9.17p2, 2026-08-02).
+        //
+        // Without the guard the QUOTED `)` fires the `')'` arm, drops `depth` to 0
+        // and drags `tok_start` into the middle of the principal; `preceding_token`
+        // at the following `=` is then no longer exactly `CWD`, no `Option_Spec`
+        // value span is recorded, and the `,` INSIDE `"/x,y"` splits - yielding
+        // THREE specs instead of two and tearing the option value in half.
+        assert_eq!(
+            split_cmnd_specs("(root,\"a)b\") CWD=\"/x,y\" /bin/ls, NOPASSWD: /bin/su"),
+            vec!["(root,\"a)b\") CWD=\"/x,y\" /bin/ls", "NOPASSWD: /bin/su"],
+            "a quoted `)` in a runas principal must not desync the option anchor"
+        );
+    }
+
+    #[test]
     fn bare_mid_command_paren_does_not_swallow_the_segment_colon() {
         // Colon-splitter twin of `bare_mid_command_paren_does_not_swallow_comma_separator`.
         // `cvtsudoers -f json` on `alice h1 = /bin/echo a(b : h2 = ALL` (visudo -c rc 0)
