@@ -763,7 +763,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // hold: its arm is gated `!in_cmnd_list`, and `in_cmnd_list` is already true
     // everywhere a runas group can open (a `(` only bumps `depth` at a `Cmnd_Spec`
     // start, which exists only past the structural `=`). A quoted runas principal is
-    // legal -- `alice ALL = (root,"a)b") ...` is rc 0 with `runasusers [root, "a)b"]`
+    // legal -- `alice ALL = (root,"a)b") ...` is rc 0 with `runasusers ["root", "a)b"]`
     // (probe 2026-08-02) -- so its bytes, `)` included, are literal. Kept separate
     // from `principal_quotes` rather than merged into it because that vector also
     // gates the `'='` and `':'` arms, and widening those is a behaviour change this
@@ -877,14 +877,31 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // -- a `)` inside an already-consumed option value while a runas group is
                 // open, where this arm now decrements `depth` and drags `tok_start`
                 // backwards. Reaching it needs an exact `Option_Spec` keyword inside a
-                // runas list (`alice ALL = (root,CWD="/a)b") NOPASSWD: /bin/ls`), which
+                // runas list AND an UNQUOTED value (`alice ALL = (root,CWD=/a)b)
+                // NOPASSWD: /bin/ls`); the QUOTED spelling is now excluded by
+                // `runas_quotes` before it can reach this arm at all, which
                 // real sudo rejects rc 1, so it is unreachable for valid input rather
                 // than merely unlikely.
                 depth -= 1;
                 tok_start = i + c.len_utf8();
                 at_spec_start = false;
             }
-            ',' if !inside_a_clean_quoted_region(&quotes, i) => {
+            ',' if !inside_a_clean_quoted_region(&quotes, i)
+                && !inside_a_clean_quoted_region(&runas_quotes, i) =>
+            {
+                // The `runas_quotes` half: a comma inside a QUOTED runas principal
+                // is a value byte (`("a,CWD=")` is rc 0 with ONE principal named
+                // `a,CWD=`), so it must not advance `tok_start`. Letting it left
+                // `preceding_token` at the following `=` equal exactly `CWD`, an
+                // `Option_Spec` keyword harvested from inside a principal; the arm
+                // below then read the principal's own CLOSING quote as a value
+                // OPENER and pushed a bogus span that swallowed the real top-level
+                // comma, losing a NOPASSWD-on-ALL grant.
+                //
+                // Note this is NOT the same test as the `depth > 0` one the `')'`
+                // arm needs. An UNQUOTED comma in a runas list IS a token boundary
+                // (`(u1,u2)` is rc 0), so depth alone would mask the wrong commas;
+                // quoting is what makes this one literal.
                 // A comma inside a CLEAN (closed) `Option_Spec` value quote
                 // (`CWD="/a,b"`) is a value byte and must not touch `tok_start`; the
                 // guard routes it to `_` below, exactly as the `:` arm does with its own
@@ -937,7 +954,16 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 }
                 at_spec_start = false;
             }
-            '=' if !inside_a_clean_quoted_region(&principal_quotes, i) => {
+            '=' if !inside_a_clean_quoted_region(&principal_quotes, i)
+                && !inside_a_clean_quoted_region(&runas_quotes, i) =>
+            {
+                // Both registries, for the same reason: an `=` inside a quoted
+                // principal is a value byte and never an `Option_Spec` anchor. The
+                // `principal_quotes` half has been here since the `=` face was
+                // closed; the `runas_quotes` half is its runas-region twin, and its
+                // absence is why the quoted-HOST-principal spelling
+                // (`alice "h,CWD=" = ...`) was already protected while the quoted-
+                // RUNAS-principal one was not.
                 // An `Option_Spec`'s OWN `=` (`TIMEOUT=30`) is not a token boundary the
                 // way a structural `=` is: the whole `KEY=value` is ONE `Cmnd_Spec`
                 // prefix token, so `tok_start` must skip PAST the value. Leaving it just
@@ -1582,11 +1608,13 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     // byte and must not be mistaken for the group's closer. Distinct from `quotes`
     // above, which tracks only `Option_Spec` VALUE spans.
     //
-    // Swept here rather than left until a witness appears: no input has yet been
-    // found where this splitter alone flips a grant, because the top-level splitter
-    // fails first on every shape tried. The unmodelled semantic is identical
-    // though, and leaving one of a pair of twins unfixed is precisely the
-    // second-call-site pattern behind 31 of 62 escaped defects.
+    // Swept here rather than left until a witness appears. No input has yet been
+    // found where this splitter alone flips a grant: #650's truncation in
+    // `parse_cmnd_spec` intercepts every line with a quoted `)` in a runas list
+    // before this splitter's `tok_start` can matter, so the arm is currently
+    // MASKED rather than exercised, and its mutants survive accordingly. The
+    // unmodelled semantic is identical to the twin's, and fixing #650 is what
+    // will make this arm observable.
     let mut runas_quotes: Vec<(usize, usize)> = Vec::new();
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
@@ -1638,7 +1666,9 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // text or in an unquoted `Option_Spec` value never had a matching
                 // `(` (which only bumps `depth` at `at_spec_start`), so `depth` is
                 // 0 and it falls through to `_` as the literal byte it is, while a
-                // QUOTED `)` is at depth > 0 and needs `runas_quotes` to exclude it.
+                // `)` quoted inside a RUNAS PRINCIPAL is at depth > 0 and needs
+                // `runas_quotes` to exclude it. (A quoted `)` in ordinary command
+                // text is at depth 0 and never reaches this arm at all.)
                 //
                 // This subsumes the `i >= tok_start` guard it replaces for every
                 // input this arm can actually see - with the same one-directional

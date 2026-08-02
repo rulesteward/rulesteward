@@ -2728,8 +2728,14 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 // the only thing that makes the byte literal (`CWD=/a,b` unquoted is visudo
 // rc 1), so a positional guard would mask a comma sudo actually rejects and
 // convert a loud fatal into a silent misparse. For a `)`, an unquoted value may
-// legitimately contain one (`CWD=/a)b` is rc 0), so that arm needs the
-// structural `depth > 0` test instead.
+// legitimately contain one (`CWD=/a)b` is rc 0), so that arm needs a STRUCTURAL
+// `depth > 0` test that the comma arm does not.
+//
+// That is a difference in WHICH tests each arm needs, not a claim that the `)`
+// arm needs no content test. It needs both: a `)` is also literal when QUOTED
+// inside a runas principal (`(root,"a)b")` is rc 0 with one principal named
+// `a)b`), which `depth > 0` alone cannot see. The shipped guard is
+// `depth > 0 && !inside_a_clean_quoted_region(&runas_quotes, i)`.
 // ===========================================================================
 
 // ===========================================================================
@@ -3041,7 +3047,8 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
 //
 // Both arms have since changed and the two guards are NOT the same: the `','`
 // arm took the content-based `!inside_a_clean_quoted_region(&quotes, i)`, and
-// the `')'` arm moved OFF the positional test to the structural `depth > 0`.
+// the `')'` arm moved OFF the positional test to a structural `depth > 0` PLUS
+// its own content test `!inside_a_clean_quoted_region(&runas_quotes, i)`.
 // See this file's earlier "#538 status" block for why symmetry would be wrong.
 //
 // This is PRE-EXISTING (not a round-5/round-6 regression): the same defect
@@ -3951,7 +3958,9 @@ fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mas
 // closes nothing, unlike its `split_top_level_segments` sibling at the time.
 // ===========================================================================
 //
-// HISTORICAL. Both arms are now guarded `depth > 0` (#629) and neither uses
+// HISTORICAL. Both arms are now guarded `depth > 0` PLUS
+// `!inside_a_clean_quoted_region(&runas_quotes, i)` (#629 + the quoted-runas
+// fix), and neither uses
 // the positional test this section was written about; the header once claimed
 // the sibling arm still had `i >= tok_start` while `split_cmnd_specs` had no
 // guard at all, which stopped being true before this section was last touched.
@@ -4032,8 +4041,10 @@ fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mas
 // `)` would measure its preceding token as the whole `")CWD"` and be
 // wrongly rejected. A naive fix that simply DELETES the reset would repair
 // MISS-B/C but break this idiom; the reset must instead be GUARDED, not
-// removed outright. The guard that shipped is `depth > 0` on both arms
-// (#629) -- a `)` that actually closes a runas group this scan opened. The
+// removed outright. The guard that shipped is `depth > 0` plus
+// `!inside_a_clean_quoted_region(&runas_quotes, i)` on both arms (#629 plus the
+// quoted-runas-principal fix) -- a `)` that actually closes a runas group this
+// scan opened AND is not a literal byte inside a quoted principal. The
 // `i >= tok_start` spelling this paragraph used to prescribe was retired:
 // it cannot see a `)` in plain COMMAND text, where `tok_start` is
 // legitimately behind the cursor, so it left the #629 fail-open open.

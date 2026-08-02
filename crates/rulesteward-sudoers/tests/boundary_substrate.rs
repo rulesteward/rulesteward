@@ -270,7 +270,9 @@ fn command_glued_to_a_closing_quote_is_a_fresh_token() {
 //
 // `depth` is 0 at such a `)` (a mid-command `(` never bumps it), whereas a
 // genuine runas close-paren has `depth > 0`. The arms did not distinguish them;
-// `depth > 0` is now the guard on both.
+// `depth > 0` is now part of the guard on both. It is not the WHOLE guard - see
+// the quoted-runas-principal section below, where a `)` at `depth > 0` is still
+// a literal byte and needs `runas_quotes` to exclude it.
 // ===========================================================================
 
 /// cvtsudoers reports TWO `Cmnd_Spec`s here, the second with
@@ -346,21 +348,22 @@ fn idiom_runas_group_glued_to_an_option_keyword_still_works() {
 // ===========================================================================
 // The third `)`, which the `depth > 0` guard alone does not model.
 //
-// That guard is STRUCTURAL and quote-blind, and NEITHER quote registry reaches
-// this byte: `principal_quotes` is gated `!in_cmnd_list`, which is already true
-// by the time a runas group can open, and `quotes` only ever tracks
-// `Option_Spec` values. So a `)` inside a QUOTED RUNAS PRINCIPAL fires the arm,
-// drops `depth` to 0, and leaves the real closer to fall through to `_` without
-// resetting `tok_start` - desyncing the rest of the line and discarding an
-// independent grant.
+// BEFORE the fix the arm was `')' if depth > 0` - structural and quote-blind,
+// with neither of the two registries then present reaching this byte
+// (`principal_quotes` is gated `!in_cmnd_list`, already true by the time a runas
+// group can open; `quotes` tracks only `Option_Spec` values). A `)` inside a
+// QUOTED RUNAS PRINCIPAL therefore fired the arm, dropped `depth` to 0, and left
+// the real closer to fall through to `_` without resetting `tok_start` -
+// desyncing the rest of the line and discarding an independent grant.
 //
-// A `)` is therefore literal in THREE ways, not two: unquoted in command text
-// (structural, `depth` is 0 there), unquoted in an `Option_Spec` value, and
-// quoted anywhere. The arm needs the structural AND the content test.
+// A `)` is literal in THREE ways, not two: unquoted in command text (structural,
+// `depth` is 0 there), unquoted in an `Option_Spec` value, and quoted anywhere.
+// The arm needs the structural AND the content test, so it now takes both, and
+// `runas_quotes` is the third registry that supplies the second.
 //
 // Re-derived 2026-08-02, sudo 1.9.17p2, stdin only: the line below is
 // `visudo -c -f -` rc 0, and `cvtsudoers -f json` reports TWO `User_Specs`,
-// `runasusers [root, "a)b"]`, and `authenticate: false` on BOTH.
+// `runasusers ["root", "a)b"]`, and `authenticate: false` on BOTH.
 // ===========================================================================
 
 #[test]
@@ -379,16 +382,24 @@ fn quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group(
     // `sudo-F02` text). That drops the FIRST group's grant, identically on the fork
     // point and on HEAD, and is filed as #650. When #650 lands this becomes 2.
     //
-    // The grant this arm was losing is h2's, and
-    // [`quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant`]
-    // pins that one directly, so the security property does not rest on this count.
+    // THIS test is the regression pin, and it pins via `f01_count` above rather
+    // than via the count below: with the content guard removed from both `')'`
+    // arms, it is the ONLY test in this file that fails, and it fails on
+    // `f01_count` (`left: 1, right: 0`) -- the regression surfaces as a false
+    // FATAL, not as a missing grant. Measured by building that mutant, 2026-08-02.
     assert_eq!(w05_count(src), 1, "h2's grant; group 1's is lost to #650");
 }
 
-/// The security property on its own, isolated from #650: only the SECOND host
+/// The security property with #650's interference removed: only the SECOND host
 /// group carries a `NOPASSWD`, so the count cannot be satisfied by the first
-/// group's grant and is unaffected by #650's truncation of it. This is the
-/// assertion that goes RED if the `')'` arm ever loses its content guard again.
+/// group's grant.
+///
+/// NOT the regression pin, despite testing the property the regression violated.
+/// Its line has no tag colon in the first host group, and the tag colon is what
+/// makes a corrupted `tok_start` observable -- so a `')'` arm that loses its
+/// content guard leaves this test GREEN. Isolating it from #650 also isolated it
+/// from the defect. The pin is
+/// [`quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group`].
 #[test]
 fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
     let src = "alice ALL = (root,\"a)b\") /bin/ls : h2 = NOPASSWD: /bin/su\n";
@@ -398,9 +409,18 @@ fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
 }
 
 /// The one-byte negative control: the same line with the `)` deleted from the
-/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES, so the
-/// two lines must lint identically. This control is green on the fork point as
-/// well, which is what stops a fix passing by deleting the `depth > 0` guard.
+/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES. The two
+/// lines still do not lint IDENTICALLY -- `w05_count` is 1 above and 2 here --
+/// because #650 truncates the first group's grant on the `a)b` spelling only.
+///
+/// Green on the fork point as well, so a fix cannot pass by DISABLING the `')'`
+/// arm outright. It is blind to deletion of `depth > 0` on its own: this line
+/// holds exactly one `)`, at which `depth` is 1, so that guard is a no-op here.
+/// Deleting `depth > 0` is killed instead by
+/// [`literal_close_paren_in_command_text_does_not_mask_a_host_group_colon`],
+/// [`literal_close_paren_in_command_text_does_not_mask_a_cmnd_spec_comma`] and
+/// [`control_unknown_keyword_after_a_close_paren_is_unaffected`] -- verified by
+/// building that mutant, 2026-08-02.
 #[test]
 fn control_quoted_runas_principal_without_a_paren_is_unaffected() {
     let src = "alice ALL = (root,\"ab\") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su\n";
@@ -409,15 +429,74 @@ fn control_quoted_runas_principal_without_a_paren_is_unaffected() {
     assert_eq!(w05_count(src), 2);
 }
 
-/// The second one-byte control: `(` instead of `)`. Only the CLOSING paren can
-/// desync `depth`, so this one must be green on both shas too, and it isolates
-/// the defect to the close-paren rather than to quoting-in-a-runas-list at all.
+/// The second one-byte control: `(` instead of `)`. INSIDE a quoted principal
+/// only the CLOSING paren can desync `depth`, because `at_spec_start` is already
+/// false there so the `(` never bumps it. (Elsewhere a `(` certainly can desync
+/// depth - see the #416 note on the `'('` arm in `parser.rs`.) Green on both
+/// shas, isolating the defect to the close-paren rather than to
+/// quoting-in-a-runas-list at all.
 #[test]
 fn control_quoted_open_paren_in_a_runas_principal_is_unaffected() {
     let src = "alice ALL = (root,\"a(b\") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su\n";
     assert_eq!(f01_count(src), 0);
     assert_eq!(only_spec(src).host_groups.len(), 2);
     assert_eq!(w05_count(src), 2);
+}
+
+// ===========================================================================
+// The OTHER arms that need the runas registry.
+//
+// Adding `runas_quotes` and wiring only the `')'` arm to it left the `','` and
+// `'='` arms of `split_top_level_segments` still blind to a quoted runas
+// principal - the same one-arm-of-three sweep miss this whole file exists to
+// close, one registry later.
+//
+// The chain, for `alice ALL = ("a,CWD=") /bin/ls, CWD="/tmp" NOPASSWD: ALL`:
+// the `,` INSIDE the quoted principal advances `tok_start`, so `preceding_token`
+// at the following `=` is exactly `CWD` - an `Option_Spec` keyword harvested from
+// inside a principal. `quoted_value_span` then reads the principal's own CLOSING
+// quote as a value OPENER, pairs it with the next quote, and the resulting bogus
+// span covers the real top-level `,`. The tag colon then measures
+// `/bin/ls, CWD="/tmp" NOPASSWD`, `parse_tag` rejects it, and the line is
+// discarded - losing a NOPASSWD-on-ALL grant.
+//
+// Oracle 2026-08-02 (sudo 1.9.17p2, stdin only): rc 0, ONE host group with TWO
+// Cmnd_Specs, `runasusers ["a,CWD="]` on both, and `authenticate: false` +
+// `command: ALL` on the second.
+//
+// The quoted-HOST-principal twin is already protected, because the `'='` arm
+// does consult `principal_quotes`; that asymmetry is what identifies the gap.
+// ===========================================================================
+
+#[test]
+fn comma_inside_a_quoted_runas_principal_does_not_hide_the_passwordless_all_grant() {
+    let src = "alice ALL = (\"a,CWD=\") /bin/ls, CWD=\"/tmp\" NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo accepts this line rc 0");
+    assert_eq!(
+        w01_count(src),
+        1,
+        "the passwordless ALL grant must be reported"
+    );
+}
+
+/// One-byte negative control: `CWD` -> `XWD` is not an `Option_Spec` keyword, so
+/// no anchor is manufactured inside the principal and no bogus span opens. Green
+/// on the fork point AND on HEAD, so a fix cannot pass by deleting a guard.
+#[test]
+fn control_non_keyword_inside_a_quoted_runas_principal_is_unaffected() {
+    let src = "alice ALL = (\"a,XWD=\") /bin/ls, CWD=\"/tmp\" NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(w01_count(src), 1);
+}
+
+/// The twin that was ALREADY protected, kept as the contrast that localises the
+/// defect: the identical construct in a quoted HOST principal works, because the
+/// `'='` arm consults `principal_quotes`. Only the runas region lacked a registry.
+#[test]
+fn comma_inside_a_quoted_host_principal_is_protected_by_principal_quotes() {
+    let src = "alice \"h,CWD=\" = CWD=\"/tmp\" NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(w01_count(src), 1);
 }
 
 // ===========================================================================
