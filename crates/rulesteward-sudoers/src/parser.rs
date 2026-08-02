@@ -3254,6 +3254,28 @@ mod tests {
     }
 
     #[test]
+    fn a_depth_zero_quote_never_shields_a_later_runas_close_paren() {
+        // The `depth > 0` half of the same arm's guard. `runas_quotes` must record
+        // ONLY spans opened inside a runas group: a quote opened in ordinary command
+        // text at depth 0 has no principal power, and sudo splits on a quoted comma
+        // in the Cmnd_Spec_List anyway.
+        //
+        // `alice ALL = /bin/echo "x, (root) /bin/ls", NOPASSWD: /bin/su` is
+        // `visudo -c -f -` rc 0 with THREE `Cmnd_Spec`s (sudo 1.9.17p2, 2026-08-02).
+        //
+        // Widen the guard to `depth >= 0` and the leading `"` records a span running
+        // past the `(root)` group. The group's real `)` is then inside that span and
+        // gets masked, so `depth` never returns to 0 and the FINAL `,` - the one
+        // separating the `NOPASSWD` spec - stops splitting: two specs instead of
+        // three, with the passwordless grant swallowed into its predecessor.
+        assert_eq!(
+            split_cmnd_specs("/bin/echo \"x, (root) /bin/ls\", NOPASSWD: /bin/su"),
+            vec!["/bin/echo \"x", "(root) /bin/ls\"", "NOPASSWD: /bin/su"],
+            "a depth-0 quote must not shield a later runas `)`"
+        );
+    }
+
+    #[test]
     fn bare_mid_command_paren_does_not_swallow_the_segment_colon() {
         // Colon-splitter twin of `bare_mid_command_paren_does_not_swallow_comma_separator`.
         // `cvtsudoers -f json` on `alice h1 = /bin/echo a(b : h2 = ALL` (visudo -c rc 0)
