@@ -36,7 +36,7 @@ jobs:
     name: build static musl binary + assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install stable Rust + musl target
         run: |
@@ -62,7 +62,7 @@ jobs:
       # 2026-06-02. Installed via cargo-binstall (prebuilt binaries) rather than
       # source-compiled. Pinned for the same drift-prevention reason ci.yml pins
       # cargo-audit / cargo-deny.
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         with:
           # cargo-binstall itself is pinned too (it was the last floating tool):
           # 1.20.1 is what the v0.3.0-rc1 release dry-run installed and validated.
@@ -311,7 +311,7 @@ jobs:
             dist/rulesteward-*.x86_64.rpm
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
