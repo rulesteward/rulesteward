@@ -4,11 +4,30 @@
 # WHY: a comment citing `foo.rs:123` is a claim about the tree that decays silently.
 # An INSERTION anywhere above the target invalidates it without touching the comment,
 # so it survives fmt, clippy, the test suite, the mutation gate and code review.
-# Measured 2026-07-31 on main: 220 such citations, 36 of them provably dead (32 name a
-# file that does not exist, 4 name a line past their target's EOF). The worked example
-# is timestamped: `fn color_enabled`'s citation was correct for five days, was falsified
-# twice in 18 hours by insertions 300 lines away that never touched the comment, and was
-# repaired 26 minutes after the last move - with every gate green and blind throughout.
+# The tree carries these citations in the hundreds and a standing minority of them are
+# provably dead at any given moment. The live counts are NOT repeated here: run
+# `bash scripts/check-doc-citations.sh` and read its own summary line, which is derived
+# rather than remembered.
+#
+# NOTE ON WIRING, since it is easy to assume otherwise: this guard is NOT part of
+# `just ci`. The only reference to it in the justfile or any workflow is the
+# `instrument-test` loop, which runs its SELF-TEST (`check-doc-citations-test.sh`), not
+# the guard against this tree. It exits 1 on the current backlog, so wiring it into
+# `just ci` is gated on that cleanup landing.
+#
+# That is a deliberate correction, not a stylistic one. This header used to state
+# "220 such citations, 36 of them provably dead", measured 2026-07-31; the same script
+# unmodified reported 246/42 one day later (#642). A doc-truth instrument whose own
+# header had decayed into a false claim is the exact defect it exists to catch, and the
+# stale figure had already been quoted downstream as the measured basis for a rule
+# change. CLAUDE.md's Project Context took the same fix for the same reason, after a
+# pinned version rotted from v0.1 through v0.7 unnoticed in always-loaded context.
+#
+# The worked example is timestamped and stays, because a dated anecdote does not decay
+# the way a live count does: `fn color_enabled`'s citation was correct for five days,
+# was falsified twice in 18 hours by insertions 300 lines away that never touched the
+# comment, and was repaired 26 minutes after the last move - every gate green and blind
+# throughout.
 #
 # WHAT IT CHECKS (only what cannot be argued with):
 #   DEAD-FILE      - the cited path matches no tracked file.
