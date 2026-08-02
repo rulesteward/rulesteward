@@ -344,6 +344,83 @@ fn idiom_runas_group_glued_to_an_option_keyword_still_works() {
 }
 
 // ===========================================================================
+// The third `)`, which the `depth > 0` guard alone does not model.
+//
+// That guard is STRUCTURAL and quote-blind, and NEITHER quote registry reaches
+// this byte: `principal_quotes` is gated `!in_cmnd_list`, which is already true
+// by the time a runas group can open, and `quotes` only ever tracks
+// `Option_Spec` values. So a `)` inside a QUOTED RUNAS PRINCIPAL fires the arm,
+// drops `depth` to 0, and leaves the real closer to fall through to `_` without
+// resetting `tok_start` - desyncing the rest of the line and discarding an
+// independent grant.
+//
+// A `)` is therefore literal in THREE ways, not two: unquoted in command text
+// (structural, `depth` is 0 there), unquoted in an `Option_Spec` value, and
+// quoted anywhere. The arm needs the structural AND the content test.
+//
+// Re-derived 2026-08-02, sudo 1.9.17p2, stdin only: the line below is
+// `visudo -c -f -` rc 0, and `cvtsudoers -f json` reports TWO `User_Specs`,
+// `runasusers [root, "a)b"]`, and `authenticate: false` on BOTH.
+// ===========================================================================
+
+#[test]
+fn quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group() {
+    let src = "alice ALL = (root,\"a)b\") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su\n";
+    assert_eq!(f01_count(src), 0, "visudo accepts this line rc 0");
+    let s = only_spec(src);
+    assert_eq!(
+        s.host_groups.len(),
+        2,
+        "cvtsudoers reports two User_Specs; the h2 grant must not vanish"
+    );
+    // 1 and not 2, and the missing one is NOT this arm's doing: `parse_cmnd_spec`
+    // locates the runas list's end with a bare `after_open.find(')')`, which stops at
+    // the QUOTED paren and truncates the token to `"a` (visible in the collateral
+    // `sudo-F02` text). That drops the FIRST group's grant, identically on the fork
+    // point and on HEAD, and is filed as #650. When #650 lands this becomes 2.
+    //
+    // The grant this arm was losing is h2's, and
+    // [`quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant`]
+    // pins that one directly, so the security property does not rest on this count.
+    assert_eq!(w05_count(src), 1, "h2's grant; group 1's is lost to #650");
+}
+
+/// The security property on its own, isolated from #650: only the SECOND host
+/// group carries a `NOPASSWD`, so the count cannot be satisfied by the first
+/// group's grant and is unaffected by #650's truncation of it. This is the
+/// assertion that goes RED if the `')'` arm ever loses its content guard again.
+#[test]
+fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
+    let src = "alice ALL = (root,\"a)b\") /bin/ls : h2 = NOPASSWD: /bin/su\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(only_spec(src).host_groups.len(), 2);
+    assert_eq!(w05_count(src), 1, "the h2 grant must survive");
+}
+
+/// The one-byte negative control: the same line with the `)` deleted from the
+/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES, so the
+/// two lines must lint identically. This control is green on the fork point as
+/// well, which is what stops a fix passing by deleting the `depth > 0` guard.
+#[test]
+fn control_quoted_runas_principal_without_a_paren_is_unaffected() {
+    let src = "alice ALL = (root,\"ab\") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(only_spec(src).host_groups.len(), 2);
+    assert_eq!(w05_count(src), 2);
+}
+
+/// The second one-byte control: `(` instead of `)`. Only the CLOSING paren can
+/// desync `depth`, so this one must be green on both shas too, and it isolates
+/// the defect to the close-paren rather than to quoting-in-a-runas-list at all.
+#[test]
+fn control_quoted_open_paren_in_a_runas_principal_is_unaffected() {
+    let src = "alice ALL = (root,\"a(b\") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(only_spec(src).host_groups.len(), 2);
+    assert_eq!(w05_count(src), 2);
+}
+
+// ===========================================================================
 // The unswept siblings.
 //
 // Routing the `'='` arm through a quoted-principal registry closed the `=` face

@@ -759,6 +759,16 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // reaches command text). Both exist because the splitter and its callers
     // locate that `=` independently.
     let mut principal_quotes: Vec<(usize, usize)> = Vec::new();
+    // Quote spans of the RUNAS region, which `principal_quotes` structurally cannot
+    // hold: its arm is gated `!in_cmnd_list`, and `in_cmnd_list` is already true
+    // everywhere a runas group can open (a `(` only bumps `depth` at a `Cmnd_Spec`
+    // start, which exists only past the structural `=`). A quoted runas principal is
+    // legal -- `alice ALL = (root,"a)b") ...` is rc 0 with `runasusers [root, "a)b"]`
+    // (probe 2026-08-02) -- so its bytes, `)` included, are literal. Kept separate
+    // from `principal_quotes` rather than merged into it because that vector also
+    // gates the `'='` and `':'` arms, and widening those is a behaviour change this
+    // registry does not need to make.
+    let mut runas_quotes: Vec<(usize, usize)> = Vec::new();
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each token-list
@@ -819,15 +829,29 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 depth += 1;
                 at_spec_start = false;
             }
-            ')' if depth > 0 => {
+            ')' if depth > 0 && !inside_a_clean_quoted_region(&runas_quotes, i) => {
                 // ONLY a `)` that actually closes a runas group this scan opened is a
-                // token boundary. `depth > 0` is the whole test, and it is STRUCTURAL
-                // rather than positional on purpose: an `Option_Spec` value may legally
-                // contain a literal `)` unquoted (`alice ALL = CWD=/a)b NOPASSWD:
-                // /bin/ls` is rc 0 with value `/a)b`, probe 2026-08-02), and so may
-                // ordinary command text -- and in BOTH of those a `(` never opened
-                // anything, because `(` only bumps `depth` at `at_spec_start`. So depth
-                // is 0 there and the `)` falls through to `_` as the literal byte it is.
+                // token boundary. That takes TWO tests, structural and content, because
+                // a `)` is literal in three different ways:
+                //
+                //  1. unquoted in ordinary command text,
+                //  2. unquoted in an `Option_Spec` value (`alice ALL = CWD=/a)b
+                //     NOPASSWD: /bin/ls` is rc 0 with value `/a)b`, probe 2026-08-02),
+                //  3. quoted, anywhere -- including inside a runas principal.
+                //
+                // `depth > 0` covers 1 and 2 and is STRUCTURAL rather than positional on
+                // purpose: in both, a `(` never opened anything, because `(` only bumps
+                // `depth` at `at_spec_start`. So depth is 0 there and the `)` falls
+                // through to `_` as the literal byte it is.
+                //
+                // It does NOT cover 3, and that gap was a live fail-open: on
+                // `alice ALL = (root,"a)b") NOPASSWD: /bin/ls : h2 = NOPASSWD: /bin/su`
+                // (rc 0, TWO User_Specs, `authenticate: false` on both) the quoted `)`
+                // sits at depth 1, so the arm fired on it, dropped `depth` to 0, and
+                // left the REAL closer to fall through without resetting `tok_start`.
+                // The tag colon then measured `b") NOPASSWD`, `parse_tag` rejected it,
+                // the colon became a host-group separator and the whole line was
+                // discarded Malformed -- taking the independent `h2` grant with it.
                 //
                 // The predecessor guard was `i >= tok_start`, which asked instead
                 // "is this `)` past the value the `=` arm already consumed?". That
@@ -894,6 +918,22 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // matching every other quote rule in this file.
                 if let Some(close) = find_closing_quote(s, i + 1) {
                     principal_quotes.push((i, close));
+                }
+                at_spec_start = false;
+            }
+            '"' if depth > 0 && opens_principal(&runas_quotes, i) => {
+                // Opens a quoted RUNAS principal (see `runas_quotes` above). Disjoint
+                // from the arm above rather than merely ordered after it: `depth > 0`
+                // implies `in_cmnd_list`, since a `(` only bumps `depth` at
+                // `at_spec_start`, which is armed only past the structural `=`.
+                //
+                // `opens_principal` is what makes this alternate-pairing rather than
+                // whole-line pairing: at the CLOSING quote of a recorded span the
+                // predicate is false, so the closer cannot re-open and pair with some
+                // later unrelated quote. Whole-line pairing is the hazard
+                // [`split_cmnd_specs`]'s doc comment records.
+                if let Some(close) = find_closing_quote(s, i + 1) {
+                    runas_quotes.push((i, close));
                 }
                 at_spec_start = false;
             }
@@ -1536,6 +1576,18 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     // quotes (each closing a different command) is a genuine separator and
     // must still split; see the `,` arm.
     let mut quotes: Vec<(usize, usize)> = Vec::new();
+    // Quote spans of the RUNAS region, the twin of the registry
+    // [`split_top_level_segments`] carries under the same name and for the same
+    // reason: a quoted runas principal is legal, so a `)` inside it is a literal
+    // byte and must not be mistaken for the group's closer. Distinct from `quotes`
+    // above, which tracks only `Option_Spec` VALUE spans.
+    //
+    // Swept here rather than left until a witness appears: no input has yet been
+    // found where this splitter alone flips a grant, because the top-level splitter
+    // fails first on every shape tried. The unmodelled semantic is identical
+    // though, and leaving one of a pair of twins unfixed is precisely the
+    // second-call-site pattern behind 31 of 62 escaped defects.
+    let mut runas_quotes: Vec<(usize, usize)> = Vec::new();
     let mut segments = Vec::new();
     let mut seg_start = 0usize;
     // Start of the token immediately preceding the cursor, reset at each
@@ -1578,13 +1630,15 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 depth += 1;
                 at_spec_start = false;
             }
-            ')' if depth > 0 => {
+            ')' if depth > 0 && !inside_a_clean_quoted_region(&runas_quotes, i) => {
                 // Mirrors `split_top_level_segments`'s own `')'` arm exactly - see
-                // there for the grounding probes. ONLY a `)` closing a runas group
+                // there for the grounding probes and for why this needs BOTH a
+                // structural and a content test. ONLY a `)` closing a runas group
                 // this scan opened is a token boundary; a literal `)` in command
                 // text or in an unquoted `Option_Spec` value never had a matching
                 // `(` (which only bumps `depth` at `at_spec_start`), so `depth` is
-                // 0 and it falls through to `_` as the literal byte it is.
+                // 0 and it falls through to `_` as the literal byte it is, while a
+                // QUOTED `)` is at depth > 0 and needs `runas_quotes` to exclude it.
                 //
                 // This subsumes the `i >= tok_start` guard it replaces for every
                 // input this arm can actually see - with the same one-directional
@@ -1603,6 +1657,17 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // fail-open.
                 depth -= 1;
                 tok_start = i + c.len_utf8();
+                at_spec_start = false;
+            }
+            '"' if depth > 0 && opens_principal(&runas_quotes, i) => {
+                // Opens a quoted RUNAS principal, populating the registry the `')'`
+                // arm above consults. The twin of the same arm in
+                // [`split_top_level_segments`]; `opens_principal` is what keeps this
+                // alternate-pairing, so a span's own CLOSING quote cannot re-open and
+                // pair with a later unrelated one.
+                if let Some(close) = find_closing_quote(s, i + 1) {
+                    runas_quotes.push((i, close));
+                }
                 at_spec_start = false;
             }
             ',' if depth == 0 && !inside_a_clean_quoted_region(&quotes, i) => {
