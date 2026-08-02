@@ -1,22 +1,32 @@
 //! Boundary-location fidelity: the structural `=`, the `Option_Spec` value's end,
 //! and the four boundary arms of the top-level splitters.
 //!
-//! ONE root cause, six faces, filed as #612, #622, #629, #630, #631 and #643.
-//! `parser.rs` decides where a structural boundary is in two under-contextualized
-//! ways:
+//! ONE root cause, five reproducing faces, filed as #622, #629, #630, #631 and
+//! #643. Before the fix these tests pin, `parser.rs` decided where a structural
+//! boundary is in two under-contextualized ways:
 //!
 //!   1. A QUOTE-BLIND byte search for the structural `=` (`seg.find('=')` in
-//!      `classify_user_spec` and `classify_alias`), which lands inside a quoted
-//!      principal that contains one.
+//!      `classify_user_spec` and `classify_alias`), which landed inside a quoted
+//!      principal that contains one. Now `structural_eq`.
 //!   2. A POSITION ANCHOR (`tok_start`) in `split_top_level_segments` and
 //!      `split_cmnd_specs`, whose four boundary arms (`)`, `,`, `:`, `=`) each
-//!      carry a hand-written guard. Only the `':'` arm consults the `quotes`
-//!      registry the `'='` arm builds; the `','` arm has no guard at all and the
-//!      `')'` arm's is positional and fires on a `)` in plain command text.
+//!      carried a hand-written guard. Only the `':'` arm consulted the `quotes`
+//!      registry the `'='` arm builds; the `','` arm had no guard at all and the
+//!      `')'` arm's was positional, firing on a `)` in plain command text.
 //!
-//! Four of the six faces are FAIL-OPEN: a `NOPASSWD` grant disappears from the
+//! Four of the five are FAIL-OPEN: a `NOPASSWD` grant disappears from the
 //! parsed model with no diagnostic, so a compliance run reports clean on a file
 //! that grants passwordless sudo. That is the worst outcome this tool has.
+//!
+//! #612 was filed as a sixth face and is NOT one: it was already fixed on `main`
+//! before this work began, verified against a build of `96038c9`, and its
+//! reproducer contains no `(`, `)`, `,` or `"` so none of the changes here can
+//! reach it. Its test is kept below purely as a regression pin.
+//!
+//! Two siblings of the same root cause remain OPEN as #645 and are deliberately
+//! not pinned here: a quoted `:` in a principal-ALIAS member, and `comma_split`'s
+//! quote-blindness. Both are pre-existing and both need changes outside this
+//! surface. Do not read a green run of this file as covering them.
 //!
 //! GROUNDING. Every expectation below was re-derived on THIS host on 2026-08-02,
 //! not copied from the issues: `visudo -c -f -` for the rc and `cvtsudoers -f json`
@@ -89,8 +99,9 @@ fn w05_count(src: &str) -> usize {
 /// `"a=b" h1 = ALL` - visudo rc 0, `User_List ['a=b']`, `Host_List ['h1']`,
 /// `Commands ['ALL']`.
 ///
-/// Today the `eq` index lands on the `=` INSIDE the quotes, so `lhs` is `"a` and
-/// the host part comes back empty: a `sudo-F01` Fatal on a valid file.
+/// Before the fix, the `eq` index landed on the `=` INSIDE the quotes, so `lhs`
+/// was `"a` and the host part came back empty: a `sudo-F01` Fatal on a valid
+/// file.
 #[test]
 fn quoted_user_containing_eq_is_not_a_false_fatal() {
     let src = "\"a=b\" h1 = ALL\n";
@@ -107,9 +118,9 @@ fn quoted_user_containing_eq_is_not_a_false_fatal() {
 /// `alice "h=1" = NOPASSWD: ALL` - visudo rc 0, `Host_List ['h=1']`,
 /// `authenticate: false`, `Commands ['ALL']`.
 ///
-/// The fail-open direction: today the host list is `["\"h"]` and the whole
-/// remainder becomes one command string, so the run-anything-without-a-password
-/// grant is never seen and `sudo-W01` fires zero times.
+/// The fail-open direction: before the fix the host list was `["\"h"]` and the
+/// whole remainder became one command string, so the run-anything-without-a-
+/// password grant was never seen and `sudo-W01` fired zero times.
 #[test]
 fn quoted_host_containing_eq_still_reports_the_passwordless_all_grant() {
     let src = "alice \"h=1\" = NOPASSWD: ALL\n";
@@ -158,11 +169,20 @@ fn control_quoted_principal_without_eq_is_unaffected() {
 /// reports TWO `User_Specs`: `h1` with command `/bin/echo X=NOPASSWD`, and `h2`
 /// with `ALL`.
 ///
-/// Today the command-argument `=` resets `tok_start` just as the structural one
-/// does, so at the tag colon the candidate span is the bare `NOPASSWD` (which
-/// parses as a tag) rather than `/bin/echo X=NOPASSWD` (which does not). The
-/// colon is read as a tag colon, `h2 = ALL` is swallowed into the first
-/// command's text, and that grant leaves the model entirely.
+/// REGRESSION PIN ONLY - this face does not reproduce and never did on any tree
+/// this branch touched. It passed immediately against a `parser.rs` byte-identical
+/// to `main`, and a build of `96038c9` reports no `sudo-F01` on it either.
+///
+/// #612 attributes it to the command-argument `=` resetting `tok_start` "just as
+/// the structural one does". That is not what the code does: the `'='` arm
+/// already leaves `tok_start` untouched on a rejected `=` while `in_cmnd_list`
+/// (the `else if !in_cmnd_list` branch), so `preceding_token` at the tag colon is
+/// the full `/bin/echo X=NOPASSWD`, never the bare `NOPASSWD`. Recorded so a
+/// future reader does not go hunting for a bug that is not there.
+///
+/// The input contains no `(`, `)`, `,` or `"`, so none of the boundary changes on
+/// this branch can reach it - which is the second, independent proof that
+/// whatever fixed it, it was not this work.
 #[test]
 fn command_argument_eq_before_a_tag_colon_does_not_swallow_the_next_host_group() {
     let src = "alice h1 = /bin/echo X=NOPASSWD : h2 = ALL\n";
@@ -179,10 +199,10 @@ fn command_argument_eq_before_a_tag_colon_does_not_swallow_the_next_host_group()
 // ===========================================================================
 // #631 - `option_value_end` runs PAST the closing quote.
 //
-// It computes a quoted value's end as "the next whitespace AFTER the closing
-// quote" rather than "the closing quote", so a `Tag_Spec` glued to that quote is
+// It computed a quoted value's end as "the next whitespace AFTER the closing
+// quote" rather than "the closing quote", so a `Tag_Spec` glued to that quote was
 // swallowed into the value. `quoted_value_span`, which records the SAME concept
-// for the `':'` arm's benefit, correctly stops AT the closing quote - two
+// for the `':'` arm's benefit, always stopped AT the closing quote - two
 // recognizers of one concept disagreeing, which is the shape of every prior
 // regression on this surface.
 //
@@ -197,8 +217,8 @@ fn command_argument_eq_before_a_tag_colon_does_not_swallow_the_next_host_group()
 /// Face A, fully silent: a grant vanishes with zero diagnostics.
 ///
 /// cvtsudoers: `runcwd '/a'`, `authenticate false`, command
-/// `/usr/bin/env FOO=/bin/ls`. Today `RuleSteward` emits no `sudo-W05`, no
-/// `sudo-F01` and no `sudo-E01` - it simply does not see the grant.
+/// `/usr/bin/env FOO=/bin/ls`. Before the fix `RuleSteward` emitted no
+/// `sudo-W05`, no `sudo-F01` and no `sudo-E01` - it simply did not see the grant.
 #[test]
 fn tag_glued_to_a_closing_quote_still_reports_the_grant() {
     let src = "alice ALL = CWD=\"/a\"NOPASSWD: /usr/bin/env FOO=/bin/ls\n";
@@ -245,12 +265,13 @@ fn command_glued_to_a_closing_quote_is_a_fresh_token() {
 // quotes mask a real separator.
 //
 // `depth` is 0 at such a `)` (a mid-command `(` never bumps it), whereas a
-// genuine runas close-paren has `depth > 0`. The arms do not distinguish them.
+// genuine runas close-paren has `depth > 0`. The arms did not distinguish them;
+// `depth > 0` is now the guard on both.
 // ===========================================================================
 
 /// cvtsudoers reports TWO `Cmnd_Spec`s here, the second with
-/// `authenticate: false` and command `/bin/su"`. Today `RuleSteward` sees one and
-/// `sudo-W05` never fires.
+/// `authenticate: false` and command `/bin/su"`. Before the fix `RuleSteward` saw
+/// one and `sudo-W05` never fired.
 #[test]
 fn literal_close_paren_in_command_text_does_not_mask_a_cmnd_spec_comma() {
     let src = "alice ALL = /bin/echo a) CWD=\"/a, NOPASSWD: /bin/su\"\n";
@@ -316,4 +337,146 @@ fn idiom_runas_group_glued_to_an_option_keyword_still_works() {
         1,
         "the `:` inside the CWD value is a value byte"
     );
+}
+
+// ===========================================================================
+// The unswept siblings.
+//
+// Routing the `'='` arm through a quoted-principal registry closed the `=` face
+// and left the SEPARATOR faces open, because a quoted principal may contain a
+// `:` as legitimately as it contains an `=`. Both faces below are one boundary
+// arm away from the ones above and neither was sampled by any of the 95 frozen
+// tests, so a green suite said nothing about them.
+//
+// The openers themselves follow real sudo's ALTERNATE PAIRING: a `"` opens a
+// principal unless it is closing one already open. Whitespace before it is
+// irrelevant, which the frozen suite already recorded in
+// `a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespace_needed`
+// ("a `\"` always opens a NEW token, whether or not whitespace precedes it").
+//
+// All ground truth below re-derived on 2026-08-02, sudo 1.9.17p2, same
+// positive-controlled oracle as the rest of this file.
+// ===========================================================================
+
+/// `alice" h=1" = NOPASSWD: /bin/ls` - visudo rc 0, `Host_List [' h=1']`,
+/// `authenticate: false`. The opening `"` is GLUED to `alice` with no space,
+/// and real sudo still starts a fresh principal token there.
+#[test]
+fn glued_quoted_principal_containing_eq_still_reports_its_nopasswd_grant() {
+    for src in [
+        "alice\" h=1\" = NOPASSWD: /bin/ls\n",
+        "alice\"h=1\" = NOPASSWD: /bin/ls\n",
+    ] {
+        assert_eq!(f01_count(src), 0, "visudo rc 0 for {src:?}");
+        assert_eq!(
+            w05_count(src),
+            1,
+            "the NOPASSWD grant must be seen in {src:?}"
+        );
+    }
+    assert_eq!(
+        w01_count("alice\"h=1\" = NOPASSWD: ALL\n"),
+        1,
+        "passwordless ALL on a glued quoted host"
+    );
+    assert_eq!(
+        only_spec("alice\" h=1\" = ALL\n").host_groups[0].hosts,
+        vec!["\" h=1\"".to_string()],
+        "the host is the whole quoted token, kept verbatim"
+    );
+}
+
+/// The same glued spelling WITHOUT an `=` inside the quotes. This one already
+/// parsed correctly, which is exactly why the defect above survived: the frozen
+/// suite covered the glued opener here and the interior `=` elsewhere, and
+/// never their intersection.
+#[test]
+fn control_glued_quoted_principal_without_eq_is_unaffected() {
+    let src = "alice\" h1\" = ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(
+        only_spec(src).host_groups[0].hosts,
+        vec!["\" h1\"".to_string()]
+    );
+}
+
+/// `alice "h:1" = NOPASSWD: ALL` - visudo rc 0, `Host_List ['h:1']`,
+/// `authenticate: false`. `sudoers(5)` documents quoting a name precisely "to
+/// avoid the need for escaping special characters", and `:` is one of them.
+#[test]
+fn quoted_colon_in_a_principal_is_not_a_host_group_separator() {
+    let src = "alice \"h:1\" = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0");
+    assert_eq!(w01_count(src), 1, "the passwordless ALL grant must be seen");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 1, "the quoted `:` is a host byte");
+    assert_eq!(s.host_groups[0].hosts, vec!["\"h:1\"".to_string()]);
+
+    let specific = "alice \"h:1\" = NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(specific), 0);
+    assert_eq!(w05_count(specific), 1);
+}
+
+// The ALIAS face of this same arm is NOT fixed here and is tracked as #645,
+// which carries its ready-to-restore RED test. `Host_Alias A = "h:1"` is rc 0
+// and still reports a false `sudo-F01` plus a cascading `sudo-E01` on every
+// reference to the alias. It needs a model change rather than another guard:
+// `split_top_level_segments` takes a `skip_tag_colons: bool`, but there are
+// THREE modes, not two -- a user-spec has commands after the structural `=`,
+// `User_`/`Host_`/`Runas_Alias` have PRINCIPALS there, and `Cmnd_Alias` has
+// commands (real sudo rejects `Cmnd_Alias C = "/bin/foo:bar"`, rc 1, so the
+// distinction is not cosmetic). Pre-existing, verified identical on 96038c9.
+
+/// An unmatched principal quote must STILL be rejected: `%bad"group ALL = ALL`
+/// is visudo rc 1. Alternate pairing must not become "any quote opens a span
+/// that runs to end of line", which would silently accept it.
+#[test]
+fn control_unmatched_principal_quote_is_still_rejected() {
+    assert_eq!(
+        count_code("%bad\"group ALL = ALL\n", "sudo-F02"),
+        1,
+        "visudo rc 1; an unterminated principal quote must not be waved through"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mutation-survivor kills. The six survivors on the principal-opener predicate
+// all reported it as observationally inert, meaning nothing pinned WHICH quote
+// opens a span. Each line below is visudo rc 0 with `authenticate: false`.
+// ---------------------------------------------------------------------------
+
+/// Kills the "opener predicate -> true" and "guard -> true" mutants: with every
+/// `"` opening a span, the CLOSING quote of `"a b"` re-opens one that then
+/// swallows the structural `=`.
+#[test]
+fn quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword() {
+    let src = "\"a b\" ALL=(ALL:ALL)CHROOT=\"/a)CWD=\" NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0");
+    assert_eq!(w05_count(src), 1, "the NOPASSWD grant must be seen");
+    assert_eq!(only_spec(src).users, vec!["\"a b\"".to_string()]);
+}
+
+/// Kills the `,`-boundary mutants in the opener predicate: the second user is a
+/// quoted principal containing an `=`, opened right after a comma.
+#[test]
+fn comma_separated_user_list_with_a_quoted_eq_member() {
+    let src = "alice,\"b=c\" ALL = NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0");
+    assert_eq!(w05_count(src), 1);
+    assert_eq!(
+        only_spec(src).users,
+        vec!["alice".to_string(), "\"b=c\"".to_string()]
+    );
+}
+
+/// Kills the `:`-boundary mutants: the second host group's principal is a
+/// quoted token containing an `=`, glued to the segment colon that precedes it.
+#[test]
+fn glued_quoted_host_containing_eq_after_a_segment_colon() {
+    let src = "alice h1 = /bin/ls :\"h=2\" = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0");
+    assert_eq!(w01_count(src), 1, "the second group's passwordless ALL");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 2, "cvtsudoers reports two User_Specs");
+    assert_eq!(s.host_groups[1].hosts, vec!["\"h=2\"".to_string()]);
 }

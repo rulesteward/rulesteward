@@ -2704,16 +2704,20 @@ fn a_quoted_principal_preceded_by_whitespace_after_a_comma_is_a_separate_user_li
 //     round-6 cases earlier in this file, are ordinary passing (no longer
 //     `#[ignore]`d) rows since `2de19ea` (measured: FAIL at `93ef75b`, PASS
 //     from `2de19ea` onward, re-confirmed at current HEAD 2026-07-31).
-//   * `split_top_level_segments`'s `','` arm has no guard against a comma
-//     INSIDE a quoted option value re-arming `tok_start` mid-value (its
-//     `')'` and `':'` sibling arms each have one). STILL OPEN: the "Round 6,
-//     second brief" tests further below (the `comma_inside_a_quoted_*` trio)
-//     remain `#[ignore]`d and pin it.
+//   * `split_top_level_segments`'s `','` arm had no guard against a comma
+//     INSIDE a quoted option value re-arming `tok_start` mid-value. CLOSED as
+//     #643: the arm now consults the same `quotes` registry the `':'` arm
+//     uses, and the "Round 6, second brief" tests below (the
+//     `comma_inside_a_quoted_*` trio) are no longer `#[ignore]`d.
 //
-// A real fix for the remaining bullet must address the `','`-arm substrate,
-// not patch around it with another positional guard -- ec11a15's own
-// `i >= tok_start` guard was exactly that kind of patch, and it is what
-// regressed the two cases above.
+// That fix addressed the substrate rather than patching around it with another
+// positional guard -- and deliberately did NOT mirror the `')'` arm, which
+// ec11a15 attempted. The two arms are not symmetric: for a comma, QUOTING is
+// the only thing that makes the byte literal (`CWD=/a,b` unquoted is visudo
+// rc 1), so a positional guard would mask a comma sudo actually rejects and
+// convert a loud fatal into a silent misparse. For a `)`, an unquoted value may
+// legitimately contain one (`CWD=/a)b` is rc 0), so that arm needs the
+// structural `depth > 0` test instead.
 // ===========================================================================
 
 // ===========================================================================
@@ -3008,19 +3012,25 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
 }
 
 // ===========================================================================
-// Round 6, second brief: the `','` arm of `split_top_level_segments` has
-// neither guard its siblings have.
+// Round 6, second brief: the `','` arm of `split_top_level_segments` had
+// neither guard its siblings have. FIXED as #643; these three tests are the
+// regression pins and are no longer `#[ignore]`d.
 // ===========================================================================
 //
-// `split_top_level_segments`'s `')'` arm is guarded `i >= tok_start` (round 2,
-// #538 gap C round 2): a `)` byte sitting INSIDE an `Option_Spec` value the
-// `'='` arm has already skipped past must not drag `tok_start` BACKWARD into
-// the middle of that value. Its `':'` arm is additionally guarded
-// `!inside_a_clean_quoted_region(&quotes, i)`. The `','` arm (`parser.rs`,
-// ~:775) has NEITHER guard, despite identical exposure: a comma inside a
-// legitimately-quoted `Option_Spec` value drags `tok_start` backward into the
-// value exactly as an unguarded `)` would, and re-arms `at_spec_start` when
-// `in_cmnd_list`, corrupting whatever boundary check comes next.
+// As written then, `split_top_level_segments`'s `')'` arm was guarded
+// `i >= tok_start` (#538 gap C round 2): a `)` byte sitting INSIDE an
+// `Option_Spec` value the `'='` arm has already skipped past must not drag
+// `tok_start` BACKWARD into the middle of that value. Its `':'` arm was
+// additionally guarded `!inside_a_clean_quoted_region(&quotes, i)`. The `','`
+// arm had NEITHER, despite identical exposure: a comma inside a
+// legitimately-quoted `Option_Spec` value dragged `tok_start` backward into the
+// value exactly as an unguarded `)` would, and re-armed `at_spec_start` when
+// `in_cmnd_list`, corrupting whatever boundary check came next.
+//
+// Both arms have since changed and the two guards are NOT the same: the `','`
+// arm took the content-based `!inside_a_clean_quoted_region(&quotes, i)`, and
+// the `')'` arm moved OFF the positional test to the structural `depth > 0`.
+// See this file's earlier "#538 status" block for why symmetry would be wrong.
 //
 // This is PRE-EXISTING (not a round-5/round-6 regression): the same defect
 // sits in the very first published cut of `split_top_level_segments`'s `','`
@@ -3926,19 +3936,26 @@ fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mas
 }
 
 // ===========================================================================
-// 9m round 3: `split_cmnd_specs`'s `')'` arm has no `i >= tok_start` guard,
-// unlike its `split_top_level_segments` sibling.
+// 9m round 3: `split_cmnd_specs`'s `')'` arm reset `tok_start` on a `)` that
+// closes nothing, unlike its `split_top_level_segments` sibling at the time.
 // ===========================================================================
 //
-// `split_top_level_segments`'s `')'` arm is guarded `i >= tok_start` (9m
-// round 2, #538 gap C round 2 -- see that arm's own doc comment): a `)`
-// byte sitting INSIDE an `Option_Spec` value the `'='` arm has already
-// skipped past (`tok_start` now points AHEAD of the `)`) is a literal value
-// byte, not a runas close-paren, and must not drag `tok_start` BACKWARD into
-// the middle of that value. `split_cmnd_specs`'s own `')'` arm, new in
-// commit `2de19ea` ("position-anchor the option-value quote opener"), never
-// got that guard: it resets `tok_start = i + 1` UNCONDITIONALLY on every
-// `)`, including one sitting inside an option value already skipped past.
+// HISTORICAL. Both arms are now guarded `depth > 0` (#629) and neither uses
+// the positional test this section was written about; the header once claimed
+// the sibling arm still had `i >= tok_start` while `split_cmnd_specs` had no
+// guard at all, which stopped being true before this section was last touched.
+// The scenario below still reproduces the defect it was written for, so the
+// test stays; only the mechanism description is dated.
+//
+// As written then: `split_top_level_segments`'s `')'` arm was guarded
+// `i >= tok_start` (9m round 2, #538 gap C round 2): a `)` byte sitting INSIDE
+// an `Option_Spec` value the `'='` arm has already skipped past (`tok_start`
+// now points AHEAD of the `)`) is a literal value byte, not a runas
+// close-paren, and must not drag `tok_start` BACKWARD into the middle of that
+// value. `split_cmnd_specs`'s own `')'` arm, new in commit `2de19ea`
+// ("position-anchor the option-value quote opener"), never got that guard: it
+// reset `tok_start = i + 1` UNCONDITIONALLY on every `)`, including one
+// sitting inside an option value already skipped past.
 //
 // Consequence, on `alice ALL = CHROOT="/a)CWD=" /bin/ls, NOPASSWD: /bin/su
 // "x`: `CHROOT`'s own `=` is correctly recognized (`is_option_eq`), so
@@ -4003,9 +4020,13 @@ fn option_after_a_tag_is_not_valid_sudo_so_the_comma_splitter_still_does_not_mas
 // resetting `tok_start` at a genuine runas close-paren, `CWD` glued to the
 // `)` would measure its preceding token as the whole `")CWD"` and be
 // wrongly rejected. A naive fix that simply DELETES the reset would repair
-// MISS-B/C but break this idiom; the reset must instead be GUARDED
-// (mirroring `split_top_level_segments`'s own `i >= tok_start` guard), not
-// removed outright. Six tests un-ignored in commit `b2fafd9` already pin
+// MISS-B/C but break this idiom; the reset must instead be GUARDED, not
+// removed outright. The guard that shipped is `depth > 0` on both arms
+// (#629) -- a `)` that actually closes a runas group this scan opened. The
+// `i >= tok_start` spelling this paragraph used to prescribe was retired:
+// it cannot see a `)` in plain COMMAND text, where `tok_start` is
+// legitimately behind the cursor, so it left the #629 fail-open open.
+// Six tests un-ignored in commit `b2fafd9` already pin
 // this idiom and its siblings and must stay green throughout:
 // `option_keyword_glued_to_a_runas_close_paren_still_opens_its_quoted_value`,
 // `option_keyword_glued_to_a_runas_close_paren_with_spaces_around_the_structural_equals`,
