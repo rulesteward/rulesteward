@@ -368,7 +368,8 @@ fn parse_default_settings(s: &str) -> Vec<DefaultSetting> {
 /// consumes exactly the next char literally (so `\\` is one literal backslash
 /// and does NOT re-arm escaping -- grounded via visudo: an escaped comma after
 /// an EVEN run of backslashes is a real separator, after an ODD run it stays
-/// literal). An escaped `"` (`\"`) inside a quoted value does not end the
+/// literal). That is the SEPARATOR-finding rule, correct for commas here; the
+/// QUOTE-finding rule differs -- see [`unescaped_quote_positions`] for both. An escaped `"` (`\"`) inside a quoted value does not end the
 /// quote (grounded: `"a \" b, c"` is ONE setting).
 ///
 /// Per the #370 precedent, this function only fixes the split BOUNDARY; it
@@ -523,9 +524,17 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
 ///
 /// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
 /// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
-/// `"a\\" #5 "b"` rc=1 (`\\` is a literal backslash, so the `"` closes the first
-/// region), `"a\\\" #5 b"` rc=0 (three backslashes: literal `\` + escaped `"`,
-/// so the inner quote stays escaped and the value is one region).
+/// `"a\\" #5 "b"` rc=1, `"a\\\" #5 b"` rc=0.
+///
+/// CAVEAT on the third, re-checked 2026-08-02: the rc is right but the reason
+/// once given here ("`\\` is a literal backslash, so the `"` closes the first
+/// region") is not what visudo reports. Its caret lands on the `b`, i.e. the
+/// string ran ON past that `"` and the bare `b` is the syntax error - the
+/// QUOTE-FINDING rule of the two in [`unescaped_quote_positions`], not the
+/// separator one this function implements. Both readings give rc 1 here, so no
+/// probe in this set distinguishes them and this function's model is unpinned
+/// on the `Defaults` surface. Left as-is deliberately rather than changed on an
+/// unproven hunch; tracked separately.
 fn clean_double_quoted_interior(value: &str) -> Option<&str> {
     let inner = value.strip_prefix('"')?;
     let mut escaped = false;
@@ -1033,21 +1042,41 @@ fn preceding_token(s: &str, tok_start: usize, i: usize) -> &str {
     s[tok_start.min(i)..i].trim()
 }
 
-/// Byte positions of every UNESCAPED `"` in `s`, honoring the sudoers single
-/// backslash escape (a `\` consumes exactly the next char literally, so `\"`
-/// is not a quote and does not toggle anything, and `\\` is one literal
-/// backslash that leaves a following `"` un-escaped -- the same escape model
-/// [`split_cmnd_specs`] and [`split_top_level_segments`] already use).
+/// Byte positions of every UNESCAPED `"` in `s`, per [`quote_is_escaped`]: a
+/// `"` is escaped exactly when a backslash immediately precedes it.
 ///
-/// The single quote-scanning primitive every other quote rule in this file is
-/// built from. Its ONLY direct caller is [`simple_quote_pairs`]; the splitters'
-/// `:` and `,` guards do NOT reach it at all, directly or indirectly: they
-/// consume spans from [`quoted_value_span`] / [`find_closing_quote`], which
-/// locate quotes by their own scan. What those share with this function is
-/// [`quote_is_escaped`], the escape rule itself -- so a change to the RULE
-/// propagates everywhere, while a change to this function's scanning affects
-/// only [`simple_quote_pairs`]. (Two earlier revisions of this comment claimed
-/// a call path that has never existed.)
+/// # This file has TWO escape rules, and both are correct
+///
+/// They apply to different contexts, so a comment naming one must say which
+/// (several used to say "the" escape model and were wrong by omission):
+///
+/// - **Quote-finding** ([`quote_is_escaped`], used here and by
+///   [`find_closing_quote`]): a `\` escapes ONLY a `"`. A `\` before anything
+///   else, including another `\`, is a literal byte that consumes nothing.
+///   Grounded on `alice "h\\1" = ALL` -> rc 0 with hostname `h\\1`, BOTH
+///   backslashes kept, and `alice "h\\" = ALL` -> rc 1 because that `"` does
+///   not close. This is the rule INSIDE a quoted string.
+/// - **Separator-finding** (the `escaped` state machines in
+///   [`split_top_level_segments`], [`split_cmnd_specs`], [`structural_eq`],
+///   [`unquoted_whitespace_runs`]): a `\` consumes exactly the next char, so an
+///   escaped separator is a literal token byte. Grounded on
+///   `a\=b ALL = NOPASSWD: /bin/ls` -> rc 0 with `User_List ['a=b']` (frozen as
+///   the third case of `principal_containing_eq_still_reports_its_nopasswd_grant`).
+///   This is the rule OUTSIDE a quoted string, where sudoers lets any special
+///   character be backslash-escaped.
+///
+/// Changing [`quote_is_escaped`] therefore propagates to quote-finding only; it
+/// does NOT reach those state machines, and it should not.
+///
+/// # Call graph
+///
+/// The single quote-SCANNING primitive: its ONLY direct caller is
+/// [`simple_quote_pairs`], which feeds [`unquoted_whitespace_runs`] and
+/// [`split_user_list`]. The splitters' `:` and `,` guards do NOT reach this
+/// function at all, directly or indirectly - they consume spans from
+/// [`quoted_value_span`] / [`find_closing_quote`], which locate quotes by their
+/// own scan and share only the RULE above. (Two earlier revisions of this
+/// comment claimed a call path that has never existed.)
 fn unescaped_quote_positions(s: &str) -> Vec<usize> {
     s.char_indices()
         .filter(|&(i, c)| c == '"' && !quote_is_escaped(s, i))
@@ -1133,7 +1162,11 @@ fn simple_quote_pairs(s: &str) -> Vec<(usize, usize)> {
 /// during its own scan, so the two agree by construction; it additionally gates
 /// on `!in_cmnd_list`, which this function does not need because it returns at
 /// the FIRST unmasked `=` and so never scans past the principal region.
-/// A `"` is escaped iff a backslash immediately precedes it ([`quote_is_escaped`]).
+/// Escaping here uses BOTH of the file's two rules, in their proper places (see
+/// [`unescaped_quote_positions`]): the scan below consumes a `\`-escaped char
+/// whole, so `a\=b` keeps its `=` as a token byte and `\"` never reaches the
+/// `'"'` arm as an opener; once a span opens, its CLOSING quote is located by
+/// [`find_closing_quote`], where a `\` escapes only a `"`.
 ///
 /// NOT needed at the other two `=` scans in this file, both re-probed
 /// 2026-08-02 and left on `find('=')` deliberately:
@@ -1328,9 +1361,14 @@ fn skip_value_leading_whitespace(s: &str, start: usize) -> usize {
 /// (`interior_quote_in_an_option_value_does_not_swallow_a_following_tag_and_command`).
 /// An OPENING quote with no matching close is likewise not an enclosing pair
 /// (mirrors [`inside_a_clean_quoted_region`]'s "unmatched quote protects
-/// nothing" rule) and falls through to the same literal-byte scan. A `\`
-/// consumes exactly the next byte literally (whitespace or not) without
-/// toggling anything, both inside and outside a quoted span. Shared by
+/// nothing" rule) and falls through to the same literal-byte scan. Escaping
+/// follows whichever of the file's two rules the context calls for (see
+/// [`unescaped_quote_positions`]): the UNQUOTED scan below has a `\` consume
+/// exactly the next byte, whitespace or not; locating the CLOSING quote of a
+/// quoted value goes through [`find_closing_quote`], where a `\` escapes only a
+/// `"`. So `alice ALL = CWD="/a\\" NOPASSWD: /bin/ls` is visudo rc 1 - that
+/// quote does not close the value - and this function does not close it either.
+/// Shared by
 /// [`split_leading_option`] (the value's own scan) and
 /// [`split_top_level_segments`]'s `=` arm, which needs the SAME end point so
 /// its preceding-token marker lands past the whole value rather than inside it
@@ -1548,8 +1586,11 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // `(` (which only bumps `depth` at `at_spec_start`), so `depth` is
                 // 0 and it falls through to `_` as the literal byte it is.
                 //
-                // This subsumes the `i >= tok_start` guard it replaces, whose two
-                // recorded misses (9m round 3, #538 gap C) were both `depth == 0`
+                // This subsumes the `i >= tok_start` guard it replaces for every
+                // input this arm can actually see - with the same one-directional
+                // caveat the sibling arm records (`depth > 0 && i < tok_start`,
+                // unreachable for valid input; see there). Its two recorded misses
+                // (9m round 3, #538 gap C) were both `depth == 0`
                 // anyway: on `CHROOT="/a)CWD="` the stray `)` let a glued `CWD=` be
                 // read as a genuine option anchor, opening a bogus quote span that
                 // masked the real top-level comma (MISS-B), or dragged `tok_start`
@@ -1915,7 +1956,10 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
 ///
 /// A whitespace byte inside a CLOSED quote pair is part of the token, not a
 /// boundary; a `\` consumes exactly the next byte literally, whitespace or not
-/// (same single-backslash escape model as [`option_value_end`] and the two
+/// -- the SEPARATOR-finding rule of the two in [`unescaped_quote_positions`],
+/// which is the right one here because this scan runs outside quoted spans
+/// (the spans themselves come from [`simple_quote_pairs`], which uses the
+/// quote-finding rule). Matches [`option_value_end`]'s unquoted half and the two
 /// top-level splitters). Deliberately uses [`simple_quote_pairs`]'s PAIRED quote
 /// detection rather than a live open/close toggle: an unrelated, unpaired `"` elsewhere in the same
 /// pre-`=` text (e.g. a malformed `%bad"group` principal, `f02_group_name_with_dquote_fires`)

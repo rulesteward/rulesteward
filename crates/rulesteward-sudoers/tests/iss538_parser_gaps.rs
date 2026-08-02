@@ -950,8 +950,8 @@ fn gap_c_option_before_a_tag_does_not_split_the_user_spec() {
 /// host.
 ///
 /// `NOPASSWD` also makes the operator cost concrete: this is a passwordless
-/// grant, and today the entire line is discarded as `Malformed` rather than
-/// linted.
+/// grant, and before the gap-C fix the entire line was discarded as `Malformed`
+/// rather than linted.
 #[test]
 fn gap_c_selinux_option_before_a_tag_does_not_split_the_user_spec() {
     let kind = first_kind("alice ALL = ROLE=sysadm_r NOPASSWD: /bin/ls\n");
@@ -2059,17 +2059,29 @@ fn a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespa
     assert_eq!(s.host_groups[0].cmnd_specs[0].cmnd, CmndItem::All);
 }
 
-/// MUTATION SURVIVOR: deleting `unescaped_quote_positions`'s `'\\' => escaped
-/// = true` match arm SURVIVES. Removing that arm makes an ESCAPED quote
-/// (`\"`) count as a real quote position, which re-pairs every later quote;
-/// `chunks_exact(2)` then silently drops a leftover odd element, which can
-/// flip a separator from "inside a clean region" to "outside" it.
+/// Pins that an ESCAPED quote (`\"`) is not counted as a quote position: doing
+/// so re-pairs every later quote, and `chunks_exact(2)` then silently drops a
+/// leftover odd element, flipping a separator from "inside a clean region" to
+/// "outside" it.
 ///
 /// This is the escape HALF of the user's "honor quotes and escapes" ruling
 /// for this lane, and until this test it was pinned by no assertion at all -
 /// every existing quoted-value test in this file has EITHER zero backslashes
 /// inside its quotes, or a backslash that is not itself immediately before an
 /// interior quote.
+///
+/// The mechanism below describes the ORIGINAL implementation, a match arm
+/// `'\\' => escaped = true` inside `unescaped_quote_positions`, and the mutant
+/// that deleted it. Both are gone: that function is now a three-line iterator
+/// chain delegating to `quote_is_escaped` (a `"` is escaped iff a backslash
+/// immediately precedes it), so the named mutant can no longer be generated.
+/// The POSITIONS are unchanged - `[0, 9]` under either rule for this input - so
+/// the assertion still pins what it was written to pin.
+///
+/// The old text also attributed the masking to `unescaped_quote_positions` +
+/// `chunks_exact(2)`. That call path does not exist: `split_cmnd_specs`'s `,`
+/// guard reads a registry built by `quoted_value_span` / `find_closing_quote`.
+/// The two share the escape RULE, not a call.
 ///
 /// Host probe, 2026-07-31, `visudo -c -f -` rc 0:
 ///
