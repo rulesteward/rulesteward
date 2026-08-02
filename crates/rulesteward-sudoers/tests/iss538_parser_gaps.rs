@@ -3067,7 +3067,7 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
 /// tag colon is misread as a genuine top-level separator and the whole line
 /// is discarded `Malformed`.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
+// Un-ignored: re-pointed from the closed #538 to #643, which tracks this defect.
 fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
     let src = "alice ALL = CWD=\"/a,b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -3118,7 +3118,7 @@ fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
 /// option is asserted first here and not against `cvtsudoers`'s own field
 /// order.)
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
+// Un-ignored: re-pointed from the closed #538 to #643, which tracks this defect.
 fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
     let src = "alice ALL = APPARMOR_PROFILE=\"a,b\" NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
@@ -3163,7 +3163,7 @@ fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
 /// swallowed into a command string that matches no `Cmnd_Alias`, no reserved
 /// `ALL` check and no path check, and nothing about `h2` is reported at all.
 #[test]
-#[ignore = "known-open #538 defect; round-6 fix reverted, see section comment above (ec11a15)"]
+// Un-ignored: re-pointed from the closed #538 to #643, which tracks this defect.
 fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_the_next_host_group()
  {
     let src = "alice ALL = CWD=\"/a,(b\" NOEXEC: /bin/ls : h2 = /bin/cat\n";
