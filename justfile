@@ -99,11 +99,38 @@ instrument-test:
     for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
              check-no-mnt-paths rs-mutation-gate check-doc-citations; do
-        bash "scripts/${t}-test.sh"
+        # Captured rather than streamed, so the FAIL-token assertion below can see
+        # it. Printed verbatim immediately afterwards: a suite's own transcript is
+        # what a maintainer debugs from, and swallowing it would trade one
+        # readability defect for another.
+        out="$(bash "scripts/${t}-test.sh" 2>&1)"
         rc=$?
         ran=$((ran + 1))
+        printf '%s\n' "${out}"
         echo "instrument-test: ${t}-test rc=${rc}"
         [ "${rc}" -eq 0 ] || fail=1
+        # A GREEN suite must not print the token FAIL (#641). Three suites used to
+        # run their positive-control phase through the ordinary per-case reporter,
+        # so a fully passing `just ci` emitted 14 lines beginning with FAIL - the
+        # SUCCESS condition, announced with the word for failure. That cost real
+        # debugging time on 2026-08-01, and it silently arms any log-scraping check
+        # keyed on FAIL to fire on every healthy run.
+        #
+        # Only asserted when rc is 0: a genuinely failing suite is SUPPOSED to say
+        # FAIL, and gating that would be the opposite defect.
+        #
+        # Matched with a bash `case`, not a grep pipeline, for the reason the guard
+        # count below is counted with a glob: a filter in the middle of a pipeline
+        # is rewritten by this project's command wrapper, so a gate must never read
+        # its answer through one.
+        if [ "${rc}" -eq 0 ]; then
+            case "${out}" in
+                *FAIL*)
+                    echo "instrument-test: ${t}-test passed (rc=0) but printed the token FAIL - a green run must not, see #641" >&2
+                    fail=1
+                    ;;
+            esac
+        fi
     done
     # ANTI-VACUITY on this recipe itself, in two directions.
     #

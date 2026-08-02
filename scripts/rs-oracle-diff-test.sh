@@ -37,6 +37,26 @@ trap 'rm -rf "${SANDBOX_BASE}"' EXIT
 PASS=0
 FAIL=0
 FAILED_CASES=()
+# 1 while a positive-control phase is running; see case_marker().
+CONTROL_PHASE=0
+
+# The per-case marker for a case that did NOT meet its expectation.
+#
+# During a positive-control phase the cases are SUPPOSED not to meet it - that is
+# precisely how the control proves the guard is load-bearing - so printing `FAIL`
+# there announces SUCCESS using the word for failure (#641). A fully green
+# `just ci` used to emit 14 such lines across three suites, and on 2026-08-01 they
+# sent a session root-causing a regression that did not exist.
+#
+# `CAUGHT` is the accurate word: the sabotaged driver was caught by this case,
+# which is also how the phase's own verdict line already reads.
+#
+# It deliberately contains no `FAIL` substring. `just instrument-test` asserts that
+# a suite exiting 0 prints none, and the `EXPECTED-FAIL` spelling would still trip
+# any plain log scrape keyed on the token - which is half of what #641 is about.
+case_marker() {
+    if [ "${CONTROL_PHASE}" -eq 1 ]; then printf 'CAUGHT'; else printf 'FAIL'; fi
+}
 
 # ---------------------------------------------------------------------------
 # Sandbox construction.
@@ -209,8 +229,8 @@ run_case() {
     else
         FAIL=$((FAIL + 1))
         FAILED_CASES+=("${name}")
-        printf 'FAIL %s: want rc=%s sub=%q; got rc=%s\n' \
-            "${name}" "${want_rc}" "${want_sub}" "${rc}" >&2
+        printf '%s %s: want rc=%s sub=%q; got rc=%s\n' \
+            "$(case_marker)" "${name}" "${want_rc}" "${want_sub}" "${rc}" >&2
         printf '     output: %s\n' "${out}" >&2
     fi
 }
@@ -234,8 +254,8 @@ run_argcase() {
     else
         FAIL=$((FAIL + 1))
         FAILED_CASES+=("${name}")
-        printf 'FAIL %s: want rc=%s sub=%q; got rc=%s\n' \
-            "${name}" "${want_rc}" "${want_sub}" "${rc}" >&2
+        printf '%s %s: want rc=%s sub=%q; got rc=%s\n' \
+            "$(case_marker)" "${name}" "${want_rc}" "${want_sub}" "${rc}" >&2
         printf '     output: %s\n' "${out}" >&2
     fi
 }
@@ -378,7 +398,9 @@ run_positive_control() {
     FAIL=0
     FAILED_CASES=()
     DRIVER_UNDER_TEST="${broken}"
+    CONTROL_PHASE=1
     run_all_cases
+    CONTROL_PHASE=0
 
     local missed=() want got found
     for want in "${must_catch[@]}"; do
