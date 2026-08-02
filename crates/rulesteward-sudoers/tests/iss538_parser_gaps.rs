@@ -3072,10 +3072,10 @@ fn option_keyword_glued_to_a_comma_does_not_merge_into_the_preceding_command() {
 ///                 Commands [{"command":"/bin/ls"}]
 /// ```
 ///
-/// Today: `sudo-F01` fatal, `sudo-W05` count 0 - the comma inside the quoted
-/// value drags `tok_start` back into the value, so the following `NOPASSWD:`
-/// tag colon is misread as a genuine top-level separator and the whole line
-/// is discarded `Malformed`.
+/// Before #643: `sudo-F01` fatal, `sudo-W05` count 0 - the comma inside the
+/// quoted value dragged `tok_start` back into the value, so the following
+/// `NOPASSWD:` tag colon was misread as a genuine top-level separator and the
+/// whole line was discarded `Malformed`. Measured on a build of `96038c9`.
 #[test]
 // Un-ignored: re-pointed from the closed #538 to #643, which tracks this defect.
 fn comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal() {
@@ -3168,10 +3168,11 @@ fn comma_inside_a_quoted_non_cwd_option_value_does_not_trigger_a_false_fatal() {
 ///       [1] Host_List [h2]   Commands [/bin/cat]
 /// ```
 ///
-/// Today: ONE host group, `hosts == ["ALL"]`, one `Cmnd_Spec` whose `cmnd` is
-/// the garbage `"/bin/ls : h2 = /bin/cat"` - the ENTIRE second grant is
-/// swallowed into a command string that matches no `Cmnd_Alias`, no reserved
-/// `ALL` check and no path check, and nothing about `h2` is reported at all.
+/// Before #643: ONE host group, `hosts == ["ALL"]`, one `Cmnd_Spec` whose
+/// `cmnd` was the garbage `"/bin/ls : h2 = /bin/cat"` - the ENTIRE second grant
+/// swallowed into a command string that matched no `Cmnd_Alias`, no reserved
+/// `ALL` check and no path check, with nothing about `h2` reported at all.
+/// Measured on a build of `96038c9`.
 #[test]
 // Un-ignored: re-pointed from the closed #538 to #643, which tracks this defect.
 fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_the_next_host_group()
@@ -3215,16 +3216,14 @@ fn comma_inside_a_quoted_option_value_with_an_unbalanced_paren_does_not_swallow_
     );
 }
 
-/// Control - already correct today, must STAY green: a HYPHEN in the quoted
-/// value, not a comma, so it is never routed through the (now-reverted)
-/// `','`-arm guard at all -- there is nothing for that arm's absence to
-/// affect here. Only the punctuation byte differs from the `CWD` false-fatal
-/// input pinned by `comma_inside_a_quoted_cwd_option_value_does_not_trigger_
-/// a_false_fatal` above (now `#[ignore]`d as an open #538 defect, its
-/// round-6 fix having been narrow-reverted in ec11a15's follow-up); this
-/// control exists so a FUTURE fix at that arm cannot pass by being
+/// Control - always been correct, must STAY green: a HYPHEN in the quoted
+/// value, not a comma, so the `','` arm never sees it at all. Only the
+/// punctuation byte differs from the `CWD` false-fatal input pinned by
+/// `comma_inside_a_quoted_cwd_option_value_does_not_trigger_a_false_fatal`
+/// above. This control exists so a fix at that arm cannot pass by being
 /// over-broad (e.g. rejecting every byte inside a quoted value at this
-/// position) and breaking this clean line.
+/// position) and breaking this clean line. That fix has since shipped as #643
+/// and this control held.
 ///
 /// Host probe, rc 0:
 ///

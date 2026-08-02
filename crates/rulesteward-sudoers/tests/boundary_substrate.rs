@@ -9,10 +9,14 @@
 //!      `classify_user_spec` and `classify_alias`), which landed inside a quoted
 //!      principal that contains one. Now `structural_eq`.
 //!   2. A POSITION ANCHOR (`tok_start`) in `split_top_level_segments` and
-//!      `split_cmnd_specs`, whose four boundary arms (`)`, `,`, `:`, `=`) each
-//!      carried a hand-written guard. Only the `':'` arm consulted the `quotes`
-//!      registry the `'='` arm builds; the `','` arm had no guard at all and the
-//!      `')'` arm's was positional, firing on a `)` in plain command text.
+//!      `split_cmnd_specs`, whose boundary arms (`)`, `,`, `:`, `=`) each
+//!      decided independently what counts as a boundary. At the fork point
+//!      (`96038c9`) the guards were uneven: exactly two arms consulted the
+//!      `quotes` registry the `'='` arms build - `split_top_level_segments`'s
+//!      `':'` and `split_cmnd_specs`'s `','`. Of the rest,
+//!      `split_top_level_segments`'s `','` had no guard at all, both `'='` arms
+//!      were unguarded, and the two `')'` arms shared a POSITIONAL guard that
+//!      fired on a `)` in plain command text.
 //!
 //! Four of the five are FAIL-OPEN: a `NOPASSWD` grant disappears from the
 //! parsed model with no diagnostic, so a compliance run reports clean on a file
@@ -258,11 +262,11 @@ fn command_glued_to_a_closing_quote_is_a_fresh_token() {
 // ===========================================================================
 // #629 - a `)` in ordinary command text re-arms the option anchor.
 //
-// The `')'` arm resets `tok_start` on ANY `)`, including one that is plain
-// command text and closed nothing, which restores a single-token span after a
-// command word has already begun. A command argument merely SPELLED like an
-// option keyword then regains an option value's quote-pairing power, and its
-// quotes mask a real separator.
+// The `')'` arm reset `tok_start` on ANY `)`, including one that is plain
+// command text and closed nothing, which restored a single-token span after a
+// command word had already begun. A command argument merely SPELLED like an
+// option keyword then regained an option value's quote-pairing power, and its
+// quotes masked a real separator.
 //
 // `depth` is 0 at such a `)` (a mid-command `(` never bumps it), whereas a
 // genuine runas close-paren has `depth > 0`. The arms did not distinguish them;
@@ -440,14 +444,20 @@ fn control_unmatched_principal_quote_is_still_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Mutation-survivor kills. The six survivors on the principal-opener predicate
-// all reported it as observationally inert, meaning nothing pinned WHICH quote
-// opens a span. Each line below is visudo rc 0 with `authenticate: false`.
+// Mutation-survivor kills. The principal-opener predicate arrived with six
+// survivors, all reporting it as observationally inert: nothing pinned WHICH
+// quote opens a span. Each line below is visudo rc 0 with `authenticate: false`.
+//
+// The predicate has since been rewritten (positional -> alternate pairing), so
+// the surviving mutant SET is not the one these were written against; what each
+// test still does is stated per-test below and was checked by running the
+// mutant, not by inspection.
 // ---------------------------------------------------------------------------
 
-/// Kills the "opener predicate -> true" and "guard -> true" mutants: with every
-/// `"` opening a span, the CLOSING quote of `"a b"` re-opens one that then
-/// swallows the structural `=`.
+/// Kills the `-> true` / `-> false` / `delete !` family on the opener predicate
+/// and the `guard -> true` mutants at both call sites: with every `"` opening a
+/// span, the CLOSING quote of `"a b"` re-opens one that then swallows the
+/// structural `=`.
 #[test]
 fn quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword() {
     let src = "\"a b\" ALL=(ALL:ALL)CHROOT=\"/a)CWD=\" NOPASSWD: /bin/ls\n";
@@ -456,8 +466,11 @@ fn quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword() 
     assert_eq!(only_spec(src).users, vec!["\"a b\"".to_string()]);
 }
 
-/// Kills the `,`-boundary mutants in the opener predicate: the second user is a
-/// quoted principal containing an `=`, opened right after a comma.
+/// A comma-preceded opener: the second user is a quoted principal containing an
+/// `=`. With only ONE span in play this cannot distinguish the comparison
+/// mutants (`open < i` already holds); it pins the `-> false` / `delete !`
+/// family and the shape itself. The two-span test below is what separates
+/// `&&` from `||`.
 #[test]
 fn comma_separated_user_list_with_a_quoted_eq_member() {
     let src = "alice,\"b=c\" ALL = NOPASSWD: /bin/ls\n";
@@ -469,8 +482,9 @@ fn comma_separated_user_list_with_a_quoted_eq_member() {
     );
 }
 
-/// Kills the `:`-boundary mutants: the second host group's principal is a
-/// quoted token containing an `=`, glued to the segment colon that precedes it.
+/// A colon-preceded, GLUED opener: the second host group's principal is a
+/// quoted token containing an `=`, glued to the segment colon before it. Also a
+/// single-span case, so it pins the shape rather than the comparison operators.
 #[test]
 fn glued_quoted_host_containing_eq_after_a_segment_colon() {
     let src = "alice h1 = /bin/ls :\"h=2\" = NOPASSWD: ALL\n";
@@ -479,4 +493,108 @@ fn glued_quoted_host_containing_eq_after_a_segment_colon() {
     let s = only_spec(src);
     assert_eq!(s.host_groups.len(), 2, "cvtsudoers reports two User_Specs");
     assert_eq!(s.host_groups[1].hosts, vec!["\"h=2\"".to_string()]);
+}
+
+/// TWO quoted principals on one line, each carrying its own `=`. Every earlier
+/// case has at most one, so none of them can tell `open < i && i <= close` from
+/// `open < i || i <= close` in `opens_principal`: spans are pushed only AFTER
+/// the open decision, so `open < i` already holds for every span in the vector,
+/// and under `||` the first span alone would mask every later quote. The second
+/// principal would then never open, its interior `=` would be taken for the
+/// structural one, and the grant would be lost.
+///
+/// visudo rc 0 for all three; `cvtsudoers` reports
+/// `User_List ['a=b']` + `Host_List ['h=1']` for the first,
+/// `User_List ['a=b','c=d']` for the second, and `['alice','b=c']` for the
+/// third, each with `authenticate: false`.
+#[test]
+fn two_quoted_principals_each_containing_eq_both_open_their_own_span() {
+    for src in [
+        "\"a=b\" \"h=1\" = NOPASSWD: /bin/ls\n",
+        "\"a=b\",\"c=d\" ALL = NOPASSWD: /bin/ls\n",
+        "alice,\"b=c\" \"h=1\" = NOPASSWD: /bin/ls\n",
+    ] {
+        assert_eq!(f01_count(src), 0, "visudo rc 0 for {src:?}");
+        assert_eq!(
+            w05_count(src),
+            1,
+            "the grant must survive both spans in {src:?}"
+        );
+    }
+
+    let s = only_spec("\"a=b\" \"h=1\" = NOPASSWD: /bin/ls\n");
+    assert_eq!(s.users, vec!["\"a=b\"".to_string()]);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["\"h=1\"".to_string()],
+        "the SECOND quoted principal must open its own span, not be masked by the first"
+    );
+}
+
+// ===========================================================================
+// The escape model inside a quoted string.
+//
+// A backslash escapes ONLY a `"`. A backslash followed by anything else -
+// INCLUDING another backslash - is a literal byte that consumes nothing, so
+// `\\"` is literal-backslash + ESCAPED-quote and the string CONTINUES.
+//
+// Probes, sudo 1.9.17p2, 2026-08-02, stdin only:
+//   `alice "h\"1" = ALL`     -> rc 0, Host_List ['h"1']    (one backslash)
+//   `alice "h\\1" = ALL`     -> rc 0, Host_List ['h\\1']   (both kept, neither consumed)
+//   `alice "h\\" = ALL`      -> rc 1                       (that `"` does NOT close)
+//   `alice "a\\"b" = ALL`    -> rc 0, Host_List ['a\"b']   (span runs past it)
+//   `alice "a\\\\" = ALL`    -> rc 1                       (four backslashes: still escaped)
+//
+// The rule that reproduces all five is simply: a `"` is escaped IFF the byte
+// immediately before it is `\`. `find_closing_quote` and
+// `unescaped_quote_positions` instead had a backslash consume whatever came
+// next, which closes the span one quote too early.
+//
+// That model was latent for as long as nothing depended on it in a
+// grant-bearing position. `opens_principal` made it load-bearing: closing the
+// span early leaves the NEXT quote looking like a fresh opener, and the bogus
+// span it opens covers the structural `=`, so the line is thrown away
+// Malformed and its NOPASSWD grant is never linted. No test in this crate
+// contained the byte sequence `\ \ "` before these.
+// ===========================================================================
+
+/// The fail-open witness. visudo rc 0, `Host_List ['h\"1']`,
+/// `authenticate: false`, command `/bin/echo "x"` - a real passwordless grant.
+#[test]
+fn doubled_backslash_before_a_quote_does_not_close_the_principal_span() {
+    let src = "alice \"h\\\\\"1\" = NOPASSWD: /bin/echo \"x\"\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(w05_count(src), 1, "the NOPASSWD grant must be seen");
+    assert_eq!(
+        only_spec(src).host_groups[0].hosts,
+        vec!["\"h\\\\\"1\"".to_string()],
+        "the whole quoted token is one host, kept verbatim"
+    );
+}
+
+/// The same escape, with a genuine host-group separator after it. visudo rc 0
+/// and cvtsudoers reports TWO `User_Specs`, the second carrying
+/// `authenticate: false`. Closing the span early makes the bogus second span
+/// swallow that separator too.
+#[test]
+fn doubled_backslash_span_does_not_swallow_a_later_host_group() {
+    let src = "alice \"h\\\\\"1\" = /bin/ls : h2 = NOPASSWD: /bin/echo \"x\"\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0");
+    assert_eq!(w05_count(src), 1, "the second group's grant must be seen");
+    let s = only_spec(src);
+    assert_eq!(s.host_groups.len(), 2, "cvtsudoers reports two User_Specs");
+    assert_eq!(s.host_groups[1].hosts, vec!["h2".to_string()]);
+}
+
+/// Control: a SINGLE backslash before the quote, where both escape models agree
+/// (`alice "h\"1" = ALL` is rc 0 with `Host_List ['h"1']`). If this ever fails,
+/// the fix went too far and stopped honouring `\"` as an escape at all.
+#[test]
+fn control_single_backslash_still_escapes_the_quote() {
+    let src = "alice \"h\\\"1\" = ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(
+        only_spec(src).host_groups[0].hosts,
+        vec!["\"h\\\"1\"".to_string()]
+    );
 }
