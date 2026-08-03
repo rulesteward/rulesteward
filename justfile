@@ -111,7 +111,7 @@ instrument-test:
     # gate here, not the transcript.
     fail=0
     ran=0
-    for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
+    for t in rs-oracle-required rs-oracle-diff rs-branch-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
              check-no-mnt-paths rs-mutation-gate check-doc-citations \
              check-corpus-growth; do
@@ -173,10 +173,10 @@ instrument-test:
         [ -x "${f}" ] || notexec="${notexec} ${f}"
     done
     [ -z "${notexec}" ] || { echo "instrument-test: not executable:${notexec} - every scripts/*.sh is mode 0755 (#658)" >&2; fail=1; }
-    [ "${guards}" -eq 10 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 10 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    [ "${guards}" -eq 11 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 11 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
     # (2) The loop itself must have run. A typo'd list that iterates zero times
     # would otherwise report clean, which is the very defect being gated.
-    [ "${ran}" -eq 10 ] || { echo "instrument-test: ran ${ran} suites, expected 10" >&2; fail=1; }
+    [ "${ran}" -eq 11 ] || { echo "instrument-test: ran ${ran} suites, expected 11" >&2; fail=1; }
     echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
     [ "${fail}" -eq 0 ]
 
@@ -853,6 +853,45 @@ diff-sysctld:
 # LIVE: drift-check sudoers parse + AST against visudo / cvtsudoers. (#538)
 diff-sudoers:
     bash scripts/rs-oracle-diff.sh sudoers
+
+# ---------------------------------------------------------------------------
+# OFFLINE: branch-vs-fork-point differential replay. (#661, epic #654)
+#
+# The recipes above hold the BINARY fixed and vary the CORPUS ("has the real
+# subsystem drifted?"). These hold the CORPUS fixed and vary the BINARY, which
+# answers the question #658's corpus-growth gate leaves open: "would the corpus
+# this branch added have caught the bug this branch fixed?". A branch can satisfy
+# the growth gate with a scenario the old code already passed - evidence that
+# accumulates without discriminating - and nothing else in the chain notices.
+#
+# Run these EVERY Adversarial Testing Loop round, not once. A divergence table is
+# the only instrument in the loop whose evidence accumulates across rounds; the
+# adversary's is re-rolled each time, which is how session 9o declared a round DRY
+# over a live fail-open.
+#
+# No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3:
+# 0 clean (the success line carries a non-zero scenario count), 1 regression,
+# 2 tool error (including "these two builds cannot be compared"). Positive-
+# controlled by scripts/rs-branch-diff-test.sh, which re-seeds each fail-open into
+# a copy of the driver and requires named cases to catch it.
+#
+# The base build is cached per sha under TMPDIR, so repeated rounds against the
+# same fork point pay for it once. Deliberately NOT in `just ci`: it takes a base
+# ref and builds two trees.
+#
+# Usage: just diff-sudoers-branch 96038c9
+
+diff-auditd-branch base:
+    bash scripts/rs-branch-diff.sh auditd "{{base}}"
+
+diff-selinux-branch base:
+    bash scripts/rs-branch-diff.sh selinux "{{base}}"
+
+diff-sudoers-branch base:
+    bash scripts/rs-branch-diff.sh sudoers "{{base}}"
+
+diff-sysctld-branch base:
+    bash scripts/rs-branch-diff.sh sysctld "{{base}}"
 
 # Self-test of the differential/capture INSTRUMENTS. In `just ci` because an
 # unverified instrument is the exact failure this contract exists to prevent: a

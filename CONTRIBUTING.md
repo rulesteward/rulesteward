@@ -118,6 +118,49 @@ Every differential is built in **two tiers, and only the live tier may skip**:
 This split is why a missing docker daemon degrades the guarantee from "nothing
 was checked" to "the oracle was not re-derived."
 
+### The branch differential: a third axis (`just diff-<lane>-branch`)
+
+The two tiers above both hold the BINARY fixed and vary the CORPUS. A third
+instrument, `scripts/rs-branch-diff.sh` (#661), does the opposite: it holds the
+corpus fixed and varies the binary, replaying this tree's committed corpus
+against a build at a base ref and a build at HEAD.
+
+It exists because of `scripts/check-corpus-growth.sh` (#658). That gate forces a
+branch touching `crates/X/src/**` to add a file under `crates/X/tests/corpus/**`,
+but nothing checks the added file DISCRIMINATES anything: a branch can satisfy it
+with a scenario the old code already passed. Three runs separate those cases,
+because then the only delta between R1 and R2 is the corpus the branch added:
+
+| run | binary | corpus |
+|---|---|---|
+| R1 | base | the base worktree's committed corpus (baseline) |
+| R2 | base | **this tree's** committed corpus |
+| R3 | HEAD | this tree's committed corpus |
+
+R1 `ok` + R2 `FAILED` is proof the growth catches the old code. R1 `ok` +
+R3 `FAILED` is a regression. R1 `FAILED` is unattributable and excluded: that
+failure predates the branch.
+
+**Run it every Adversarial Testing Loop round, not once.** A divergence table is
+the only instrument in the loop whose evidence accumulates across rounds; the
+adversary's is re-rolled every time, which is how session 9o declared a round DRY
+over a live fail-open.
+
+Rows are libtest TEST NAMES, not corpus scenario ids, because libtest already
+reports per-test pass/fail and continues past a panic. Stated plainly so nobody
+over-reads the table: this granularity **cannot** separate a regression from
+residual defects inside a single test. Scenario granularity needs the replay
+tests to accumulate rather than panic at the first divergence and is tracked
+separately.
+
+Adding a lane means adding a row to the frozen table in `scripts/rs-branch-diff.sh`
+and a recipe, nothing else. A lane's replay test must resolve its corpus through
+`rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
+`sentinel_banner` + `sentinel_count`; the driver refuses to interpret a run that
+did not announce the exact path it was handed. Note `selinux` appears in this
+table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
+offline-only.
+
 ### Exit codes
 
 Applies to NEW dev-tooling harnesses (`tools/*-update`, `just diff-*`). This is
@@ -136,6 +179,14 @@ them when reading a CI log.
 `3` exists so a developer without docker gets an honest skip while CI turns the
 same condition into a hard failure. Collapsing it into `0` is exactly the bug
 that made `just diff-fapolicyd` report success while checking nothing (#572).
+
+**`just diff-<lane>-branch` has NO rc 3, and that is not an oversight.** It is
+OFFLINE tier throughout - no docker, no root, no live oracle - so it has no
+legitimate precondition to skip on. Everything a live recipe would skip for
+(a base that predates the corpus, a base whose harness will not build, a run
+that announced the wrong corpus) is `2`, "these two builds cannot be compared".
+Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
+asserts no case in it ever yields `3`.
 
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a

@@ -23,12 +23,23 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use rulesteward_core::oracle_corpus::resolve_corpus_root;
 use rulesteward_selinux::Policy;
 use tempfile::TempDir;
 
 /// Path to the vendored solid zstd policy archive.
+///
+/// Resolved through the SAME `RS_ORACLE_CORPUS_SELINUX` override as the scenario
+/// directories, because `_policies/` lives INSIDE the corpus tree and is corpus
+/// DATA, not source. Reading it from the compiled-in manifest directory while the
+/// scenarios came from an override would make `just diff-selinux-branch` vary two
+/// things at once - the product AND the policy fixtures - which is not a
+/// differential. Unset (the `just test` path) still resolves to the committed
+/// corpus, so every other selinux test binary sharing this module is unaffected.
 fn archive_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux/_policies/policies.tar.zst")
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
+    let (root, _mode) = resolve_corpus_root("RS_ORACLE_CORPUS_SELINUX", &default);
+    root.join("_policies/policies.tar.zst")
 }
 
 /// Unpack the policy archive once into a process-lifetime temp dir.

@@ -54,6 +54,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
+use rulesteward_core::oracle_corpus::{
+    CorpusMode, resolve_corpus_root, sentinel_banner, sentinel_count,
+};
 use rulesteward_selinux::{
     CategorizeError, DenialKind, ReplayOutcome, categorize, categorize_with_outcome, group_denials,
     parse_avc,
@@ -219,15 +222,33 @@ impl Manifest {
 // Enumeration + small helpers
 // ---------------------------------------------------------------------------
 
-fn corpus_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux")
+/// Sentinel token for this lane's corpus announcements.
+///
+/// `scripts/rs-branch-diff.sh` refuses to classify a run's exit code until it has
+/// grepped for the banner below carrying the exact corpus path it handed in. That
+/// grep is what catches a binary reading its OWN tree's corpus instead: it would
+/// agree with itself, exit 0, and report a full table having compared nothing.
+const SENTINEL: &str = "RS-DIFF-SELINUX";
+
+/// Minimum enumerated scenarios (45 grammar + 21 xver + 3 vm-live).
+const SCENARIO_FLOOR: usize = 69;
+
+/// Resolve the corpus root, honouring the `RS_ORACLE_CORPUS_SELINUX` override.
+///
+/// The override is what lets `just diff-selinux-branch` point a binary built at
+/// another commit at THIS tree's committed corpus. Without it a base-built binary
+/// reads the base tree's corpus and the comparison varies two things at once,
+/// which is not a differential at all.
+fn corpus_root() -> (PathBuf, CorpusMode) {
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
+    resolve_corpus_root("RS_ORACLE_CORPUS_SELINUX", &default)
 }
 
 /// Enumerate every scenario directory: `tests/corpus/selinux/*/manifest.json`
 /// whose directory name does NOT start with `_` (skips `_policies`). Returns
 /// `(scenario_dir, Manifest)` sorted by id for deterministic output.
 fn scenarios() -> Vec<(PathBuf, Manifest)> {
-    let root = corpus_root();
+    let (root, mode) = corpus_root();
     let mut out = Vec::new();
     let entries = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("read corpus dir {}: {e}", root.display()));
@@ -250,6 +271,20 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
         out.push((dir.clone(), Manifest::load(&dir)));
     }
     out.sort_by(|a, b| a.1.id.cmp(&b.1.id));
+
+    // Announce BEFORE asserting, but the assertion is what carries the guarantee
+    // (CONTRIBUTING: "assert the count, do not merely print it"). Announcing here
+    // rather than in each test means every entry point into the corpus is covered
+    // by the same guard, including any added later.
+    eprintln!("{}", sentinel_banner(SENTINEL, mode, &root));
+    eprintln!("{}", sentinel_count(SENTINEL, out.len()));
+    assert!(
+        out.len() >= SCENARIO_FLOOR,
+        "expected >= {SCENARIO_FLOOR} enumerated scenarios under {}, found {}",
+        root.display(),
+        out.len()
+    );
+
     out
 }
 
@@ -467,8 +502,8 @@ fn floor_layer_matches_manifest_label() {
     // counted via its manifest; the dual-format scenario is parsed twice, once
     // per variant, so the PARSE count exceeds the scenario count).
     assert!(
-        scenarios.len() >= 69,
-        "expected >= 69 enumerated scenarios, found {}",
+        scenarios.len() >= SCENARIO_FLOOR,
+        "expected >= {SCENARIO_FLOOR} enumerated scenarios, found {}",
         scenarios.len()
     );
     assert!(
