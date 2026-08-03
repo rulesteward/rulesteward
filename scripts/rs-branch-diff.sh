@@ -43,16 +43,25 @@
 # one-ref question; three earlier versions of this header said "committed" and a
 # guard written to match that word compared a pair the driver never builds.
 #
+# EXHAUSTIVE over the verdicts libtest can report, which the earlier version of
+# this table was not: it listed two of the three `absent` rows and omitted the
+# base-only row entirely, so a reader could reasonably infer coverage it did not
+# have. `*` means the run's verdict does not affect the classification.
+#
 #   R1      R2      R3        verdict
 #   FAILED  *       *         UNATTRIBUTABLE - base was already red, excluded
 #   ok      FAILED  ok        DISCRIMINATED  - the growth catches the old code
 #   ok      ok      ok        clean          - this lane's corpus did not discriminate
 #   ok      *       FAILED    REGRESSION     - HEAD diverges where the base did not
 #   ok      *       ignored   SILENCED       - the base ran it, HEAD skips it (rc 1)
-#   ignored *       FAILED    HEAD-only and FAILING - un-parked and left red (rc 1)
-#   ignored *       other     no baseline    - nothing to compare against, excluded
-#   absent  *       FAILED    HEAD-only and FAILING - added and left red (rc 1)
-#   absent  *       ignored   HEAD-only and PARKED  - added already parked (rc 0)
+#   ok      *       absent    base-only      - removed at HEAD (rc 0; a rename is
+#                                              indistinguishable from a deletion
+#                                              at this granularity)
+#   ignored *       FAILED    no baseline and FAILING - un-parked, left red (rc 1)
+#   ignored *       other     ignored at base - no baseline to compare, excluded
+#   absent  *       FAILED    no baseline and FAILING - added, left red (rc 1)
+#   absent  *       ignored   HEAD-only and PARKED    - added already parked (rc 0)
+#   absent  *       ok        HEAD-only      - added and passing (rc 0)
 #
 # The two `ignored` rows are asymmetric on purpose. A test the base RAN that HEAD
 # skips is a loss of coverage and fails. A test the branch ADDS already parked is
@@ -109,10 +118,11 @@ usage: bash scripts/rs-branch-diff.sh <lane> <base-ref>
   lane        auditd | selinux | sudoers | sysctld
   base-ref    any git revision (sha, tag, branch) to compare against
 
-Replays the CURRENT tree's committed corpus against a binary built at <base-ref>
-and a binary built at HEAD, plus a baseline of the base binary against the base
-tree's own corpus. Reports which rows the branch fixed, which its corpus growth
-newly discriminates, and which it regressed.
+Replays THIS WORKING TREE's corpus, uncommitted work included, against a binary
+built at <base-ref> and a binary built from this working tree, plus a baseline of
+the base binary against the base tree's own corpus. Reports which rows this
+lane's corpus growth newly discriminates against the old code, and which rows
+HEAD regressed, silenced, or left failing with no baseline.
 EOF
 }
 
@@ -290,7 +300,8 @@ fi
 #     being re-derived by a second command.
 #   - the `-uno` dirty scan. `git diff` compares TRACKED content only, so an
 #     untracked path cannot make this tree read as varying. The `?? .serena/`
-#     case that silently disabled the guard in 744bded cannot recur here, and the
+#     case that silently disabled the guard from 31ad456 until 744bded repaired it
+#     cannot recur here, and the
 #     unchecked `git status` rc that used to sit at the end of this block (where
 #     "git could not say" became "the tree is clean") is gone with it.
 #
@@ -447,11 +458,17 @@ fi
 if [ "${wt_sha}" != "${BASE_SHA}" ]; then
     die 2 "the cached base worktree ${WT} is at ${wt_sha:0:12}, not the requested base ${BASE_SHA:0:12}; refusing to report a comparison against a sha nothing established (remove that directory to rebuild it)"
 fi
-# NO `-uno` HERE, and that is the opposite of the nothing-to-vary guard above.
+# NO `-uno` HERE, and the reason is not the one an earlier version of this comment
+# gave. It described the nothing-to-vary guard as a `git status --porcelain -uno`
+# scan and called this site "the opposite" of it. Round 3 replaced that guard with
+# a one-ref `git diff`, which has no `-uno` flag at all, so all three of that
+# comment's claims went stale at once. Round 4 repaired the suite's copy of the
+# same claim and not this one.
 #
-# The two checks ask different questions of the same command. Up there the
-# question is "would these two commits BUILD differently", and an untracked file
-# is not a build input, so `-uno` is right. Here the question is "is this worktree
+# The two checks use DIFFERENT COMMANDS to ask different questions. Up there the
+# question is "would the base COMMIT and this WORKING TREE build differently", and
+# `git diff` answers it over tracked content by construction, so no untracked
+# handling arises. Here the question is "is this worktree
 # still the base", and the corpus is enumerated with `std::fs::read_dir` (see
 # every lane's `scenarios()` / `target_files()`), which does not consult git at
 # all. An UNTRACKED scenario directory dropped into the cached base worktree is
@@ -669,10 +686,14 @@ validate_run() {
 
     # EVERY `scenarios=` announcement is checked, not just the last one.
     #
-    # A suite with several announcing tests emits several lines in a
-    # nondeterministic order (sudoers emits five). `tail -1` would sample a
-    # RANDOM one of N, so a test that compared NOTHING slips past whenever some
-    # sibling's line happens to land last. Refusing on ANY zero (not just a zero
+    # A suite with several announcing tests emits several lines (sudoers emits
+    # five). `tail -1` samples exactly one of N, DETERMINISTICALLY - `replay()`
+    # passes `--test-threads=1` precisely so the transcript reads the same way
+    # twice - and that is worse rather than better: a test that compared NOTHING
+    # then slips past PERMANENTLY whenever a sibling's line is the one that lands
+    # last, instead of intermittently. An earlier version of this comment blamed
+    # nondeterministic parallel threads, which this driver disables.
+    # Refusing on ANY zero (not just a zero
     # sum) is deliberate: one vacuous test among live ones is exactly what a sum
     # would hide.
     #
@@ -1015,9 +1036,21 @@ done
 # SILENCED WINS OUTRIGHT. A run where every row was silenced is the strongest
 # instance of the thing that gate exists to fail, not a diagnostic dead end, so it
 # is reported as rc 1 below rather than dying rc 2 here.
-if [ "${COMPARABLE}" -eq 0 ] && [ "${#SILENCED[@]}" -eq 0 ]; then
+#
+# BOTH rc-1 buckets that skip COMPARABLE must stand this gate down, not just one.
+# Round 4 added the SILENCED conjunct with the reasoning above and did not carry
+# it to its sibling - while, in the same commit, WIDENING the population that
+# reaches ONLY_HEAD_FAILING by adding the un-parked-and-red arm. The result was
+# that a branch defect got reported as a tool error: rc 2 "these two builds cannot
+# be compared", which sends the operator to change their base ref or fix their
+# environment rather than to fix the red test, and the per-test table naming that
+# test was never printed because every `die 2` here precedes the report block.
+# All three round-5 reviewers found this independently.
+if [ "${COMPARABLE}" -eq 0 ] &&
+    [ "${#SILENCED[@]}" -eq 0 ] &&
+    [ "${#ONLY_HEAD_FAILING[@]}" -eq 0 ]; then
     if [ "${#UNATTRIBUTABLE[@]}" -ne 0 ]; then
-        die 2 "every comparable row is UNATTRIBUTABLE (the base was already red against its own corpus); nothing was actually compared, so neither 'clean' nor 'regression' would be truthful"
+        die 2 "no row could be compared; ${#UNATTRIBUTABLE[@]} was/were UNATTRIBUTABLE (the base was already red against its own corpus) and ${#BASE_IGNORED[@]} #[ignore]d at the base. Nothing was actually compared, so neither 'clean' nor 'regression' would be truthful"
     fi
     if [ "${#BASE_IGNORED[@]}" -ne 0 ]; then
         die 2 "every shared row is #[ignore]d at the BASE (${#BASE_IGNORED[@]} of them), so no row has a baseline verdict to compare against; nothing was actually compared, and that is a property of ${BASE_SHA:0:12}, not of this branch"
@@ -1075,7 +1108,7 @@ for name in "${BASE_IGNORED[@]+"${BASE_IGNORED[@]}"}"; do row "${name}" "ignored
 for name in "${ONLY_BASE[@]+"${ONLY_BASE[@]}"}"; do row "${name}" "base-only (removed at HEAD)"; done
 for name in "${ONLY_HEAD[@]+"${ONLY_HEAD[@]}"}"; do row "${name}" "HEAD-only (added by the branch)"; done
 for name in "${ONLY_HEAD_PARKED[@]+"${ONLY_HEAD_PARKED[@]}"}"; do row "${name}" "HEAD-only and PARKED (#[ignore])"; done
-for name in "${ONLY_HEAD_FAILING[@]+"${ONLY_HEAD_FAILING[@]}"}"; do row "${name}" "HEAD-only and FAILING"; done
+for name in "${ONLY_HEAD_FAILING[@]+"${ONLY_HEAD_FAILING[@]}"}"; do row "${name}" "no baseline and FAILING"; done
 printf '\n%d clean row(s) not listed. Scenario announcements: R1=%d R2=%d R3=%d.\n' \
     "${CLEAN}" "${SCEN[1]}" "${SCEN[2]}" "${SCEN[3]}"
 
@@ -1083,7 +1116,14 @@ printf '\n%d clean row(s) not listed. Scenario announcements: R1=%d R2=%d R3=%d.
 # has no base counterpart to regress against. Silence here would let `just test`
 # be the only thing standing between it and a merge.
 if [ "${#ONLY_HEAD_FAILING[@]}" -ne 0 ]; then
-    printf '%s: %d test(s) exist only at HEAD and are FAILING: %s\n' \
+    # "no baseline verdict", NOT "exist only at HEAD". This bucket holds TWO
+    # populations: rows the branch ADDED (absent at base) and rows the base had
+    # PARKED that the branch un-parked and left red. The second kind is present at
+    # the base - its R1base column literally reads `ignored` two lines above - so
+    # "exists only at HEAD" sent the operator hunting a newly added test that is
+    # not in the diff. Round 4 introduced that route and reused this sentence; two
+    # reviewers found it, and the suite's own case had frozen the false wording.
+    printf '%s: %d test(s) have no baseline verdict and are FAILING at HEAD (added, or #[ignore]d at base and un-parked): %s\n' \
         "${LABEL}" "${#ONLY_HEAD_FAILING[@]}" "${ONLY_HEAD_FAILING[*]}" >&2
     finish 1
 fi

@@ -122,8 +122,8 @@ was checked" to "the oracle was not re-derived."
 
 The two tiers above both hold the BINARY fixed and vary the CORPUS. A third
 instrument, `scripts/rs-branch-diff.sh` (#661), does the opposite: it holds the
-corpus fixed and varies the binary, replaying this tree's committed corpus
-against a build at a base ref and a build at HEAD.
+corpus fixed and varies the binary, replaying this WORKING TREE's corpus against
+a build at a base ref and a build from this working tree.
 
 It exists because of `scripts/check-corpus-growth.sh` (#658). That gate forces a
 branch touching `crates/X/src/**` to add a file under `crates/X/tests/corpus/**`,
@@ -144,19 +144,24 @@ mode, and it is why the driver's nothing-to-vary guard asks git a ONE-ref
 question (`git diff <base> -- <paths>`, commit against working tree) rather than
 comparing two commits.
 
-R1 `ok` + R2 `FAILED` is proof the growth catches the old code. R1 `ok` +
-R3 `FAILED` is a regression. R1 `FAILED` is unattributable and excluded: that
-failure predates the branch.
+R1 `ok` + R2 `FAILED` + R3 `ok` is proof the growth catches the old code. R1 `ok`
++ R3 `FAILED` is a regression, and takes precedence: `ok / FAILED / FAILED` is a
+REGRESSION, not a discrimination. R1 `FAILED` is unattributable and excluded:
+that failure predates the branch.
 
-The three `#[ignore]` cases are deliberately asymmetric, because `cargo test`
+The four `#[ignore]` cases are deliberately asymmetric, because `cargo test`
 skips ignored tests by default and this is the last gate able to see a replay
 test that is not being checked:
 
 | at base | at HEAD | verdict |
 |---|---|---|
 | ran | `#[ignore]`d | SILENCED, **rc 1**: a loss of coverage |
-| `#[ignore]`d | failing | HEAD-only and FAILING, **rc 1**: un-parked and left red |
+| `#[ignore]`d | failing | no baseline and FAILING, **rc 1**: un-parked and left red |
+| `#[ignore]`d | ran, or still `#[ignore]`d | ignored at base, rc 0; rc **2** if EVERY shared row is in this state |
 | absent | `#[ignore]`d | HEAD-only and PARKED, rc 0 |
+
+The third row is the most common of the four: it is what any unrelated branch
+produces against a base carrying `boundary_substrate.rs`'s parked #669/#677 pins.
 
 The last row is rc 0 because adding a parked pin for a known-open bug is this
 repo's convention (`boundary_substrate.rs`: "`#[ignore]`d rather than deleted,

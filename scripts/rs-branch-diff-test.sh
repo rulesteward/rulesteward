@@ -370,10 +370,10 @@ fi
 [ "${STUB_SECOND_COMMITTED_READ:-0}" = "${run}" ] &&
     echo "${SENTINEL}: mode=committed corpus=/some/other/tree/tests/corpus" >&2
 
-# An extra vacuous announcement BEFORE the real one models a suite whose parallel
-# libtest threads each announce, one of which compared nothing. The healthy count
-# lands last on purpose: that is the ordering under which a `tail -1` sampler
-# reports success.
+# An extra vacuous announcement BEFORE the real one models a suite where one of
+# several announcing tests compared nothing. (Not parallel threads: the driver
+# passes `--test-threads=1`.) The healthy count lands last on purpose, because
+# that is the ordering under which a `tail -1` sampler reports success.
 [ "${STUB_ZERO_COUNT_FIRST:-0}" = "${run}" ] && echo "${SENTINEL}: scenarios=0" >&2
 [ "${STUB_NO_COUNT:-0}" = "${run}" ] || echo "${SENTINEL}: scenarios=${scen}" >&2
 [ "${STUB_ORACLE_BROKEN:-0}" = "${run}" ] &&
@@ -652,7 +652,7 @@ run_all_cases() {
     # A base that was already red on its OWN corpus cannot attribute anything:
     # its failure predates the branch. Those rows are excluded, and if EVERY row
     # is excluded nothing was compared at all.
-    run_case all_rows_unattributable 2 "every comparable row is UNATTRIBUTABLE" \
+    run_case all_rows_unattributable 2 "no row could be compared" \
         "STUB_R1_TESTS=replay_alpha:FAILED replay_beta:FAILED"
 
     # One unattributable row must NOT poison the others: the remaining row is
@@ -688,7 +688,7 @@ run_all_cases() {
     # be a REGRESSION by definition - and it was therefore collected under the
     # neutral "added by the branch" label and never consulted for the verdict.
     # rc 0 while R3's libtest exited 101.
-    run_case head_only_test_that_fails 1 "exist only at HEAD and are" \
+    run_case head_only_test_that_fails 1 "have no baseline verdict and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED"
 
     # The same shape with R3 red BEFORE it announces. RENAMED for what it actually
@@ -699,7 +699,7 @@ run_all_cases() {
     # the claim false by neutering `SCEN[3] -eq 0` and watching every case still
     # pass. A case named after a guard it cannot reach is worse than no case: it
     # is what tells the next person the guard is already covered.
-    run_case head_only_failure_beats_the_count_check 1 "exist only at HEAD and are" \
+    run_case head_only_failure_beats_the_count_check 1 "have no baseline verdict and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED" STUB_NO_COUNT=3
 
     # The ACTUAL witness for the final rc-0 contract gate, constructed to reach it.
@@ -734,7 +734,7 @@ run_all_cases() {
     # the verdict line, from one run, at rc 0 while libtest exited 101. That is
     # ONLY_HEAD_FAILING's case by a quieter route. The repo has this exact history
     # (`e2e_auditd_lint.rs`, parked during Phase 0 while its bodies were `todo!()`).
-    run_case base_ignored_but_failing_at_head 1 "exist only at HEAD and are" \
+    run_case base_ignored_but_failing_at_head 1 "have no baseline verdict and are" \
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:FAILED"
@@ -766,6 +766,46 @@ run_all_cases() {
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
+
+    # --- a branch defect must not be reported as a tool error -----------------
+    # Exactly two rc-1 buckets skip COMPARABLE: SILENCED and ONLY_HEAD_FAILING.
+    # Round 4 taught the zero-comparable gate to stand down for the first and not
+    # the second, while WIDENING the second by adding the un-parked-and-red arm.
+    # A branch defect then came back as rc 2, "these two builds cannot be
+    # compared", which routes the operator to change their base ref rather than fix
+    # the red test - and the per-test table naming it was never printed, because
+    # every `die 2` in that gate precedes the report block. All three round-5
+    # reviewers found this independently. Both routes into the bucket are pinned.
+    run_case unparked_failing_with_no_comparable_row 1 "have no baseline verdict and are" \
+        "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
+        "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
+        "STUB_R3_TESTS=replay_alpha:ignored replay_beta:FAILED"
+    run_case added_failing_with_no_comparable_row 1 "have no baseline verdict and are" \
+        "STUB_R1_TESTS=replay_alpha:FAILED replay_beta:FAILED" \
+        "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:FAILED" \
+        "STUB_R3_TESTS=replay_alpha:FAILED replay_beta:FAILED replay_gamma:FAILED"
+
+    # --- R1 and R2 are the SAME BINARY, so they must report the same test set --
+    # The guard's own comment names the false clean it prevents: a name present in
+    # R1 but absent from R2 is read as CLEAN via the `${R2[...]-}` default. A
+    # mutation probe showed BOTH halves of it (cardinality and containment)
+    # survived all 64 cases, so the guard was documented, correct, and unwitnessed.
+    # The stub can express it - STUB_R1_TESTS and STUB_R2_TESTS are independent -
+    # and no case did.
+    # Equal SIZE, different KEYS: caught only by the containment half.
+    run_case r2_reports_a_different_test_set 2 "must report the same test set" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:ok" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_gamma:ok" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok"
+    # R2 a strict SUPERSET of R1: containment holds (every R1 name is in R2), so
+    # only the cardinality half can catch it. Both halves are witnessed separately
+    # and by inputs the other cannot see, because "equal size is not equal set" is
+    # the whole reason the second one exists. An R2 with FEWER tests would trip
+    # BOTH, leaving whichever ran second uncontrolled while looking covered.
+    run_case r2_reports_an_extra_test 2 "must report the same test set" \
+        "STUB_R1_TESTS=replay_alpha:ok" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:ok" \
+        "STUB_R3_TESTS=replay_alpha:ok"
 
     # --- a test ADDED already parked gets its own label, at rc 0 ---------------
     # It previously got the byte-identical verdict to a passing addition, so the
@@ -1056,8 +1096,33 @@ run_positive_control test-line-guard-removed \
 # guard must let BOTH a fully-red baseline and a disjoint test set through.
 # shellcheck disable=SC2016
 run_positive_control unattributable-guard-removed \
-    's|^if \[ "${COMPARABLE}" -eq 0 \] && \[ "${#SILENCED\[@\]}" -eq 0 \]; then|if false; then|' \
+    's|^if \[ "${COMPARABLE}" -eq 0 \] &&|if false \&\&|' \
     all_rows_unattributable disjoint_test_sets every_row_ignored_at_base
+
+# The conjunct that stops a BRANCH DEFECT being reported as a TOOL ERROR. Seeded
+# on its own line so it is independent of the gate control above: removing it
+# leaves the gate live and only the rc-1 bucket unprotected, which is exactly the
+# state round 4 shipped.
+# shellcheck disable=SC2016
+run_positive_control head_failing_beats_zero_comparable_removed \
+    's|^    \[ "${#ONLY_HEAD_FAILING\[@\]}" -eq 0 \]; then|    true; then|' \
+    unparked_failing_with_no_comparable_row added_failing_with_no_comparable_row
+
+# The R1/R2 same-test-set guard, whose own comment names the false clean it
+# prevents and which a mutation probe found surviving all 64 cases of round 4.
+# shellcheck disable=SC2016
+run_positive_control r1_r2_cardinality_guard_removed \
+    's|^if \[ "${#R1\[@\]}" -ne "${#R2\[@\]}" \]; then|if false; then|' \
+    r2_reports_an_extra_test
+
+# The containment half, controlled separately: equal cardinality with different
+# keys passes the size check, and the missing name then reads as CLEAN via the
+# `${R2[...]-}` default. One control over both halves would have left this one
+# uncontrolled while looking covered.
+# shellcheck disable=SC2016
+run_positive_control r1_r2_containment_guard_removed \
+    's#^    \[ -n "${R2\[${name}\]+set}" \] || die 2 .*#    :#' \
+    r2_reports_a_different_test_set
 
 # The split inside the base-ignored arm. Without it the arm excludes on R1 alone
 # and a test red at HEAD rides out at rc 0 with `FAILED` printed in its own row.

@@ -873,7 +873,8 @@ diff-sudoers:
 #
 # No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3:
 # 0 clean (the success line carries a non-zero announcement count), 1 regression
-# OR a test the branch silenced with #[ignore], 2 tool error (including "these two
+# a test with no baseline left FAILING at HEAD (added, or un-parked), OR a test
+# the branch silenced with #[ignore], 2 tool error (including "these two
 # builds cannot be compared"). Positive-controlled by
 # scripts/rs-branch-diff-test.sh, which re-seeds SOME of the driver's guards into
 # a copy of it and requires named cases to catch each. Not every guard is

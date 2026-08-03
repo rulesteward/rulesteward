@@ -255,7 +255,8 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
     // announcement. The BANNER is safe, because `resolve_corpus_root` emits it
     // before returning from `corpus_root()` above, so an unreadable corpus ROOT
     // does still announce the path it could not read. The only case emitting no
-    // sentinel at all is a root that is not a directory, which that function
+    // sentinel at all is a `CorpusRootError` - a root that is not a directory, or
+    // a blank override value - both of which that function
     // rejects before announcing. That case is a corpus the
     // driver cannot use under any binary, and it is caught as such; the case this
     // split addresses is a corpus this binary cannot fully parse, which is the
