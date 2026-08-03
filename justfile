@@ -77,6 +77,21 @@ no-mnt-guard:
 capture-guard:
     bash scripts/check-capture-writes.sh
 
+# (session 9o, #658) Corpus-growth guard: a branch that changes crates/X/src/**
+# must ADD a file under crates/X/tests/corpus/**, per crate.
+#
+# The other lint-tier guards walk a TREE; this one walks a COMMIT RANGE, because
+# its escape marker lives in a commit body. That is also why it can fail in a way
+# they cannot: a base that does not resolve yields an empty diff, and an empty
+# diff has no violations. The script exits 2 rather than 0 in that case, so a CI
+# run with an unfetched origin/main fails loudly instead of reporting clean.
+#
+# Base defaults to `git merge-base origin/main HEAD`; pass one to override.
+#
+# Assert an in-scope crate's src change is paid for by that crate's corpus. (#658)
+corpus-growth-guard base="":
+    bash scripts/check-corpus-growth.sh "{{base}}"
+
 # Self-test EVERY instrument in scripts/. An unverified instrument is the exact
 # failure this contract exists to prevent: a gate that reports clean having
 # scanned nothing is indistinguishable downstream from a real pass.
@@ -98,7 +113,8 @@ instrument-test:
     ran=0
     for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
-             check-no-mnt-paths rs-mutation-gate check-doc-citations; do
+             check-no-mnt-paths rs-mutation-gate check-doc-citations \
+             check-corpus-growth; do
         # Captured rather than streamed, so the FAIL-token assertion below can see
         # it. Printed verbatim immediately afterwards: a suite's own transcript is
         # what a maintainer debugs from, and swallowing it would trade one
@@ -140,14 +156,27 @@ instrument-test:
     # a filter is not evidence, and this project's own command wrapper rewrites a
     # mid-pipeline grep and changes the number (measured while writing this recipe,
     # which reported 16 guards where there are 8).
+    #
+    # The same walk carries the MODE invariant (#658). Nothing in this tree
+    # invokes a script in a way that consults the executable bit - the justfile
+    # and every CI step say `bash scripts/x.sh`, and rs-capture-guard.sh is
+    # SOURCED - so a `test -x` PREFLIGHT on the recipes would gate a property no
+    # caller consumes and could only ever produce a false failure. This is the
+    # other shape: a tree invariant, asserted where the tree is already being
+    # walked. It catches a script silently losing +x, which really happened (every
+    # script in scripts/ was non-executable until #644) and which breaks ad-hoc
+    # `./scripts/x.sh` use and reads as broken in any file listing.
     guards=0
+    notexec=""
     for f in scripts/*.sh; do
         case "${f}" in *-test.sh) ;; *) guards=$((guards + 1)) ;; esac
+        [ -x "${f}" ] || notexec="${notexec} ${f}"
     done
-    [ "${guards}" -eq 9 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 9 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    [ -z "${notexec}" ] || { echo "instrument-test: not executable:${notexec} - every scripts/*.sh is mode 0755 (#658)" >&2; fail=1; }
+    [ "${guards}" -eq 10 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 10 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
     # (2) The loop itself must have run. A typo'd list that iterates zero times
     # would otherwise report clean, which is the very defect being gated.
-    [ "${ran}" -eq 9 ] || { echo "instrument-test: ran ${ran} suites, expected 9" >&2; fail=1; }
+    [ "${ran}" -eq 10 ] || { echo "instrument-test: ran ${ran} suites, expected 10" >&2; fail=1; }
     echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
     [ "${fail}" -eq 0 ]
 
@@ -183,7 +212,7 @@ musl:
 # no-mnt-guard + capture-guard + instrument-test + tools-gate + test + cov).
 # `instrument-test` runs a SUPERSET of `oracle-harness-test`, so the latter is not
 # listed here; it remains callable on its own.
-ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard instrument-test tools-gate test cov
+ci: fmt clippy dac-guard codes-guard no-mnt-guard capture-guard corpus-growth-guard instrument-test tools-gate test cov
 
 # (#291) Isolated trustdb NO_LOCK RW-contention harness (opt-in; NOT part of
 # `just ci`). Runs ONLY the #[ignore]d `trustdb_contention` integration test:
