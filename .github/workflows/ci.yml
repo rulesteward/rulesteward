@@ -49,15 +49,22 @@ env:
 
 jobs:
   # Fast pre-flight: fmt + clippy on a single ubuntu host. Cheaper than
-  # running them 3x inside the Rocky matrix containers. `check` and
-  # `coverage` depend on this one directly; `musl-build` depends on
-  # `check` (transitively waiting on fmt-clippy), so any fmt/clippy
-  # failure short-circuits the whole pipeline before the heavier
-  # matrix jobs spin up. `coverage` runs in parallel with `check` (not
-  # gated on it) - llvm-cov reruns the tests so a `check` failure will
-  # also fail coverage, but we accept the parallel-burn on red pushes
-  # in exchange for ~8-10 min faster wall-clock on green pushes (the
-  # common case).
+  # running them 3x inside the Rocky matrix containers.
+  #
+  # This and `instruments` are the two ungated pre-flight jobs, and six others
+  # (`coverage`, `musl-build`, `msrv`, `selinux-feature`,
+  # `selinux-feature-coverage`, `apache-only-build`) gate on BOTH, so a failure
+  # in either short-circuits the pipeline before the heavier matrix jobs spin
+  # up. `check` gates on those two plus `musl-build`.
+  #
+  # `coverage` runs in parallel with `check` (not gated on it) - llvm-cov
+  # reruns the tests so a `check` failure will also fail coverage, but we
+  # accept the parallel-burn on red pushes in exchange for ~8-10 min faster
+  # wall-clock on green pushes (the common case).
+  #
+  # (Corrected in #665: this comment previously said `musl-build` depends on
+  # `check`. The edge runs the other way - `check` needs `musl-build` - and has
+  # since the rocky-suite merge documented at that job's own header.)
   fmt-clippy:
     name: fmt + clippy (ubuntu)
     runs-on: ubuntu-latest
@@ -169,17 +176,30 @@ jobs:
   # No toolchain, no build deps, no rust-cache: `instrument-test` is pure bash
   # (cargo and docker are stubbed inside the suites) and `corpus-growth-guard`
   # is pure git. Only `just` itself has to be installed.
+  #
+  # The six jobs that gate on `fmt-clippy` gate on this one too, deliberately.
+  # While the four self-tests lived INSIDE fmt-clippy, a failing instrument
+  # turned that job red and every dependent job was skipped. Moving them to an
+  # independent job would have quietly traded that blast radius away - a net
+  # REDUCTION in enforcement inside a change whose whole purpose is to increase
+  # it. Since this job is pure bash and finishes in about a minute against
+  # fmt-clippy's vendored-libsepol clippy build, adding it to those `needs:`
+  # lists restores the short-circuit at no measurable wall-clock cost.
   instruments:
     name: instrument self-tests + corpus-growth guard (#665)
     runs-on: ubuntu-latest
     steps:
       # fetch-depth: 0 is REQUIRED here and is set on no other checkout in this
-      # file. check-corpus-growth.sh defaults its base to
-      # `git merge-base origin/main HEAD`; at the default depth 1 there is no
-      # origin/main and no merge base, so the guard would correctly report rc 2
-      # on every run. Wiring the step without the fetch depth converts a silent
-      # non-gate into a permanently red one. It stays confined to this job so
-      # the other checkouts keep their shallow-clone speed.
+      # file. check-corpus-growth.sh resolves a base, and at the default depth 1
+      # it cannot: actions/checkout's shallow refspec creates only the ref being
+      # checked out, which on a pull_request run is refs/remotes/pull/N/merge,
+      # so there is no origin/main and the guard reports rc 2. On a push to main
+      # the shallow refspec DOES create origin/main - pointed at HEAD - so the
+      # guard degrades instead to a vacuous rc 0 over an empty range. Neither is
+      # a working gate, and the second is the worse of the two because it is
+      # green. fetch-depth: 0 takes the getRefSpecForAllHistory path, which
+      # fetches every branch, so origin/main resolves on every event. It stays
+      # confined to this job so the other checkouts keep their shallow speed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -199,12 +219,30 @@ jobs:
         run: just instrument-test
 
       # (#658) A branch that changes crates/X/src/** must ADD a file under
-      # crates/X/tests/corpus/**. On a pull_request event HEAD is the merge
-      # commit, so the merge base is the current main tip and the examined
-      # range is exactly the PR's own changes. A base that cannot be resolved
-      # is rc 2, never a clean report.
+      # crates/X/tests/corpus/**. A base that cannot be resolved is rc 2, never
+      # a clean report.
+      #
+      # The PR's OWN base is passed explicitly rather than left to the recipe's
+      # `git merge-base origin/main HEAD` default, because that default silently
+      # neuters the gate on any PR not based on main. For a stacked PR the merge
+      # base with main predates the stack base, so the examined range swallows
+      # the base branch's commits: a src change in this PR is then credited with
+      # a corpus file the BASE branch added, and a `# skip-corpus:` marker in a
+      # base-branch commit - one no reviewer of this PR ever sees - exempts the
+      # whole range. Both were reproduced against a real merge commit; both
+      # report OK on exactly the change the gate exists to catch. This project's
+      # own practice makes that live rather than hypothetical: a feature lane
+      # STACKS on a cleanup branch whenever the cleanup PR cannot be merged.
+      #
+      # The expression is read through `env:` rather than interpolated into the
+      # run: block. base.sha is a repo-computed 40-hex sha and not attacker
+      # controlled, so this is defence in depth, not a live injection fix.
+      # It is empty on push and tag events, which is exactly the recipe's own
+      # `base=""` default, so those runs keep the merge-base behaviour.
       - name: Corpus-growth guard (ATL evidence must accumulate)
-        run: just corpus-growth-guard
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: just corpus-growth-guard "$PR_BASE_SHA"
 
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
@@ -222,7 +260,7 @@ jobs:
   check:
     name: ${{ matrix.label }} - test + musl smoke
     runs-on: ubuntu-latest
-    needs: [fmt-clippy, musl-build]
+    needs: [fmt-clippy, instruments, musl-build]
     strategy:
       fail-fast: false
       matrix:
@@ -473,7 +511,7 @@ jobs:
   coverage:
     name: cargo llvm-cov (workspace 80% + parser/lint 90%)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure rustup is available
@@ -521,7 +559,7 @@ jobs:
     # prior gate `needs: check` would now be a dependency cycle. A red push
     # wastes ~38 s of musl-build compute that the prior gate would have
     # saved, in exchange for the wall-clock win on green pushes.
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -642,7 +680,7 @@ jobs:
   msrv:
     name: cargo check on MSRV (1.88)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure rustup is available
@@ -683,7 +721,7 @@ jobs:
   selinux-feature:
     name: ${{ matrix.label }} - authoritative-categorizer (clippy + test)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     strategy:
       fail-fast: false
       matrix:
@@ -752,7 +790,7 @@ jobs:
   selinux-feature-coverage:
     name: authoritative-categorizer coverage (ubuntu)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure rustup is available
@@ -824,7 +862,7 @@ jobs:
   apache-only-build:
     name: apache-2.0-only build (no libsepol, no-default-features)
     runs-on: ubuntu-latest
-    needs: fmt-clippy
+    needs: [fmt-clippy, instruments]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure rustup is available
