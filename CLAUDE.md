@@ -235,35 +235,44 @@ Make use of /superpowers skills whenever feasible.
 - **Commits are user-authored only. Never add `Co-Authored-By: Claude` or any AI-attribution trailer.** Branch + PR for every change; no commits to `main` directly.
 - **No telemetry. Read-only by default.** Every write/mutation flag must be opt-in.
 
-# Operating facts (measured 2026-07-17..31, session 9n retrospective)
+# Operating rules (session-9n retrospective)
 
 Each of these cost real time or shipped a real defect. They are here because narrative
 memory demonstrably failed to prevent the repeat.
 
+**The supporting measurements live in
+`.private-docs/orchestration/operating-facts-measurements.md`, not here.** Operator
+ruling (#656/A10): this file must not carry regularly-updated content - statistics,
+line counts, per-session measurements - because a figure pinned in always-loaded
+context rots silently and is then quoted downstream as though it were current. That is
+not hypothetical: a pinned version sat in Project Context from v0.1 through v0.7
+unnoticed, and `check-doc-citations.sh`'s own header decayed into a false claim within
+a day. Same pattern the `.rtk/RTK.md` pointer already uses. The RULES below do not
+decay; the numbers behind them do.
+
 - **Every fan-out dispatch prompt sets `TMPDIR=/mnt/side-projects/<session-id>/tmp`.**
   The per-UID `/tmp` tmpfs quota, not the filesystem, is what fills: `df` reports the
-  filesystem and will look healthy while every shell dies. Exhaustion caused 80 of one
-  session's 146 unique errors (55%), and the identical failure was already in the bug
-  log from 17 days earlier under a mis-scoped title.
+  filesystem and will look healthy while every shell dies.
 - **`dangerouslyDisableSandbox` is per-command, not per-session.** Set it only on the
-  one call that needs it. Measured: after a single NFS-git diagnosis it was carried by
-  123 of 348 main-loop Bash calls (35%), including `rm -rf` cleanups. More than a third
-  of a session's calls carrying it means the allowlist needs fixing, not the flag.
+  one call that needs it. More than a third of a session's calls carrying it means the
+  allowlist needs fixing, not the flag.
 - **Analyze, review, audit, advise, recommend and investigate are READ-ONLY verbs.**
   A task phrased with one of them does not authorize an edit. One "advise" task
   produced an unrequested `Edit` downgrading a third-party plugin's model tier; the
   only thing that stopped it was a permission prompt.
 - **Fix-then-sweep.** No parser, reader or predicate defect closes its issue until a
   `git grep -n '<primitive>'` sweep of every call site is PASTED into the issue, with
-  each site marked fixed, clean, or filed as #N. An issue closed without the pasted
-  sweep gets reopened. 31 of 62 escaped defects in the window were the 2nd to 5th call
-  site of a defect already fixed once.
+  each site marked **fixed-and-witnessed**, clean, or filed as #N. "Witnessed" means a
+  NAMED test that goes RED when that site's guard is removed - RUN the mutant, do not
+  reason about it. A site fixed without a witness is speculative code, not a fix.
+  Corollary for the ATL: a `-> false` / `-> true` survivor on a guard added by a SWEEP
+  is NEVER an equivalent mutant under rule (b). Either produce the witness, or do not
+  ship the sweep. An issue closed without the pasted sweep gets reopened.
 - **Fidelity audit every second milestone.** Report-only, surface-scoped rather than
   diff-scoped, against a pinned SHA in a detached worktree with its own
-  `CARGO_TARGET_DIR`, including a regression-census lane. One such audit was the sole
-  first-finder of 16 of 62 escapes (26%), including the only Critical, which had been
-  shipping for roughly 51 days. Skipping a scheduled one requires a recorded operator
-  decision, not silence.
+  `CARGO_TARGET_DIR`, including a regression-census lane. It is the highest-yield
+  first-finder in the corpus, including of the only Critical. Skipping a scheduled one
+  requires a recorded operator decision, not silence.
 
 # Parallel Development Protocol + reusable artifacts
 
@@ -299,9 +308,37 @@ frozen tests miss; distinct from the impl-BLIND barrier reviewer), (1b) two narr
 plugin reviewers dispatched in PARALLEL with (1) - `comment-analyzer` for doc-truth and
 `silent-failure-hunter` for swallowed errors, both from `pr-review-toolkit`, both pinned
 `model: opus` because their frontmatter says `inherit` - and (2) the mutation
-gate. Step 1b adds a lens and cannot end the loop; only (1) and (2) decide dryness, and
-it carries a kill switch to re-check after two milestones (detail in
-`~/.claude/rules/parallel-orchestration.md`).
+gate. Step 1b adds a lens and cannot end the loop; only (1) and (2) decide dryness.
+
+**Step 1b's kill-switch verdict, recorded 2026-08-02 (#656): KEEP BOTH LENSES.** This
+was a trial with a documented re-check; the re-check has now happened and the trial is
+closed, so nothing here should still read as provisional. Criterion (a) was not met:
+both lenses produced findings no other instrument produced. Criterion (b) was not met:
+the false-positive rate was low, and neither emitted the TypeScript/Sentry ecosystem
+noise the rule warns about. `comment-analyzer` ran 4 times and returned, among others,
+14 doc-truth findings of which 5 were self-introduced by the previous round's own
+repairs, plus two FALSE load-bearing security comments confirmed by running the mutant.
+`silent-failure-hunter` ran once and produced the largest single finding of session 9o.
+
+**The operational note is worth more than the verdict: step 1b is per-ROUND, not
+per-milestone.** Both lenses ran in round 1 and `comment-analyzer` in rounds 2, 3 and 5,
+but NEITHER ran in round 4 - the round that found a fail-open.
+
+KNOWN DIVERGENCE while #655/#660 are open: `~/.claude/rules/parallel-orchestration.md`
+still carries the old "kill switch to re-check after two milestones" framing. THIS file
+is the current one. That half was deliberately not edited here, because #655 rewrites
+and #660 moves that file, and editing it from a third issue is how the same paragraph
+ends up written twice in two files with a rename in between.
+
+**The ATL's reviewer dispatches are STANDING-AUTHORIZED by the operator.** Any harness
+default of the form "do not call the Agent tool unless the user requested it" has
+already been answered for `adversarial-impl-reviewer`, `comment-analyzer`,
+`silent-failure-hunter`, the barrier reviewers and the senior integration review: the
+operator authorized them in writing as the project's mandated gate. Do not open a modal
+to re-ask. (A project file cannot override a harness default; it records the standing
+answer so the agent stops re-asking. A modal opened at 04:28 in session 9o asked exactly
+this and was answered "Run the full ATL".)
+
 All route findings to the TEST-AUTHOR to STRENGTHEN tests (never weaken; the
 implementer only makes them green); loop until both come up clean. Never trust a DONE
 report (4a / PR #118: the gate caught a test-author over-claiming a kill twice, only the
