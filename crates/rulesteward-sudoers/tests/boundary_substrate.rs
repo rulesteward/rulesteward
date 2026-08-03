@@ -1027,8 +1027,16 @@ fn a_three_token_left_hand_side_with_a_spaced_quote_is_also_rejected() {
 /// Honest about its own strength: `f01_count == 0` is a Malformed-ABSENCE check,
 /// not a parse-CORRECTNESS one. `a b c = NOPASSWD: ALL` also scores 0 here while
 /// producing a garbage host token. All ten shapes were verified correct against
-/// `cvtsudoers` when this was written, but eight of them carry no structural pin
-/// in this test.
+/// `cvtsudoers` when this was written, and NONE is structurally pinned by this
+/// test's own body - it asserts only the absence of an F01.
+///
+/// Four are pinned STRUCTURALLY elsewhere: `"ab"ALL` and `"ops team"web1` by the
+/// #651 tests above, `my\ user ALL = ALL` by `iss538_parser_gaps.rs`'s
+/// escaped-space test, and `alice,bob ALL` by its `accept-multi-user-list`
+/// regression control. The remaining SIX carry no structural pin anywhere, which
+/// is the honest residue. (An earlier version of this note said eight, counting
+/// the two `iss538_parser_gaps.rs` pins as absent; under-claiming a test's
+/// coverage is a smaller sin than over-claiming it, but it is still wrong.)
 #[test]
 fn control_two_token_left_hand_sides_still_parse() {
     for src in [
