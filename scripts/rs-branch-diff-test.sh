@@ -10,9 +10,13 @@
 # here against a stubbed cargo, a stubbed git and two stubbed test binaries, once
 # per interesting outcome.
 #
-# The suite ends with positive controls that seed each load-bearing guard's bug
+# The suite ends with positive controls that seed NINE of the driver's guards
 # back into a COPY of the driver and assert that NAMED cases catch it. Without
 # those, this file could pass while testing nothing.
+#
+# NINE, not "each": the driver has 28 `die 2` sites and they are not all
+# controlled. Saying "each" invited the next person to skip adding a control for
+# a new guard because the comment claimed one already existed.
 #
 # Usage: bash scripts/rs-branch-diff-test.sh
 # Exit:  0 all cases pass, 1 a case failed, 2 the suite could not run.
@@ -99,9 +103,21 @@ make_sandbox() {
         : >"${box}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
     fi
 
-    # A curated system PATH rather than /usr/bin: a hermetic PATH stops the suite
-    # from passing or failing for reasons outside the sandbox, and lets a case
-    # make a tool genuinely absent.
+    # A PRE-EXISTING cache directory, which is the driver's common path (the ATL
+    # runs it every round against one fork point) and had zero coverage: every
+    # sandbox got a fresh TMPDIR, so the reuse branch was never taken. Built here
+    # WITHOUT going through the stub `git worktree add`, which is exactly the
+    # state that made the creation path's failure unobservable.
+    if [ "${STUB_PRECREATE_WT:-0}" = "1" ]; then
+        local wt="${box}/tmp/rs-branch-diff/aaaaaaaabbbbbbbbccccccccdddddddd00000000"
+        mkdir -p "${wt}/crates/rulesteward-auditd/tests/corpus/auditd-oracle"
+        : >"${wt}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
+    fi
+
+    # A curated system PATH rather than /usr/bin, so the suite cannot pass or fail
+    # for reasons outside the sandbox. (Its sibling suite also uses this to make
+    # docker genuinely absent; no case here needs a missing tool, so that is a
+    # property of the design rather than something exercised.)
     local tool resolved
     for tool in mktemp mkdir rm tail grep cut env bash dirname cat cp; do
         resolved="$(command -v "${tool}")" || {
@@ -147,22 +163,56 @@ STUB
     # STUB_BASE_CORPUS_MISSING models a base sha that predates the corpus.
     cat >"${box}/bin/git" <<'STUB'
 #!/usr/bin/env bash
-if [ "${1-}" = "rev-parse" ]; then
-    rc="${STUB_GIT_REVPARSE_RC:-0}"
-    [ "${rc}" -eq 0 ] && echo "${STUB_BASE_SHA:-aaaaaaaabbbbbbbbccccccccdddddddd00000000}"
-    exit "${rc}"
+# Stub git. Distinguishes calls made INSIDE the cached base worktree (`git -C
+# <dir> ...`) from calls against the repo, because the driver now validates the
+# cache and those two must be able to disagree.
+in_worktree=0
+if [ "${1-}" = "-C" ]; then
+    in_worktree=1
+    shift 2
 fi
+
+BASE_DEFAULT="aaaaaaaabbbbbbbbccccccccdddddddd00000000"
+HEAD_DEFAULT="1111111122222222333333334444444455555555"
+
+if [ "${1-}" = "rev-parse" ]; then
+    if [ "${in_worktree}" -eq 1 ]; then
+        # What the CACHED worktree reports it is checked out at.
+        echo "${STUB_WT_SHA:-${STUB_BASE_SHA:-$BASE_DEFAULT}}"
+        exit 0
+    fi
+    rc="${STUB_GIT_REVPARSE_RC:-0}"
+    [ "${rc}" -ne 0 ] && { echo "fatal: stub rev-parse failure" >&2; exit "${rc}"; }
+    # HEAD resolves separately from the base ref, so "is there anything to vary?"
+    # is expressible. Defaults differ, so ordinary cases are unaffected.
+    case "${3-}" in
+    'HEAD^{commit}') echo "${STUB_HEAD_SHA:-$HEAD_DEFAULT}" ;;
+    *) echo "${STUB_BASE_SHA:-$BASE_DEFAULT}" ;;
+    esac
+    exit 0
+fi
+
+if [ "${1-}" = "status" ]; then
+    if [ "${in_worktree}" -eq 1 ]; then
+        [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
+    else
+        [ -n "${STUB_TREE_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
+    fi
+    exit 0
+fi
+
 if [ "${1-}" = "worktree" ] && [ "${2-}" = "add" ]; then
     rc="${STUB_GIT_WORKTREE_RC:-0}"
     if [ "${rc}" -eq 0 ]; then
-        # `worktree add --detach <dir> <sha>`: the directory is the last argument
-        # before the sha.
+        # `worktree add --detach <dir> <sha>`: the directory is the absolute arg.
         for arg in "$@"; do case "${arg}" in /*) dest="${arg}" ;; esac; done
         mkdir -p "${dest}"
         if [ "${STUB_BASE_CORPUS_MISSING:-0}" != "1" ]; then
             mkdir -p "${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle"
             : >"${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
         fi
+    else
+        echo "fatal: stub worktree add failure" >&2
     fi
     exit "${rc}"
 fi
@@ -274,10 +324,10 @@ STUB
     printf '%s' "${box}"
 }
 
-# run_case <name> <expected_rc> <expected_substring|-> [VAR=VAL ...]
+# run_case <name> <expected_rc> <expected_substring> [VAR=VAL ...]
 #
 # Runs the driver for lane `auditd` against base ref `BASEREF` inside a fresh
-# sandbox, asserting BOTH the exit code and (unless `-`) a substring of output.
+# sandbox, asserting BOTH the exit code and a substring of output.
 # The substring matters: many distinct defects all produce rc 2, and a case that
 # only checked the number would pass for the wrong reason.
 run_case() {
@@ -287,13 +337,15 @@ run_case() {
     # Sandbox-shaping knobs are properties of the box, not the run, so they are
     # read here before it is built.
     local kv
-    local head_corpus_empty=0
+    local head_corpus_empty=0 precreate_wt=0
     for kv in "$@"; do
         [ "${kv}" = "STUB_HEAD_CORPUS_EMPTY=1" ] && head_corpus_empty=1
+        [ "${kv}" = "STUB_PRECREATE_WT=1" ] && precreate_wt=1
     done
 
     local box
-    box="$(STUB_HEAD_CORPUS_EMPTY="${head_corpus_empty}" make_sandbox "${DRIVER_UNDER_TEST}")" || {
+    box="$(STUB_HEAD_CORPUS_EMPTY="${head_corpus_empty}" STUB_PRECREATE_WT="${precreate_wt}" \
+        make_sandbox "${DRIVER_UNDER_TEST}")" || {
         echo "SUITE ERROR: sandbox creation failed" >&2
         exit 2
     }
@@ -360,6 +412,12 @@ run_argcase() {
 #   R3 = HEAD binary against HEAD's corpus     (does HEAD still agree?)
 ALL_OK='replay_alpha:ok replay_beta:ok'
 
+# Cases every positive control's seeded driver must STILL pass. Each removes one
+# guard, and none of these three inputs reaches any of those guards, so a seeded
+# driver that fails them is broken rather than merely weakened. See
+# run_positive_control for why this matters more than it looks.
+CONTROL_MUST_STILL_PASS=(clean_no_discrimination discrimination_reported regression_is_rc1)
+
 run_all_cases() {
     # --- argument validation -------------------------------------------------
     run_argcase no_lane 2 "no lane given"
@@ -406,8 +464,10 @@ run_all_cases() {
     # --- vacuity -------------------------------------------------------------
     run_case zero_scenarios 2 "'nothing fired' and 'nothing ran' are not the same" \
         STUB_R2_SCENARIOS=0
-    run_case missing_count_line 2 "printed no 'RS-DIFF-AUDITD: scenarios=' line" \
-        STUB_NO_COUNT=3
+    # A GREEN run with no announcement is still vacuous and still rc 2. Paired
+    # with failing_run_may_lack_a_count below, these two pin the exact boundary:
+    # the count is required where, and only where, its absence is unfalsifiable.
+    run_case missing_count_line 2 "for a green run" STUB_NO_COUNT=3
     run_case unparseable_count 2 "unparseable scenario count" \
         STUB_R1_SCENARIOS=many
 
@@ -434,6 +494,24 @@ run_all_cases() {
     run_case mangled_row_in_baseline 2 "the table is incomplete" STUB_MANGLE_ROW=1
     run_case summary_disagrees 2 "the table is incomplete" STUB_SUMMARY_BAD=3
     run_case no_summary_line 2 "printed no 'test result:' summary line" STUB_NO_SUMMARY=1
+
+    # R3 is the direction where the cross-check is the SOLE guard. A mangled row
+    # in R1 or R2 is double-covered by the R1/R2 cardinality assertion, so those
+    # two cases pass even with the cross-check removed and credit it with catches
+    # it did not make. Here the row would silently vanish from R3 and be filed as
+    # `base-only (removed at HEAD)`, a reported NON-failing verdict: a HEAD test
+    # that really ran, relabelled "removed", and the run reported clean.
+    run_case mangled_row_in_HEAD 2 "the table is incomplete" STUB_MANGLE_ROW=3
+
+    # --- a FAILING run need not have announced a count -----------------------
+    # The instrument's own payload case. Three of the four lanes announce the
+    # scenario count AFTER parsing the corpus, so a base binary that chokes on
+    # HEAD's GROWN corpus during enumeration never reaches the announcement.
+    # Demanding the count unconditionally turned exactly that - the R2-FAILED
+    # signal this driver exists to report - into rc 2. A green run still must
+    # announce, because there "nothing fired" and "nothing ran" are one transcript.
+    run_case failing_run_may_lack_a_count 0 "DISCRIMINATED" \
+        "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" STUB_NO_COUNT=2
 
     # --- attribution ---------------------------------------------------------
     # A base that was already red on its OWN corpus cannot attribute anything:
@@ -493,6 +571,34 @@ run_all_cases() {
     # --- base resolution and builds are rc 2, never a skip and never clean ---
     run_case unresolvable_base 2 "cannot resolve base ref" STUB_GIT_REVPARSE_RC=128
     run_case worktree_add_failure 2 "could not create the base worktree" \
+        STUB_GIT_WORKTREE_RC=128
+
+    # --- there must be something to vary -------------------------------------
+    # A base ref resolving to this tree's own commit builds the same source
+    # twice and compares it with itself. Every anti-vacuity guard passes on that
+    # run - sentinels fire with the exact paths, counts are healthy, tables
+    # reconcile - and it prints OK. That is #572 in a new file, one step away via
+    # `just diff-<lane>-branch HEAD`.
+    run_case base_equals_head_is_refused 2 "there is nothing to vary" \
+        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000
+    # A DIRTY tree at the same sha is the legitimate "diff my uncommitted work"
+    # mode and must keep working.
+    run_case base_equals_head_but_dirty_is_allowed 0 "OK (0 regressions" \
+        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_DIRTY=1
+
+    # --- the cached base worktree must BE the base ---------------------------
+    # Directory existence was the whole reuse predicate, while the report kept
+    # printing `base=<sha>`. All three of these were rc 0 before the cache
+    # validation landed.
+    run_case cached_worktree_at_wrong_sha 2 "not the requested base" \
+        STUB_PRECREATE_WT=1 STUB_WT_SHA=deadbeefdeadbeefdeadbeefdeadbeef00000000
+    run_case cached_worktree_is_dirty 2 "has uncommitted changes" \
+        STUB_PRECREATE_WT=1 STUB_WT_DIRTY=1
+    # A hand-made directory at the cache path means `git worktree add` never runs,
+    # so even its failure is unobservable. Pairing the pre-created tree with a
+    # creation failure proves the driver is validating rather than trusting.
+    run_case cached_worktree_never_created_by_git 2 "not the requested base" \
+        STUB_PRECREATE_WT=1 STUB_WT_SHA=deadbeefdeadbeefdeadbeefdeadbeef00000000 \
         STUB_GIT_WORKTREE_RC=128
     run_case base_build_failure 2 "cannot compare" STUB_CARGO_BASE_RC=101
     run_case head_build_failure 2 "cannot compare" STUB_CARGO_HEAD_RC=101
@@ -574,7 +680,44 @@ run_positive_control() {
     run_all_cases
     CONTROL_PHASE=0
 
-    local missed=() want got found
+    # THE CONTROL NEEDS ITS OWN CONTROL.
+    #
+    # `must_catch` asserts only that named cases FAILED, and a case fails when
+    # either rc or the substring mismatches. A driver that cannot run at all -
+    # a sed anchor that moved and now breaks syntax, a quoting slip - exits 2 for
+    # every case, mismatches every substring, and is therefore credited with
+    # catching everything. `cmp -s` proves sed edited a byte, not that the result
+    # is still a driver.
+    #
+    # Reproduced: injecting a bash syntax error into `usage()` while leaving the
+    # sentinel guard fully intact made all six controls report "caught" and the
+    # suite exit 0, with `just instrument-test` unable to see it (the control
+    # phase prints CAUGHT, not FAIL). That is this project's own "positive-control
+    # any instrument you write" rule, left unapplied to the controls themselves.
+    #
+    # Two cheap assertions close it: some cases must still PASS, and specifically
+    # the ones the removed guard cannot see must still behave correctly.
+    if [ "${PASS}" -eq 0 ]; then
+        printf 'SUITE ERROR: positive control %s left ZERO cases passing.\n' "${label}" >&2
+        printf '             A driver with one guard removed still classifies every input that\n' >&2
+        printf '             guard does not see; zero passes means the seeded driver cannot run,\n' >&2
+        printf '             so "caught" here certifies nothing.\n' >&2
+        exit 2
+    fi
+    local still want got found
+    for still in "${CONTROL_MUST_STILL_PASS[@]}"; do
+        for got in "${FAILED_CASES[@]+"${FAILED_CASES[@]}"}"; do
+            if [ "${got}" = "${still}" ]; then
+                printf 'SUITE ERROR: positive control %s broke %s, which its guard does not touch.\n' \
+                    "${label}" "${still}" >&2
+                printf '             The seeded driver is not merely missing one guard; it is broken,\n' >&2
+                printf '             so every "caught" it produced is an artefact.\n' >&2
+                exit 2
+            fi
+        done
+    done
+
+    local missed=() found
     for want in "${must_catch[@]}"; do
         found=0
         for got in "${FAILED_CASES[@]+"${FAILED_CASES[@]}"}"; do
@@ -633,6 +776,24 @@ run_positive_control rc-consistency-guard-removed \
 # shellcheck disable=SC2016
 run_positive_control summary-crosscheck-removed \
     's|^    if \[ "$((lt_passed + lt_failed))" -ne "${seen}" \]; then|    if false; then|' \
-    mangled_row_is_caught mangled_row_in_baseline summary_disagrees
+    mangled_row_is_caught mangled_row_in_baseline summary_disagrees mangled_row_in_HEAD
+
+# The two guards that stop the driver comparing something with itself. Both were
+# absent until an adversarial review reproduced a green `OK (0 regressions, 0
+# discriminated, 228 scenarios)` from two builds of identical source.
+# shellcheck disable=SC2016
+run_positive_control nothing-to-vary-guard-removed \
+    's|^if \[ "${BASE_SHA}" = "${HEAD_SHA}" \] && \[ -z "$(git status --porcelain)" \]; then|if false; then|' \
+    base_equals_head_is_refused
+
+# shellcheck disable=SC2016
+run_positive_control cache-sha-guard-removed \
+    's|^if \[ "${wt_sha}" != "${BASE_SHA}" \]; then|if false; then|' \
+    cached_worktree_at_wrong_sha cached_worktree_never_created_by_git
+
+# shellcheck disable=SC2016
+run_positive_control cache-dirty-guard-removed \
+    's|^if \[ -n "${wt_dirty}" \]; then|if false; then|' \
+    cached_worktree_is_dirty
 
 exit 0

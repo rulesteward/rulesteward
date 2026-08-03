@@ -47,19 +47,23 @@
 # reports per-test pass/fail and continues past a panic. That needs no change to
 # the replay crates. It cannot separate a regression from residual defects INSIDE
 # one test, which is session 9o's exact shape; scenario granularity needs the
-# replay tests to accumulate instead of panicking at the first divergence (~35
-# assertion sites across four files) and is tracked as its own issue.
+# replay tests to accumulate instead of panicking at the first divergence, and is
+# tracked as #681. No count is quoted here on purpose: the cost depends entirely
+# on the counting rule (divergence sites in the replay path, all assertions in the
+# file, assertions inside loops) and those differ by a factor of five, so #681
+# carries the per-lane breakdown together with the rule it used.
 #
 # Exit codes (the dev-tooling contract, NOT the rulesteward binary's own):
-#   0  no regressions; the success line carries a non-zero scenario count
+#   0  no regressions; the success line carries a non-zero announcement count
 #   1  one or more REGRESSION rows
 #   2  tool/environment error, including "these two builds cannot be compared"
 #
 # THERE IS DELIBERATELY NO rc 3. This is an OFFLINE-tier instrument: no docker,
 # no root, no live oracle, so per CONTRIBUTING's differential contract it has no
 # legitimate precondition to skip on. Inventing one would rebuild #572, where
-# `just diff-fapolicyd` exited 0 with a skip message on every run for six weeks
-# while checking nothing. Its self-test asserts no case ever yields 3.
+# `just diff-fapolicyd` exited 0 with a skip message on every run while checking
+# nothing, from the 2026-07-13 NFS rebuild that destroyed its corpus until the
+# recipe was retired on 2026-07-25: 12 days. Its self-test asserts no case ever yields 3.
 
 set -uo pipefail
 
@@ -133,6 +137,16 @@ esac
 
 LABEL="diff-${LANE}-branch"
 
+# Declared up here, not at the classification step, because `finish` reads
+# DISCRIMINATED to decide whether to keep the evidence and every early `die`
+# reaches `finish` long before classification runs. Under `set -u` an undeclared
+# array there would abort with an expansion error instead of the real diagnosis.
+REGRESSIONS=()
+DISCRIMINATED=()
+UNATTRIBUTABLE=()
+ONLY_BASE=()
+ONLY_HEAD=()
+
 if [ -z "${BASE_REF}" ]; then
     echo "rs-branch-diff: no base ref given" >&2
     usage
@@ -161,9 +175,16 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/rs-bd-${LANE}-XXXXXX")" || {
 # Deliberately NOT an EXIT trap that always deletes: on a regression (rc 1) or a
 # tool error (rc 2) the three run logs ARE the evidence, and discarding them
 # would leave the operator with a verdict and nothing to inspect.
+# Evidence is retained on every rc EXCEPT a genuinely uneventful clean run.
+#
+# `rm -rf` on rc 0 alone deleted the logs for the DISCRIMINATED case, which is rc
+# 0 and is this instrument's entire reason for existing: the run that says "your
+# new corpus catches the old code" was throwing away the only record of WHICH
+# assertion diverged and how. For the documented per-round ATL use, R2's stderr
+# is the artifact you actually want.
 finish() {
     local rc="$1"
-    if [ "${rc}" -eq 0 ]; then
+    if [ "${rc}" -eq 0 ] && [ "${#DISCRIMINATED[@]}" -eq 0 ]; then
         rm -rf "${WORK}"
     else
         echo "${LABEL}: evidence retained in ${WORK}" >&2
@@ -181,22 +202,59 @@ die() {
 # ---------------------------------------------------------------------------
 # Resolve the base commit.
 # ---------------------------------------------------------------------------
-if ! BASE_SHA="$(git rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null)"; then
-    die 2 "cannot resolve base ref '${BASE_REF}' to a commit"
+# stderr is CAPTURED, not discarded. `2>/dev/null` here sent the operator to
+# inspect their ref for what was actually an environment failure: `GIT_DIR`
+# pointing at a non-repository, or a `safe.directory` refusal, which is routine on
+# the NFS worktrees this project uses. Both produce "cannot resolve base ref",
+# and the retained evidence directory was then empty because the reason had gone
+# to /dev/null.
+if ! BASE_SHA="$(git rev-parse --verify "${BASE_REF}^{commit}" 2>"${WORK}/rev-parse.err")"; then
+    tail -5 "${WORK}/rev-parse.err" >&2
+    die 2 "cannot resolve base ref '${BASE_REF}' to a commit (git's own message is above)"
 fi
 # A `rev-parse` that succeeds while printing nothing would leave every path below
 # built from an empty sha, which resolves to the cache root itself.
 [ -n "${BASE_SHA}" ] || die 2 "cannot resolve base ref '${BASE_REF}' to a commit (git printed nothing)"
 
+# THERE MUST BE SOMETHING TO VARY.
+#
+# This driver's whole premise is two DIFFERENT builds. Given a base ref that
+# resolves to the working tree's own commit, it happily builds the same source
+# twice, compares it with itself, and prints `OK (0 regressions, 0 discriminated,
+# 228 scenarios)`. Every anti-vacuity guard passes on that run: the sentinels fire
+# with the exact paths, the counts are healthy, the tables reconcile with libtest.
+# It is a green line carrying real-looking evidence for a comparison that compared
+# nothing, which is #572 wearing a different hat, and `just diff-<lane>-branch HEAD`
+# reaches it in one step.
+#
+# A DIRTY tree at the same sha is a different and legitimate case: "diff my
+# uncommitted work against the commit I am sitting on". Only the clean-tree
+# coincidence is refused.
+if ! HEAD_SHA="$(git rev-parse --verify "HEAD^{commit}" 2>"${WORK}/rev-parse-head.err")"; then
+    tail -5 "${WORK}/rev-parse-head.err" >&2
+    die 2 "could not resolve HEAD to a commit; cannot confirm the base differs from this tree"
+fi
+if [ "${BASE_SHA}" = "${HEAD_SHA}" ] && [ -z "$(git status --porcelain)" ]; then
+    die 2 "base ref '${BASE_REF}' resolves to this tree's own commit (${BASE_SHA:0:12}) and the tree is clean, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
+fi
+
 # ---------------------------------------------------------------------------
 # Cached detached worktree at the base sha.
 #
 # Keyed BY SHA and reused, because the Adversarial Testing Loop runs this every
-# round against the same fork point: paying a full base build per round is how
-# this instrument's one-shot ancestor died (issue #661, risk 2). Placed under
-# TMPDIR, which the project points off the /tmp tmpfs - the per-UID tmpfs quota
-# is what fills, and `df` reports the filesystem and looks healthy while every
-# shell dies.
+# round against the same fork point.
+#
+# #661 records the ancestor's actual cause of death, and it was NOT cost: "the
+# sweep lived entirely inside a subagent's turn. Nothing in the repo or the rules
+# named it, so it could not be re-run." Build cost is risk 2 in that issue, which
+# is prospective ("IF a round becomes too slow to run, it dies the same death").
+# Caching is how this design answers that risk; it is not a post-mortem.
+#
+# CACHE_ROOT defaults to TMPDIR, which is ORDINARILY /tmp. No `just` recipe sets
+# TMPDIR, so a plain `just diff-<lane>-branch <ref>` puts ~180 MB per lane per sha
+# on the per-UID tmpfs quota - the thing that fills while `df` reports the
+# filesystem and looks healthy, and every shell then dies. Set
+# RS_BRANCH_DIFF_CACHE to somewhere off tmpfs before running this repeatedly.
 # ---------------------------------------------------------------------------
 CACHE_ROOT="${RS_BRANCH_DIFF_CACHE:-${TMPDIR:-/tmp}}/rs-branch-diff"
 WT="${CACHE_ROOT}/${BASE_SHA}"
@@ -204,12 +262,49 @@ BASE_TARGET_DIR="${CACHE_ROOT}/target-${BASE_SHA}"
 
 if [ ! -d "${WT}" ]; then
     mkdir -p "${CACHE_ROOT}" || die 2 "could not create the worktree cache root ${CACHE_ROOT}"
+    # Self-heal a registration left behind by a swept /tmp: git refuses to re-add
+    # a path it still has registered but that no longer exists, and without this
+    # every subsequent round fails until someone prunes by hand.
+    git worktree prune >/dev/null 2>&1
     git worktree add --detach "${WT}" "${BASE_SHA}" >"${WORK}/worktree.log" 2>&1
     wt_rc=$?
     if [ "${wt_rc}" -ne 0 ]; then
         tail -20 "${WORK}/worktree.log" >&2
         die 2 "could not create the base worktree at ${WT} (git worktree add exited ${wt_rc})"
     fi
+fi
+
+# VALIDATE THE CACHE, every run, including the run that just created it.
+#
+# Directory existence was the entire reuse predicate, and the cache is a live,
+# writable checkout that this driver deliberately keeps for the whole life of a
+# branch ("the ATL runs this every round against the same fork point"). Nothing
+# stopped it drifting from the sha it is named after, while the report kept
+# printing `base=<sha>` as though it had not.
+#
+# Two ways that goes wrong, both reproduced against the real driver: editing the
+# cached tree's `src/` silently changes what "the base" means, and a
+# hand-created directory at that path makes `git worktree add` never run at all,
+# so even its failure is unobservable. In the worst version someone applies the
+# branch's fix into the cached base while debugging, every DISCRIMINATED row
+# evaporates, and the instrument reports "your new corpus proves nothing" at
+# rc 0 - the exact inversion of its purpose.
+#
+# This is the driver's own standard applied to itself. It already refuses to
+# interpret a run that did not announce the corpus it was handed; a base binary
+# built from an unverified tree deserves no more trust.
+wt_sha="$(git -C "${WT}" rev-parse --verify HEAD 2>"${WORK}/wt-verify.err")"
+if [ -z "${wt_sha}" ]; then
+    tail -5 "${WORK}/wt-verify.err" >&2
+    die 2 "the cached base worktree ${WT} is not a git checkout; remove it and re-run"
+fi
+if [ "${wt_sha}" != "${BASE_SHA}" ]; then
+    die 2 "the cached base worktree ${WT} is at ${wt_sha:0:12}, not the requested base ${BASE_SHA:0:12}; refusing to report a comparison against a sha nothing established (remove that directory to rebuild it)"
+fi
+wt_dirty="$(git -C "${WT}" status --porcelain 2>/dev/null)"
+if [ -n "${wt_dirty}" ]; then
+    printf '%s\n' "${wt_dirty}" | head -10 >&2
+    die 2 "the cached base worktree ${WT} has uncommitted changes, so the binary built from it is not ${BASE_SHA:0:12}; remove that directory to rebuild it"
 fi
 
 # ---------------------------------------------------------------------------
@@ -396,9 +491,9 @@ validate_run() {
     done <<EOF
 ${count_lines}
 EOF
-    if [ "${count_seen}" -eq 0 ]; then
-        die 2 "run R${run} printed no '${SENTINEL}: scenarios=' line; the scenario count cannot be confirmed non-zero"
-    fi
+    # NOTE: the "no announcement at all" case is judged AFTER the per-test table
+    # is parsed, because whether it is vacuous depends on whether anything failed.
+    # See the count_seen check below the summary cross-check.
 
     # The per-test table, read from STDOUT ONLY and anchored at both ends.
     #
@@ -481,6 +576,31 @@ EOF
     if [ "${inconsistent}" -eq 1 ]; then
         die 2 "run R${run} exited ${rc} but its per-test table reports ${failed} failed; the exit code disagrees with its own per-test table, which is an instrument defect rather than a result to interpret"
     fi
+
+    # The scenario count is required on a GREEN run, and ONLY there.
+    #
+    # Its job is anti-vacuity: when nothing failed, "nothing fired" and "nothing
+    # ran" are the same transcript, and only a non-zero comparison count tells
+    # them apart. A run that FAILED is not in that position - it has failing rows,
+    # already reconciled against libtest's own tally, which is direct evidence it
+    # executed.
+    #
+    # Demanding it unconditionally broke this instrument's own payload case, and
+    # the reason generalises. Three of the four lanes announce the count AFTER
+    # parsing the corpus; only sudoers obeys the invariant its own `announce` doc
+    # states ("call this FIRST, before anything that could panic, with a fixed
+    # count known upfront"). So when the base binary chokes on HEAD's GROWN corpus
+    # during enumeration - exactly the R2-FAILED signal this driver exists to
+    # report - it never reaches the announcement, and an unconditional guard
+    # turned a DISCRIMINATED row into rc 2. Measured by running the real auditd
+    # and selinux binaries against an override tree carrying one scenario the base
+    # cannot parse.
+    #
+    # The BANNER stays mandatory for every run regardless: it is what proves which
+    # corpus was read, and nothing else can establish that.
+    if [ "${rc}" -eq 0 ] && [ "${count_seen}" -eq 0 ]; then
+        die 2 "run R${run} passed but printed no '${SENTINEL}: scenarios=' line; for a green run 'nothing fired' and 'nothing ran' are the same transcript, so the count cannot be confirmed non-zero"
+    fi
 }
 
 # stdout and stderr go to SEPARATE files. See the parsing block above: merging
@@ -514,15 +634,17 @@ validate_run 3 "${WORK}/r3-head-on-head.out" "${WORK}/r3-head-on-head.err" "${HE
 if [ "${#R1[@]}" -ne "${#R2[@]}" ]; then
     die 2 "the base binary reported ${#R1[@]} tests against the base corpus but ${#R2[@]} against HEAD's; the same binary must report the same test set"
 fi
+# Equal SIZE is not equal SET. Two same-size, differently-keyed tables passed the
+# check above, and a name present in R1 but absent from R2 then read as CLEAN via
+# the `${R2[...]-}` default at the classification step. Same cardinality plus
+# total containment is set equality.
+for name in "${!R1[@]}"; do
+    [ -n "${R2[${name}]+set}" ] || die 2 "the base binary reported test '${name}' against the base corpus but not against HEAD's; the same binary must report the same test set"
+done
 
 # ---------------------------------------------------------------------------
 # Classify.
 # ---------------------------------------------------------------------------
-REGRESSIONS=()
-DISCRIMINATED=()
-UNATTRIBUTABLE=()
-ONLY_BASE=()
-ONLY_HEAD=()
 CLEAN=0
 COMPARABLE=0
 
@@ -568,18 +690,23 @@ fi
 printf '%s: base=%s (%s)  corpus=%s\n' "${LABEL}" "${BASE_SHA:0:12}" "${BASE_REF}" "${HEAD_CORPUS}"
 # Disclosed on every run, because the worktree and its target dir are CACHED and
 # nothing here ever removes them. An instrument that silently accretes gigabytes
-# under a path the operator was never told about is its own kind of defect.
-# Reclaim with: git worktree remove <path> && rm -rf <path>-target
-printf '%s: base worktree %s (cached; set RS_BRANCH_DIFF_CACHE to relocate)\n\n' "${LABEL}" "${WT}"
+# under a path the operator was never told about is its own kind of defect - and
+# the first version of this very line got the reclaim path wrong, telling the
+# operator to delete `<path>-target` when the directory is `target-<sha>`. Both
+# paths are interpolated now rather than described, so they cannot drift again.
+# Measured: 24 MB worktree + 157 MB target dir for ONE lane at ONE sha.
+printf '%s: base worktree %s (cached)\n' "${LABEL}" "${WT}"
+printf '%s: reclaim with: git worktree remove %s && rm -rf %s\n\n' "${LABEL}" "${WT}" "${BASE_TARGET_DIR}"
 printf '%-56s %-8s %-8s %-8s %s\n' "TEST" "R1base" "R2base" "R3HEAD" "VERDICT"
 printf '%-56s %-8s %-8s %-8s %s\n' \
     "--------------------------------------------------------" \
     "------" "------" "------" "-------"
 
 row() {
-    # Bound to a local first: a libtest name can carry spaces (`foo - should
-    # panic`), and reusing "$1" directly as a subscript reads badly enough that
-    # it invites a later edit which does split it.
+    # Bound to a local first. A Rust test path cannot contain a space, but libtest
+    # APPENDS ` - should panic` to the printed name, and this driver's key is the
+    # printed form - so keys really do contain spaces. Reusing "$1" directly as a
+    # subscript reads badly enough that it invites a later edit which splits it.
     local n="$1" verdict="$2"
     printf '%-56s %-8s %-8s %-8s %s\n' \
         "${n:0:56}" "${R1[${n}]-.}" "${R2[${n}]-.}" "${R3[${n}]-.}" "${verdict}"
@@ -602,6 +729,11 @@ fi
 # branch that did not touch this lane legitimately has none, and failing it here
 # would fail every unrelated branch. What it means is that this lane's corpus
 # growth, if any, would not have caught the code the base shipped.
-printf '%s: OK (%d regressions, %d discriminated, %d scenarios against HEAD'"'"'s corpus)\n' \
+# `announcements`, not `scenarios`: SCEN[n] SUMS every `scenarios=` line, and a
+# lane whose helper announces once per test emits several. selinux announces 3x69
+# and would read "207 scenarios" for a 69-scenario corpus. The line above already
+# calls these announcements; the two outputs used to contradict each other in one
+# transcript, and the misleading one was what the rc contract pointed at.
+printf '%s: OK (%d regressions, %d discriminated, %d scenario announcements in R3)\n' \
     "${LABEL}" 0 "${#DISCRIMINATED[@]}" "${SCEN[3]}"
 finish 0

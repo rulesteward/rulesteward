@@ -153,11 +153,13 @@ residual defects inside a single test. Scenario granularity needs the replay
 tests to accumulate rather than panic at the first divergence and is tracked
 separately.
 
-Adding a lane means adding a row to the frozen table in `scripts/rs-branch-diff.sh`
-and a recipe, nothing else. A lane's replay test must resolve its corpus through
-`rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
-`sentinel_banner` + `sentinel_count`; the driver refuses to interpret a run that
-did not announce the exact path it was handed. Note `selinux` appears in this
+Adding a lane takes two things. First, the lane's replay test must resolve its
+corpus through `rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
+`sentinel_banner` + `sentinel_count` BEFORE anything that can panic; the driver
+refuses to interpret a run that did not announce the exact path it was handed, and
+a lane that announces only after parsing loses that evidence in precisely the case
+the driver exists to report. Second, a row in the frozen lane table in
+`scripts/rs-branch-diff.sh` plus a recipe. Note `selinux` appears in that lane
 table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
 offline-only.
 

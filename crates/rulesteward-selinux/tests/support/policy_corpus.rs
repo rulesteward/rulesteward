@@ -14,9 +14,10 @@
 //! scenario that needs the el9 policy shares the same loaded handle.
 
 #![cfg(feature = "authoritative-categorizer")]
-// This file is compiled into MULTIPLE integration-test binaries via `mod support;`.
-// Any given binary uses only a subset of the helpers, so the unused ones would
-// trip `dead_code`. The module is shared test scaffolding, not product code.
+// Shared test scaffolding, not product code, so the helpers any one binary does
+// not use would trip `dead_code`. (As of 2026-08-03 `mod support;` appears in
+// exactly one test target, `selinux_corpus_oracle.rs`; this file is written to be
+// included by more, which is why the allow stays.)
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -35,7 +36,8 @@ use tempfile::TempDir;
 /// scenarios came from an override would make `just diff-selinux-branch` vary two
 /// things at once - the product AND the policy fixtures - which is not a
 /// differential. Unset (the `just test` path) still resolves to the committed
-/// corpus, so every other selinux test binary sharing this module is unaffected.
+/// corpus. (This module is included by exactly one test binary,
+/// `selinux_corpus_oracle.rs`; the invariant is stated so it survives a second.)
 fn archive_path() -> PathBuf {
     let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
     let (root, _mode) = resolve_corpus_root("RS_ORACLE_CORPUS_SELINUX", &default);

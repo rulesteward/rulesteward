@@ -155,7 +155,7 @@ instrument-test:
     # Counted with a shell glob rather than `ls | grep -v`: a count derived through
     # a filter is not evidence, and this project's own command wrapper rewrites a
     # mid-pipeline grep and changes the number (measured while writing this recipe,
-    # which reported 16 guards where there are 8).
+    # which reported 16 guards where there were 8 at the time; 11 today).
     #
     # The same walk carries the MODE invariant (#658). Nothing in this tree
     # invokes a script in a way that consults the executable bit - the justfile
@@ -833,8 +833,9 @@ sudoers-stig-derive product="all":
 # All three delegate to ONE driver, scripts/rs-oracle-diff.sh. The exit-code mapping
 # is the part of this harness whose every wrong branch fails toward "clean"; written
 # out three times it would be wrong in three different ways, which is how
-# `just diff-fapolicyd` came to report success while checking nothing for six weeks
-# (#572). The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
+# `just diff-fapolicyd` came to report success while checking nothing for 12 days,
+# from the 2026-07-13 NFS rebuild until the recipe was retired 2026-07-25 (#572).
+# (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30 days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
 # re-seeds that bug into a copy of it and requires named cases to catch it.
 #
 # Exit codes: 0 clean (the success line carries a non-zero scenario count), 1 drift,

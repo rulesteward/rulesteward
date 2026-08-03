@@ -249,7 +249,22 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
 /// `(scenario_dir, Manifest)` sorted by id for deterministic output.
 fn scenarios() -> Vec<(PathBuf, Manifest)> {
     let (root, mode) = corpus_root();
-    let mut out = Vec::new();
+
+    // Enumeration is split from LOADING so the announcement can precede every
+    // fallible step, which is the invariant sudoers' `announce` doc states: "call
+    // this FIRST, before anything that could panic, with a fixed count known
+    // upfront".
+    //
+    // It is not a style point. `Manifest::load` panics on a manifest this binary
+    // cannot parse, and the case that produces is precisely the one
+    // `just diff-selinux-branch` exists to report: a base-built binary reading
+    // HEAD's GROWN corpus and choking on a scenario added after it was compiled.
+    // With the announcement after the load loop, that run emitted NO sentinel at
+    // all, and the driver then refused it with "did not read the corpus it was
+    // handed" - a statement that is false, since it had read exactly that path.
+    // Measured by running this binary against an override tree carrying one
+    // scenario in a schema it does not know.
+    let mut dirs: Vec<PathBuf> = Vec::new();
     let entries = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("read corpus dir {}: {e}", root.display()));
     for entry in entries.flatten() {
@@ -268,23 +283,30 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
         if !dir.join("manifest.json").is_file() {
             continue;
         }
-        out.push((dir.clone(), Manifest::load(&dir)));
+        dirs.push(dir);
     }
-    out.sort_by(|a, b| a.1.id.cmp(&b.1.id));
 
     // Announce BEFORE asserting, but the assertion is what carries the guarantee
     // (CONTRIBUTING: "assert the count, do not merely print it"). Announcing here
     // rather than in each test means every entry point into the corpus is covered
     // by the same guard, including any added later.
     eprintln!("{}", sentinel_banner(SENTINEL, mode, &root));
-    eprintln!("{}", sentinel_count(SENTINEL, out.len()));
+    eprintln!("{}", sentinel_count(SENTINEL, dirs.len()));
     assert!(
-        out.len() >= SCENARIO_FLOOR,
+        dirs.len() >= SCENARIO_FLOOR,
         "expected >= {SCENARIO_FLOOR} enumerated scenarios under {}, found {}",
         root.display(),
-        out.len()
+        dirs.len()
     );
 
+    let mut out: Vec<(PathBuf, Manifest)> = dirs
+        .into_iter()
+        .map(|dir| {
+            let m = Manifest::load(&dir);
+            (dir, m)
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.id.cmp(&b.1.id));
     out
 }
 
