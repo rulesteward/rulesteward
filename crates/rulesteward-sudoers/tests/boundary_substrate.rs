@@ -909,6 +909,91 @@ fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
     );
 }
 
+/// A THREE-token left-hand side must stay rejected, and this is the one input
+/// where #651's new candidate would otherwise have lost an existing catch.
+///
+/// `a\ "b"c = NOPASSWD: ALL` is `visudo -c -f -` **rc 1**, `stdin:1:7: syntax
+/// error`: sudo lexes three LHS tokens, `a ` (the backslash escapes the space),
+/// `b`, and `c`, and a user spec takes exactly two.
+///
+/// The escape is what makes it delicate. `unquoted_whitespace_runs` deliberately
+/// emits NO run here (its `\` arm consumes the next byte), and the glued-OPENER
+/// candidate is skipped because `prev` is that escaped space. So before #651
+/// there was no candidate at all, `split_user_list` fell through to `(lhs, "")`,
+/// and the line was rejected - correct verdict, reached by accident. #651's
+/// `close + 1` candidate is a genuine boundary between `"b"` and `c`, and
+/// supplying it turned the accidental rejection into an acceptance.
+///
+/// The real defect is that a 3-token LHS was never DETECTED, only stumbled over.
+/// That gap is pre-existing and wider than this input: `a\ "b" c = ...` is also
+/// oracle rc 1 and is accepted identically on `ee250aa` and here, which is the
+/// one-byte control isolating the flip to the glued spelling.
+///
+/// KNOWN-OPEN, filed as #669. `#[ignore]`d rather than deleted, per this
+/// repo's convention: removing the `#[ignore]` is how the fix gets demonstrated.
+///
+/// A repair WAS built and then reverted, and the reason is the useful part.
+/// Detecting the arity means reclassifying such a line as `Malformed`, and the
+/// frozen `f02_malformed_group_subject_fires` shows what that costs: `%bad group
+/// ALL = ALL` is also a three-token LHS, and today `RuleSteward` parses it
+/// structurally and catches it with a PRECISE `sudo-F02` naming the bad group
+/// token. Under the arity check it became a generic Fatal instead, and a
+/// `Malformed` line is invisible to every W/E pass (#668). So the obvious fix
+/// trades a specific finding for a vague one and can SUPPRESS other lints - the
+/// fail-open shape, arriving through the front door.
+///
+/// That is a design decision about diagnostic precedence, not an implementation
+/// detail, so it is filed rather than guessed at, and the frozen test was left
+/// alone rather than weakened to reach green.
+#[test]
+#[ignore = "#669: a 3-token LHS is not detected; repairing it needs a diagnostic-precedence decision"]
+fn a_three_token_left_hand_side_is_rejected() {
+    let src = "a\\ \"b\"c = NOPASSWD: ALL\n";
+    assert_eq!(
+        f01_count(src),
+        1,
+        "visudo rc 1 (three LHS tokens): sudo-F01 must fire"
+    );
+}
+
+/// The one-byte control for the case above, and the evidence that #669 is a
+/// PRE-EXISTING hole rather than this branch's doing: `a\ "b" c = ...` is oracle
+/// rc 1 and is accepted identically on `ee250aa` and here.
+///
+/// The pair together is what makes the regression legible. This spelling is
+/// wrong on BOTH shas; the glued one was right on `ee250aa` only because no
+/// boundary candidate existed at all, so the line fell through to `(lhs, "")`
+/// and was rejected for the wrong reason. #651 supplied the missing candidate
+/// and the accident stopped happening.
+#[test]
+#[ignore = "#669: pre-existing on both shas; the paired control for the regression"]
+fn a_three_token_left_hand_side_with_a_spaced_quote_is_also_rejected() {
+    let src = "a\\ \"b\" c = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 1, "visudo rc 1: sudo-F01 must fire");
+}
+
+/// The two-token controls, which must keep parsing. If either of these ever
+/// fires `sudo-F01`, the arity check above has become a false-FATAL generator -
+/// the worst regression shape for a compliance linter, and the reason the check
+/// reuses the splitter's own candidate logic instead of a fresh whitespace scan.
+#[test]
+fn control_two_token_left_hand_sides_still_parse() {
+    for src in [
+        "alice ALL = NOPASSWD: ALL\n",
+        "alice,bob ALL = NOPASSWD: ALL\n",
+        "alice, bob ALL = NOPASSWD: ALL\n",
+        "alice ,bob ALL = NOPASSWD: ALL\n",
+        "alice , bob ALL = NOPASSWD: ALL\n",
+        "\"ab\"ALL = NOPASSWD: ALL\n",
+        "\"ops team\"web1 = NOPASSWD: /bin/ls\n",
+        "alice h1,h2 = NOPASSWD: ALL\n",
+        "alice h1, h2 = NOPASSWD: ALL\n",
+        "my\\ user ALL = ALL\n",
+    ] {
+        assert_eq!(f01_count(src), 0, "must still parse: {src:?}");
+    }
+}
+
 /// A quoted principal whose value CONTAINS whitespace. This is the case a
 /// whitespace-run boundary can never reach on its own: the only space in the
 /// line sits INSIDE the quoted span, so before the fix there was no candidate
