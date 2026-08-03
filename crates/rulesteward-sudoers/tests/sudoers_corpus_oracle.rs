@@ -532,7 +532,33 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// `User_Specs` entry (`tuple_count=1`, a negated, tagged uid user). This is
 /// a DIFFERENT crate's bug (`rulesteward-core`), not #538, so it gets its
 /// OWN (drafted, unfiled) issue rather than being folded in.
-const L3_XFAIL: &[(&str, Option<u32>)] = &[("accept-negated-uid-subject", None)];
+/// The four `Some(667)` entries (added with #651's corpus rows) are a QUOTE-
+/// RETENTION divergence, not a structural one: for a quoted principal the two
+/// projections agree on `tuple_count`, arity, order, hosts and commands, and
+/// differ only in that the AST keeps the surrounding `"` (`ast.rs`: "kept
+/// verbatim", frozen by `boundary_substrate.rs`'s `["\"a=b\""]` and `["\"a b\""]`)
+/// while `cvtsudoers` reports the dequoted value.
+///
+/// They are xfailed rather than fixed here because resolving it means either
+/// editing this differential gate's own comparison or changing the public AST,
+/// and #651's implementer does not alter a barrier test to reach green. #667
+/// carries the three candidate resolutions.
+///
+/// NOTHING about #651 rests on these entries. L1 compares all four scenarios and
+/// is the layer that witnesses the fix: with the `close + 1` guard reverted, L1
+/// fails with `our F01 verdict (rejects=true) disagrees with the oracle
+/// (rejects=false)`. Measured, not reasoned - the mutant was built and run.
+///
+/// Reaching them at all required the corpus's FIRST quoted principals: none of
+/// the 41 pre-existing scenarios contained a double quote, on the most
+/// defect-dense surface this parser has (#622, #629, #630, #631, #643, #651).
+const L3_XFAIL: &[(&str, Option<u32>)] = &[
+    ("accept-negated-uid-subject", None),
+    ("accept-glued-closing-quote-principal", Some(667)),
+    ("accept-glued-closing-quote-with-inner-space", Some(667)),
+    ("accept-glued-closing-quote-after-comma-list", Some(667)),
+    ("accept-spaced-closing-quote-control", Some(667)),
+];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
 /// (and CONFIRMED below, not just assumed) to be invalid JSON, so L3 skips the
@@ -1971,6 +1997,57 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             vec!["!userid:1000".to_string()],
                             "L3 {id} ({target}): the oracle must show a negated, tagged uid \
                              user, got {:?}",
+                            cvt_proj.users
+                        );
+                    }
+                    "accept-glued-closing-quote-principal"
+                    | "accept-glued-closing-quote-with-inner-space"
+                    | "accept-glued-closing-quote-after-comma-list"
+                    | "accept-spaced-closing-quote-control" => {
+                        // #667: a QUOTE-RETENTION divergence and NOTHING more.
+                        // Every structural field must AGREE; the users lists must
+                        // agree too once the AST's retained `"` are stripped.
+                        //
+                        // Pinning it this tightly is the whole point. A loose
+                        // "they differ somehow" entry would go on passing if one
+                        // of these scenarios later developed a REAL structural
+                        // regression - a wrong split, a lost host, a swallowed
+                        // command - which is precisely the fail-open #651 is
+                        // about. Here a mis-split `"b c"` into `"b` / `c"`
+                        // dequotes to `b` / `c` and still trips the users
+                        // assertion below.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): #667 is quote-retention only, so tuple_count \
+                             must AGREE; got ast={} cvt={}",
+                            ast_proj.tuple_count, cvt_proj.tuple_count
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 is quote-retention only, so hosts must \
+                             AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            cvt_proj.hosts
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): #667 is quote-retention only, so commands must \
+                             AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        let dequoted: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| u.trim_matches('"').to_string())
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the users lists agree once the \
+                             AST's retained quotes are stripped; got ast={:?} dequoted={:?} \
+                             cvt={:?}",
+                            ast_proj.users,
+                            dequoted,
                             cvt_proj.users
                         );
                     }

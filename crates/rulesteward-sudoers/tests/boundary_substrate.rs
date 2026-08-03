@@ -754,3 +754,111 @@ fn control_single_backslash_still_escapes_the_quote() {
         vec!["\"h\\\"1\"".to_string()]
     );
 }
+
+// ===========================================================================
+// #651 - `split_user_list` discards the CLOSING-quote position.
+//
+// It iterated quote spans as `for (open, _close) in simple_quote_pairs(lhs)`,
+// binding the close to `_close` and throwing it away, so `close + 1` was never
+// a boundary candidate. When a principal's closing quote is GLUED to the next
+// token no candidate exists at all: `unquoted_whitespace_runs` finds no
+// whitespace outside the pair, and the glued-OPENER candidate is skipped when
+// `open == 0`. `split_user_list` returns `(lhs, "")`, the host part is empty,
+// and the line dies as `sudo-F01` - taking any grant on it with it. FAIL-OPEN.
+//
+// The crate already models "the next token starts at `close + 1`" TWICE on the
+// value/command side - `option_value_end` (`return close + 1`, #631) and
+// `parse_cmnd_spec` (`rest = after_open[close + 1..]`) - and models the
+// MIRROR-IMAGE opener rule on the principal side in `split_user_list` itself.
+// The principal side modelled the glued OPENER and not the glued CLOSER. That
+// asymmetry is the bug.
+//
+// PRE-EXISTING, not a regression: identical on the fork point `96038c9` and on
+// `fix/sudoers-boundary-substrate`.
+//
+// Ground truth re-derived on rs-oracle9 (sudo 1.9.17p2) 2026-08-02, every row
+// `visudo -c -f -` rc 0 `parsed OK`, every row carrying a one-byte space
+// control that isolates the defect to the glued closing quote:
+//
+//   `"ab"ALL = NOPASSWD: ALL`          -> User_List ["ab"],      Host_List ["ALL"]
+//   `"ab" ALL = NOPASSWD: ALL`         -> identical (the control)
+//   `"ops team"web1 = NOPASSWD: /bin/ls` -> User_List ["ops team"], Host_List ["web1"]
+//   `alice,"b c"ALL = NOPASSWD: ALL`   -> User_List ["alice","b c"], Host_List ["ALL"]
+// ===========================================================================
+
+/// Face A: the grant vanishes behind a false FATAL.
+///
+/// cvtsudoers splits this into `User_List ["ab"]` / `Host_List ["ALL"]` with
+/// `authenticate: false`, so the correct output is exactly one `sudo-W01`
+/// (NOPASSWD on ALL). Before the fix `RuleSteward` emitted `sudo-F01` ("needs
+/// both a user list and a host list before the `=`") and NO `sudo-W01`.
+#[test]
+fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
+    let src = "\"ab\"ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w01_count(src),
+        1,
+        "cvtsudoers: authenticate false on Host_List ALL - the NOPASSWD grant must be seen"
+    );
+}
+
+/// The one-byte control for face A. A single added space is the whole
+/// difference, which is what isolates the defect to the glued CLOSING quote
+/// rather than to quoting in a principal generally.
+#[test]
+fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
+    let src = "\"ab\" ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(w01_count(src), 1);
+}
+
+/// The structural face, sharper than a lint-code count: the boundary must land
+/// AT `close + 1`, so the quoted token is the whole user list and `ALL` is the
+/// whole host list. A count-only assertion would still pass if the split landed
+/// somewhere else that happened to produce one `sudo-W01`.
+#[test]
+fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
+    let s = only_spec("\"ab\"ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string()],
+        "the quoted token is the whole user list, kept verbatim"
+    );
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host list starts at close + 1, not at the next whitespace"
+    );
+}
+
+/// A quoted principal whose value CONTAINS whitespace. This is the case a
+/// whitespace-run boundary can never reach on its own: the only space in the
+/// line sits INSIDE the quoted span, so before the fix there was no candidate
+/// boundary anywhere in `"ops team"web1`.
+#[test]
+fn quoted_principal_containing_a_space_glued_to_its_host_still_reports_the_grant() {
+    let src = "\"ops team\"web1 = NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(s.users, vec!["\"ops team\"".to_string()]);
+    assert_eq!(s.host_groups[0].hosts, vec!["web1".to_string()]);
+}
+
+/// The comma-list form: the glued closing quote is the boundary even when the
+/// quoted principal is the LAST element of a multi-principal user list, where
+/// the comma-continuation logic also has to not swallow it.
+#[test]
+fn glued_closing_quote_after_a_comma_list_still_reports_the_grant() {
+    let src = "alice,\"b c\"ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(w01_count(src), 1, "the NOPASSWD grant must be seen");
+    let s = only_spec(src);
+    assert_eq!(
+        s.users,
+        vec!["alice".to_string(), "\"b c\"".to_string()],
+        "cvtsudoers reports two usernames"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+}

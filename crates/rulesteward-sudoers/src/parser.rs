@@ -2056,6 +2056,26 @@ fn comma_split(s: &str) -> Vec<String> {
 /// preceding non-whitespace, non-`,` byte. A quote at `lhs`'s own start, or one
 /// reached after whitespace or a comma, is not "glued" - it is either the run's
 /// first token or already reachable through the whitespace-run candidates.
+///
+/// # #651: the mirror-image CLOSING quote
+///
+/// The rule above is HALF of the token-boundary semantic, and shipping only that
+/// half was a fail-open. A quoted principal also ENDS at its closing quote, with
+/// the next token starting at `close + 1` whether or not whitespace follows, so
+/// the loop treats `close + 1` as a candidate too.
+///
+/// Without it `"ab"ALL = NOPASSWD: ALL` had NO candidate boundary at all: the
+/// whitespace runs are empty (no whitespace outside the pair) and the glued-OPENER
+/// candidate is skipped because `open == 0`. `split_user_list` returned
+/// `(lhs, "")`, the host part was empty, and the line died as a false `sudo-F01`
+/// that took the `NOPASSWD` grant with it. `visudo -c -f -` gives rc 0 and
+/// `cvtsudoers -f json` reports `User_List ["ab"]` / `Host_List ["ALL"]`
+/// (re-derived on rs-oracle9, sudo 1.9.17p2, 2026-08-02).
+///
+/// This is the SAME `close + 1` rule [`option_value_end`] and [`parse_cmnd_spec`]
+/// already model on the value/command side. Three recognizers of one concept, and
+/// until #651 the principal one was the odd out - the recurring shape on this
+/// surface (#622, #629, #630, #631, #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
     let bytes = lhs.as_bytes();
@@ -2065,12 +2085,30 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // resume after the run; a glued-quote candidate resumes AT the quote itself
     // (no whitespace to skip).
     let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
-    for (open, _close) in simple_quote_pairs(lhs) {
+    for (open, close) in simple_quote_pairs(lhs) {
         if open > 0 {
             let prev = bytes[open - 1];
             if prev != b',' && !prev.is_ascii_whitespace() {
                 candidates.push((open, open));
             }
+        }
+        // The MIRROR of the opener rule above, and the reason `close` is bound
+        // rather than discarded (#651): a quoted principal ENDS at its closing
+        // quote, with the next token starting at `close + 1`, whitespace or not.
+        // `option_value_end` (`return close + 1`, #631) and `parse_cmnd_spec`
+        // (`after_open[close + 1..]`) already model exactly this on the
+        // value/command side; the principal side modelled only the glued OPENER,
+        // and that asymmetry dropped the whole grant on `"ab"ALL = ...`.
+        //
+        // A `close` at the very end of `lhs` yields no candidate (`get` is None).
+        // A following `,` or whitespace is excluded for the same reasons as in
+        // the opener rule: whitespace is already a candidate via
+        // `unquoted_whitespace_runs`, and a `,` means the run continues.
+        if let Some(&next) = bytes.get(close + 1)
+            && next != b','
+            && !next.is_ascii_whitespace()
+        {
+            candidates.push((close + 1, close + 1));
         }
     }
     candidates.sort_unstable();
