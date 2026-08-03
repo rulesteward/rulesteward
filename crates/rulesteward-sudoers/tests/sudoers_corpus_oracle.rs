@@ -398,8 +398,11 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// 22 + 8 + 2 + 6 + 3 + 4 = 45.
 ///
 /// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
-/// #651 initially forgot. The floor is a ONE-SIDED anti-DELETION guard, so it
-/// does not fail when it is too low - it silently stops binding. Left at 41
+/// since 2026-08-03 the suite ENFORCES that rather than asking: the two
+/// assertions below are `assert_eq!`, not `>=`.
+///
+/// They were `>=` until then, and a one-sided floor fails only downward - too
+/// low, it does not fail at all, it silently stops binding. Left at 41
 /// against a corpus of 45, four scenario directories could be deleted and all
 /// three layers still reported `607 passed`, byte-identical to a clean run
 /// (measured 2026-08-03 in a detached worktree: `reject-cmnd-alias-empty-members`,
@@ -409,8 +412,10 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// exists to prevent: a corpus destroyed and the harness reporting success
 /// forever after.
 ///
-/// verified: 2026-08-03 - with the floor at 45, deleting ONE scenario fails
-/// again, which is this constant's own positive control.
+/// verified: 2026-08-03 - both directions, which together are this constant's
+/// positive control. Deleting one scenario fails (`found 44`) and ADDING one
+/// fails too (`found 46`), while the committed 45 passes. Only the second of
+/// those was newly bought by the equality; under `>=` a 46th scenario was rc 0.
 const SCENARIO_FLOOR: usize = 45;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
@@ -1690,9 +1695,16 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
     // corpus size, so the true count is known upfront - not `ids.len()`,
     // which is the unrelated corpus-directory count.
     announce(&root, mode, TARGETS.len());
-    assert!(
-        ids.len() >= SCENARIO_FLOOR,
-        "expected >= {SCENARIO_FLOOR} scenarios, found {}",
+    assert_eq!(
+        ids.len(),
+        SCENARIO_FLOOR,
+        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
+         a one-sided floor fails only downward: #651 added 4 scenarios without \
+         bumping the constant, and four directories could then be deleted with \
+         every layer still reporting success. Equality makes the next addition \
+         fail until the constant is updated, which is a one-line fix, instead of \
+         silently widening the slack again.",
         ids.len()
     );
 
@@ -1779,9 +1791,16 @@ fn per_version_identity_control() {
 fn l1_f01_matches_visudo_verdict_per_target() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    assert!(
-        ids.len() >= SCENARIO_FLOOR,
-        "expected >= {SCENARIO_FLOOR} scenarios, found {}",
+    assert_eq!(
+        ids.len(),
+        SCENARIO_FLOOR,
+        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
+         a one-sided floor fails only downward: #651 added 4 scenarios without \
+         bumping the constant, and four directories could then be deleted with \
+         every layer still reporting success. Equality makes the next addition \
+         fail until the constant is updated, which is a one-line fix, instead of \
+         silently widening the slack again.",
         ids.len()
     );
 

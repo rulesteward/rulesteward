@@ -2175,10 +2175,18 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // site instead. Neither `before` ends with `,` (excluded above).
         if !before.ends_with(',') && !after.starts_with(',') {
             // `lhs` is trimmed and `after` starts right after the boundary (a
-            // non-whitespace char, a quote, the string end, or - since #651 -
-            // a whitespace char outside `u8::is_ascii_whitespace`'s set, which
-            // the closer guard above deliberately does not exclude), so both
-            // halves are trimmed by the time `comma_split` sees them.
+            // non-whitespace char, a quote, or the string end), so both halves
+            // are already trimmed.
+            //
+            // That holds exhaustively over the three candidate producers, and
+            // #651 kept it that way rather than widening it: whitespace-run
+            // candidates resume at the first non-whitespace char (or at a `\`),
+            // opener candidates resume at `"`, and closer candidates are
+            // excluded by `!next.is_whitespace()` above - the SAME predicate
+            // `unquoted_whitespace_runs` uses. An intermediate version of the
+            // closer guard tested the BYTE with `u8::is_ascii_whitespace`, which
+            // broke this invariant for non-ASCII whitespace and swallowed a
+            // principal; do not restore it.
             return (before, after);
         }
     }
