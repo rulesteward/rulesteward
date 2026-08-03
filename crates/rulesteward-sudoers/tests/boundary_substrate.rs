@@ -1086,6 +1086,52 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
     }
 }
 
+/// The OPENER mirror of the case above, and the sweep that #651 round 2 owed
+/// and did not pay.
+///
+/// Round 2 fixed the CLOSER guard's byte-level whitespace test and left the
+/// OPENER guard three lines above it with the identical shape, recording it as
+/// "unswept rather than cleared". A fresh adversary found the input in one
+/// round, which is the whole argument for sweeping at the time rather than
+/// annotating.
+///
+/// `alice,<U+00A0>"b c" ALL` : the run candidate is correctly rejected (its
+/// `before` ends with `,`), and the byte-level opener guard did not recognise
+/// the NBSP as whitespace, so it pushed a spurious candidate AT the quote. That
+/// won, and the USER principal `"b c"` was swallowed into a host token.
+///
+/// `visudo -c -f -` gives rc 1 here (three LHS tokens - #669's gap), so as with
+/// the closer mirror the pinnable axis is the SPLIT, not the verdict. The
+/// one-byte ASCII-space control `alice, "b c" ALL` is rc 1 too and splits
+/// correctly on every sha, which is what isolates this to the whitespace
+/// predicate rather than to quoting or to commas.
+///
+/// VT (`0x0B`) is the same case with no multi-byte encoding. sudo treats both as
+/// WORD characters, not separators: `alice,<0x0B>bob ALL = NOPASSWD: ALL` is
+/// rc 0 with `User_List [alice, "bob"]` (rs-oracle9, sudo 1.9.17p2,
+/// 2026-08-03).
+#[test]
+fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
+    for src in [
+        "alice,\u{a0}\"b c\" ALL = NOPASSWD: ALL\n",
+        "alice,\u{b}\"b c\" ALL = NOPASSWD: ALL\n",
+        // The ASCII-space control, correct on every sha.
+        "alice, \"b c\" ALL = NOPASSWD: ALL\n",
+    ] {
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["alice".to_string(), "\"b c\"".to_string()],
+            "the quoted USER principal must not be swallowed into the hosts: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["ALL".to_string()],
+            "the host list is exactly `ALL`: {src:?}"
+        );
+    }
+}
+
 /// A quoted principal whose value CONTAINS whitespace. This is the case a
 /// whitespace-run boundary can never reach on its own: the only space in the
 /// line sits INSIDE the quoted span, so before the fix there was no candidate

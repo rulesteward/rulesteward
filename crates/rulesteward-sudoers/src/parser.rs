@@ -2089,7 +2089,6 @@ fn comma_split(s: &str) -> Vec<String> {
 /// #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
-    let bytes = lhs.as_bytes();
 
     // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
     // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
@@ -2098,24 +2097,29 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // PAST the closing quote, which is where the next token begins.
     let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
     for (open, close) in simple_quote_pairs(lhs) {
-        if open > 0 {
-            // STILL BYTE-LEVEL, and deliberately recorded rather than silently
-            // left. This inspects `bytes[open - 1]` - the last BYTE of what may
-            // be a multi-byte char - and tests `u8::is_ascii_whitespace`, while
-            // `unquoted_whitespace_runs` tests `char::is_whitespace`. It is the
-            // last such disagreement in this function; the CLOSER guard below
-            // had the identical shape and it was NOT harmless (#651 round 2:
-            // it swallowed a principal on `"ab"<U+00A0>,alice ALL`).
-            //
-            // No input has been found where this one flips a verdict, and the
-            // reason to doubt that is written directly above: the closer's
-            // exclusion was believed inert for exactly the same "trimming
-            // absorbs it" argument, and that belief was wrong. Treat this as
-            // unswept rather than as cleared.
-            let prev = bytes[open - 1];
-            if prev != b',' && !prev.is_ascii_whitespace() {
-                candidates.push((open, open));
-            }
+        // Tests the CHAR before the quote with `char::is_whitespace`, matching
+        // both `unquoted_whitespace_runs` and the closer guard below. All three
+        // recognizers of "where does whitespace end a token" now agree, which is
+        // the invariant this surface keeps losing.
+        //
+        // This was byte-level (`bytes[open - 1]`, `u8::is_ascii_whitespace`)
+        // until #651 round 3. Round 2 fixed the identical defect on the CLOSER
+        // and left this one three lines away with a comment calling it
+        // "unswept rather than cleared"; a fresh adversary produced the input in
+        // one round. On `alice,<U+00A0>"b c" ALL` the run candidate is correctly
+        // rejected (its `before` ends with `,`), the byte test did not see the
+        // NBSP as whitespace, and the spurious candidate it pushed at the quote
+        // won - swallowing the USER principal `"b c"` into a host token.
+        // `a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary`
+        // pins it, with the ASCII-space control in the same loop.
+        //
+        // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
+        if open > 0
+            && let Some(prev) = lhs[..open].chars().next_back()
+            && prev != ','
+            && !prev.is_whitespace()
+        {
+            candidates.push((open, open));
         }
         // The MIRROR of the opener rule above, and the reason `close` is bound
         // rather than discarded (#651): a quoted principal ENDS at its closing
@@ -2125,7 +2129,11 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // value/command side; the principal side modelled only the glued OPENER,
         // and that asymmetry dropped the whole grant on `"ab"ALL = ...`.
         //
-        // A `close` at the very end of `lhs` yields no candidate (`get` is None).
+        // A `close` at the very end of `lhs` yields no candidate: the slice
+        // `lhs[close + 1..]` is then empty and `chars().next()` is None. (This
+        // said "`get` is None" until #651 round 3, describing the byte-level
+        // `bytes.get(close + 1)` that round 2 had already replaced - the same
+        // commit that swept four neighbouring comments and missed this one.)
         // A following `,` or whitespace is excluded for the same reasons as in
         // the opener rule: whitespace already yields a candidate via
         // `unquoted_whitespace_runs`, and a `,` means the run continues.

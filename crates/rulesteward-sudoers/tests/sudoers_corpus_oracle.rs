@@ -2135,11 +2135,14 @@ fn l3_structure_projection_matches_cvtsudoers() {
                         // when BOTH are present - never `trim_matches('"')`,
                         // which strips any number from either end
                         // independently. (It checks the first and last bytes,
-                        // so it is not a true balance check: on `"a"b"` it
-                        // removes two quotes that are not a matched pair. That
-                        // is deliberate simplicity, not an oversight - the
-                        // property it must have is refusing an UNBALANCED
-                        // token, which it does.)
+                        // so it is not a true balance check: on `"a"b"`, which
+                        // has THREE quotes, it still strips the outer two and
+                        // yields `a"b`. That is deliberate simplicity, not an
+                        // oversight, but state the property precisely: what it
+                        // refuses is a token quoted on only ONE end, which is
+                        // the shape a mis-split produces. It does not refuse
+                        // every unbalanced token, and an earlier version of this
+                        // comment claimed it did.)
                         //
                         // `trim_matches` strips ANY number of quotes from BOTH
                         // ends independently, so it also absorbs an UNBALANCED
