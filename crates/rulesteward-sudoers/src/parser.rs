@@ -1996,7 +1996,13 @@ fn comma_split(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Split a user-spec's pre-`=` text into `(User_List, Host_List)`, both trimmed.
+/// Split a user-spec's pre-`=` text into `(User_List, Host_List)`.
+///
+/// `Host_List` is trimmed; `User_List` may carry trailing ESCAPED whitespace
+/// (`a\ "b c"` splits as `a\ ` / `"b c"`), so callers trim - the sole caller
+/// maps `comma_split`, which does. This said "both trimmed" until #651 and was
+/// already false then for non-ASCII whitespace; four sweeps of this function
+/// did not catch it because the caller's trim masks it.
 ///
 /// `User_Spec ::= User_List Host_List '='...` and `User_List ::= User | User ','
 /// User_List` (sudoers(5), sudo 1.9.17p2). The two lists are separated by
@@ -2053,24 +2059,159 @@ fn comma_split(s: &str) -> Vec<String> {
 /// whitespace outside the quoted span to find at all - the single space sits
 /// INSIDE the pair), so the loop below also treats the OPEN position of a
 /// [`simple_quote_pairs`] pair as a candidate boundary whenever it is glued to a
-/// preceding non-whitespace, non-`,` byte. A quote at `lhs`'s own start, or one
-/// reached after whitespace or a comma, is not "glued" - it is either the run's
-/// first token or already reachable through the whitespace-run candidates.
+/// preceding non-`,` char at a position where no whitespace RUN ends. A quote at
+/// `lhs`'s own start, or one reached after a comma, is not "glued"; one reached
+/// after whitespace is already reachable through the whitespace-run candidates,
+/// which is why the guard ASKS the run set rather than testing the char.
+///
+/// That phrasing is deliberate. This said "non-whitespace byte" until #651, and
+/// re-deciding "is this whitespace a separator" here instead of asking the one
+/// function that models it produced two fail-opens in opposite directions - see
+/// the guard's own comment.
+///
+/// # #651: the mirror-image CLOSING quote
+///
+/// The rule above is HALF of the token-boundary semantic, and shipping only that
+/// half was a fail-open. A quoted principal also ENDS at its closing quote, with
+/// the next token starting at `close + 1` whether or not whitespace follows, so
+/// the loop treats `close + 1` as a candidate too.
+///
+/// Without it `"ab"ALL = NOPASSWD: ALL` had NO candidate boundary at all: the
+/// whitespace runs are empty (no whitespace outside the pair) and the glued-OPENER
+/// candidate is skipped because `open == 0`. `split_user_list` returned
+/// `(lhs, "")`, the host part was empty, and the line died as a false `sudo-F01`
+/// that took the `NOPASSWD` grant with it. `visudo -c -f -` gives rc 0 and
+/// `cvtsudoers -f json` reports `User_List ["ab"]` / `Host_List ["ALL"]`
+/// (re-derived on rs-oracle9, sudo 1.9.17p2, 2026-08-02).
+///
+/// The shared abstraction is "the next token starts one byte past the CLOSING
+/// DELIMITER", and it is worth naming precisely rather than loosely:
+///
+///   * [`option_value_end`] is the same rule for the same delimiter - a closing
+///     QUOTE (`return close + 1`, #631).
+///   * [`parse_cmnd_spec`] is the same rule for a different delimiter: its
+///     `close` comes from `after_open.find(')')`, a closing PAREN of the runas
+///     group. Do NOT read it as a co-model of the quote rule - that `find(')')`
+///     is quote-BLIND, stops at a quoted paren and truncates `"a)b"` to `"a`,
+///     and is filed as #650.
+///
+/// So two quote recognizers and one paren recognizer, and until #651 the
+/// principal-side quote one was the odd out. Recognizers of one concept
+/// disagreeing is the recurring shape on this surface (#622, #629, #630, #631,
+/// #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
-    let bytes = lhs.as_bytes();
 
     // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
     // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
-    // resume after the run; a glued-quote candidate resumes AT the quote itself
-    // (no whitespace to skip).
-    let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
-    for (open, _close) in simple_quote_pairs(lhs) {
-        if open > 0 {
-            let prev = bytes[open - 1];
-            if prev != b',' && !prev.is_ascii_whitespace() {
-                candidates.push((open, open));
-            }
+    // resume after the run; a glued-OPENER candidate resumes AT the quote itself
+    // (no whitespace to skip); a glued-CLOSER candidate (#651) resumes one byte
+    // PAST the closing quote, which is where the next token begins.
+    let runs = unquoted_whitespace_runs(lhs);
+    let mut candidates: Vec<(usize, usize)> = runs.clone();
+    for (open, close) in simple_quote_pairs(lhs) {
+        // The whitespace half of this guard ASKS `unquoted_whitespace_runs`
+        // whether a run actually ends here, rather than re-deciding it.
+        //
+        // Its purpose has always been "skip the candidate that a whitespace run
+        // already supplies". Two attempts to express that as a PREDICATE both
+        // shipped defects, in opposite directions:
+        //
+        //   `u8::is_ascii_whitespace` on `bytes[open - 1]` (through round 2) -
+        //       too NARROW. On `alice,<U+00A0>"b c" ALL` it pushed a candidate
+        //       the run already covered; that candidate won and swallowed the
+        //       USER principal `"b c"` into a host token.
+        //   `char::is_whitespace` on the char (round 3) - too WIDE. It matched
+        //       `unquoted_whitespace_runs`' predicate but not its CONTEXT: that
+        //       function ignores whitespace which is backslash-escaped or inside
+        //       a quoted region. On `a\<VT>"b c" = NOPASSWD: ALL` the escape
+        //       meant no run existed, the guard suppressed the candidate anyway,
+        //       and with NO candidate at all the line became a false `sudo-F01`
+        //       that dropped a passwordless-ALL grant.
+        //
+        // Matching predicates is not matching recognizers. Asking the run set
+        // directly inherits the escape and quote context from the one place that
+        // models it, so there is nothing left to keep in sync.
+        //
+        // Pinned in both directions by
+        // `a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary`
+        // (too-narrow) and `escaped_whitespace_before_an_opening_quote_still_reports_the_grant`
+        // (too-wide), each carrying its own one-byte control.
+        //
+        // The `,` half is still a predicate and is still escape-BLIND: an
+        // escaped `a\,"b"` is a literal comma that does not continue the user
+        // list, and this suppresses the candidate anyway. Filed as #675, with
+        // the sibling in the continuation filter below; unswept here because the
+        // two must move together.
+        //
+        // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
+        if open > 0
+            && let Some(prev) = lhs[..open].chars().next_back()
+            && prev != ','
+            && !runs.iter().any(|&(_, end)| end == open)
+        {
+            candidates.push((open, open));
+        }
+        // The MIRROR of the opener rule above, and the reason `close` is bound
+        // rather than discarded (#651): a quoted principal ENDS at its closing
+        // quote, with the next token starting at `close + 1`, whitespace or not.
+        // `option_value_end` (`return close + 1`, #631) and `parse_cmnd_spec`
+        // (`after_open[close + 1..]`) already model exactly this on the
+        // value/command side; the principal side modelled only the glued OPENER,
+        // and that asymmetry dropped the whole grant on `"ab"ALL = ...`.
+        //
+        // A `close` at the very end of `lhs` yields no candidate: the slice
+        // `lhs[close + 1..]` is then empty and `chars().next()` is None. (This
+        // said "`get` is None" until #651 round 3, describing the byte-level
+        // `bytes.get(close + 1)` that round 2 had already replaced - the same
+        // commit that swept four neighbouring comments and missed this one.)
+        // A following `,` or whitespace is excluded for the same reasons as in
+        // the opener rule: whitespace already yields a candidate via
+        // `unquoted_whitespace_runs`, and a `,` means the run continues.
+        //
+        // The two exclusions are NOT equally load-bearing, and an earlier
+        // version of this comment claimed they were. Measured by deleting each
+        // conjunct separately and running the whole suite:
+        //
+        //   whitespace exclusion deleted -> rc 101. TWO tests fail:
+        //       `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        //       and
+        //       `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`.
+        //       LOAD-BEARING, and individually observable.
+        //   comma exclusion deleted      -> rc 0, fully green. REDUNDANT.
+        //
+        // The comma one is redundant against the continuation filter below by
+        // construction, not by luck: any candidate it would admit has `after`
+        // beginning with `,`, which that filter rejects unconditionally. It is
+        // kept as defence-in-depth and as a statement of intent, and nothing
+        // pins it - say so rather than implying a test would catch its removal.
+        //
+        // This tests the CHAR at `close + 1` with `char::is_whitespace`, the
+        // SAME predicate `unquoted_whitespace_runs` uses, and that agreement is
+        // deliberate. It first shipped as a byte-level `u8::is_ascii_whitespace`
+        // and the mismatch was a real defect, not a stylistic one: a whitespace
+        // char outside the ASCII set (any non-ASCII one, and ASCII `0x0B`
+        // VERTICAL TAB, which `char::is_whitespace` accepts and the byte test
+        // does not) was NOT excluded here while `unquoted_whitespace_runs` DID
+        // emit a run for it. The candidate was pushed, sorted ahead of the run,
+        // and won.
+        //
+        // On `"ab"<U+00A0>,alice ALL` that swallowed a principal: `after` began
+        // with the NBSP rather than with `,`, so the continuation filter could
+        // not fire, and `alice` - which belongs to the USER list - ended up
+        // inside a host token. The fork point split it correctly. Two
+        // recognizers of "where does whitespace end a token" disagreeing is the
+        // exact shape of every prior regression on this surface, so the fix is
+        // to make them the same predicate rather than to document the gap.
+        // `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        // pins it.
+        //
+        // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.
+        if let Some(next) = lhs[close + 1..].chars().next()
+            && next != ','
+            && !next.is_whitespace()
+        {
+            candidates.push((close + 1, close + 1));
         }
     }
     candidates.sort_unstable();
@@ -2080,13 +2221,31 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         let after = &lhs[resume..];
         // The run continues across this boundary if a comma sits on either side
         // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
-        // its own token and both adjacent runs continue). A glued-quote candidate
-        // never itself ends with `,` (excluded above) and never starts with `,`
-        // (it starts with `"`), so it always passes this check.
+        // its own token and both adjacent runs continue). Both glued candidates
+        // always pass this check, but for DIFFERENT reasons, and stating one
+        // reason for both was wrong once already: an OPENER candidate's `after`
+        // literally starts with `"`, while a CLOSER candidate's `after` starts
+        // with the next token's first byte, which is `,`-excluded at the push
+        // site instead. Neither `before` ends with `,` (excluded above).
         if !before.ends_with(',') && !after.starts_with(',') {
-            // `lhs` is trimmed and `after` starts right after the boundary (a
-            // non-whitespace char, a quote, or the string end), so both halves
-            // are already trimmed.
+            // `after` starts right after the boundary - a non-whitespace char,
+            // a quote, or the string end - so the HOST half is trimmed. That
+            // holds exhaustively over the three candidate producers:
+            // whitespace-run candidates resume at the first non-whitespace char
+            // (or at a `\`), opener candidates resume at `"`, and closer
+            // candidates are excluded by `!next.is_whitespace()` above, the SAME
+            // predicate `unquoted_whitespace_runs` uses. An intermediate version
+            // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,
+            // which broke it for non-ASCII whitespace and swallowed a principal;
+            // do not restore it.
+            //
+            // `before` is NOT guaranteed trimmed, and #651 widened that rather
+            // than keeping it: since the opener guard began delegating to the run
+            // set, an opener candidate whose preceding whitespace is ESCAPED is
+            // admitted, so `a\ "b c"` splits with `before == "a\ "`. That is the
+            // intended fix (the fork point returned `(lhs, "")` there), but it
+            // means the caller trims - `comma_split` maps `str::trim`. A second
+            // caller must not assume otherwise.
             return (before, after);
         }
     }

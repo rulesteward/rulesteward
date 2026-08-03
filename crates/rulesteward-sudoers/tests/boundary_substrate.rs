@@ -33,11 +33,17 @@
 //! surface. Do not read a green run of this file as covering them.
 //!
 //! GROUNDING. Every expectation below was re-derived on THIS host on 2026-08-02,
-//! not copied from the issues: `visudo -c -f -` for the rc and `cvtsudoers -f json`
+//! and the #651 cases again on 2026-08-03, not copied from the issues:
+//! `visudo -c -f -` for the rc and `cvtsudoers -f json`
 //! for the AST, both on sudo 1.9.17p2 (`visudo grammar version 50`), both reading
 //! stdin only. The oracle's discrimination was positive-controlled in the same run:
-//! `alice h1 = ` returns rc 1, so the rc 0 behind every case here is meaningful
-//! rather than an oracle that accepts anything.
+//! `alice h1 = ` returns rc 1, so the oracle VERDICT behind every case here is
+//! meaningful rather than an oracle that accepts anything.
+//!
+//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL. The few
+//! that are rc 1 say so, in the owning test's doc or in the section header above
+//! it; silence means rc 0. See `f01_count` for why that convention is stated in
+//! that direction rather than as a list or as a universal.
 
 use std::path::Path;
 
@@ -72,8 +78,31 @@ fn count_code(src: &str, code: &str) -> usize {
         .count()
 }
 
-/// `sudo-F01`: the file does not parse. On every input in this file real
-/// `visudo` returns rc 0, so any F01 here is a false FATAL on a valid file.
+/// `sudo-F01`: the file does not parse.
+///
+/// MOST inputs in this file are real-`visudo` rc 0, and on those an F01 is a
+/// false FATAL on a valid file. A few are rc 1.
+///
+/// **The convention: an rc-1 input SAYS SO, in the owning test's doc or in the
+/// section header above it. A doc that states no verdict means rc 0.** So
+/// `f01_count == 0` is the meaningful assertion by default, and the rc-1 cases
+/// are the ones that announce themselves.
+///
+/// That is weaker than it looks and is stated this way on purpose. Measured
+/// 2026-08-03: of 43 tests, 18 state a verdict in their own doc and 25 do not
+/// (3 carry no doc at all), so a rule requiring every test to state one would be
+/// false for most of the file. What IS true is the direction that matters -
+/// every rc-1 input is documented as such.
+///
+/// Two earlier attempts here were wrong within hours, and the shape of the
+/// failures is why this is a convention rather than a list or a universal. The
+/// first said "every input here is rc 0" while two `#[ignore]`d #669 cases were
+/// rc 1. Its correction said "except the two #669 cases" in the same commit that
+/// added two MORE rc-1 inputs, and never noticed a fifth that pre-dated the
+/// branch (`%bad"group ALL = ALL`, whose own doc has always said rc 1). The
+/// third attempt replaced the enumeration with a universal that was false for 25
+/// of 43 tests. An enumeration rots on every added input; an unmeasured
+/// universal was simply never true.
 fn f01_count(src: &str) -> usize {
     count_code(src, "sudo-F01")
 }
@@ -753,4 +782,565 @@ fn control_single_backslash_still_escapes_the_quote() {
         only_spec(src).host_groups[0].hosts,
         vec!["\"h\\\"1\"".to_string()]
     );
+}
+
+// ===========================================================================
+// #651 - `split_user_list` discards the CLOSING-quote position.
+//
+// It iterated quote spans as `for (open, _close) in simple_quote_pairs(lhs)`,
+// binding the close to `_close` and throwing it away, so `close + 1` was never
+// a boundary candidate. When a principal's closing quote is GLUED to the next
+// token no candidate exists at all: `unquoted_whitespace_runs` finds no
+// whitespace outside the pair, and the glued-OPENER candidate is skipped when
+// `open == 0`. `split_user_list` returns `(lhs, "")`, the host part is empty,
+// and the line dies as `sudo-F01` - taking any grant on it with it. FAIL-OPEN.
+//
+// The crate already models "the next token starts at `close + 1`" TWICE on the
+// value/command side - `option_value_end` (`return close + 1`, #631) and
+// `parse_cmnd_spec` (`rest = after_open[close + 1..]`) - and models the
+// MIRROR-IMAGE opener rule on the principal side in `split_user_list` itself.
+// The principal side modelled the glued OPENER and not the glued CLOSER. That
+// asymmetry is the bug.
+//
+// PRE-EXISTING, not a regression: identical on `96038c9` (the fork point of the
+// PREVIOUS branch, `fix/sudoers-boundary-substrate`, not of this one - this
+// branch forks at `ee250aa`) and on that branch's tip. `96038c9` is the right
+// baseline for the claim because it PRECEDES the change being exonerated;
+// `split_user_list` there still reads `for (open, _close) in ...`.
+//
+// Ground truth re-derived on rs-oracle9 (sudo 1.9.17p2) 2026-08-02, every row
+// `visudo -c -f -` rc 0 `parsed OK`, every row carrying a one-byte space
+// control that isolates the defect to the glued closing quote:
+//
+//   `"ab"ALL = NOPASSWD: ALL`          -> User_List ["ab"],      Host_List ["ALL"]
+//   `"ab" ALL = NOPASSWD: ALL`         -> identical (the control)
+//   `"ops team"web1 = NOPASSWD: /bin/ls` -> User_List ["ops team"], Host_List ["web1"]
+//   `alice,"b c"ALL = NOPASSWD: ALL`   -> User_List ["alice","b c"], Host_List ["ALL"]
+// ===========================================================================
+
+/// Face A: the grant vanishes behind a false FATAL.
+///
+/// cvtsudoers splits this into `User_List ["ab"]` / `Host_List ["ALL"]` with
+/// `authenticate: false`, so the correct output is exactly one `sudo-W01`
+/// (NOPASSWD on ALL). Before the fix `RuleSteward` emitted `sudo-F01` ("needs
+/// both a user list and a host list before the `=`") and NO `sudo-W01`.
+#[test]
+fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
+    let src = "\"ab\"ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w01_count(src),
+        1,
+        "cvtsudoers: authenticate false on Host_List ALL - the NOPASSWD grant must be seen"
+    );
+}
+
+/// The one-byte control for face A. A single added space is the whole
+/// difference, which is what isolates the defect to the glued CLOSING quote
+/// rather than to quoting in a principal generally.
+///
+/// The structural assertion below pins the split shape for its own sake. It is
+/// deliberately NOT claimed as a mutant-killer, and the correction is recorded
+/// because getting it wrong once already cost a false comment on this branch.
+///
+/// The `close + 1` arithmetic mutants SURVIVE this test, structural assertion
+/// included. The mutated guard pushes a spurious candidate `(close + 1,
+/// close + 1)` here, where `close + 1` IS the space, and it does sort ahead of
+/// the whitespace run and win - but `comma_split` maps `str::trim` over the
+/// halves, so `host_groups[0].hosts` comes back `["ALL"]` either way and the
+/// stray byte never reaches an assertion. That is exactly WHY they survived the
+/// original five tests, and the reason this test is documented as NOT a
+/// mutant-killer.
+///
+/// The kill belongs to
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` (and now also
+/// to its non-ASCII sibling), where the comma-continuation filter rather than
+/// trimming is what the spurious candidate defeats.
+///
+/// The guard's SPELLING has changed twice - `bytes.get(close + 1)` when this was
+/// first written, `lhs[close + 1..].chars().next()` since round 2 - but the
+/// mutants remain constructible at that `+`, and a `--list` reports them at
+/// `parser.rs`'s closer guard to this day. A previous version of this paragraph
+/// declared them "not constructible" and removed the `verified:` stamp on the
+/// grounds that nothing was left to re-verify. That was an OVER-correction: only
+/// the spelling was stale, the substance was true, and the stamp was earned.
+/// Re-deriving gives the right answer, so re-derive rather than trusting either
+/// this paragraph or that one.
+///
+/// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the current
+/// spelling: rc 101, with exactly
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` and
+/// `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+/// failing, and THIS test passing.
+#[test]
+fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
+    let src = "\"ab\" ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0);
+    assert_eq!(w01_count(src), 1);
+    let s = only_spec(src);
+    assert_eq!(s.users, vec!["\"ab\"".to_string()]);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host must be exactly `ALL`: a candidate placed ON the space instead \
+         of after it yields a leading-space host that every lint-code count misses"
+    );
+}
+
+/// The structural face, sharper than a lint-code count: the boundary must land
+/// AT `close + 1`, so the quoted token is the whole user list and `ALL` is the
+/// whole host list. A count-only assertion would still pass if the split landed
+/// somewhere else that happened to produce one `sudo-W01`.
+#[test]
+fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
+    let s = only_spec("\"ab\"ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string()],
+        "the quoted token is the whole user list, kept verbatim"
+    );
+    assert_eq!(s.host_groups.len(), 1);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host list starts at close + 1, not at the next whitespace"
+    );
+}
+
+/// The guard's WHITESPACE exclusion is load-bearing, and this is its witness.
+///
+/// An earlier version of this doc said BOTH exclusions were, and were observable
+/// only where the two cases meet. That was wrong in both directions, measured by
+/// deleting each conjunct separately and running the whole suite: deleting the
+/// whitespace exclusion gives rc 101 and fails THIS test, while deleting the
+/// comma exclusion gives rc 0 and a fully green suite.
+///
+/// So the comma exclusion is redundant against the continuation filter - any
+/// candidate it would admit has `after` beginning with `,`, which that filter
+/// rejects unconditionally - and nothing pins it. It is defence-in-depth.
+///
+/// What this test actually pins is narrower and more interesting than "both
+/// exclusions matter": that the whitespace exclusion cannot be dropped even
+/// though trimming appears to make it harmless. It appears harmless because on
+/// every simpler input it IS - `comma_split` maps `str::trim` and absorbs the
+/// stray candidate. The input below is where trimming stops being enough.
+///
+/// `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with
+/// `User_List ["ab","alice"]`, `Host_List ["ALL"]`, `authenticate false`
+/// (rs-oracle9, sudo 1.9.17p2, 2026-08-03). The whitespace-run candidate
+/// `(4, 5)` is correctly REJECTED because its `after` begins `,alice`, so the
+/// split falls through to the real boundary before `ALL`.
+///
+/// A guard that inspects the wrong byte pushes an extra candidate `(4, 4)` whose
+/// `after` is `" ,alice ALL"` - beginning with the SPACE, so
+/// `after.starts_with(',')` is false and the continuation filter no longer fires.
+/// It sorts first, wins, and the line parses as user `"ab"` with the host TEXT
+/// `" ,alice ALL"`. `comma_split` then splits on `,`, trims, and drops empties,
+/// so the leading comma never survives into the AST and `hosts` reads
+/// `["alice ALL"]` - the `alice` that belonged in the USER list, swallowed into
+/// a host token. The users assertion below is what fires; the hosts one is
+/// stated for shape.
+///
+/// This test is the KILLER for the closer guard's `close + 1` arithmetic. The
+/// mutation gate found that mutating that `+` survived the original five tests,
+/// including a structural assertion on the spaced control, because every one of
+/// those inputs let trimming or the comma filter absorb the stray candidate.
+/// This input is the shape where BOTH stop absorbing it.
+///
+/// The guard's spelling has changed - `bytes.get(close + 1)` when this was
+/// written, `lhs[close + 1..].chars().next()` since round 2 - and an earlier
+/// version of this paragraph concluded from that that "neither named mutant
+/// exists to re-derive". Wrong: the `+` is still there and still mutable, and a
+/// `--list` reports both mutants at that site today. A spelling change is not a
+/// mutant's disappearance, and treating it as one retires a live witness.
+///
+/// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the
+/// current spelling: rc 101, with this test and its non-ASCII sibling failing
+/// and `control_principal_spaced_from_a_closing_quote_is_unaffected` passing.
+#[test]
+fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+    let src = "\"ab\" ,alice ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string(), "alice".to_string()],
+        "the comma continues the USER list; it must not be swallowed into the hosts"
+    );
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host list is exactly `ALL`, not `alice ALL` (comma_split drops the \
+         leading comma, so the mutant's damage shows up as a swallowed principal)"
+    );
+}
+
+/// A THREE-token left-hand side must stay rejected, and this is the one input
+/// where #651's new candidate would otherwise have lost an existing catch.
+///
+/// `a\ "b"c = NOPASSWD: ALL` is `visudo -c -f -` **rc 1**, `stdin:1:7: syntax
+/// error`: sudo lexes three LHS tokens, `a ` (the backslash escapes the space),
+/// `b`, and `c`, and a user spec takes exactly two.
+///
+/// The escape is what makes it delicate. `unquoted_whitespace_runs` deliberately
+/// emits NO run here (its `\` arm consumes the next byte), and the glued-OPENER
+/// candidate is skipped because `prev` is that escaped space. So before #651
+/// there was no candidate at all, `split_user_list` fell through to `(lhs, "")`,
+/// and the line was rejected - correct verdict, reached by accident. #651's
+/// `close + 1` candidate is a genuine boundary between `"b"` and `c`, and
+/// supplying it turned the accidental rejection into an acceptance.
+///
+/// The real defect is that a 3-token LHS was never DETECTED, only stumbled over.
+/// That gap is pre-existing and wider than this input: `a\ "b" c = ...` is also
+/// oracle rc 1 and is accepted identically on `ee250aa` and here, which is the
+/// one-byte control isolating the flip to the glued spelling.
+///
+/// KNOWN-OPEN, filed as #669. `#[ignore]`d rather than deleted, per this
+/// repo's convention: removing the `#[ignore]` is how the fix gets demonstrated.
+///
+/// A repair WAS built and then reverted, and the reason is the useful part.
+/// Detecting the arity means reclassifying such a line as `Malformed`, and the
+/// frozen `f02_malformed_group_subject_fires` shows what that costs: `%bad group
+/// ALL = ALL` is also a three-token LHS, and today `RuleSteward` parses it
+/// structurally and catches it with a PRECISE `sudo-F02` naming the bad group
+/// token. Under the arity check it became a generic Fatal instead, and a
+/// `Malformed` line is invisible to every W/E pass (#668). So the obvious fix
+/// trades a specific finding for a vague one and can SUPPRESS other lints - the
+/// fail-open shape, arriving through the front door.
+///
+/// That is a design decision about diagnostic precedence, not an implementation
+/// detail, so it is filed rather than guessed at, and the frozen test was left
+/// alone rather than weakened to reach green.
+#[test]
+#[ignore = "#669: a 3-token LHS is not detected; repairing it needs a diagnostic-precedence decision"]
+fn a_three_token_left_hand_side_is_rejected() {
+    let src = "a\\ \"b\"c = NOPASSWD: ALL\n";
+    assert_eq!(
+        f01_count(src),
+        1,
+        "visudo rc 1 (three LHS tokens): sudo-F01 must fire"
+    );
+}
+
+/// The one-byte control for the case above, and the evidence that #669 is a
+/// PRE-EXISTING hole rather than this branch's doing: `a\ "b" c = ...` is oracle
+/// rc 1 and is accepted identically on `ee250aa` and here.
+///
+/// The pair together is what makes the regression legible. This spelling is
+/// wrong on BOTH shas; the glued one was right on `ee250aa` only because no
+/// boundary candidate existed at all, so the line fell through to `(lhs, "")`
+/// and was rejected for the wrong reason. #651 supplied the missing candidate
+/// and the accident stopped happening.
+#[test]
+#[ignore = "#669: pre-existing on both shas; the paired control for the regression"]
+fn a_three_token_left_hand_side_with_a_spaced_quote_is_also_rejected() {
+    let src = "a\\ \"b\" c = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 1, "visudo rc 1: sudo-F01 must fire");
+}
+
+/// The two-token controls, which must keep parsing.
+///
+/// There is NO arity check in the tree - an earlier version of this doc said
+/// "the arity check above", pointing at an `#[ignore]`d test rather than at any
+/// code, and describing an internal design property of a repair that was
+/// reverted (see #669). This is a forward-looking constraint on whatever fix
+/// #669 eventually takes: if it ever makes one of these ten shapes fire
+/// `sudo-F01`, it has become a false-FATAL generator, which is the worst
+/// regression shape for a compliance linter. Whatever detects the arity should
+/// reuse the splitter's own candidate logic rather than a fresh whitespace scan,
+/// so that "where does a token end" has one recognizer and not two.
+///
+/// Honest about its own strength: `f01_count == 0` is a Malformed-ABSENCE check,
+/// not a parse-CORRECTNESS one. `a b c = NOPASSWD: ALL` also scores 0 here while
+/// producing a garbage host token. All ten shapes were verified correct against
+/// `cvtsudoers` when this was written, and NONE is structurally pinned by this
+/// test's own body - it asserts only the absence of an F01.
+///
+/// Four are pinned STRUCTURALLY elsewhere: `"ab"ALL` and `"ops team"web1` by the
+/// #651 tests above, `my\ user ALL = ALL` by `iss538_parser_gaps.rs`'s
+/// escaped-space test, and `alice,bob ALL` by its `accept-multi-user-list`
+/// regression control. The remaining SIX carry no structural pin anywhere, which
+/// is the honest residue. (An earlier version of this note said eight, counting
+/// the two `iss538_parser_gaps.rs` pins as absent; under-claiming a test's
+/// coverage is a smaller sin than over-claiming it, but it is still wrong.)
+#[test]
+fn control_two_token_left_hand_sides_still_parse() {
+    for src in [
+        "alice ALL = NOPASSWD: ALL\n",
+        "alice,bob ALL = NOPASSWD: ALL\n",
+        "alice, bob ALL = NOPASSWD: ALL\n",
+        "alice ,bob ALL = NOPASSWD: ALL\n",
+        "alice , bob ALL = NOPASSWD: ALL\n",
+        "\"ab\"ALL = NOPASSWD: ALL\n",
+        "\"ops team\"web1 = NOPASSWD: /bin/ls\n",
+        "alice h1,h2 = NOPASSWD: ALL\n",
+        "alice h1, h2 = NOPASSWD: ALL\n",
+        "my\\ user ALL = ALL\n",
+    ] {
+        assert_eq!(f01_count(src), 0, "must still parse: {src:?}");
+    }
+}
+
+/// The same MEET case with a NON-ASCII space, which the first version of the
+/// closer guard got wrong.
+///
+/// The guard shipped testing the BYTE at `close + 1` with
+/// `u8::is_ascii_whitespace`, while `unquoted_whitespace_runs` tests the CHAR
+/// with `char::is_whitespace`. U+00A0 is whitespace to the second and not to the
+/// first, so the closer candidate was pushed AND a run was emitted; the
+/// candidate sorted first and won, `after` began with the NBSP rather than with
+/// `,`, the continuation filter could not fire, and `alice` was swallowed into a
+/// host token. The fork point `ee250aa` split this correctly, so it was a
+/// regression from #651's own fix.
+///
+/// `visudo -c -f -` gives rc 1 on this line (U+00A0 is not a sudoers
+/// separator), so NEITHER sha reaches the right verdict - that belongs to #669's
+/// three-token gap. What is pinned here is the SPLIT: the user list must keep
+/// `alice`, which is the axis where HEAD had become strictly worse than base.
+///
+/// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
+#[test]
+fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+    for src in [
+        "\"ab\"\u{a0},alice ALL = NOPASSWD: ALL\n",
+        "\"ab\"\u{b},alice ALL = NOPASSWD: ALL\n",
+    ] {
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["\"ab\"".to_string(), "alice".to_string()],
+            "the comma continues the USER list even after a whitespace char outside \
+             `u8::is_ascii_whitespace`'s set: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["ALL".to_string()],
+            "the host list must not swallow `alice`: {src:?}"
+        );
+    }
+}
+
+/// The OPENER mirror of the case above, and the sweep that #651 round 2 owed
+/// and did not pay.
+///
+/// Round 2 fixed the CLOSER guard's byte-level whitespace test and left the
+/// OPENER guard three lines above it with the identical shape, recording it as
+/// "unswept rather than cleared". A fresh adversary found the input in one
+/// round, which is the whole argument for sweeping at the time rather than
+/// annotating.
+///
+/// `alice,<U+00A0>"b c" ALL` : the run candidate is correctly rejected (its
+/// `before` ends with `,`), and the byte-level opener guard did not recognise
+/// the NBSP as whitespace, so it pushed a spurious candidate AT the quote. That
+/// won, and the USER principal `"b c"` was swallowed into a host token.
+///
+/// `visudo -c -f -` gives rc 1 on the NBSP and VT rows (three LHS tokens -
+/// #669's gap), so for those the pinnable axis is the SPLIT, not the verdict.
+///
+/// The one-byte ASCII-space control `alice, "b c" ALL` is **rc 0**, not rc 1:
+/// the comma makes `alice, "b c"` a single `User_List`, so the LHS has TWO
+/// tokens and #669's gap does not touch it. That is what makes it a control.
+/// Its verdict IS therefore pinnable, and is pinned below. (An earlier version
+/// of this doc called it rc 1, which under this file's own rule would have told
+/// a maintainer that `RuleSteward` should emit `sudo-F01` on a line sudo
+/// accepts - the false-FATAL direction this file exists to prevent.)
+///
+/// VT (`0x0B`) is the same case with no multi-byte encoding. sudo treats both as
+/// WORD characters, not separators: `alice,<0x0B>bob ALL = NOPASSWD: ALL` is
+/// rc 0 with `User_List [alice, "<0x0B>bob"]` (rs-oracle9, sudo 1.9.17p2,
+/// 2026-08-03).
+#[test]
+fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
+    for src in [
+        "alice,\u{a0}\"b c\" ALL = NOPASSWD: ALL\n",
+        "alice,\u{b}\"b c\" ALL = NOPASSWD: ALL\n",
+        // The ASCII-space control, correct on every sha. This row is visudo
+        // rc 0 (two LHS tokens), so unlike the two above its VERDICT is
+        // pinnable too.
+        "alice, \"b c\" ALL = NOPASSWD: ALL\n",
+    ] {
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["alice".to_string(), "\"b c\"".to_string()],
+            "the quoted USER principal must not be swallowed into the hosts: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["ALL".to_string()],
+            "the host list is exactly `ALL`: {src:?}"
+        );
+    }
+}
+
+/// ESCAPED whitespace before an opening quote. This is where matching the
+/// PREDICATE without matching the CONTEXT went wrong, and it is a fail-open.
+///
+/// Round 3 swept the opener guard to `char::is_whitespace` so it would agree
+/// with `unquoted_whitespace_runs`. The predicates then agreed and the
+/// RECOGNIZERS still did not: `unquoted_whitespace_runs` treats a whitespace
+/// char as a token end only when it is NOT backslash-escaped and sits outside a
+/// quoted region, and the guard applied neither qualifier.
+///
+/// So on `a\<VT>"b c" = NOPASSWD: ALL` the widened guard suppressed the opener
+/// candidate as "already covered by a run", while the escape meant no run was
+/// ever emitted to cover it. Zero candidates, `(lhs, "")`, and a false
+/// `sudo-F01` that dropped a DISA STIG passwordless-ALL finding on a line
+/// `visudo` accepts. The fork point reported it correctly, so round 3 traded one
+/// swallowed principal for one dropped grant.
+///
+/// The repair suppresses only when a run ACTUALLY ends at the quote, which
+/// inherits the escape and quote context from the one recognizer that already
+/// models it instead of restating it.
+///
+/// Oracle (rs-oracle9, sudo 1.9.17p2, 2026-08-03), every row rc 0:
+///   `a\<VT>"b c" = ...`   -> `User_List ["a<VT>"]`,   `Host_List ["b c"]`
+///   `a\<NBSP>"b c" = ...` -> `User_List ["a<NBSP>"]`, `Host_List ["b c"]`
+///   `a\ "b c" = ...`      -> `User_List ["a "]`,      `Host_List ["b c"]`
+///
+/// The escaped SPACE row was ALSO wrong at the fork point, so this closes a
+/// pre-existing false FATAL as well; `a\x"b c"` is the escaped-non-whitespace
+/// control and is correct everywhere, which isolates the defect to the
+/// whitespace predicate rather than to escaping generally.
+#[test]
+fn escaped_whitespace_before_an_opening_quote_still_reports_the_grant() {
+    for src in [
+        "a\\\u{b}\"b c\" = NOPASSWD: ALL\n",
+        "a\\\u{a0}\"b c\" = NOPASSWD: ALL\n",
+        "a\\ \"b c\" = NOPASSWD: ALL\n",
+        // Control: escaped NON-whitespace, correct on every sha.
+        "a\\x\"b c\" = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            0,
+            "visudo rc 0: no sudo-F01 may fire: {src:?}"
+        );
+        assert_eq!(
+            w01_count(src),
+            1,
+            "the passwordless-ALL grant must be reported: {src:?}"
+        );
+    }
+}
+
+/// KNOWN-OPEN, filed as #677. `#[ignore]`d rather than deleted, per this repo's
+/// convention: removing the `#[ignore]` is how the fix gets demonstrated.
+///
+/// An empty quoted principal `""` is not a legal sudoers token - `visudo -c -f -`
+/// gives rc 1, `stdin:1:2: empty string`, on every spelling below, and
+/// `cvtsudoers` refuses identically. `RuleSteward` accepts all four.
+///
+/// Three of them were accepted at the fork point too. The GLUED spelling was
+/// not: `ee250aa` rejected it by accident, having no boundary candidate at all
+/// and falling through to `(lhs, "")`. #651 supplies the missing candidate, so
+/// the accident stops happening and that row flipped from a (correct) Fatal to
+/// silence. Same shape as #669, different scope - an empty principal is not a
+/// three-token LHS, so #669 does not cover it.
+///
+/// The three pre-existing spellings share this test deliberately, so a fix
+/// cannot be a special case for the glued one.
+///
+/// Severity is lower than the fail-opens on this surface and the test says so
+/// rather than leaving it to be inferred: this is a missed Fatal on a file sudo
+/// will NOT load, not a dropped grant on a valid line.
+#[test]
+#[ignore = "#677: an empty quoted principal is accepted; the glued spelling is a #651 regression"]
+fn an_empty_quoted_principal_is_rejected() {
+    for src in [
+        // The #651 regression: rejected at ee250aa, accepted now.
+        "\"\"ALL = /bin/ls\n",
+        // Pre-existing on both shas.
+        "\"\" ALL = /bin/ls\n",
+        "alice \"\" = /bin/ls\n",
+        "alice\"\"ALL = /bin/ls\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            1,
+            "visudo rc 1 `empty string`: a Fatal is owed: {src:?}"
+        );
+    }
+}
+
+/// The run-set delegation must ask about THIS quote, not about runs in general.
+///
+/// `!runs.iter().any(|(_, end)| end == open)` reads "no run ends AT this quote".
+/// The mutation gate found that flipping the comparison to `end != open` - which
+/// reads "every run ends at this quote", vacuously true when there are none -
+/// survived every other test on the branch. It is the round-3 too-wide bug
+/// wearing a different spelling: whenever ANY run exists elsewhere in the LHS,
+/// the mutant suppresses the glued-opener candidate that this input needs.
+///
+/// `alice, x"b c" = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with
+/// `User_List [alice, x]` and `Host_List [b c]` (rs-oracle9, sudo 1.9.17p2,
+/// 2026-08-03). The run after the comma is REJECTED as a boundary because its
+/// `before` ends with `,`, so the glued opener at the quote is the only
+/// candidate that can produce the correct split. Under the mutant there is no
+/// candidate at all and the line becomes a false `sudo-F01` that drops the
+/// grant - the same fail-open signature as #651 itself.
+///
+/// The spaced control `alice, x "b c" = ...` is rc 0 with the identical parse
+/// and reaches it through the whitespace run, so it does NOT distinguish the
+/// mutant. It is here to show the difference is the glued spelling.
+#[test]
+fn a_glued_opener_is_still_a_boundary_when_a_run_exists_elsewhere() {
+    for src in [
+        "alice, x\"b c\" = NOPASSWD: ALL\n",
+        // Control: reaches the same parse via the whitespace run.
+        "alice, x \"b c\" = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            0,
+            "visudo rc 0: no sudo-F01 may fire: {src:?}"
+        );
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["alice".to_string(), "x".to_string()],
+            "cvtsudoers reports two usernames: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["\"b c\"".to_string()],
+            "the host is the quoted token: {src:?}"
+        );
+    }
+}
+
+/// A quoted principal whose value CONTAINS whitespace. This is the case a
+/// whitespace-run boundary can never reach on its own: the only space in the
+/// line sits INSIDE the quoted span, so before the fix there was no candidate
+/// boundary anywhere in `"ops team"web1`.
+#[test]
+fn quoted_principal_containing_a_space_glued_to_its_host_still_reports_the_grant() {
+    let src = "\"ops team\"web1 = NOPASSWD: /bin/ls\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the name promises a reported grant, so assert one: cvtsudoers gives \
+         authenticate false on /bin/ls"
+    );
+    let s = only_spec(src);
+    assert_eq!(s.users, vec!["\"ops team\"".to_string()]);
+    assert_eq!(s.host_groups[0].hosts, vec!["web1".to_string()]);
+}
+
+/// The comma-list form: the glued closing quote is the boundary even when the
+/// quoted principal is the LAST element of a multi-principal user list, where
+/// the comma-continuation logic also has to not swallow it.
+#[test]
+fn glued_closing_quote_after_a_comma_list_still_reports_the_grant() {
+    let src = "alice,\"b c\"ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(w01_count(src), 1, "the NOPASSWD grant must be seen");
+    let s = only_spec(src);
+    assert_eq!(
+        s.users,
+        vec!["alice".to_string(), "\"b c\"".to_string()],
+        "cvtsudoers reports two usernames"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
 }

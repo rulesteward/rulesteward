@@ -10,9 +10,17 @@
 # "Differential oracle contract"): `scripts/rs-oracle-diff.sh sudoers` invokes
 # this script to populate a FRESH corpus, then re-points the SAME Tier-1 test
 # (`tests/sudoers_corpus_oracle.rs`) at it via `RS_ORACLE_CORPUS_SUDOERS`. This
-# same script, invoked with its own directory as the output dir, is also how
-# the COMMITTED corpus below was produced in the first place - there is only
-# ONE capture implementation, never a second hand-authored one.
+# same script is also how the COMMITTED corpus below was produced in the first
+# place - there is only ONE capture implementation, never a second hand-authored
+# one.
+#
+# It CANNOT be pointed at its own directory, and this header used to say it
+# could. With OUT == SELF_DIR the per-scenario `cp "$input" "$OUT/$scen/..."` is
+# `cp X X`, which exits 1 ("are the same file"), so `rs_capture_die` turns the
+# very first scenario into rc 2 and nothing is captured. Capture into a STAGING
+# directory and copy the wanted files back:
+#
+#   bash capture_sudoers.sh /tmp/stage && diff -r . /tmp/stage
 #
 # Exit codes (the tools/*-update contract, NOT the rulesteward binary's own):
 #   0  captured cleanly (every scenario x target combination captured)
@@ -40,7 +48,7 @@
 #   SAME deterministic command twice (once discarding stderr, once discarding
 #   stdout) rather than via fd-juggling redirection tricks, which are fragile
 #   to get right and hard to verify by inspection. The extra process per call
-#   is cheap at this corpus's scale (30 scenarios x 3 targets x 4 programs).
+#   is cheap at this corpus's scale (45 scenarios x 3 targets x 4 programs).
 #   All four calls for one (scenario, target) pair happen inside a SINGLE
 #   `docker run`, delimited by plain-text markers the host parses back apart.
 # - Every write (the output dir, each scenario dir, the copied input, each
@@ -293,5 +301,16 @@ rs_capture_context
 expected_files=$((scenario_count * (1 + ${#TARGETS[@]})))
 rs_capture_verify_output "$OUT" "$expected_files"
 
-echo "capture_sudoers: captured $scenario_count scenarios x ${#TARGETS[@]} targets into $OUT" >&2
+# Gated on status, because an ungated success line is a suppression: the recount
+# above counts files ON DISK and cannot tell this run's writes from a previous
+# run's. Into a FRESH dir a failed scenario also skips its write, so the recount
+# dies first and this line is unreachable - but into a REUSED dir already holding
+# a complete corpus, a docker failure sets status=2 while the recount still
+# passes, and the line printed "captured 45 scenarios" next to rc 2. That is the
+# manual invocation this file's own header documents.
+if [ "$status" -eq 0 ]; then
+    echo "capture_sudoers: captured $scenario_count scenarios x ${#TARGETS[@]} targets into $OUT" >&2
+else
+    echo "capture_sudoers: FAILED (rc $status) after iterating $scenario_count scenario(s) into $OUT; any files present may be from an earlier run" >&2
+fi
 exit "$status"

@@ -389,8 +389,34 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-negated-user`, `accept-negated-host`) added 2026-07-27 (round 4),
 /// where the first two give the round-3 negation MARK its first end-to-end
 /// (parser -> captured-oracle) coverage, and the third is L1's first-ever
-/// xfail (see the module doc's "L1" section and `L1_XFAIL`).
-const SCENARIO_FLOOR: usize = 41;
+/// xfail (see the module doc's "L1" section and `L1_XFAIL`); 4 more `accept-*`
+/// scenarios (`accept-glued-closing-quote-principal`,
+/// `accept-glued-closing-quote-with-inner-space`,
+/// `accept-glued-closing-quote-after-comma-list`,
+/// `accept-spaced-closing-quote-control`) added 2026-08-03 with #651, the
+/// corpus's first quoted principals - see `PROVENANCE.md` section 17.
+/// 22 + 8 + 2 + 6 + 3 + 4 = 45.
+///
+/// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
+/// since 2026-08-03 the suite ENFORCES that rather than asking: the two
+/// assertions below are `assert_eq!`, not `>=`.
+///
+/// They were `>=` until then, and a one-sided floor fails only downward - too
+/// low, it does not fail at all, it silently stops binding. Left at 41
+/// against a corpus of 45, four scenario directories could be deleted and all
+/// three layers still passed at rc 0, byte-identical to a clean run
+/// (measured 2026-08-03 in a detached worktree: `reject-cmnd-alias-empty-members`,
+/// `reject-defaults-bare`, `reject-defaults-scope-no-target` and
+/// `reject-no-equals-garbage` removed, rc 0). Half the reject side can vanish
+/// unnoticed. That is exactly the #572 shape this project's `no-mnt-guard`
+/// exists to prevent: a corpus destroyed and the harness reporting success
+/// forever after.
+///
+/// verified: 2026-08-03 - both directions, which together are this constant's
+/// positive control. Deleting one scenario fails (`found 44`) and ADDING one
+/// fails too (`found 46`), while the committed 45 passes. Only the second of
+/// those was newly bought by the equality; under `>=` a 46th scenario was rc 0.
+const SCENARIO_FLOOR: usize = 45;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -429,11 +455,20 @@ const SCENARIO_FLOOR: usize = 41;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: 33 accept scenarios x 3
-/// targets = 99 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 98 attempted; minus 3 xfail hits (the 1 remaining `L3_XFAIL`
-/// scenario x 3 targets, minus 0 scope-out/xfail overlap now that
+/// Cross-check, which AGREES with the measurement: **37** accept scenarios x 3
+/// targets = 111 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 110 attempted; minus **15** xfail hits (the **5** `L3_XFAIL`
+/// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
 /// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 95.
+///
+/// Those numbers were 33 / 99 / 98 / 3 until 2026-08-03 and every one of them
+/// was stale, while the RESULT stayed 95 and nothing failed. #651 added 4 accept
+/// scenarios and 4 `L3_XFAIL` entries, so each new scenario contributed +1
+/// attempted and +1 xfail hit per target and the two errors cancelled exactly.
+/// A cross-check that survives its own inputs going wrong is not cross-checking
+/// anything, which matters because this const's doc tells a later reader to
+/// investigate if the number MOVES. Update all four figures in the same commit
+/// that adds a scenario or an `L3_XFAIL` entry.
 ///
 /// 84 -> 95 is exactly the four #538 scenarios leaving `L3_XFAIL`:
 /// `accept-user-list-whitespace-bug`, `accept-notbefore` and
@@ -532,7 +567,85 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// `User_Specs` entry (`tuple_count=1`, a negated, tagged uid user). This is
 /// a DIFFERENT crate's bug (`rulesteward-core`), not #538, so it gets its
 /// OWN (drafted, unfiled) issue rather than being folded in.
-const L3_XFAIL: &[(&str, Option<u32>)] = &[("accept-negated-uid-subject", None)];
+/// The four `Some(667)` entries (added with #651's corpus rows) are a QUOTE-
+/// RETENTION divergence, not a structural one: for a quoted principal the two
+/// projections agree on `tuple_count`, hosts and commands, and differ only in
+/// that the AST keeps the surrounding `"` while `cvtsudoers` reports the
+/// dequoted value. (`StructureProjection` has exactly four fields -
+/// `tuple_count`, `users`, `hosts`, `commands` - so those ARE the axes; an
+/// earlier version of this line also named "arity", which is not one of them.)
+///
+/// What these rows canNOT witness, stated because a reader may reasonably assume
+/// otherwise: `StructureProjection` carries no OPTIONS/TAGS axis and no RUNAS
+/// axis, so dropping `NOPASSWD:` from any of these four inputs, or adding a
+/// `(root)` runas, leaves every corpus layer green. The grant itself is
+/// witnessed only by the `w01_count` / `w05_count` assertions in
+/// `boundary_substrate.rs`, never by a corpus row. Full AST-vs-AST fidelity is
+/// the module doc's declared follow-up.
+///
+/// ORDER is deliberately NOT among the things checked - every
+/// comparison here goes through [`sorted_eq`], which is documented multiset
+/// equality, so an order regression on these rows is out of scope for this gate
+/// as it is for every other.
+///
+/// The verbatim-quote convention is stated inside
+/// `boundary_substrate.rs`'s `quoted_user_containing_eq_is_not_a_false_fatal`
+/// ("Values are kept VERBATIM from the source bytes, quotes included, per the
+/// crate's convention") and frozen by its `["\"a=b\""]` assertion and by
+/// `quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword`'s
+/// `["\"a b\""]`. `ast.rs`'s own "kept verbatim" is about `!`-negation, not
+/// quoting, so it is deliberately not cited here.
+///
+/// Cited by TEST NAME, not `file:line`, and the case history is the argument.
+///
+/// The line form was `boundary_substrate.rs:115-117`. It was CORRECT when
+/// written: at that commit those three lines were exactly the "kept VERBATIM"
+/// comment and the `["\"a=b\""]` assertion it claimed to cite. It died ONE COMMIT
+/// LATER, when a correction on this same branch inserted lines above it, and by
+/// then `:115-117` pointed at an unrelated doc comment.
+///
+/// `check-doc-citations.sh` is structurally blind to that: it decides only
+/// whether the cited path and line EXIST, and they still did. So the failure
+/// mode is not careless authoring - a `file:line` citation is correct at most
+/// until the next insertion above it, and nothing mechanical can tell. A name
+/// survives every insertion.
+///
+/// They are xfailed rather than fixed here because resolving it means either
+/// editing this differential gate's own comparison or changing the public AST,
+/// and #651's implementer does not alter a barrier test to reach green. #667
+/// carries the three candidate resolutions.
+///
+/// NOTHING about #651 rests on these entries. L1 is the PRIMARY witness: it
+/// compares all four scenarios on all three targets and, with the `close + 1`
+/// guard reverted, fails with `our F01 verdict (rejects=true) disagrees with the
+/// oracle (rejects=false)`. The `#667` arm below is a SECOND witness rather than
+/// inert - the same reverted guard trips its own `tuple_count` assertion
+/// (`ast=0 cvt=1`), which is exactly what an arm pinned this tightly is built to
+/// do.
+///
+/// verified: 2026-08-03 - guard deleted, `cargo test -p rulesteward-sudoers
+/// --no-fail-fast` gives rc 101 with BOTH
+/// `l1_f01_matches_visudo_verdict_per_target` and
+/// `l3_structure_projection_matches_cvtsudoers` among the failures.
+/// `--no-fail-fast` is REQUIRED to observe this: without it the run stops after
+/// `boundary_substrate` fails and neither corpus layer executes at all.
+///
+/// The two NAMED tests are the claim; a failure COUNT deliberately is not. An
+/// earlier version of this line said "600 passed / 6 failed" and was falsified
+/// within the same branch by a later commit adding one more test that also
+/// fails on guard deletion. Any count here is invalidated by any added test,
+/// which is how a `verified:` sentinel rots while still looking authoritative.
+///
+/// Reaching them at all required the corpus's FIRST quoted principals: none of
+/// the 41 pre-existing scenarios contained a double quote, on the most
+/// defect-dense surface this parser has (#622, #629, #630, #631, #643, #651).
+const L3_XFAIL: &[(&str, Option<u32>)] = &[
+    ("accept-negated-uid-subject", None),
+    ("accept-glued-closing-quote-principal", Some(667)),
+    ("accept-glued-closing-quote-with-inner-space", Some(667)),
+    ("accept-glued-closing-quote-after-comma-list", Some(667)),
+    ("accept-spaced-closing-quote-control", Some(667)),
+];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
 /// (and CONFIRMED below, not just assumed) to be invalid JSON, so L3 skips the
@@ -1598,9 +1711,16 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
     // corpus size, so the true count is known upfront - not `ids.len()`,
     // which is the unrelated corpus-directory count.
     announce(&root, mode, TARGETS.len());
-    assert!(
-        ids.len() >= SCENARIO_FLOOR,
-        "expected >= {SCENARIO_FLOOR} scenarios, found {}",
+    assert_eq!(
+        ids.len(),
+        SCENARIO_FLOOR,
+        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
+         a one-sided floor fails only downward: #651 added 4 scenarios without \
+         bumping the constant, and four directories could then be deleted with \
+         every layer still reporting success. Equality makes the next addition \
+         fail until the constant is updated, which is a one-line fix, instead of \
+         silently widening the slack again.",
         ids.len()
     );
 
@@ -1687,9 +1807,16 @@ fn per_version_identity_control() {
 fn l1_f01_matches_visudo_verdict_per_target() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    assert!(
-        ids.len() >= SCENARIO_FLOOR,
-        "expected >= {SCENARIO_FLOOR} scenarios, found {}",
+    assert_eq!(
+        ids.len(),
+        SCENARIO_FLOOR,
+        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
+         a one-sided floor fails only downward: #651 added 4 scenarios without \
+         bumping the constant, and four directories could then be deleted with \
+         every layer still reporting success. Equality makes the next addition \
+         fail until the constant is updated, which is a one-line fix, instead of \
+         silently widening the slack again.",
         ids.len()
     );
 
@@ -1971,6 +2098,93 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             vec!["!userid:1000".to_string()],
                             "L3 {id} ({target}): the oracle must show a negated, tagged uid \
                              user, got {:?}",
+                            cvt_proj.users
+                        );
+                    }
+                    "accept-glued-closing-quote-principal"
+                    | "accept-glued-closing-quote-with-inner-space"
+                    | "accept-glued-closing-quote-after-comma-list"
+                    | "accept-spaced-closing-quote-control" => {
+                        // #667: a QUOTE-RETENTION divergence and NOTHING more.
+                        // Every structural field must AGREE; the users lists must
+                        // agree too once the AST's retained `"` are stripped.
+                        //
+                        // Pinning it this tightly is the whole point. A loose
+                        // "they differ somehow" entry would go on passing if one
+                        // of these scenarios later developed a REAL structural
+                        // regression - a wrong split, a lost host, a swallowed
+                        // command - which is precisely the fail-open #651 is
+                        // about. Here a mis-split `"b c"` into `"b` / `c"` is
+                        // left UNCHANGED by `unwrap_one_pair` (neither half has
+                        // a quote at both ends) and so trips the users assertion
+                        // below. `trim_matches` would have stripped both to
+                        // `b` / `c` and absorbed the mis-split - which is the
+                        // whole reason for the difference.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): #667 is quote-retention only, so tuple_count \
+                             must AGREE; got ast={} cvt={}",
+                            ast_proj.tuple_count, cvt_proj.tuple_count
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 is quote-retention only, so hosts must \
+                             AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            cvt_proj.hosts
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): #667 is quote-retention only, so commands must \
+                             AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        // Removes ONE leading and ONE trailing quote, and only
+                        // when BOTH are present - never `trim_matches('"')`,
+                        // which strips any number from either end
+                        // independently. (It checks the first and last bytes,
+                        // so it is not a true balance check: on `"a"b"`, which
+                        // has THREE quotes, it still strips the outer two and
+                        // yields `a"b`. That is deliberate simplicity, not an
+                        // oversight, but state the property precisely: what it
+                        // refuses is a token quoted on only ONE end, which is
+                        // the shape a mis-split produces. It does not refuse
+                        // every unbalanced token, and an earlier version of this
+                        // comment claimed it did.)
+                        //
+                        // `trim_matches` strips ANY number of quotes from BOTH
+                        // ends independently, so it also absorbs an UNBALANCED
+                        // token - and an unbalanced principal quote is precisely
+                        // what this defect family produces. `simple_quote_pairs`
+                        // silently drops a trailing unmatched quote
+                        // (`chunks_exact(2)`), and an off-by-one in the very
+                        // guard #651 adds yields users `"ops team` with a clean
+                        // host `web1`: tuple_count, hosts and commands all agree
+                        // and `trim_matches` would have eaten the stray quote.
+                        //
+                        // Measured with `trim_matches`: a corpus scenario whose
+                        // input was changed to `"ab ALL = NOPASSWD: ALL` (one
+                        // unbalanced quote) passed EVERY layer, rc 0. #667 is a
+                        // BALANCED one-pair divergence, so the assertion states
+                        // exactly that and nothing wider.
+                        let unwrap_one_pair = |u: &str| -> String {
+                            let b = u.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                u[1..u.len() - 1].to_string()
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> =
+                            ast_proj.users.iter().map(|u| unwrap_one_pair(u)).collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the users lists agree once ONE \
+                             balanced quote pair is removed from each AST token; got ast={:?} \
+                             unwrapped={:?} cvt={:?}",
+                            ast_proj.users,
+                            dequoted,
                             cvt_proj.users
                         );
                     }
