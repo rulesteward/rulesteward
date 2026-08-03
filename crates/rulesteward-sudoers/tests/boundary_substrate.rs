@@ -40,9 +40,9 @@
 //! `alice h1 = ` returns rc 1, so the oracle VERDICT behind every case here is
 //! meaningful rather than an oracle that accepts anything.
 //!
-//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL. The
-//! exceptions are the two `#[ignore]`d #669 cases, which are genuinely rc 1 and
-//! assert an F01 as the CORRECT verdict; see `f01_count`.
+//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL, but not
+//! all of them are; each test's own doc states the verdict its input expects.
+//! See `f01_count` for why that is stated as a rule rather than as a list.
 
 use std::path::Path;
 
@@ -79,10 +79,19 @@ fn count_code(src: &str, code: &str) -> usize {
 
 /// `sudo-F01`: the file does not parse.
 ///
-/// On every input in this file real `visudo` returns rc 0 EXCEPT the two
-/// `#[ignore]`d #669 cases, which are rc 1 (`a\ "b"c` -> `stdin:1:7: syntax
-/// error`, `a\ "b" c` -> `stdin:1:8`) and therefore assert `f01_count == 1` as
-/// the CORRECT verdict. Everywhere else an F01 is a false FATAL on a valid file.
+/// MOST inputs in this file are real-`visudo` rc 0, and on those an F01 is a
+/// false FATAL on a valid file. Some are rc 1. **The expected `visudo` verdict
+/// for an input is stated in the doc of the test that OWNS it, and nowhere
+/// else** - `f01_count == 0` is meaningful only where that doc says rc 0.
+///
+/// This deliberately does not enumerate the exceptions. Two successive attempts
+/// to do so were wrong within hours: the first said "every input here is rc 0"
+/// while two `#[ignore]`d #669 cases were rc 1, and its correction said "except
+/// the two #669 cases" in the same commit that added two MORE rc-1 inputs (the
+/// non-ASCII whitespace pair), while never noticing a fifth that pre-dated the
+/// branch (`%bad"group ALL = ALL`, whose own doc has always said rc 1). Any
+/// enumeration here is invalidated by any added input, which is the same
+/// argument this branch already applied to failure COUNTS.
 fn f01_count(src: &str) -> usize {
     count_code(src, "sudo-F01")
 }
@@ -908,12 +917,20 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
 /// a host token. The users assertion below is what fires; the hosts one is
 /// stated for shape.
 ///
-/// This is the case the mutation gate found: `bytes.get(close + 1)` ->
-/// `bytes.get(close - 1)` and `-> bytes.get(close * 1)` both survived the
-/// original five tests, including a structural assertion on the spaced control,
-/// because every one of those inputs let trimming or the comma filter absorb the
-/// stray candidate (verified: 2026-08-03, both mutants built and run; RED here,
-/// green everywhere else).
+/// HISTORY, and it no longer describes a constructible mutant. The guard this
+/// test was written against was `bytes.get(close + 1)`, and the mutation gate
+/// found that `-> bytes.get(close - 1)` and `-> bytes.get(close * 1)` both
+/// survived the original five tests, including a structural assertion on the
+/// spaced control, because every one of those inputs let trimming or the comma
+/// filter absorb the stray candidate. Both mutants were built and run at the
+/// time, and this test was the only thing that went RED.
+///
+/// The guard has since been rewritten to `lhs[close + 1..].chars().next()`
+/// (see `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+/// for why), so neither named mutant exists to re-derive. The INPUT below is
+/// what still earns this test its place: it is the shape where trimming and the
+/// continuation filter both stop absorbing a stray candidate, whatever spelling
+/// the guard takes.
 #[test]
 fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
     let src = "\"ab\" ,alice ALL = NOPASSWD: ALL\n";
@@ -1049,7 +1066,7 @@ fn control_two_token_left_hand_sides_still_parse() {
 ///
 /// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
 #[test]
-fn a_non_ascii_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
     for src in [
         "\"ab\"\u{a0},alice ALL = NOPASSWD: ALL\n",
         "\"ab\"\u{b},alice ALL = NOPASSWD: ALL\n",
@@ -1058,7 +1075,8 @@ fn a_non_ascii_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
         assert_eq!(
             s.users,
             vec!["\"ab\"".to_string(), "alice".to_string()],
-            "the comma continues the USER list even after a non-ASCII space: {src:?}"
+            "the comma continues the USER list even after a whitespace char outside \
+             `u8::is_ascii_whitespace`'s set: {src:?}"
         );
         assert_eq!(
             s.host_groups[0].hosts,

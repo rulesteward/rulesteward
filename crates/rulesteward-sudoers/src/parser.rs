@@ -2099,6 +2099,19 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
     for (open, close) in simple_quote_pairs(lhs) {
         if open > 0 {
+            // STILL BYTE-LEVEL, and deliberately recorded rather than silently
+            // left. This inspects `bytes[open - 1]` - the last BYTE of what may
+            // be a multi-byte char - and tests `u8::is_ascii_whitespace`, while
+            // `unquoted_whitespace_runs` tests `char::is_whitespace`. It is the
+            // last such disagreement in this function; the CLOSER guard below
+            // had the identical shape and it was NOT harmless (#651 round 2:
+            // it swallowed a principal on `"ab"<U+00A0>,alice ALL`).
+            //
+            // No input has been found where this one flips a verdict, and the
+            // reason to doubt that is written directly above: the closer's
+            // exclusion was believed inert for exactly the same "trimming
+            // absorbs it" argument, and that belief was wrong. Treat this as
+            // unswept rather than as cleared.
             let prev = bytes[open - 1];
             if prev != b',' && !prev.is_ascii_whitespace() {
                 candidates.push((open, open));
@@ -2121,9 +2134,11 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // version of this comment claimed they were. Measured by deleting each
         // conjunct separately and running the whole suite:
         //
-        //   whitespace exclusion deleted -> rc 101,
+        //   whitespace exclusion deleted -> rc 101. TWO tests fail:
         //       `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
-        //       fails. LOAD-BEARING, and individually observable.
+        //       and
+        //       `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`.
+        //       LOAD-BEARING, and individually observable.
         //   comma exclusion deleted      -> rc 0, fully green. REDUNDANT.
         //
         // The comma one is redundant against the continuation filter below by
@@ -2149,7 +2164,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // recognizers of "where does whitespace end a token" disagreeing is the
         // exact shape of every prior regression on this surface, so the fix is
         // to make them the same predicate rather than to document the gap.
-        // `a_non_ascii_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        // `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
         // pins it.
         //
         // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.

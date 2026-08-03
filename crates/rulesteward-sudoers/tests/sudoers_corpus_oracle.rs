@@ -404,7 +404,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// They were `>=` until then, and a one-sided floor fails only downward - too
 /// low, it does not fail at all, it silently stops binding. Left at 41
 /// against a corpus of 45, four scenario directories could be deleted and all
-/// three layers still reported `607 passed`, byte-identical to a clean run
+/// three layers still passed at rc 0, byte-identical to a clean run
 /// (measured 2026-08-03 in a detached worktree: `reject-cmnd-alias-empty-members`,
 /// `reject-defaults-bare`, `reject-defaults-scope-no-target` and
 /// `reject-no-equals-garbage` removed, rc 0). Half the reject side can vanish
@@ -588,11 +588,18 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// equality, so an order regression on these rows is out of scope for this gate
 /// as it is for every other.
 ///
-/// The verbatim-quote convention is stated at `boundary_substrate.rs:115-117`
+/// The verbatim-quote convention is stated inside
+/// `boundary_substrate.rs`'s `quoted_user_containing_eq_is_not_a_false_fatal`
 /// ("Values are kept VERBATIM from the source bytes, quotes included, per the
-/// crate's convention") and frozen by its `["\"a=b\""]` and `["\"a b\""]`
-/// assertions. `ast.rs`'s own "kept verbatim" is about `!`-negation, not quoting,
-/// so it is deliberately not cited here.
+/// crate's convention") and frozen by its `["\"a=b\""]` assertion and by
+/// `quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword`'s
+/// `["\"a b\""]`. `ast.rs`'s own "kept verbatim" is about `!`-negation, not
+/// quoting, so it is deliberately not cited here.
+///
+/// Cited by TEST NAME, not `file:line`. The line form was `:115-117` and was
+/// already dead when written; `check-doc-citations.sh` cannot see that class,
+/// because it decides only whether the cited path and line EXIST - and they did,
+/// pointing at an unrelated comment. A name survives every insertion above it.
 ///
 /// They are xfailed rather than fixed here because resolving it means either
 /// editing this differential gate's own comparison or changing the public AST,

@@ -594,31 +594,7 @@ the 3 new ones). The 3 new scenarios' own captured JSON (`visudo`/
 section's findings are grounded on, confirmed directly before being
 committed.
 
-## Scenario list
-
-`accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
-`nopasswd-specific`, `plain-specific-command`, `runas-noexec`,
-`selinux-role-type` (L3 xfail #538), `timeout-option` (L3 xfail #538, found
-2026-07-26 - see section 8), `notbefore` (L3 xfail #538, found 2026-07-26 -
-see section 8), `defaults-global`, `defaults-negated`, `defaults-scoped-host`,
-`user-alias-basic`, `user-alias-multi-spec`, `host-alias`, `cmnd-alias`,
-`runas-alias`, `multi-hostgroup`, `multi-user-list`,
-`user-list-whitespace-bug` (L3 xfail #538), `uid-subject`, `group-subject`,
-`continuation-line`, `netgroup-subject`, `undefined-alias-ref` (L2 xfail,
-added 2026-07-26 - see section 5), `alias-cycle` (L2 xfail, added
-2026-07-26 - see section 5), `negated-command`, `negated-all`,
-`host-netgroup`, `host-networkaddr`, `gid-subject`, `uid-leading-zero` (all
-six added 2026-07-27, none xfailed - bugs to fix, not accepted divergences -
-see section 10), `negated-user`, `negated-host` (added 2026-07-27, round 4,
-none xfailed - project cleanly, first end-to-end negation-mark coverage -
-see section 16), `negated-uid-subject` (added 2026-07-27, round 4; L1 xfail
-- a tracked `rulesteward-core` parser bug, drafted but not filed - AND L3
-xfail; see section 16), `glued-closing-quote-principal`,
-`glued-closing-quote-with-inner-space`, `glued-closing-quote-after-comma-list`,
-`spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
-L3 xfail #667 - see section 17).
-
-## Section 17: the corpus's first quoted principals (2026-08-03, #651)
+### 17. The corpus's first quoted principals (2026-08-03, #651)
 
 Four scenarios added alongside the #651 fix, for a glued CLOSING quote in the
 principal list. Their inputs, all `visudo -c -f -` rc 0 `parsed OK` on all three
@@ -664,6 +640,30 @@ i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 `user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
 `user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
 `equals-only` (the L1/L2 positive-control REJECT input).
+
+## Scenario list
+
+`accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
+`nopasswd-specific`, `plain-specific-command`, `runas-noexec`,
+`selinux-role-type` (L3 xfail #538), `timeout-option` (L3 xfail #538, found
+2026-07-26 - see section 8), `notbefore` (L3 xfail #538, found 2026-07-26 -
+see section 8), `defaults-global`, `defaults-negated`, `defaults-scoped-host`,
+`user-alias-basic`, `user-alias-multi-spec`, `host-alias`, `cmnd-alias`,
+`runas-alias`, `multi-hostgroup`, `multi-user-list`,
+`user-list-whitespace-bug` (L3 xfail #538), `uid-subject`, `group-subject`,
+`continuation-line`, `netgroup-subject`, `undefined-alias-ref` (L2 xfail,
+added 2026-07-26 - see section 5), `alias-cycle` (L2 xfail, added
+2026-07-26 - see section 5), `negated-command`, `negated-all`,
+`host-netgroup`, `host-networkaddr`, `gid-subject`, `uid-leading-zero` (all
+six added 2026-07-27, none xfailed - bugs to fix, not accepted divergences -
+see section 10), `negated-user`, `negated-host` (added 2026-07-27, round 4,
+none xfailed - project cleanly, first end-to-end negation-mark coverage -
+see section 16), `negated-uid-subject` (added 2026-07-27, round 4; L1 xfail
+- a tracked `rulesteward-core` parser bug, drafted but not filed - AND L3
+xfail; see section 16), `glued-closing-quote-principal`,
+`glued-closing-quote-with-inner-space`, `glued-closing-quote-after-comma-list`,
+`spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
+L3 xfail #667 - see section 17).
 
 ## Re-capturing
 
