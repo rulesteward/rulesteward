@@ -181,22 +181,55 @@ pub fn checked_corpus_root(
     Ok((root, mode))
 }
 
-/// Read `env_var` from the process environment and resolve the corpus root.
+/// Read `env_var` from the process environment, resolve the corpus root, and
+/// ANNOUNCE it on stderr.
+///
+/// The announcement lives here rather than at each call site, and that placement
+/// is load-bearing. `just diff-<lane>-branch` proves a run read the corpus it was
+/// handed by grepping for this banner, but that grep is EXISTENTIAL: it shows
+/// that something read the right tree, never that nothing read a different one. A
+/// binary resolving the corpus correctly in one place and from a compiled-in
+/// `CARGO_MANIFEST_DIR` in another satisfies it completely.
+///
+/// That is not hypothetical. `rulesteward-selinux`'s `policy_corpus::archive_path`
+/// was exactly that shape: it read `_policies/policies.tar.zst` from the manifest
+/// dir while `scenarios()` honoured the override, so a branch differential would
+/// have replayed one tree's scenarios against another tree's policy fixtures and
+/// reported nothing. It was found by reading the code, not by the instrument.
+///
+/// Announcing from the single resolver closes the class instead of the instance:
+/// every resolution announces, including one added later by someone who never
+/// read this comment, and a resolution that BYPASSES this function announces
+/// `mode=committed` and is refused by the driver.
+///
+/// Emitting from a library is a deliberate exception to the usual rule. This
+/// module exists only to serve replay-test harnesses, whose stderr IS the
+/// instrument's input.
 ///
 /// # Panics
 /// On any [`CorpusRootError`]. A replay test has no exit-code vocabulary of its
 /// own (a failed assertion is just 101), so panicking with the full message is
 /// how the reason reaches the recipe's log.
 #[must_use]
-pub fn resolve_corpus_root(env_var: &str, default_root: &Path) -> (PathBuf, CorpusMode) {
+pub fn resolve_corpus_root(
+    sentinel: &str,
+    env_var: &str,
+    default_root: &Path,
+) -> (PathBuf, CorpusMode) {
     // `var_os`, not `var`: `var` returns Err for a non-UTF-8 value, and
     // `.ok()`-ing that away would silently turn a real override into "unset",
     // which is the fail-open behaviour this module rejects.
     let raw = std::env::var_os(env_var);
-    match checked_corpus_root(env_var, raw.as_deref(), default_root) {
+    let (root, mode) = match checked_corpus_root(env_var, raw.as_deref(), default_root) {
         Ok(resolved) => resolved,
         Err(e) => panic!("{e}"),
-    }
+    };
+    // Before the caller can touch the filesystem, so an unreadable corpus root
+    // still leaves a banner naming the path that could not be read. The only
+    // fallible step ahead of it is this function's own resolution, which panics
+    // with the reason rather than failing silently.
+    eprintln!("{}", sentinel_banner(sentinel, mode, &root));
+    (root, mode)
 }
 
 /// Render the banner a replay test MUST print before it asserts anything.

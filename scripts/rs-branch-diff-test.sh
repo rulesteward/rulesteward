@@ -10,16 +10,23 @@
 # here against a stubbed cargo, a stubbed git and two stubbed test binaries, once
 # per interesting outcome.
 #
-# The suite ends with positive controls that seed NINE of the driver's guards
+# The suite ends with positive controls that seed SOME of the driver's guards
 # back into a COPY of the driver and assert that NAMED cases catch it. Without
 # those, this file could pass while testing nothing.
 #
-# NINE, not "each": the driver has substantially more `die 2` sites than that and
-# they are not all controlled. Saying "each" invited the next person to skip
-# adding a control for a new guard because the comment claimed one already
-# existed. No exact site count is quoted, deliberately - the first version of this
-# comment said "28" in the very commit that made it 34, and it was 38 two commits
-# later. Count it with `grep -c 'die 2 '` if you need the number today.
+# SOME, not "each": the driver has substantially more `die 2` sites than there are
+# controls, and they are not all controlled. Saying "each" invited the next person
+# to skip adding a control for a new guard because the comment claimed one already
+# existed. No exact count is quoted for EITHER number, deliberately - the first
+# version of this comment said the driver had "28" die sites in the very commit
+# that made it 34, it was 38 two commits later, and the control count has since
+# been "six" and "NINE" in a file whose own rule forbids quoting counts. Count
+# them today with `grep -c 'die 2 '` and `grep -cE '^run_positive_control '`.
+#
+# A control proves a guard is WITNESSED, which a case NAME does not. Round 3 found
+# a guard whose only named case exited earlier and never reached it: neutering the
+# guard left every case passing. If you add a guard, add a control, and check the
+# control fails when the guard is gone.
 #
 # Usage: bash scripts/rs-branch-diff-test.sh
 # Exit:  0 all cases pass, 1 a case failed, 2 the suite could not run.
@@ -217,25 +224,77 @@ if [ "${1-}" = "status" ]; then
 fi
 
 if [ "${1-}" = "diff" ]; then
-    # `git diff --quiet <base> <head> -- <paths>`: 0 = identical, 1 = they differ.
+    # THE NUMBER OF REFS IS THE WHOLE POINT, so this stub counts them.
+    #
+    #   `git diff --quiet <base> -- <paths>`        ONE ref: base COMMIT vs WORKING TREE
+    #   `git diff --quiet <base> <head> -- <paths>` TWO refs: commit vs commit
+    #
+    # The driver builds the WORKING TREE, so only the one-ref question is the one
+    # it is entitled to act on. The previous version of this stub discarded its ref
+    # arguments entirely and answered both forms from a single variable, which made
+    # the distinction INEXPRESSIBLE in the suite - and that is why a guard asking
+    # the wrong pair survived four repairs and three review rounds with every case
+    # green. A stub that cannot state the bug cannot catch it.
+    refs=0
+    for a in "$@"; do
+        case "${a}" in
+        diff | --quiet) ;;
+        --) break ;;
+        *) refs=$((refs + 1)) ;;
+        esac
+    done
+    if [ "${refs}" -le 1 ]; then
+        [ -n "${STUB_WORKTREE_MATCHES_BASE:-}" ] && exit 0
+        exit 1
+    fi
     [ -n "${STUB_TREES_IDENTICAL:-}" ] && exit 0
     exit 1
 fi
 
-if [ "${1-}" = "worktree" ] && [ "${2-}" = "add" ]; then
-    rc="${STUB_GIT_WORKTREE_RC:-0}"
-    if [ "${rc}" -eq 0 ]; then
-        # `worktree add --detach <dir> <sha>`: the directory is the absolute arg.
-        for arg in "$@"; do case "${arg}" in /*) dest="${arg}" ;; esac; done
-        mkdir -p "${dest}"
-        if [ "${STUB_BASE_CORPUS_MISSING:-0}" != "1" ]; then
-            mkdir -p "${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle"
-            : >"${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
+if [ "${1-}" = "worktree" ]; then
+    case "${2-}" in
+    prune)
+        # A LOCKED registration is exactly what prune must NOT remove - that is
+        # what locking is for - so a locked-but-missing worktree survives this and
+        # the plain `add` below still fails. Modelling prune as "always heals
+        # everything" is what hid the interaction between the two.
+        exit "${STUB_GIT_PRUNE_RC:-0}"
+        ;;
+    lock)
+        if [ -n "${STUB_GIT_LOCK_ALREADY:-}" ]; then
+            echo "fatal: '${3-}' is already locked" >&2
+            exit 128
         fi
-    else
-        echo "fatal: stub worktree add failure" >&2
-    fi
-    exit "${rc}"
+        exit "${STUB_GIT_LOCK_RC:-0}"
+        ;;
+    add)
+        forced=0
+        for a in "$@"; do
+            case "${a}" in -f | --force) forced=$((forced + 1)) ;; esac
+        done
+        # git refuses a plain `add` at a path it still has registered but that no
+        # longer exists, and documents the recovery: "To add a missing but locked
+        # worktree path, specify --force twice."
+        if [ -n "${STUB_WT_LOCKED_MISSING:-}" ] && [ "${forced}" -lt 2 ]; then
+            echo "fatal: is a missing but already registered worktree" >&2
+            exit 128
+        fi
+        rc="${STUB_GIT_WORKTREE_RC:-0}"
+        if [ "${rc}" -eq 0 ]; then
+            # `worktree add --detach <dir> <sha>`: the directory is the absolute arg.
+            for arg in "$@"; do case "${arg}" in /*) dest="${arg}" ;; esac; done
+            mkdir -p "${dest}"
+            if [ "${STUB_BASE_CORPUS_MISSING:-0}" != "1" ]; then
+                mkdir -p "${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle"
+                : >"${dest}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
+            fi
+        else
+            echo "fatal: stub worktree add failure" >&2
+        fi
+        exit "${rc}"
+        ;;
+    esac
+    exit 0
 fi
 exit 0
 STUB
@@ -287,6 +346,15 @@ fi
 # must honour it or the suite would be testing a shape that does not occur.
 [ "${STUB_NO_BANNER:-0}" = "${run}" ] || echo "${SENTINEL}: mode=${mode} corpus=${root}" >&2
 
+# A SECOND resolution in the same process that did NOT consult the override, and
+# therefore announces committed mode against its own tree. This is the shape
+# `rulesteward-selinux`'s `policy_corpus::archive_path` had before this branch:
+# scenarios honoured the override while the policy archive came from a compiled-in
+# CARGO_MANIFEST_DIR. The existential `grep -qF` for the fresh banner passes on
+# this transcript, so only the negative half can see it.
+[ "${STUB_SECOND_COMMITTED_READ:-0}" = "${run}" ] &&
+    echo "${SENTINEL}: mode=committed corpus=/some/other/tree/tests/corpus" >&2
+
 # An extra vacuous announcement BEFORE the real one models a suite whose parallel
 # libtest threads each announce, one of which compared nothing. The healthy count
 # lands last on purpose: that is the ordering under which a `tail -1` sampler
@@ -299,6 +367,7 @@ fi
 failed=0
 total=0
 mangled=0
+ignored=0
 for entry in ${tests}; do
     name="${entry%%:*}"
     verdict="${entry##*:}"
@@ -316,6 +385,12 @@ for entry in ${tests}; do
         echo "test ${name} ... ${verdict}"
     fi
     [ "${verdict}" = "FAILED" ] && failed=$((failed + 1))
+    # libtest's third per-test verdict. Counted here so the summary line below
+    # stays ARITHMETICALLY HONEST: the driver reconciles passed+failed+ignored
+    # against the number of rows it parsed, so a stub that emitted an `ignored`
+    # row while still claiming `0 ignored` would trip the cross-check instead of
+    # exercising the case, and would look like a driver defect.
+    [ "${verdict}" = "ignored" ] && ignored=$((ignored + 1))
 done
 
 # libtest's own tally, the independent second count the driver reconciles against.
@@ -324,7 +399,7 @@ if [ "${STUB_NO_SUMMARY:-0}" != "${run}" ]; then
         echo "test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
     else
         if [ "${failed}" -eq 0 ]; then word="ok"; else word="FAILED"; fi
-        echo "test result: ${word}. $((total - failed)) passed; ${failed} failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        echo "test result: ${word}. $((total - failed - ignored)) passed; ${failed} failed; ${ignored} ignored; 0 measured; 0 filtered out; finished in 0.00s"
     fi
 fi
 
@@ -481,6 +556,16 @@ run_all_cases() {
         STUB_IGNORES_ENV=3
     run_case no_banner_at_all 2 "did not read the corpus it was handed" \
         STUB_NO_BANNER=2
+    # The guard above is EXISTENTIAL: it proves something read the handed tree,
+    # never that nothing read a different one. A binary resolving the corpus
+    # correctly in one place and from a compiled-in CARGO_MANIFEST_DIR in another
+    # satisfies it completely, and the comparison quietly becomes part
+    # self-comparison. `rulesteward-selinux`'s `policy_corpus::archive_path` was
+    # that exact shape until this branch, and the instrument could not see it -
+    # it was found by reading the code. Now every resolution announces, so the
+    # second read announces committed mode and the negative half catches it.
+    run_case second_committed_read_is_refused 2 "ALSO resolved a corpus in committed mode" \
+        STUB_SECOND_COMMITTED_READ=2
 
     # --- vacuity -------------------------------------------------------------
     run_case zero_scenarios 2 "'nothing fired' and 'nothing ran' are not the same" \
@@ -525,9 +610,11 @@ run_all_cases() {
     run_case mangled_row_in_HEAD 2 "the table is incomplete" STUB_MANGLE_ROW=3
 
     # --- a FAILING run need not have announced a count -----------------------
-    # The instrument's own payload case. Three of the four lanes announce the
-    # scenario count AFTER parsing the corpus, so a base binary that chokes on
-    # HEAD's GROWN corpus during enumeration never reaches the announcement.
+    # The instrument's own payload case. Some lanes announce the scenario COUNT
+    # after parsing the corpus (they cannot know it earlier), so a base binary
+    # that chokes on HEAD's GROWN corpus during enumeration never reaches the
+    # announcement. The BANNER is not in that position: it comes from
+    # `resolve_corpus_root` and precedes every lane's first filesystem read.
     # Demanding the count unconditionally turned exactly that - the R2-FAILED
     # signal this driver exists to report - into rc 2. A green run still must
     # announce, because there "nothing fired" and "nothing ran" are one transcript.
@@ -577,11 +664,43 @@ run_all_cases() {
     run_case head_only_test_that_fails 1 "exist only at HEAD and are FAILING" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED"
 
-    # The same shape with R3 red BEFORE it announces: rc 0 with a ZERO count on
-    # the success line, contradicting the rc-0 contract stated in this driver's
-    # header, in the justfile, and in CONTRIBUTING.
-    run_case rc_zero_must_carry_a_nonzero_count 1 "exist only at HEAD and are FAILING" \
+    # The same shape with R3 red BEFORE it announces. RENAMED for what it actually
+    # pins: a real failure above must be reported AS ITSELF and must not be
+    # converted into "no announcements". It reaches `finish 1` on the head-only
+    # gate and never gets near the final count gate, so it is NOT that gate's
+    # witness - the name it used to carry said otherwise, and a mutant run proved
+    # the claim false by neutering `SCEN[3] -eq 0` and watching every case still
+    # pass. A case named after a guard it cannot reach is worse than no case: it
+    # is what tells the next person the guard is already covered.
+    run_case head_only_failure_beats_the_count_check 1 "exist only at HEAD and are FAILING" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED" STUB_NO_COUNT=3
+
+    # The ACTUAL witness for the final rc-0 contract gate, constructed to reach it.
+    # Every earlier exit must be avoided: no regression (beta was already red at
+    # base, so it is UNATTRIBUTABLE), no head-only row, no silenced row, and one
+    # surviving comparable row so the "everything is unattributable" gate stays
+    # quiet. R3 is red, which is what relaxes validate_run's green-run-only count
+    # requirement and leaves SCEN[3] at zero on the path to OK.
+    run_case rc_zero_contract_refuses_zero_count 2 "requires the success line to carry a non-zero count" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:FAILED" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:FAILED" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:FAILED" STUB_NO_COUNT=3
+
+    # --- a test SILENCED at HEAD is not a test removed at HEAD ----------------
+    # `ignored) continue` dropped the row from the table outright, so a test the
+    # branch put `#[ignore]` on vanished from R3, was filed as present-in-base-only
+    # and printed "base-only (removed at HEAD)" at rc 0 - asserting a deletion that
+    # never happened and calling the run clean. `cargo test` skips `#[ignore]` by
+    # default, so neither `just test` nor `just ci` sees the transition either.
+    # rc 1, symmetric with head_only_test_that_fails above.
+    run_case head_silenced_a_test 1 "ran at base" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignored"
+    # The other direction is NOT a silencing: a test already ignored at the base
+    # has no baseline verdict to lose, so it is reported and excluded, not failed.
+    run_case ignored_at_base_is_not_a_silencing 0 "ignored at base (no baseline)" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignored"
 
     # --- rc must agree with the table ----------------------------------------
     # rc IS the gate and a derived count is never the pass condition; a count
@@ -606,6 +725,17 @@ run_all_cases() {
     run_case unresolvable_base 2 "cannot resolve base ref" STUB_GIT_REVPARSE_RC=128
     run_case worktree_add_failure 2 "could not create the base worktree" \
         STUB_GIT_WORKTREE_RC=128
+    # A LOCKED worktree whose directory has since been swept - the default cache
+    # lives under TMPDIR, so a /tmp sweep produces exactly this - is the one case
+    # `prune` cannot heal, because refusing to prune a locked worktree is
+    # precisely what locking is for. The two ended up in the same function without
+    # anyone noticing they cancel: after the lock was added, a swept cache made
+    # `git worktree add` fail 128 and the driver refused that base sha FOREVER,
+    # naming neither the cause nor the remedy. git documents the recovery ("To add
+    # a missing but locked worktree path, specify --force twice"), and this case
+    # pins that the driver uses it. Reproduced end to end against real git first.
+    run_case locked_but_missing_worktree_is_recovered 0 "OK (0 regressions" \
+        STUB_WT_LOCKED_MISSING=1
 
     # --- there must be something to vary -------------------------------------
     # A base ref resolving to this tree's own commit builds the same source
@@ -613,23 +743,45 @@ run_all_cases() {
     # run - sentinels fire with the exact paths, counts are healthy, tables
     # reconcile - and it prints OK. That is #572 in a new file, one step away via
     # `just diff-<lane>-branch HEAD`.
-    run_case base_equals_head_is_refused 2 "there is nothing to vary" \
-        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000
-    # A DIRTY tree at the same sha is the legitimate "diff my uncommitted work"
-    # mode and must keep working.
-    run_case base_equals_head_but_dirty_is_allowed 0 "OK (0 regressions" \
-        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_DIRTY=1
-    # UNTRACKED files are not part of the build, so they must not read as "dirty"
-    # and thereby disable the guard. Found by running the real recipe on a tree
-    # that looked clean and getting rc 0: a single `?? .serena/` was enough.
-    run_case base_equals_head_untracked_only_is_refused 2 "there is nothing to vary" \
-        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_UNTRACKED=1
-    # DIFFERENT shas, IDENTICAL sources. The guard always claimed "identical
-    # sources" and tested sha equality, so this sibling walked straight through:
-    # on this very branch, two commits differing only under scripts/ produced
-    # three runs of the same computation at rc 0.
-    run_case identical_trees_different_shas_refused 2 "there is nothing to vary" \
+    #
+    # These four cases are a 2x2 over the two questions git can be asked, and the
+    # pairing is the point. `git diff --quiet <base> -- <paths>` (ONE ref) compares
+    # the base commit to the WORKING TREE, which is the pair this driver actually
+    # builds. `git diff --quiet <base> <head> -- <paths>` (TWO refs) compares two
+    # COMMITS, a pair the driver never builds. Cases 1 and 4 are cells where the
+    # two answers AGREE and any implementation passes them; cases 2 and 3 are the
+    # cells where they DISAGREE, so a driver consulting the wrong one fails exactly
+    # one of them. Only those two cells discriminate, and neither existed until
+    # round 3 - which is how a guard pointed at the wrong operand survived four
+    # repairs and three review rounds with every case green.
+
+    # 1. Both agree the sources are the same. Refuse.
+    run_case worktree_matches_base_is_refused 2 "there is nothing to vary" \
+        STUB_WORKTREE_MATCHES_BASE=1 STUB_TREES_IDENTICAL=1
+    # 2. DISAGREE: the commits differ, the working tree does not. This is the live
+    # defect round 3 found, and it is this instrument's own documented use case:
+    # `git checkout <base> -- crates/` is how an operator asks "would my new corpus
+    # really have caught the old code?", and an in-flight `git stash` has the same
+    # shape. Both leave the tree byte-identical to the base while the two COMMITS
+    # still differ, so the two-ref guard stood down and the driver compared a tree
+    # with itself, printing OK at rc 0.
+    run_case reverted_worktree_refused_though_commits_differ 2 "there is nothing to vary" \
+        STUB_WORKTREE_MATCHES_BASE=1
+    # 3. DISAGREE the other way: two commits carrying identical sources are NOT a
+    # reason to refuse once the working tree has uncommitted work on top. This is
+    # the legitimate "diff my uncommitted work against the commit I am sitting on"
+    # mode, and it is what stops the fix for case 2 from over-firing.
+    run_case identical_commits_but_dirty_worktree_proceeds 0 "OK (0 regressions" \
         STUB_TREES_IDENTICAL=1
+    # 4. Both agree the sources differ. The ordinary case; proceed.
+    run_case worktree_differs_from_base_proceeds 0 "OK (0 regressions"
+    # UNTRACKED files are not part of the build and must not make the tree read as
+    # varying. Found by running the real recipe on a tree that looked clean and
+    # getting rc 0: a single `?? .serena/` was enough to disable the whole guard.
+    # `git diff` compares TRACKED content, so the one-ref form gets this right by
+    # construction rather than by a second `status --porcelain -uno` call.
+    run_case untracked_only_is_still_refused 2 "there is nothing to vary" \
+        STUB_WORKTREE_MATCHES_BASE=1 STUB_TREE_UNTRACKED=1
 
     # --- the cached base worktree must BE the base ---------------------------
     # Directory existence was the whole reuse predicate, while the report kept
@@ -741,7 +893,9 @@ run_positive_control() {
     # is still a driver.
     #
     # Reproduced: injecting a bash syntax error into `usage()` while leaving the
-    # sentinel guard fully intact made all six controls report "caught" and the
+    # sentinel guard fully intact made every control then in the suite report
+    # "caught" (there were six at the time; quoting a live count here is the
+    # very thing this file's header forbids) and the
     # suite exit 0, with `just instrument-test` unable to see it (the control
     # phase prints CAUGHT, not FAIL). That is this project's own "positive-control
     # any instrument you write" rule, left unapplied to the controls themselves.
@@ -799,6 +953,15 @@ run_positive_control sentinel-guard-removed \
     base_baseline_ignores_override base_on_head_corpus_ignores_override \
     head_run_ignores_override no_banner_at_all
 
+# The NEGATIVE half of that guard, which is a separate `if` and therefore needs
+# its own control: seeding one does not disturb the other, and a suite where only
+# the positive half is controlled would report full coverage of a guard that is
+# half uncontrolled.
+# shellcheck disable=SC2016
+run_positive_control committed-mode-guard-removed \
+    's|^    if grep -qF "${SENTINEL}: mode=committed" "${err}" "${out}"; then|    if false; then|' \
+    second_committed_read_is_refused
+
 # shellcheck disable=SC2016
 run_positive_control zero-count-guard-removed \
     's|^        if \[ "${one}" -eq 0 \]; then|        if false; then|' \
@@ -826,22 +989,35 @@ run_positive_control rc-consistency-guard-removed \
 # would report a confident verdict over a silently narrowed table.
 # shellcheck disable=SC2016
 run_positive_control summary-crosscheck-removed \
-    's|^    if \[ "$((lt_passed + lt_failed))" -ne "${seen}" \]; then|    if false; then|' \
+    's|^    if \[ "$((lt_passed + lt_failed + lt_ignored))" -ne "${seen}" \]; then|    if false; then|' \
     mangled_row_is_caught mangled_row_in_baseline summary_disagrees mangled_row_in_HEAD
 
-# The two guards that stop the driver comparing something with itself. Both were
-# absent until an adversarial review reproduced a green `OK (0 regressions, 0
-# discriminated, 228 scenarios)` from two builds of identical source.
+# The guard that stops the driver comparing something with itself. It was absent
+# until an adversarial review reproduced a green `OK (0 regressions, 0
+# discriminated, ...)` from two builds of identical source.
+#
+# Seeded by neutering the COMPARISON rather than the `die`, because after round 3
+# the whole guard is one `git diff` and its case arms: forcing rc 1 ("they
+# differ") is exactly what a driver missing this guard would do.
 # shellcheck disable=SC2016
 run_positive_control nothing-to-vary-guard-removed \
-    's|^if \[ "${same_sources}" -eq 1 \] && \[ -z "$(git status --porcelain -uno -- crates/ Cargo.toml Cargo.lock)" \]; then|if false; then|' \
-    base_equals_head_is_refused base_equals_head_untracked_only_is_refused \
-    identical_trees_different_shas_refused
+    's|^git diff --quiet "${BASE_SHA}" -- crates/ Cargo.toml Cargo.lock 2>"${WORK}/tree-diff.err"$|false|' \
+    worktree_matches_base_is_refused reverted_worktree_refused_though_commits_differ \
+    untracked_only_is_still_refused
 
 # shellcheck disable=SC2016
 run_positive_control cache-sha-guard-removed \
     's|^if \[ "${wt_sha}" != "${BASE_SHA}" \]; then|if false; then|' \
     cached_worktree_at_wrong_sha cached_worktree_never_created_by_git
+
+# The final rc-0 contract gate. It had NO control and NO witness until round 3: a
+# mutant that neutered it left all 52 cases of the day passing, because the only
+# case NAMED for it exited earlier on the head-only gate and never reached it.
+# That is the failure this whole file exists to prevent, found in this file.
+# shellcheck disable=SC2016
+run_positive_control rc-zero-contract-gate-removed \
+    's|^if \[ "${SCEN\[3\]}" -eq 0 \]; then|if false; then|' \
+    rc_zero_contract_refuses_zero_count
 
 # shellcheck disable=SC2016
 run_positive_control cache-dirty-guard-removed \

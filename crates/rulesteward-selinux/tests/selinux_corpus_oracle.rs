@@ -54,9 +54,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use rulesteward_core::oracle_corpus::{
-    CorpusMode, resolve_corpus_root, sentinel_banner, sentinel_count,
-};
+use rulesteward_core::oracle_corpus::{CorpusMode, resolve_corpus_root, sentinel_count};
 use rulesteward_selinux::{
     CategorizeError, DenialKind, ReplayOutcome, categorize, categorize_with_outcome, group_denials,
     parse_avc,
@@ -241,14 +239,14 @@ const SCENARIO_FLOOR: usize = 69;
 /// which is not a differential at all.
 fn corpus_root() -> (PathBuf, CorpusMode) {
     let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
-    resolve_corpus_root("RS_ORACLE_CORPUS_SELINUX", &default)
+    resolve_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SELINUX", &default)
 }
 
 /// Enumerate every scenario directory: `tests/corpus/selinux/*/manifest.json`
 /// whose directory name does NOT start with `_` (skips `_policies`). Returns
 /// `(scenario_dir, Manifest)` sorted by id for deterministic output.
 fn scenarios() -> Vec<(PathBuf, Manifest)> {
-    let (root, mode) = corpus_root();
+    let (root, _mode) = corpus_root();
 
     // Enumeration is split from LOADING so the announcement precedes the
     // PER-SCENARIO parse.
@@ -291,11 +289,14 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
         dirs.push(dir);
     }
 
+    // The COUNT only. The BANNER now comes from `resolve_corpus_root`, which every
+    // corpus resolution in this binary goes through, so it covers entry points
+    // this function never sees - `support::policy_corpus`, which reads `_policies/`
+    // out of the same overridden root, is exactly such a caller and announced
+    // nothing while the banner lived here.
+    //
     // Announce BEFORE asserting, but the assertion is what carries the guarantee
-    // (CONTRIBUTING: "assert the count, do not merely print it"). Announcing here
-    // rather than in each test means every entry point into the corpus is covered
-    // by the same guard, including any added later.
-    eprintln!("{}", sentinel_banner(SENTINEL, mode, &root));
+    // (CONTRIBUTING: "assert the count, do not merely print it").
     eprintln!("{}", sentinel_count(SENTINEL, dirs.len()));
     assert!(
         dirs.len() >= SCENARIO_FLOOR,

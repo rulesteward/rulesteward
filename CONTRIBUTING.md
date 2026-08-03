@@ -133,13 +133,22 @@ because then the only delta between R1 and R2 is the corpus the branch added:
 
 | run | binary | corpus |
 |---|---|---|
-| R1 | base | the base worktree's committed corpus (baseline) |
-| R2 | base | **this tree's** committed corpus |
-| R3 | HEAD | this tree's committed corpus |
+| R1 | base worktree | the base worktree's committed corpus (baseline) |
+| R2 | base worktree | **this working tree's** corpus |
+| R3 | this working tree | this working tree's corpus |
+
+"Working tree", not "committed": R3's binary is built from the repo root and both
+R2 and R3 read the corpus from it, so uncommitted work is included. That is what
+makes "diff my uncommitted work against the commit I am sitting on" a supported
+mode, and it is why the driver's nothing-to-vary guard asks git a ONE-ref
+question (`git diff <base> -- <paths>`, commit against working tree) rather than
+comparing two commits.
 
 R1 `ok` + R2 `FAILED` is proof the growth catches the old code. R1 `ok` +
 R3 `FAILED` is a regression. R1 `FAILED` is unattributable and excluded: that
-failure predates the branch.
+failure predates the branch. A test the base ran that HEAD `#[ignore]`s is
+SILENCED and exits 1: `cargo test` skips ignored tests by default, so this is the
+last gate able to see a replay test being switched off.
 
 **Run it every Adversarial Testing Loop round, not once.** A divergence table is
 the only instrument in the loop whose evidence accumulates across rounds; the
@@ -155,15 +164,24 @@ separately.
 
 Adding a lane takes two things. First, the lane's replay test must resolve its
 corpus through `rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
-`sentinel_banner` + `sentinel_count`. The BANNER should precede anything that can
-panic, because the driver refuses to interpret a run that did not announce the
-path it was handed. The COUNT is best announced early too, but is not always
-possible: sudoers' L1/L2/L3 announce after their comparison loop with the real
-accumulated tally, because how much they compare is data-dependent. That is why
-the driver requires a count only on a GREEN run. Stated plainly rather than as an
-aspiration: as of 2026-08-03 auditd and sysctld announce their count after
-parsing, so neither is a model for early announcement. Second, a row in the frozen
-lane table in
+`sentinel_count`.
+
+The BANNER needs no work from the lane: `resolve_corpus_root` emits it, on every
+resolution, before returning. That placement is deliberate and is not a
+convenience. The driver's sentinel check is EXISTENTIAL, so it can only prove
+that something read the tree it handed over, never that nothing read a different
+one; a binary that resolves the corpus correctly in one place and from a
+compiled-in `CARGO_MANIFEST_DIR` in another used to satisfy it completely.
+`rulesteward-selinux`'s `policy_corpus::archive_path` was exactly that shape.
+Announcing from the single resolver means a bypassing read announces
+`mode=committed` instead of nothing, and the driver refuses the run.
+
+The COUNT is the lane's job and is not always knowable early: sudoers' L1/L2/L3
+announce after their comparison loop with the real accumulated tally, because how
+much they compare is data-dependent. That is why the driver requires a count only
+on a GREEN run, where "nothing fired" and "nothing ran" are the same transcript.
+
+Second, a row in the frozen lane table in
 `scripts/rs-branch-diff.sh` plus a recipe. Note `selinux` appears in that lane
 table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
 offline-only.
@@ -193,7 +211,9 @@ legitimate precondition to skip on. Everything a live recipe would skip for
 (a base that predates the corpus, a base whose harness will not build, a run
 that announced the wrong corpus) is `2`, "these two builds cannot be compared".
 Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
-asserts no case in it ever yields `3`.
+asserts that no case in its FIRST pass, against the real driver, ever yields `3`.
+Exit codes from its positive-control phases, where the driver is deliberately
+sabotaged, are not covered and should not be.
 
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a

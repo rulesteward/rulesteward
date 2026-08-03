@@ -32,14 +32,24 @@
 # between R1 and R2 is the corpus the branch added:
 #
 #   R1  base binary, base worktree's committed corpus  (baseline)
-#   R2  base binary, HEAD's committed corpus           (does the growth discriminate?)
-#   R3  HEAD binary, HEAD's committed corpus           (does HEAD still agree?)
+#   R2  base binary, THIS WORKING TREE's corpus        (does the growth discriminate?)
+#   R3  HEAD binary, THIS WORKING TREE's corpus        (does HEAD still agree?)
 #
-#   R1      R2      R3      verdict
-#   FAILED  *       *       UNATTRIBUTABLE - base was already red, excluded
-#   ok      FAILED  ok      DISCRIMINATED  - the growth catches the old code
-#   ok      ok      ok      clean          - this lane's corpus did not discriminate
-#   ok      *       FAILED  REGRESSION     - HEAD diverges where the base did not
+# "working tree", not "committed", and the distinction is not pedantry. R2 and R3
+# read `${REPO_ROOT}/${CORPUS_SUBPATH}` and R3's binary is built from
+# `${REPO_ROOT}`, so uncommitted work is INCLUDED on both. That is deliberate: it
+# is what makes "diff my uncommitted work against the commit I am sitting on" a
+# supported mode. It is also why the nothing-to-vary guard below asks git a
+# one-ref question; three earlier versions of this header said "committed" and a
+# guard written to match that word compared a pair the driver never builds.
+#
+#   R1      R2      R3        verdict
+#   FAILED  *       *         UNATTRIBUTABLE - base was already red, excluded
+#   ok      FAILED  ok        DISCRIMINATED  - the growth catches the old code
+#   ok      ok      ok        clean          - this lane's corpus did not discriminate
+#   ok      *       FAILED    REGRESSION     - HEAD diverges where the base did not
+#   ok      *       ignored   SILENCED       - the base ran it, HEAD skips it (rc 1)
+#   ignored *       *         no baseline    - nothing to compare against, excluded
 #
 # GRANULARITY, STATED HONESTLY
 #
@@ -55,8 +65,17 @@
 #
 # Exit codes (the dev-tooling contract, NOT the rulesteward binary's own):
 #   0  no regressions; the success line carries a non-zero announcement count
-#   1  one or more REGRESSION rows
+#   1  one or more REGRESSION rows, a HEAD-only test left FAILING, or a test the
+#      base ran that HEAD SILENCES with #[ignore]
 #   2  tool/environment error, including "these two builds cannot be compared"
+#
+# rc 1 is also what bash itself exits on a `set -u` unbound-variable abort, so a
+# driver that dies mid-flight would be read as "the branch regressed". Nothing is
+# known to reach that today - every array is pre-declared below and every
+# expansion is `+`-guarded, precisely for this - but the collision is real and the
+# justfile gates on rc alone. rc 1 is only meaningful ALONGSIDE the report line
+# naming what failed; a bare rc 1 with no such line is a driver defect, not a
+# verdict about the branch.
 #
 # THERE IS DELIBERATELY NO rc 3. This is an OFFLINE-tier instrument: no docker,
 # no root, no live oracle, so per CONTRIBUTING's differential contract it has no
@@ -151,6 +170,8 @@ DISCRIMINATED=()
 UNATTRIBUTABLE=()
 ONLY_BASE=()
 ONLY_HEAD=()
+SILENCED=()
+BASE_IGNORED=()
 
 if [ -z "${BASE_REF}" ]; then
     echo "rs-branch-diff: no base ref given" >&2
@@ -224,66 +245,69 @@ fi
 # THERE MUST BE SOMETHING TO VARY.
 #
 # This driver's whole premise is two DIFFERENT builds. Given a base ref that
-# resolves to the working tree's own commit, it happily builds the same source
-# twice, compares it with itself, and prints `OK (0 regressions, 0 discriminated,
-# 228 scenarios)`. Every anti-vacuity guard passes on that run: the sentinels fire
-# with the exact paths, the counts are healthy, the tables reconcile with libtest.
-# It is a green line carrying real-looking evidence for a comparison that compared
-# nothing, which is #572 wearing a different hat, and `just diff-<lane>-branch HEAD`
-# reaches it in one step.
+# resolves to the same sources this tree already carries, it happily builds the
+# same source twice, compares it with itself, and prints `OK (0 regressions,
+# 0 discriminated, ...)`. Every anti-vacuity guard passes on that run: the
+# sentinels fire with the exact paths, the counts are healthy, the tables
+# reconcile with libtest. It is a green line carrying real-looking evidence for a
+# comparison that compared nothing, which is #572 wearing a different hat, and
+# `just diff-<lane>-branch HEAD` reaches it in one step.
 #
-# A DIRTY tree at the same sha is a different and legitimate case: "diff my
-# uncommitted work against the commit I am sitting on". Only the clean-tree
-# coincidence is refused.
-if ! HEAD_SHA="$(git rev-parse --verify "HEAD^{commit}" 2>"${WORK}/rev-parse-head.err")"; then
-    tail -5 "${WORK}/rev-parse-head.err" >&2
-    die 2 "could not resolve HEAD to a commit; cannot confirm the base differs from this tree"
-fi
-# `-uno`: UNTRACKED files are not part of the build and must not count as
-# "dirty". Without it a single stray untracked path silently disabled this whole
-# guard - caught by running it on what looked like a clean tree and getting rc 0,
-# because `?? .serena/` was enough to make the tree read as modified. A guard that
-# has never been observed firing is not known to be a guard.
-# Two different shas can still produce two identical binaries. The guard's own
-# message has always claimed "identical SOURCES"; testing sha equality was a
-# narrower question that let the sibling case through. Measured on this branch:
-# `diff-sudoers-branch 31ad4564` from 744bded differs only under `scripts/`, so
-# `crates/` is byte-identical, and the driver built the same source twice and
-# reported `OK (0 regressions, 0 discriminated, 362 ...)` at rc 0.
+# ONE REF, NOT TWO, AND THE PAIR IS THE WHOLE POINT. This guard was repaired four
+# times (sha equality, then untracked handling, then `-uno` placement, then a
+# commit-to-commit tree compare) and every one of those repairs argued about how
+# to compare BASE_SHA with the HEAD COMMIT. The driver does not build the HEAD
+# commit. It builds the WORKING TREE (`cargo_in "${REPO_ROOT}" ""` below) and
+# reads the working tree's corpus (`HEAD_CORPUS="${REPO_ROOT}/${CORPUS_SUBPATH}"`),
+# so the only question that matters is whether the base COMMIT differs from this
+# WORKING TREE. That is the one-ref form: `git diff <commit> -- <paths>`.
+#
+# The two-ref form reported OK at rc 0 on this instrument's own documented use
+# case. `git checkout <base> -- crates/` is how an operator asks "would my new
+# corpus really have caught the old code?"; it leaves the tree byte-identical to
+# the base while the two COMMITS still differ, so the guard stood down and the
+# driver compared a tree with itself. An in-flight `git stash` has the same shape.
+#
+# The one-ref form also SUBSUMES the two checks that used to sit beside it, which
+# is why they are gone rather than moved:
+#   - the `BASE_SHA = HEAD_SHA` special case. Equal shas plus a clean tree gives
+#     rc 0 and is refused; equal shas plus a DIRTY tree gives rc 1 and proceeds,
+#     which is the legitimate "diff my uncommitted work against the commit I am
+#     sitting on" mode. The distinction now falls out of the comparison instead of
+#     being re-derived by a second command.
+#   - the `-uno` dirty scan. `git diff` compares TRACKED content only, so an
+#     untracked path cannot make this tree read as varying. The `?? .serena/`
+#     case that silently disabled the guard in 744bded cannot recur here, and the
+#     unchecked `git status` rc that used to sit at the end of this block (where
+#     "git could not say" became "the tree is clean") is gone with it.
 #
 # `--quiet` exits 0 when there is NO difference. rc 1 means they differ (proceed);
 # anything else is git failing, and "git could not say" must not become "they
 # differ", so it is refused.
 #
-# RESIDUE, stated rather than papered over: this compares the whole of `crates/`,
-# not the specific lane's dependency closure. `just diff-sudoers-branch <ref>`
-# where <ref> differs only in `crates/rulesteward-selinux/` still varies nothing
-# for the sudoers binary and will not be caught here. Narrowing it to the lane's
-# closure needs a cargo-metadata walk; that is a design decision, not an oversight.
-same_sources=0
-if [ "${BASE_SHA}" = "${HEAD_SHA}" ]; then
-    same_sources=1
-else
-    git diff --quiet "${BASE_SHA}" "${HEAD_SHA}" -- crates/ Cargo.toml Cargo.lock 2>"${WORK}/tree-diff.err"
-    tree_rc=$?
-    case "${tree_rc}" in
-    0) same_sources=1 ;;
-    1) ;;
-    *)
-        tail -5 "${WORK}/tree-diff.err" >&2
-        die 2 "could not compare the base and HEAD trees (git diff exited ${tree_rc}); refusing to assume they differ"
-        ;;
-    esac
-fi
-# The dirty check is scoped to the SAME paths as the tree comparison above.
-# Scanning the whole tree while comparing only crates/ was inconsistent: an
-# uncommitted edit under scripts/ made the tree read as "varying" when the two
-# binaries were still byte-identical, so the guard silently stood down. Found by
-# running it - the identical-tree witness returned rc 0 because this file itself
-# was uncommitted at the time.
-if [ "${same_sources}" -eq 1 ] && [ -z "$(git status --porcelain -uno -- crates/ Cargo.toml Cargo.lock)" ]; then
-    die 2 "base ref '${BASE_REF}' (${BASE_SHA:0:12}) and this tree carry identical sources under crates/, Cargo.toml and Cargo.lock, and the tree has no uncommitted changes, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
-fi
+# RESIDUE, stated rather than papered over, two of them:
+#   - This compares the whole of `crates/`, not the specific lane's dependency
+#     closure. `just diff-sudoers-branch <ref>` where <ref> differs only in
+#     `crates/rulesteward-selinux/` still varies nothing for the sudoers binary
+#     and will not be caught here. Narrowing it to the lane's closure needs a
+#     cargo-metadata walk; that is a design decision, not an oversight.
+#   - An UNTRACKED corpus scenario directory is invisible to `git diff`, so a
+#     tree differing from the base ONLY by an untracked scenario is refused here
+#     as "nothing to vary" when the corpora do in fact differ. That direction is
+#     fail-closed (a refused comparison, never a false clean) and is the price of
+#     asking git the build-input question; commit the scenario and it proceeds.
+git diff --quiet "${BASE_SHA}" -- crates/ Cargo.toml Cargo.lock 2>"${WORK}/tree-diff.err"
+tree_rc=$?
+case "${tree_rc}" in
+0)
+    die 2 "base ref '${BASE_REF}' (${BASE_SHA:0:12}) and this WORKING TREE carry identical sources under crates/, Cargo.toml and Cargo.lock, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
+    ;;
+1) ;;
+*)
+    tail -5 "${WORK}/tree-diff.err" >&2
+    die 2 "could not compare base ref '${BASE_REF}' against this working tree (git diff exited ${tree_rc}); refusing to assume they differ"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Cached detached worktree at the base sha.
@@ -307,22 +331,29 @@ CACHE_ROOT="${RS_BRANCH_DIFF_CACHE:-${TMPDIR:-/tmp}}/rs-branch-diff"
 WT="${CACHE_ROOT}/${BASE_SHA}"
 BASE_TARGET_DIR="${CACHE_ROOT}/target-${BASE_SHA}"
 
+# Captured BEFORE the `mkdir -p` below, because the mkdir is what makes the answer
+# useless. See the prune gate for why the ordering is the entire protection.
+cache_root_existed=0
+[ -d "${CACHE_ROOT}" ] && cache_root_existed=1
+
 if [ ! -d "${WT}" ]; then
     mkdir -p "${CACHE_ROOT}" || die 2 "could not create the worktree cache root ${CACHE_ROOT}"
     # Self-heal a registration left behind by a swept /tmp: git refuses to re-add a
     # path it still has registered but that no longer exists.
     #
-    # GATED on the cache ROOT existing, and that gate is the whole point. `prune`
+    # GATED on the cache root having existed BEFORE the mkdir above. `prune`
     # deregisters every worktree whose path is currently unreachable, and this
     # project's cache lives on an NFS mount - so running it unconditionally meant
     # that one invocation while /mnt was down would deregister every OTHER cached
     # worktree too, permanently (`fatal: not a git repository` thereafter, even
-    # once the mount returns). git's own manual names this exact hazard and its
-    # remedy: "If the working tree ... is stored on a portable device or network
-    # share which is not always mounted, you can prevent its administrative files
-    # from being pruned by issuing the `git worktree lock` command." So: prune only
-    # when the cache root is actually present, and LOCK what we create.
-    if [ -d "${CACHE_ROOT}" ]; then
+    # once the mount returns).
+    #
+    # The previous version of this gate tested `[ -d "${CACHE_ROOT}" ]` AFTER the
+    # `mkdir -p` that creates it, so it could never be false and the protection
+    # described here did not exist. With the mount down, `mkdir -p` succeeds
+    # against the bare mountpoint and the gate waved the prune straight through.
+    # Capture the answer before running the thing that changes it.
+    if [ "${cache_root_existed}" -eq 1 ]; then
         git worktree prune --verbose >"${WORK}/worktree-prune.log" 2>&1
         prune_rc=$?
         if [ "${prune_rc}" -ne 0 ]; then
@@ -333,14 +364,47 @@ if [ ! -d "${WT}" ]; then
     git worktree add --detach "${WT}" "${BASE_SHA}" >"${WORK}/worktree.log" 2>&1
     wt_rc=$?
     if [ "${wt_rc}" -ne 0 ]; then
-        tail -20 "${WORK}/worktree.log" >&2
-        die 2 "could not create the base worktree at ${WT} (git worktree add exited ${wt_rc})"
+        # A LOCKED worktree whose directory has since been swept is the one case
+        # the prune above cannot heal, because refusing to prune is exactly what
+        # the lock is for. Without this retry the driver refuses that base sha
+        # forever, with a message naming neither the cause nor the remedy.
+        # git's manual gives the recovery verbatim: "To add a missing but locked
+        # worktree path, specify --force twice." Only reached after a plain add
+        # has already failed, so it cannot mask an ordinary failure.
+        git worktree add --force --force --detach "${WT}" "${BASE_SHA}" \
+            >>"${WORK}/worktree.log" 2>&1
+        wt_rc=$?
     fi
-    # git's documented remedy for a worktree on a share that is not always
-    # mounted. Advisory only, and deliberately non-fatal: failing to lock is not a
-    # reason to refuse a comparison, but leaving it unlocked is how an unrelated
-    # `prune` silently deregisters the cache.
-    git worktree lock "${WT}" >/dev/null 2>&1 || true
+    if [ "${wt_rc}" -ne 0 ]; then
+        tail -20 "${WORK}/worktree.log" >&2
+        die 2 "could not create the base worktree at ${WT} (git worktree add exited ${wt_rc}, including the --force --force retry that recovers a locked-but-missing registration)"
+    fi
+fi
+
+# LOCKED OUTSIDE the creation branch, so every run re-asserts it.
+#
+# Inside that branch it reached only worktrees created by the same invocation, so
+# a cache built before this line was added stayed unprotected forever. Measured on
+# this repo while the lock was in the creation branch: two cache worktrees, many
+# driver runs, and `git worktree list --porcelain | grep -c locked` returned 0. A
+# protection that only ever applies to brand-new worktrees does not protect the
+# cache it was added for.
+#
+# git's documented remedy for a worktree on a share that is not always mounted:
+# "If the working tree ... is stored on a portable device or network share which
+# is not always mounted, you can prevent its administrative files from being
+# pruned by issuing the `git worktree lock` command."
+#
+# Advisory, and deliberately non-fatal: failing to lock is not a reason to refuse
+# a comparison. It is NOT silent, though. The previous `|| true` meant there was
+# no way to tell whether the protection had taken. Re-locking an already-locked
+# worktree is the normal steady state and is not worth a word.
+if ! git worktree lock "${WT}" >"${WORK}/worktree-lock.log" 2>&1; then
+    if ! grep -qF 'already locked' "${WORK}/worktree-lock.log"; then
+        printf '%s: warning: could not lock the cached worktree %s, so an unrelated "git worktree prune" while the mount is down can deregister it\n' \
+            "${LABEL}" "${WT}" >&2
+        tail -3 "${WORK}/worktree-lock.log" >&2
+    fi
 fi
 
 # VALIDATE THE CACHE, every run, including the run that just created it.
@@ -474,11 +538,18 @@ resolve_bin() {
     RESOLVED_BIN=""
     RESOLVE_ERR=""
 
+    # stderr is CAPTURED, not discarded, and this file's header names the reason:
+    # a `2>/dev/null` here once sent the operator to inspect their ref for what was
+    # actually an environment failure, and the retained evidence directory was
+    # empty because the only explanation had gone to /dev/null. This is the one
+    # path where the message IS the whole diagnosis - the rc alone says a build
+    # that had just succeeded has now failed, which is not a story the operator
+    # can act on. Kept out of ${logj}, which is parsed for the artifact JSON.
     cargo_in "${dir}" "${tdir}" test -p "${PKG}" --test "${TEST_TARGET}" --locked --no-run \
-        --message-format=json >"${logj}" 2>/dev/null
+        --message-format=json >"${logj}" 2>"${logj}.err"
     local json_rc=$?
     if [ "${json_rc}" -ne 0 ]; then
-        RESOLVE_ERR="cargo --message-format=json exited ${json_rc} on a build that had just succeeded"
+        RESOLVE_ERR="cargo --message-format=json exited ${json_rc} on a build that had just succeeded; cargo said: $(tail -3 "${logj}.err" | tr '\n' ' ')"
         return 1
     fi
 
@@ -534,6 +605,29 @@ validate_run() {
     if ! grep -qF "${SENTINEL}: mode=fresh corpus=${want_corpus}" "${err}" "${out}"; then
         tail -30 "${err}" "${out}" >&2
         die 2 "run R${run} did not read the corpus it was handed (${want_corpus}); its exit code and per-test table therefore mean nothing"
+    fi
+
+    # THE OTHER HALF, and the guard above is worth much less without it.
+    #
+    # `grep -qF` asks an EXISTENTIAL question: it proves something read the tree we
+    # handed over, never that nothing read a different one. A binary that resolves
+    # the corpus correctly in one place and from a compiled-in CARGO_MANIFEST_DIR
+    # in another satisfies it completely, and the comparison silently becomes part
+    # self-comparison.
+    #
+    # That is not hypothetical. `rulesteward-selinux`'s `policy_corpus::archive_path`
+    # was exactly that shape until this branch: `_policies/policies.tar.zst` came
+    # from the manifest dir while `scenarios()` honoured the override, so R2 and R3
+    # would have replayed HEAD's scenarios against the BASE tree's policy fixtures
+    # with this guard reporting nothing. It was caught by reading the code.
+    #
+    # `resolve_corpus_root` now announces on EVERY resolution, so a read that did
+    # not consult the override announces `mode=committed` and lands here. The two
+    # halves together are what make the guard mean "the whole binary read this
+    # tree" rather than "some part of it did".
+    if grep -qF "${SENTINEL}: mode=committed" "${err}" "${out}"; then
+        grep -F "${SENTINEL}: mode=committed" "${err}" "${out}" | head -5 >&2
+        die 2 "run R${run} was handed ${want_corpus} but ALSO resolved a corpus in committed mode; part of this run read a different tree, so the comparison is partly a self-comparison and its verdict cannot be trusted"
     fi
 
     # A two-sided positive control that comes back one-sided means the ORACLE is
@@ -606,7 +700,7 @@ EOF
     # The `$` anchor is the second layer, for a lane that ever prints to STDOUT:
     # a mangled line then fails to match rather than yielding a bogus verdict, and
     # the summary cross-check below turns that silence into a hard error.
-    local test_lines line rest name verdict seen=0 failed=0
+    local test_lines line rest name verdict seen=0 failed=0 ignored_n=0
     test_lines="$(grep -E '^test .+ \.\.\. (ok|FAILED|ignored)$' "${out}")"
     while IFS= read -r line; do
         [ -n "${line}" ] || continue
@@ -616,7 +710,16 @@ EOF
         case "${verdict}" in
         ok) ;;
         FAILED) failed=$((failed + 1)) ;;
-        ignored) continue ;;
+        # RECORDED, not skipped. `continue` here dropped the row from the table
+        # entirely, so a test the branch put `#[ignore]` on simply vanished from
+        # R3, was then filed as present-in-base-only, and printed as "removed at
+        # HEAD" at rc 0 - asserting a deletion that never happened. The regex
+        # above proves the code SEES the distinction before discarding it.
+        #
+        # `cargo test` skips `#[ignore]` by default, so neither `just test` nor
+        # `just ci` sees an ok -> ignored transition either. This driver is the
+        # last instrument that could notice a replay test being silenced.
+        ignored) ignored_n=$((ignored_n + 1)) ;;
         *)
             die 2 "run R${run}: unrecognised libtest verdict '${verdict}' for test '${name}'"
             ;;
@@ -638,23 +741,33 @@ EOF
     # with nothing else. Anchoring the regex above makes a mangled line invisible
     # rather than wrong; without this check, invisible is indistinguishable from
     # absent, and a dropped row would silently narrow the comparison.
-    local summary lt_passed lt_failed
+    local summary lt_passed lt_failed lt_ignored
     summary="$(grep -m1 -E '^test result: ' "${out}")"
     if [ -z "${summary}" ]; then
         die 2 "run R${run} printed no 'test result:' summary line; libtest's own tally is what confirms this driver parsed every row"
     fi
     # `test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; ...`
+    #
+    # All THREE columns are reconciled, not two. The table now records `ignored`
+    # rows instead of dropping them, so `passed + failed` would under-count `seen`
+    # by exactly the number of silenced tests - which is the population this
+    # cross-check most needs to see.
     lt_passed="${summary#*. }"
     lt_passed="${lt_passed%% passed;*}"
     lt_failed="${summary#* passed; }"
     lt_failed="${lt_failed%% failed;*}"
-    case "${lt_passed}${lt_failed}" in
+    lt_ignored="${summary#* failed; }"
+    lt_ignored="${lt_ignored%% ignored;*}"
+    case "${lt_passed}${lt_failed}${lt_ignored}" in
     '' | *[!0-9]*)
-        die 2 "run R${run}: could not read pass/fail counts out of libtest's summary line: ${summary}"
+        die 2 "run R${run}: could not read pass/fail/ignored counts out of libtest's summary line: ${summary}"
         ;;
     esac
-    if [ "$((lt_passed + lt_failed))" -ne "${seen}" ]; then
-        die 2 "run R${run}: libtest reports ${lt_passed} passed + ${lt_failed} failed but this driver parsed ${seen} row(s); the table is incomplete, so any verdict from it would be drawn from a narrower comparison than it claims"
+    if [ "$((lt_passed + lt_failed + lt_ignored))" -ne "${seen}" ]; then
+        die 2 "run R${run}: libtest reports ${lt_passed} passed + ${lt_failed} failed + ${lt_ignored} ignored but this driver parsed ${seen} row(s); the table is incomplete, so any verdict from it would be drawn from a narrower comparison than it claims"
+    fi
+    if [ "${lt_ignored}" -ne "${ignored_n}" ]; then
+        die 2 "run R${run}: libtest reports ${lt_ignored} ignored but this driver parsed ${ignored_n}; the table disagrees with libtest's own tally"
     fi
     if [ "${lt_failed}" -ne "${failed}" ]; then
         die 2 "run R${run}: libtest reports ${lt_failed} failed but this driver parsed ${failed}; the table disagrees with libtest's own tally"
@@ -759,6 +872,27 @@ for name in "${!R1[@]}"; do
         UNATTRIBUTABLE+=("${name}")
         continue
     fi
+    # The base never rendered a verdict for this test, so there is no baseline to
+    # compare against. Not the branch's doing and not a loss it caused; reported,
+    # excluded, and explicitly NOT rc 1.
+    if [ "${R1[${name}]}" = "ignored" ]; then
+        BASE_IGNORED+=("${name}")
+        continue
+    fi
+    # SILENCED: the base ran this test and HEAD skips it. A comparison row that
+    # existed has been removed from the comparison, which is a loss of coverage
+    # this driver is the last gate able to see - `cargo test` skips `#[ignore]` by
+    # default, so `just test` and `just ci` are both blind to it.
+    #
+    # rc 1, deliberately, and symmetric with ONLY_HEAD_FAILING below: round 2 had
+    # already ruled that a branch must not reach a green branch-differential while
+    # a replay test it touched is not actually being checked. Silencing one is the
+    # same outcome by a quieter route. A branch legitimately parking a flaky test
+    # states so by removing it, or overrides this run.
+    if [ "${R3[${name}]}" = "ignored" ]; then
+        SILENCED+=("${name}")
+        continue
+    fi
     COMPARABLE=$((COMPARABLE + 1))
     if [ "${R3[${name}]}" = "FAILED" ]; then
         REGRESSIONS+=("${name}")
@@ -804,10 +938,23 @@ printf '%s: base=%s (%s)  corpus=%s\n' "${LABEL}" "${BASE_SHA:0:12}" "${BASE_REF
 # under a path the operator was never told about is its own kind of defect - and
 # the first version of this very line got the reclaim path wrong, telling the
 # operator to delete `<path>-target` when the directory is `target-<sha>`. Both
-# paths are interpolated now rather than described, so they cannot drift again.
-# Measured: 24 MB worktree + 157 MB target dir for ONE lane at ONE sha.
+# paths are interpolated rather than described, so the PATHS cannot drift again.
+#
+# `--force --force`, and both are load-bearing. This driver LOCKS its cache
+# worktrees (see the lock call above), and git refuses to remove a locked
+# worktree: "remove refuses to remove an unclean worktree unless --force is used.
+# To remove a locked worktree, specify --force twice." The single-force form
+# printed here previously failed with `fatal: cannot remove a locked working
+# tree` - and because of the `&&`, the `rm -rf` of the target dir never ran
+# either, so the reclaim line stranded the larger of the two directories. The
+# paths were correct and the COMMAND was wrong, which the old comment's "they
+# cannot drift again" did not cover.
+#
+# Roughly 180 MB total per lane per sha, most of it the target dir. Deliberately
+# approximate: it tracks dependency growth and a precise pair of numbers here
+# would rot without anything noticing.
 printf '%s: base worktree %s (cached)\n' "${LABEL}" "${WT}"
-printf '%s: reclaim with: git worktree remove %s && rm -rf %s\n\n' "${LABEL}" "${WT}" "${BASE_TARGET_DIR}"
+printf '%s: reclaim with: git worktree remove --force --force %s && rm -rf %s\n\n' "${LABEL}" "${WT}" "${BASE_TARGET_DIR}"
 printf '%-56s %-8s %-8s %-8s %s\n' "TEST" "R1base" "R2base" "R3HEAD" "VERDICT"
 printf '%-56s %-8s %-8s %-8s %s\n' \
     "--------------------------------------------------------" \
@@ -825,6 +972,8 @@ row() {
 for name in "${REGRESSIONS[@]+"${REGRESSIONS[@]}"}"; do row "${name}" "REGRESSION"; done
 for name in "${DISCRIMINATED[@]+"${DISCRIMINATED[@]}"}"; do row "${name}" "DISCRIMINATED"; done
 for name in "${UNATTRIBUTABLE[@]+"${UNATTRIBUTABLE[@]}"}"; do row "${name}" "UNATTRIBUTABLE"; done
+for name in "${SILENCED[@]+"${SILENCED[@]}"}"; do row "${name}" "SILENCED at HEAD (#[ignore])"; done
+for name in "${BASE_IGNORED[@]+"${BASE_IGNORED[@]}"}"; do row "${name}" "ignored at base (no baseline)"; done
 for name in "${ONLY_BASE[@]+"${ONLY_BASE[@]}"}"; do row "${name}" "base-only (removed at HEAD)"; done
 for name in "${ONLY_HEAD[@]+"${ONLY_HEAD[@]}"}"; do row "${name}" "HEAD-only (added by the branch)"; done
 for name in "${ONLY_HEAD_FAILING[@]+"${ONLY_HEAD_FAILING[@]}"}"; do row "${name}" "HEAD-only and FAILING"; done
@@ -837,6 +986,18 @@ printf '\n%d clean row(s) not listed. Scenario announcements: R1=%d R2=%d R3=%d.
 if [ "${#ONLY_HEAD_FAILING[@]}" -ne 0 ]; then
     printf '%s: %d test(s) exist only at HEAD and are FAILING: %s\n' \
         "${LABEL}" "${#ONLY_HEAD_FAILING[@]}" "${ONLY_HEAD_FAILING[*]}" >&2
+    finish 1
+fi
+
+# The same ruling as ONLY_HEAD_FAILING, applied to the quieter route in. The base
+# ran these tests and HEAD does not, so each one is a comparison row this branch
+# removed from the comparison. `cargo test` skips `#[ignore]` by default, so no
+# other gate in `just ci` sees the transition; reporting it as "removed at HEAD"
+# at rc 0 (which is what the old `ignored) continue` produced) asserted a deletion
+# that never happened and called the run clean.
+if [ "${#SILENCED[@]}" -ne 0 ]; then
+    printf '%s: %d test(s) ran at base %s and are #[ignore]d at HEAD: %s\n' \
+        "${LABEL}" "${#SILENCED[@]}" "${BASE_SHA:0:12}" "${SILENCED[*]}" >&2
     finish 1
 fi
 

@@ -871,10 +871,12 @@ diff-sudoers:
 # over a live fail-open.
 #
 # No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3:
-# 0 clean (the success line carries a non-zero scenario count), 1 regression,
-# 2 tool error (including "these two builds cannot be compared"). Positive-
-# controlled by scripts/rs-branch-diff-test.sh, which re-seeds each fail-open into
-# a copy of the driver and requires named cases to catch it.
+# 0 clean (the success line carries a non-zero announcement count), 1 regression
+# OR a test the branch silenced with #[ignore], 2 tool error (including "these two
+# builds cannot be compared"). Positive-controlled by
+# scripts/rs-branch-diff-test.sh, which re-seeds SOME of the driver's guards into
+# a copy of it and requires named cases to catch each. Not every guard is
+# controlled; that file's header says which and why.
 #
 # The base build is cached per sha under TMPDIR, so repeated rounds against the
 # same fork point pay for it once. Deliberately NOT in `just ci`: it takes a base
