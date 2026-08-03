@@ -2095,29 +2095,48 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // resume after the run; a glued-OPENER candidate resumes AT the quote itself
     // (no whitespace to skip); a glued-CLOSER candidate (#651) resumes one byte
     // PAST the closing quote, which is where the next token begins.
-    let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
+    let runs = unquoted_whitespace_runs(lhs);
+    let mut candidates: Vec<(usize, usize)> = runs.clone();
     for (open, close) in simple_quote_pairs(lhs) {
-        // Tests the CHAR before the quote with `char::is_whitespace`, matching
-        // both `unquoted_whitespace_runs` and the closer guard below. All three
-        // recognizers of "where does whitespace end a token" now agree, which is
-        // the invariant this surface keeps losing.
+        // The whitespace half of this guard ASKS `unquoted_whitespace_runs`
+        // whether a run actually ends here, rather than re-deciding it.
         //
-        // This was byte-level (`bytes[open - 1]`, `u8::is_ascii_whitespace`)
-        // until #651 round 3. Round 2 fixed the identical defect on the CLOSER
-        // and left this one three lines away with a comment calling it
-        // "unswept rather than cleared"; a fresh adversary produced the input in
-        // one round. On `alice,<U+00A0>"b c" ALL` the run candidate is correctly
-        // rejected (its `before` ends with `,`), the byte test did not see the
-        // NBSP as whitespace, and the spurious candidate it pushed at the quote
-        // won - swallowing the USER principal `"b c"` into a host token.
+        // Its purpose has always been "skip the candidate that a whitespace run
+        // already supplies". Two attempts to express that as a PREDICATE both
+        // shipped defects, in opposite directions:
+        //
+        //   `u8::is_ascii_whitespace` on `bytes[open - 1]` (through round 2) -
+        //       too NARROW. On `alice,<U+00A0>"b c" ALL` it pushed a candidate
+        //       the run already covered; that candidate won and swallowed the
+        //       USER principal `"b c"` into a host token.
+        //   `char::is_whitespace` on the char (round 3) - too WIDE. It matched
+        //       `unquoted_whitespace_runs`' predicate but not its CONTEXT: that
+        //       function ignores whitespace which is backslash-escaped or inside
+        //       a quoted region. On `a\<VT>"b c" = NOPASSWD: ALL` the escape
+        //       meant no run existed, the guard suppressed the candidate anyway,
+        //       and with NO candidate at all the line became a false `sudo-F01`
+        //       that dropped a passwordless-ALL grant.
+        //
+        // Matching predicates is not matching recognizers. Asking the run set
+        // directly inherits the escape and quote context from the one place that
+        // models it, so there is nothing left to keep in sync.
+        //
+        // Pinned in both directions by
         // `a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary`
-        // pins it, with the ASCII-space control in the same loop.
+        // (too-narrow) and `escaped_whitespace_before_an_opening_quote_still_reports_the_grant`
+        // (too-wide), each carrying its own one-byte control.
+        //
+        // The `,` half is still a predicate and is still escape-BLIND: an
+        // escaped `a\,"b"` is a literal comma that does not continue the user
+        // list, and this suppresses the candidate anyway. Filed as #675, with
+        // the sibling in the continuation filter below; unswept here because the
+        // two must move together.
         //
         // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
         if open > 0
             && let Some(prev) = lhs[..open].chars().next_back()
             && prev != ','
-            && !prev.is_whitespace()
+            && !runs.iter().any(|&(_, end)| end == open)
         {
             candidates.push((open, open));
         }

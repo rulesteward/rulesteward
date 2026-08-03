@@ -1132,6 +1132,57 @@ fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
     }
 }
 
+/// ESCAPED whitespace before an opening quote. This is where matching the
+/// PREDICATE without matching the CONTEXT went wrong, and it is a fail-open.
+///
+/// Round 3 swept the opener guard to `char::is_whitespace` so it would agree
+/// with `unquoted_whitespace_runs`. The predicates then agreed and the
+/// RECOGNIZERS still did not: `unquoted_whitespace_runs` treats a whitespace
+/// char as a token end only when it is NOT backslash-escaped and sits outside a
+/// quoted region, and the guard applied neither qualifier.
+///
+/// So on `a\<VT>"b c" = NOPASSWD: ALL` the widened guard suppressed the opener
+/// candidate as "already covered by a run", while the escape meant no run was
+/// ever emitted to cover it. Zero candidates, `(lhs, "")`, and a false
+/// `sudo-F01` that dropped a DISA STIG passwordless-ALL finding on a line
+/// `visudo` accepts. The fork point reported it correctly, so round 3 traded one
+/// swallowed principal for one dropped grant.
+///
+/// The repair suppresses only when a run ACTUALLY ends at the quote, which
+/// inherits the escape and quote context from the one recognizer that already
+/// models it instead of restating it.
+///
+/// Oracle (rs-oracle9, sudo 1.9.17p2, 2026-08-03), every row rc 0:
+///   `a\<VT>"b c" = ...`   -> `User_List ["a<VT>"]`,   `Host_List ["b c"]`
+///   `a\<NBSP>"b c" = ...` -> `User_List ["a<NBSP>"]`, `Host_List ["b c"]`
+///   `a\ "b c" = ...`      -> `User_List ["a "]`,      `Host_List ["b c"]`
+///
+/// The escaped SPACE row was ALSO wrong at the fork point, so this closes a
+/// pre-existing false FATAL as well; `a\x"b c"` is the escaped-non-whitespace
+/// control and is correct everywhere, which isolates the defect to the
+/// whitespace predicate rather than to escaping generally.
+#[test]
+fn escaped_whitespace_before_an_opening_quote_still_reports_the_grant() {
+    for src in [
+        "a\\\u{b}\"b c\" = NOPASSWD: ALL\n",
+        "a\\\u{a0}\"b c\" = NOPASSWD: ALL\n",
+        "a\\ \"b c\" = NOPASSWD: ALL\n",
+        // Control: escaped NON-whitespace, correct on every sha.
+        "a\\x\"b c\" = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            0,
+            "visudo rc 0: no sudo-F01 may fire: {src:?}"
+        );
+        assert_eq!(
+            w01_count(src),
+            1,
+            "the passwordless-ALL grant must be reported: {src:?}"
+        );
+    }
+}
+
 /// A quoted principal whose value CONTAINS whitespace. This is the case a
 /// whitespace-run boundary can never reach on its own: the only space in the
 /// line sits INSIDE the quoted span, so before the fix there was no candidate
