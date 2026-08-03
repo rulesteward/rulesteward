@@ -155,7 +155,8 @@ instrument-test:
     # Counted with a shell glob rather than `ls | grep -v`: a count derived through
     # a filter is not evidence, and this project's own command wrapper rewrites a
     # mid-pipeline grep and changes the number (measured while writing this recipe,
-    # which reported 16 guards where there were 8 at the time; 11 today).
+    # which reported 16 guards where there were 8 at the time). The count is
+    # asserted below rather than quoted here, so it cannot drift while green.
     #
     # The same walk carries the MODE invariant (#658). Nothing in this tree
     # invokes a script in a way that consults the executable bit - the justfile
@@ -876,7 +877,8 @@ diff-sudoers:
 # builds cannot be compared"). Positive-controlled by
 # scripts/rs-branch-diff-test.sh, which re-seeds SOME of the driver's guards into
 # a copy of it and requires named cases to catch each. Not every guard is
-# controlled; that file's header says which and why.
+# controlled; that file's header says why, and gives the two commands that count
+# both numbers rather than quoting either.
 #
 # The base build is cached per sha under TMPDIR, so repeated rounds against the
 # same fork point pay for it once. Deliberately NOT in `just ci`: it takes a base

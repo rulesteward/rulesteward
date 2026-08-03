@@ -251,9 +251,12 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
     // Enumeration is split from LOADING so the announcement precedes the
     // PER-SCENARIO parse.
     //
-    // Not "every fallible step", which an earlier version of this comment
-    // claimed: `read_dir` below still panics ahead of the announcement, so an
-    // unreadable corpus ROOT emits no sentinel at all. That case is a corpus the
+    // Not "every fallible step": `read_dir` below still panics ahead of the COUNT
+    // announcement. The BANNER is safe, because `resolve_corpus_root` emits it
+    // before returning from `corpus_root()` above, so an unreadable corpus ROOT
+    // does still announce the path it could not read. The only case emitting no
+    // sentinel at all is a root that is not a directory, which that function
+    // rejects before announcing. That case is a corpus the
     // driver cannot use under any binary, and it is caught as such; the case this
     // split addresses is a corpus this binary cannot fully parse, which is the
     // one the driver must be able to attribute.

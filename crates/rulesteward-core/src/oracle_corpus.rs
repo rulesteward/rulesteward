@@ -197,10 +197,16 @@ pub fn checked_corpus_root(
 /// have replayed one tree's scenarios against another tree's policy fixtures and
 /// reported nothing. It was found by reading the code, not by the instrument.
 ///
-/// Announcing from the single resolver closes the class instead of the instance:
-/// every resolution announces, including one added later by someone who never
-/// read this comment, and a resolution that BYPASSES this function announces
-/// `mode=committed` and is refused by the driver.
+/// Announcing from the single resolver is what makes a MISDIRECTED resolution
+/// visible: a call that reaches this function with a variable the driver did not
+/// set announces `mode=committed`, and the driver refuses the run.
+///
+/// It does NOT close the bypass class, and an earlier version of this comment
+/// claimed it did. A corpus read that never calls this function announces nothing
+/// at all, matches neither half of the driver's guard, and passes. That is
+/// precisely the shape of the `archive_path` bug described above. Nothing
+/// mechanically forces a read through here, so a new corpus read has to be routed
+/// through it by hand.
 ///
 /// Emitting from a library is a deliberate exception to the usual rule. This
 /// module exists only to serve replay-test harnesses, whose stderr IS the

@@ -40,11 +40,16 @@ use tempfile::TempDir;
 /// `selinux_corpus_oracle.rs`; the invariant is stated so it survives a second.)
 fn archive_path() -> PathBuf {
     let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
-    // The sentinel is spelled out rather than imported from the oracle target:
-    // this module is `include!`d into a test binary, not linked against it. The
-    // string must match `selinux_corpus_oracle::SENTINEL` exactly, and the branch
-    // differential is what enforces that - a mismatch here shows up as a banner
-    // the driver's fixed-string guard does not recognise.
+    // The sentinel is spelled out rather than referenced as `crate::SENTINEL`,
+    // which IS reachable (this is a `mod support;` module of the same test crate,
+    // not an `include!`). It is spelled out because this module is written to be
+    // usable by more than one test binary and only `selinux_corpus_oracle.rs`
+    // defines that const.
+    //
+    // NOTHING MECHANICALLY ENFORCES THE MATCH. A mismatched sentinel produces a
+    // line matching NEITHER of the driver's guards - not the positive fixed-string
+    // match, not the `mode=committed` refusal - so the run passes clean. Change
+    // one, change both.
     let (root, _mode) =
         resolve_corpus_root("RS-DIFF-SELINUX", "RS_ORACLE_CORPUS_SELINUX", &default);
     root.join("_policies/policies.tar.zst")

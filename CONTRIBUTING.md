@@ -146,9 +146,26 @@ comparing two commits.
 
 R1 `ok` + R2 `FAILED` is proof the growth catches the old code. R1 `ok` +
 R3 `FAILED` is a regression. R1 `FAILED` is unattributable and excluded: that
-failure predates the branch. A test the base ran that HEAD `#[ignore]`s is
-SILENCED and exits 1: `cargo test` skips ignored tests by default, so this is the
-last gate able to see a replay test being switched off.
+failure predates the branch.
+
+The three `#[ignore]` cases are deliberately asymmetric, because `cargo test`
+skips ignored tests by default and this is the last gate able to see a replay
+test that is not being checked:
+
+| at base | at HEAD | verdict |
+|---|---|---|
+| ran | `#[ignore]`d | SILENCED, **rc 1**: a loss of coverage |
+| `#[ignore]`d | failing | HEAD-only and FAILING, **rc 1**: un-parked and left red |
+| absent | `#[ignore]`d | HEAD-only and PARKED, rc 0 |
+
+The last row is rc 0 because adding a parked pin for a known-open bug is this
+repo's convention (`boundary_substrate.rs`: "`#[ignore]`d rather than deleted,
+per this repo's convention: removing the `#[ignore]` is how the fix gets
+demonstrated"; #669 and #677 are live examples). There is no override switch.
+
+Note that `#[ignore = "reason"]` renders as `test <name> ... ignored, <reason>`,
+which is the form every ignore attribute in this repo uses; a lane parser that
+anchors on the bare word will not see it.
 
 **Run it every Adversarial Testing Loop round, not once.** A divergence table is
 the only instrument in the loop whose evidence accumulates across rounds; the
@@ -173,8 +190,12 @@ that something read the tree it handed over, never that nothing read a different
 one; a binary that resolves the corpus correctly in one place and from a
 compiled-in `CARGO_MANIFEST_DIR` in another used to satisfy it completely.
 `rulesteward-selinux`'s `policy_corpus::archive_path` was exactly that shape.
-Announcing from the single resolver means a bypassing read announces
-`mode=committed` instead of nothing, and the driver refuses the run.
+Announcing from the single resolver makes a MISDIRECTED resolution visible: a call
+that reaches the resolver under a variable the driver did not set announces
+`mode=committed`, and the driver refuses the run. It does NOT close the bypass
+class: a read that never calls the resolver announces nothing, matches neither
+half of the guard, and passes. Nothing mechanically forces a read through it, so
+route a new corpus read through the resolver deliberately.
 
 The COUNT is the lane's job and is not always knowable early: sudoers' L1/L2/L3
 announce after their comparison loop with the real accumulated tally, because how

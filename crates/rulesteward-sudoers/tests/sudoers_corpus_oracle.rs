@@ -665,11 +665,15 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
     resolve_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SUDOERS", &default)
 }
 
-/// Print the two mandatory sentinel lines. Called in every corpus-driven test
-/// (not just one), so the banner survives regardless of which test the
-/// default parallel runner happens to execute or schedule first -
-/// `scripts/rs-oracle-diff.sh` only requires the line to appear somewhere in
-/// the combined `--nocapture` output.
+/// Print the mandatory sentinel COUNT line.
+///
+/// The BANNER is not printed here and this helper could not print one: it is
+/// emitted once per resolution by
+/// `rulesteward_core::oracle_corpus::resolve_corpus_root`, which covers callers
+/// that never reach this function. Called in every corpus-driven test (not just
+/// one), so the COUNT survives regardless of which test the default parallel
+/// runner happens to execute or schedule first - `scripts/rs-oracle-diff.sh` only
+/// requires the line to appear somewhere in the combined `--nocapture` output.
 ///
 /// `scenario_count` MUST be the number of comparisons this test actually
 /// performed, never the raw corpus directory count: a corpus of entirely

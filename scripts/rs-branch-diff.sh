@@ -49,7 +49,15 @@
 #   ok      ok      ok        clean          - this lane's corpus did not discriminate
 #   ok      *       FAILED    REGRESSION     - HEAD diverges where the base did not
 #   ok      *       ignored   SILENCED       - the base ran it, HEAD skips it (rc 1)
-#   ignored *       *         no baseline    - nothing to compare against, excluded
+#   ignored *       FAILED    HEAD-only and FAILING - un-parked and left red (rc 1)
+#   ignored *       other     no baseline    - nothing to compare against, excluded
+#   absent  *       FAILED    HEAD-only and FAILING - added and left red (rc 1)
+#   absent  *       ignored   HEAD-only and PARKED  - added already parked (rc 0)
+#
+# The two `ignored` rows are asymmetric on purpose. A test the base RAN that HEAD
+# skips is a loss of coverage and fails. A test the branch ADDS already parked is
+# this repo's documented convention for pinning a known-open bug (#669/#677), so
+# it gets its own label and passes.
 #
 # GRANULARITY, STATED HONESTLY
 #
@@ -71,11 +79,14 @@
 #
 # rc 1 is also what bash itself exits on a `set -u` unbound-variable abort, so a
 # driver that dies mid-flight would be read as "the branch regressed". Nothing is
-# known to reach that today - every array is pre-declared below and every
-# expansion is `+`-guarded, precisely for this - but the collision is real and the
-# justfile gates on rc alone. rc 1 is only meaningful ALONGSIDE the report line
-# naming what failed; a bare rc 1 with no such line is a driver defect, not a
-# verdict about the branch.
+# known to reach that today, but the property is narrower than an earlier version
+# of this line claimed: every array that `finish` or an early `die` can reach is
+# declared in the block below, and every `[@]` VALUE expansion is `+`-guarded.
+# `${#name[@]}` on a DECLARED array is safe unguarded, which is why the count
+# expansions carry no `+`. A new array must therefore go in that block, not at its
+# first use. The collision is real and the justfile gates on rc alone, so rc 1 is
+# only meaningful ALONGSIDE the report line naming what failed; a bare rc 1 with
+# no such line is a driver defect, not a verdict about the branch.
 #
 # THERE IS DELIBERATELY NO rc 3. This is an OFFLINE-tier instrument: no docker,
 # no root, no live oracle, so per CONTRIBUTING's differential contract it has no
@@ -170,6 +181,8 @@ DISCRIMINATED=()
 UNATTRIBUTABLE=()
 ONLY_BASE=()
 ONLY_HEAD=()
+ONLY_HEAD_PARKED=()
+ONLY_HEAD_FAILING=()
 SILENCED=()
 BASE_IGNORED=()
 
@@ -621,10 +634,16 @@ validate_run() {
     # would have replayed HEAD's scenarios against the BASE tree's policy fixtures
     # with this guard reporting nothing. It was caught by reading the code.
     #
-    # `resolve_corpus_root` now announces on EVERY resolution, so a read that did
-    # not consult the override announces `mode=committed` and lands here. The two
-    # halves together are what make the guard mean "the whole binary read this
-    # tree" rather than "some part of it did".
+    # WHAT THIS ACTUALLY CATCHES, stated narrowly because the first version of
+    # this comment over-claimed it: a resolution that DOES call
+    # `resolve_corpus_root` but with an env var the driver did not set. That
+    # announces `mode=committed` and lands here.
+    #
+    # It does NOT close the bypass class. A corpus read that never calls
+    # `resolve_corpus_root` at all - the exact shape `policy_corpus::archive_path`
+    # had - announces NOTHING, so it matches neither half and the run passes.
+    # Nothing mechanically forces a read through the resolver. A new corpus read
+    # has to be routed through it by hand.
     if grep -qF "${SENTINEL}: mode=committed" "${err}" "${out}"; then
         grep -F "${SENTINEL}: mode=committed" "${err}" "${out}" | head -5 >&2
         die 2 "run R${run} was handed ${want_corpus} but ALSO resolved a corpus in committed mode; part of this run read a different tree, so the comparison is partly a self-comparison and its verdict cannot be trusted"
@@ -700,13 +719,37 @@ EOF
     # The `$` anchor is the second layer, for a lane that ever prints to STDOUT:
     # a mangled line then fails to match rather than yielding a bogus verdict, and
     # the summary cross-check below turns that silence into a hard error.
+    # `ignored(, .*)?`, because `#[ignore = "reason"]` renders as
+    # `test <name> ... ignored, <reason>` and the `$` anchor rejects it.
+    #
+    # MEASURED on rustc 1.97.0 rather than recalled, by running a real test binary:
+    #
+    #   test bare_ignore        ... ignored
+    #   test ignore_with_reason ... ignored, flaky under NFS
+    #   test result: ok. 1 passed; 0 failed; 2 ignored; ...
+    #
+    # This is the form the repo actually uses. Every `#[ignore]` attribute under
+    # `crates/` carries a reason, and `boundary_substrate.rs` states the convention:
+    # "`#[ignore]`d rather than deleted, per this repo's convention: removing the
+    # `#[ignore]` is how the fix gets demonstrated."
+    #
+    # Anchoring against the bare form alone was a deterministic denial of service,
+    # not merely a missed feature. The reasoned row failed to match, so `seen`
+    # under-counted while libtest still tallied it, and the three-column
+    # cross-check below fired with a message blaming this parser. A base ref that
+    # merely CARRIED such a test killed R1, making that lane's differential
+    # permanently unusable at a fork point no branch can change.
     local test_lines line rest name verdict seen=0 failed=0 ignored_n=0
-    test_lines="$(grep -E '^test .+ \.\.\. (ok|FAILED|ignored)$' "${out}")"
+    test_lines="$(grep -E '^test .+ \.\.\. (ok|FAILED|ignored(, .*)?)$' "${out}")"
     while IFS= read -r line; do
         [ -n "${line}" ] || continue
         rest="${line#test }"
         name="${rest%% ...*}"
-        verdict="${rest##*... }"
+        # Sliced by the name's length rather than `${rest##*... }`, which takes the
+        # LONGEST match and would swallow the verdict whole for a reason that itself
+        # contains " ... ".
+        verdict="${rest:${#name}}"
+        verdict="${verdict# ... }"
         case "${verdict}" in
         ok) ;;
         FAILED) failed=$((failed + 1)) ;;
@@ -719,7 +762,14 @@ EOF
         # `cargo test` skips `#[ignore]` by default, so neither `just test` nor
         # `just ci` sees an ok -> ignored transition either. This driver is the
         # last instrument that could notice a replay test being silenced.
-        ignored) ignored_n=$((ignored_n + 1)) ;;
+        #
+        # NORMALISED to bare `ignored` before it reaches the table, so every
+        # downstream comparison stays a fixed-string equality and no classifier
+        # has to know reasons exist.
+        ignored | ignored,*)
+            verdict="ignored"
+            ignored_n=$((ignored_n + 1))
+            ;;
         *)
             die 2 "run R${run}: unrecognised libtest verdict '${verdict}' for test '${name}'"
             ;;
@@ -873,10 +923,26 @@ for name in "${!R1[@]}"; do
         continue
     fi
     # The base never rendered a verdict for this test, so there is no baseline to
-    # compare against. Not the branch's doing and not a loss it caused; reported,
-    # excluded, and explicitly NOT rc 1.
+    # compare against.
+    #
+    # SPLIT ON R3, which the first version of this arm did not do: it excluded on
+    # R1 alone and never read R3 at all. A test parked at the base that the branch
+    # UN-parks and leaves red then printed `FAILED` in the R3HEAD column and `OK`
+    # on the verdict line, from one run, at rc 0 while libtest exited 101. The repo
+    # has exactly that history (`e2e_auditd_lint.rs` was `#[ignore]`d during Phase
+    # 0 while its bodies were `todo!()` stubs).
+    #
+    # A row with no baseline that is RED at HEAD is ONLY_HEAD_FAILING's case
+    # reached by a quieter route, and that gate's own ruling applies verbatim:
+    # silence here would let `just test` be the only thing standing between it and
+    # a merge. UNATTRIBUTABLE is genuinely different and stays rc 0 - there the
+    # base DID render a verdict and it was already red.
     if [ "${R1[${name}]}" = "ignored" ]; then
-        BASE_IGNORED+=("${name}")
+        if [ "${R3[${name}]}" = "FAILED" ]; then
+            ONLY_HEAD_FAILING+=("${name}")
+        else
+            BASE_IGNORED+=("${name}")
+        fi
         continue
     fi
     # SILENCED: the base ran this test and HEAD skips it. A comparison row that
@@ -887,8 +953,16 @@ for name in "${!R1[@]}"; do
     # rc 1, deliberately, and symmetric with ONLY_HEAD_FAILING below: round 2 had
     # already ruled that a branch must not reach a green branch-differential while
     # a replay test it touched is not actually being checked. Silencing one is the
-    # same outcome by a quieter route. A branch legitimately parking a flaky test
-    # states so by removing it, or overrides this run.
+    # same outcome by a quieter route.
+    #
+    # This is NOT symmetric with a test the branch ADDS already parked, which is
+    # rc 0 with its own label (ONLY_HEAD_PARKED below). Operator ruling, and the
+    # reason is this repo's own convention: `boundary_substrate.rs` says
+    # "`#[ignore]`d rather than deleted, per this repo's convention: removing the
+    # `#[ignore]` is how the fix gets demonstrated", and #669/#677 are live
+    # examples. Adding a parked pin for a known-open bug is normal practice here;
+    # switching off a test that WAS running is a loss of coverage. There is no
+    # override switch, deliberately.
     if [ "${R3[${name}]}" = "ignored" ]; then
         SILENCED+=("${name}")
         continue
@@ -903,30 +977,54 @@ for name in "${!R1[@]}"; do
     fi
 done
 
-ONLY_HEAD_FAILING=()
+# NOT declared here. `ONLY_HEAD_FAILING=()` used to sit on this line, and the
+# classification loop above now appends to it - a reset here would have silently
+# discarded exactly the rows that gate exists to fail. It lives in the
+# pre-declaration block with its siblings.
 for name in "${!R3[@]}"; do
     if [ -z "${R1[${name}]+set}" ]; then
-        # Split by verdict. A test the branch ADDED and left RED is not a neutral
-        # "added by the branch" note: it has no base counterpart, so it cannot be
-        # a REGRESSION by this driver's definition, but reporting it under the
-        # same reassuring label as a passing addition is how a red new test rode
-        # out at rc 0.
-        if [ "${R3[${name}]}" = "FAILED" ]; then
-            ONLY_HEAD_FAILING+=("${name}")
-        else
-            ONLY_HEAD+=("${name}")
-        fi
+        # Split three ways by verdict. A test the branch ADDED and left RED is not
+        # a neutral "added by the branch" note: it has no base counterpart, so it
+        # cannot be a REGRESSION by this driver's definition, but reporting it
+        # under the same reassuring label as a passing addition is how a red new
+        # test rode out at rc 0.
+        #
+        # A test the branch adds already PARKED gets its own label at rc 0. The
+        # verdict column previously asserted the same thing about a test that ran
+        # and one that did not. It is rc 0 rather than rc 1 by operator ruling:
+        # adding a parked pin for a known-open bug is this repo's documented
+        # convention (#669/#677), unlike silencing a test that WAS running.
+        case "${R3[${name}]}" in
+        FAILED) ONLY_HEAD_FAILING+=("${name}") ;;
+        ignored) ONLY_HEAD_PARKED+=("${name}") ;;
+        *) ONLY_HEAD+=("${name}") ;;
+        esac
     fi
 done
 
-# Zero comparable rows has two distinct causes and they point at different files,
-# so they get different messages. Reporting one as the other sends the reader to
-# the wrong place, which is most of the cost of a bad diagnostic.
-if [ "${COMPARABLE}" -eq 0 ]; then
+# Zero comparable rows has SEVERAL distinct causes and they point at different
+# files, so they get different messages. Reporting one as the other sends the
+# reader to the wrong place, which is most of the cost of a bad diagnostic.
+#
+# When this gate was written there were two causes. `SILENCED` and `BASE_IGNORED`
+# were added later without revisiting it, and both landed in the final `die`: a
+# branch that parked every replay row was told "no test name appears in BOTH the
+# base and HEAD runs (0 base-only, 0 HEAD-only)", a sentence its own two counts
+# refute, and was sent looking for a rename that never happened.
+#
+# SILENCED WINS OUTRIGHT. A run where every row was silenced is the strongest
+# instance of the thing that gate exists to fail, not a diagnostic dead end, so it
+# is reported as rc 1 below rather than dying rc 2 here.
+if [ "${COMPARABLE}" -eq 0 ] && [ "${#SILENCED[@]}" -eq 0 ]; then
     if [ "${#UNATTRIBUTABLE[@]}" -ne 0 ]; then
         die 2 "every comparable row is UNATTRIBUTABLE (the base was already red against its own corpus); nothing was actually compared, so neither 'clean' nor 'regression' would be truthful"
     fi
-    die 2 "no test name appears in BOTH the base and HEAD runs (${#ONLY_BASE[@]} base-only, ${#ONLY_HEAD[@]} HEAD-only); there is nothing to compare, so neither 'clean' nor 'regression' would be truthful"
+    if [ "${#BASE_IGNORED[@]}" -ne 0 ]; then
+        die 2 "every shared row is #[ignore]d at the BASE (${#BASE_IGNORED[@]} of them), so no row has a baseline verdict to compare against; nothing was actually compared, and that is a property of ${BASE_SHA:0:12}, not of this branch"
+    fi
+    # Every bucket is named, so the reader is never handed a count that contradicts
+    # the sentence around it.
+    die 2 "no test name appears in BOTH the base and HEAD runs (${#ONLY_BASE[@]} base-only, ${#ONLY_HEAD[@]} HEAD-only, ${#ONLY_HEAD_PARKED[@]} HEAD-only and parked, ${#ONLY_HEAD_FAILING[@]} HEAD-only and failing); there is nothing to compare, so neither 'clean' nor 'regression' would be truthful"
 fi
 
 # ---------------------------------------------------------------------------
@@ -976,6 +1074,7 @@ for name in "${SILENCED[@]+"${SILENCED[@]}"}"; do row "${name}" "SILENCED at HEA
 for name in "${BASE_IGNORED[@]+"${BASE_IGNORED[@]}"}"; do row "${name}" "ignored at base (no baseline)"; done
 for name in "${ONLY_BASE[@]+"${ONLY_BASE[@]}"}"; do row "${name}" "base-only (removed at HEAD)"; done
 for name in "${ONLY_HEAD[@]+"${ONLY_HEAD[@]}"}"; do row "${name}" "HEAD-only (added by the branch)"; done
+for name in "${ONLY_HEAD_PARKED[@]+"${ONLY_HEAD_PARKED[@]}"}"; do row "${name}" "HEAD-only and PARKED (#[ignore])"; done
 for name in "${ONLY_HEAD_FAILING[@]+"${ONLY_HEAD_FAILING[@]}"}"; do row "${name}" "HEAD-only and FAILING"; done
 printf '\n%d clean row(s) not listed. Scenario announcements: R1=%d R2=%d R3=%d.\n' \
     "${CLEAN}" "${SCEN[1]}" "${SCEN[2]}" "${SCEN[3]}"
@@ -1024,8 +1123,11 @@ fi
 # would fail every unrelated branch. What it means is that this lane's corpus
 # growth, if any, would not have caught the code the base shipped.
 # `announcements`, not `scenarios`: SCEN[n] SUMS every `scenarios=` line, and a
-# lane whose helper announces once per test emits several. selinux announces 3x69
-# and would read "207 scenarios" for a 69-scenario corpus. The line above already
+# lane whose helper announces once per test emits several. selinux announces once
+# per test across three tests, so its sum is 3x the scenario count and would read
+# as three times too many. No literal is quoted: #658's growth gate MANDATES that
+# any branch touching that crate adds a scenario, so a number here rots on the
+# next selinux branch by construction. The line above already
 # calls these announcements; the two outputs used to contradict each other in one
 # transcript, and the misleading one was what the rc contract pointed at.
 printf '%s: OK (%d regressions, %d discriminated, %d scenario announcements in R3)\n' \

@@ -193,8 +193,10 @@ if [ "${1-}" = "rev-parse" ]; then
     fi
     rc="${STUB_GIT_REVPARSE_RC:-0}"
     [ "${rc}" -ne 0 ] && { echo "fatal: stub rev-parse failure" >&2; exit "${rc}"; }
-    # HEAD resolves separately from the base ref, so "is there anything to vary?"
-    # is expressible. Defaults differ, so ordinary cases are unaffected.
+    # Retained for a driver that resolves HEAD; the current one does NOT (round 3
+    # dropped the `rev-parse HEAD^{commit}` call when the nothing-to-vary guard
+    # became a one-ref `git diff`), and no case sets STUB_HEAD_SHA. Kept because
+    # the arm costs nothing and a future caller would otherwise be mis-answered.
     case "${3-}" in
     'HEAD^{commit}') echo "${STUB_HEAD_SHA:-$HEAD_DEFAULT}" ;;
     *) echo "${STUB_BASE_SHA:-$BASE_DEFAULT}" ;;
@@ -203,9 +205,19 @@ if [ "${1-}" = "rev-parse" ]; then
 fi
 
 if [ "${1-}" = "status" ]; then
-    # Does the caller want untracked files suppressed? The driver passes -uno,
-    # because an untracked path is not part of the build and must not read as a
-    # modified tree.
+    # Does the caller want untracked files suppressed?
+    #
+    # The driver no longer passes `-uno` ANYWHERE: round 3 replaced the
+    # nothing-to-vary `status --porcelain -uno` scan with a one-ref `git diff`,
+    # which reads tracked content by construction. Its only `status` call is
+    # `git -C <wt> status --porcelain` on the cached worktree, which deliberately
+    # omits `-uno` because the corpus is enumerated from the filesystem and an
+    # untracked scenario dir IS part of the base's replay input.
+    #
+    # So every `status` reaching this stub arrives with `-C`, and the `else` arm
+    # below is currently unreachable. Both are kept so a future caller that does
+    # pass `-uno`, or that asks about the repo rather than the worktree, is
+    # modelled rather than silently mis-answered.
     uno=0
     for a in "$@"; do case "${a}" in -uno|--untracked-files=no) uno=1 ;; esac; done
     if [ "${in_worktree}" -eq 1 ]; then
@@ -276,7 +288,10 @@ if [ "${1-}" = "worktree" ]; then
         # longer exists, and documents the recovery: "To add a missing but locked
         # worktree path, specify --force twice."
         if [ -n "${STUB_WT_LOCKED_MISSING:-}" ] && [ "${forced}" -lt 2 ]; then
-            echo "fatal: is a missing but already registered worktree" >&2
+            # Real git 2.55.0's wording, checked rather than invented. The driver
+            # reads only the rc, but a fixture that quotes the manual and then
+            # makes up the string is the drift this file otherwise refuses.
+            echo "fatal: '${3-}' is a missing but locked worktree; use 'add -f -f' to override, or 'unlock' and 'prune' or 'remove' to clear" >&2
             exit 128
         fi
         rc="${STUB_GIT_WORKTREE_RC:-0}"
@@ -382,7 +397,18 @@ for entry in ${tests}; do
         printf 'test %s ... %s: mode=fresh corpus=%s\n' "${name}" "${SENTINEL}" "${root}"
         mangled=1
     else
-        echo "test ${name} ... ${verdict}"
+        case "${verdict}" in
+        # `ignoredr` is not a libtest verdict, it is this stub's knob for the
+        # REASONED form. `#[ignore = "reason"]` renders as `ignored, <reason>`,
+        # measured on rustc 1.97.0, and that is the form the repo actually uses:
+        # every `#[ignore]` attribute under `crates/` carries a reason, and
+        # `boundary_substrate.rs` documents the convention. The driver's
+        # `$`-anchored regex rejected it for two rounds while every case in this
+        # file used the bare form, so round 3's whole SILENCED feature was
+        # witnessed only on a rendering the repo does not produce.
+        ignoredr) echo "test ${name} ... ignored, flaky under NFS" ;;
+        *) echo "test ${name} ... ${verdict}" ;;
+        esac
     fi
     [ "${verdict}" = "FAILED" ] && failed=$((failed + 1))
     # libtest's third per-test verdict. Counted here so the summary line below
@@ -390,7 +416,7 @@ for entry in ${tests}; do
     # against the number of rows it parsed, so a stub that emitted an `ignored`
     # row while still claiming `0 ignored` would trip the cross-check instead of
     # exercising the case, and would look like a driver defect.
-    [ "${verdict}" = "ignored" ] && ignored=$((ignored + 1))
+    case "${verdict}" in ignored | ignoredr) ignored=$((ignored + 1)) ;; esac
 done
 
 # libtest's own tally, the independent second count the driver reconciles against.
@@ -614,7 +640,8 @@ run_all_cases() {
     # after parsing the corpus (they cannot know it earlier), so a base binary
     # that chokes on HEAD's GROWN corpus during enumeration never reaches the
     # announcement. The BANNER is not in that position: it comes from
-    # `resolve_corpus_root` and precedes every lane's first filesystem read.
+    # `resolve_corpus_root` and precedes the LANE's first filesystem read. The
+    # resolver's own `is_dir` check is ahead of it and panics without a banner.
     # Demanding the count unconditionally turned exactly that - the R2-FAILED
     # signal this driver exists to report - into rc 2. A green run still must
     # announce, because there "nothing fired" and "nothing ran" are one transcript.
@@ -661,7 +688,7 @@ run_all_cases() {
     # be a REGRESSION by definition - and it was therefore collected under the
     # neutral "added by the branch" label and never consulted for the verdict.
     # rc 0 while R3's libtest exited 101.
-    run_case head_only_test_that_fails 1 "exist only at HEAD and are FAILING" \
+    run_case head_only_test_that_fails 1 "exist only at HEAD and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED"
 
     # The same shape with R3 red BEFORE it announces. RENAMED for what it actually
@@ -672,7 +699,7 @@ run_all_cases() {
     # the claim false by neutering `SCEN[3] -eq 0` and watching every case still
     # pass. A case named after a guard it cannot reach is worse than no case: it
     # is what tells the next person the guard is already covered.
-    run_case head_only_failure_beats_the_count_check 1 "exist only at HEAD and are FAILING" \
+    run_case head_only_failure_beats_the_count_check 1 "exist only at HEAD and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED" STUB_NO_COUNT=3
 
     # The ACTUAL witness for the final rc-0 contract gate, constructed to reach it.
@@ -701,6 +728,53 @@ run_all_cases() {
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignored"
+    # ...UNLESS it is red at HEAD. The first version of that arm excluded on R1
+    # alone and never read R3, so a test parked at the base that the branch
+    # un-parks and leaves red printed `FAILED` in the R3HEAD column and `OK` on
+    # the verdict line, from one run, at rc 0 while libtest exited 101. That is
+    # ONLY_HEAD_FAILING's case by a quieter route. The repo has this exact history
+    # (`e2e_auditd_lint.rs`, parked during Phase 0 while its bodies were `todo!()`).
+    run_case base_ignored_but_failing_at_head 1 "exist only at HEAD and are" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:FAILED"
+
+    # --- `#[ignore = "reason"]`, which is the form this repo actually uses ------
+    # libtest renders it `test <name> ... ignored, <reason>` (measured, rustc
+    # 1.97.0). The driver's `$`-anchored regex rejected that for two rounds, so the
+    # row went missing from the table while libtest still tallied it and the
+    # three-column cross-check fired with a message blaming the parser. Both
+    # directions are pinned, because the base side is the worse one: it cannot be
+    # fixed by the branch, since the attribute lives at the fork point.
+    run_case head_silenced_with_a_reason 1 "ran at base" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignoredr"
+    run_case base_carries_a_reasoned_ignore 0 "ignored at base (no baseline)" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignoredr" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignoredr" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignoredr"
+
+    # --- zero comparable rows must name the cause it actually found ------------
+    # The zero-comparable gate predates SILENCED and BASE_IGNORED, and both landed
+    # in its final `die`: a branch parking every replay row was told "no test name
+    # appears in BOTH the base and HEAD runs (0 base-only, 0 HEAD-only)", a
+    # sentence its own two counts refute, and sent after a rename that never
+    # happened. SILENCED now wins outright - every row silenced is the strongest
+    # instance of the thing that gate exists to fail, not a diagnostic dead end.
+    run_case every_row_silenced_at_head 1 "ran at base" \
+        "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
+    run_case every_row_ignored_at_base 2 "no row has a baseline verdict to compare against" \
+        "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
+        "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
+        "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
+
+    # --- a test ADDED already parked gets its own label, at rc 0 ---------------
+    # It previously got the byte-identical verdict to a passing addition, so the
+    # column asserted the same thing about a test that ran and one that did not.
+    # rc 0 rather than rc 1 by operator ruling: adding a parked pin for a
+    # known-open bug is this repo's documented convention (#669/#677), unlike
+    # silencing a test that WAS running.
+    run_case head_only_test_that_is_parked 0 "HEAD-only and PARKED" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:ignored"
 
     # --- rc must agree with the table ----------------------------------------
     # rc IS the gate and a derived count is never the pass condition; a count
@@ -778,8 +852,14 @@ run_all_cases() {
     # UNTRACKED files are not part of the build and must not make the tree read as
     # varying. Found by running the real recipe on a tree that looked clean and
     # getting rc 0: a single `?? .serena/` was enough to disable the whole guard.
-    # `git diff` compares TRACKED content, so the one-ref form gets this right by
-    # construction rather than by a second `status --porcelain -uno` call.
+    #
+    # PINNED BY CONSTRUCTION, NOT BY THIS KNOB, and saying so is the point.
+    # `git diff` reads tracked content, so `STUB_TREE_UNTRACKED` reaches no driver
+    # path at all and this run is identical to the case above. It is kept as a
+    # named regression marker for the `?? .serena/` incident: it will start
+    # discriminating again only if the guard ever reverts to a `status`-based
+    # form. Calling it a witness would be the exact defect this file's header
+    # warns about, committed in the same diff that restates the rule.
     run_case untracked_only_is_still_refused 2 "there is nothing to vary" \
         STUB_WORKTREE_MATCHES_BASE=1 STUB_TREE_UNTRACKED=1
 
@@ -976,8 +1056,23 @@ run_positive_control test-line-guard-removed \
 # guard must let BOTH a fully-red baseline and a disjoint test set through.
 # shellcheck disable=SC2016
 run_positive_control unattributable-guard-removed \
-    's|^if \[ "${COMPARABLE}" -eq 0 \]; then|if false; then|' \
-    all_rows_unattributable disjoint_test_sets
+    's|^if \[ "${COMPARABLE}" -eq 0 \] && \[ "${#SILENCED\[@\]}" -eq 0 \]; then|if false; then|' \
+    all_rows_unattributable disjoint_test_sets every_row_ignored_at_base
+
+# The split inside the base-ignored arm. Without it the arm excludes on R1 alone
+# and a test red at HEAD rides out at rc 0 with `FAILED` printed in its own row.
+# shellcheck disable=SC2016
+run_positive_control base_ignored_r3_split_removed \
+    's|^        if \[ "${R3\[${name}\]}" = "FAILED" \]; then|        if false; then|' \
+    base_ignored_but_failing_at_head
+
+# The reasoned-ignore rendering. Reverting the regex to the bare-only form is
+# exactly the state the driver shipped in for two rounds, and it must not be
+# reachable again silently: both directions of the reasoned form have to fail.
+# shellcheck disable=SC2016
+run_positive_control reasoned_ignore_parse_removed \
+    's#(ok|FAILED|ignored(, .\*)?)#(ok|FAILED|ignored)#' \
+    head_silenced_with_a_reason base_carries_a_reasoned_ignore
 
 # shellcheck disable=SC2016
 run_positive_control rc-consistency-guard-removed \
