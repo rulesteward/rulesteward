@@ -193,10 +193,17 @@ if [ "${1-}" = "rev-parse" ]; then
 fi
 
 if [ "${1-}" = "status" ]; then
+    # Does the caller want untracked files suppressed? The driver passes -uno,
+    # because an untracked path is not part of the build and must not read as a
+    # modified tree.
+    uno=0
+    for a in "$@"; do case "${a}" in -uno|--untracked-files=no) uno=1 ;; esac; done
     if [ "${in_worktree}" -eq 1 ]; then
         [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
     else
         [ -n "${STUB_TREE_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
+        # Untracked-only: visible to a bare `status --porcelain`, invisible to -uno.
+        [ -n "${STUB_TREE_UNTRACKED:-}" ] && [ "${uno}" -eq 0 ] && echo "?? .serena/"
     fi
     exit 0
 fi
@@ -585,6 +592,11 @@ run_all_cases() {
     # mode and must keep working.
     run_case base_equals_head_but_dirty_is_allowed 0 "OK (0 regressions" \
         STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_DIRTY=1
+    # UNTRACKED files are not part of the build, so they must not read as "dirty"
+    # and thereby disable the guard. Found by running the real recipe on a tree
+    # that looked clean and getting rc 0: a single `?? .serena/` was enough.
+    run_case base_equals_head_untracked_only_is_refused 2 "there is nothing to vary" \
+        STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_UNTRACKED=1
 
     # --- the cached base worktree must BE the base ---------------------------
     # Directory existence was the whole reuse predicate, while the report kept
@@ -783,8 +795,8 @@ run_positive_control summary-crosscheck-removed \
 # discriminated, 228 scenarios)` from two builds of identical source.
 # shellcheck disable=SC2016
 run_positive_control nothing-to-vary-guard-removed \
-    's|^if \[ "${BASE_SHA}" = "${HEAD_SHA}" \] && \[ -z "$(git status --porcelain)" \]; then|if false; then|' \
-    base_equals_head_is_refused
+    's|^if \[ "${BASE_SHA}" = "${HEAD_SHA}" \] && \[ -z "$(git status --porcelain -uno)" \]; then|if false; then|' \
+    base_equals_head_is_refused base_equals_head_untracked_only_is_refused
 
 # shellcheck disable=SC2016
 run_positive_control cache-sha-guard-removed \

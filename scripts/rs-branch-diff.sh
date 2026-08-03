@@ -234,7 +234,12 @@ if ! HEAD_SHA="$(git rev-parse --verify "HEAD^{commit}" 2>"${WORK}/rev-parse-hea
     tail -5 "${WORK}/rev-parse-head.err" >&2
     die 2 "could not resolve HEAD to a commit; cannot confirm the base differs from this tree"
 fi
-if [ "${BASE_SHA}" = "${HEAD_SHA}" ] && [ -z "$(git status --porcelain)" ]; then
+# `-uno`: UNTRACKED files are not part of the build and must not count as
+# "dirty". Without it a single stray untracked path silently disabled this whole
+# guard - caught by running it on what looked like a clean tree and getting rc 0,
+# because `?? .serena/` was enough to make the tree read as modified. A guard that
+# has never been observed firing is not known to be a guard.
+if [ "${BASE_SHA}" = "${HEAD_SHA}" ] && [ -z "$(git status --porcelain -uno)" ]; then
     die 2 "base ref '${BASE_REF}' resolves to this tree's own commit (${BASE_SHA:0:12}) and the tree is clean, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
 fi
 
@@ -301,7 +306,7 @@ fi
 if [ "${wt_sha}" != "${BASE_SHA}" ]; then
     die 2 "the cached base worktree ${WT} is at ${wt_sha:0:12}, not the requested base ${BASE_SHA:0:12}; refusing to report a comparison against a sha nothing established (remove that directory to rebuild it)"
 fi
-wt_dirty="$(git -C "${WT}" status --porcelain 2>/dev/null)"
+wt_dirty="$(git -C "${WT}" status --porcelain -uno 2>/dev/null)"
 if [ -n "${wt_dirty}" ]; then
     printf '%s\n' "${wt_dirty}" | head -10 >&2
     die 2 "the cached base worktree ${WT} has uncommitted changes, so the binary built from it is not ${BASE_SHA:0:12}; remove that directory to rebuild it"
