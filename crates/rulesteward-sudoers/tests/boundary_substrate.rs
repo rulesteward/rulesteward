@@ -1263,6 +1263,52 @@ fn an_empty_quoted_principal_is_rejected() {
     }
 }
 
+/// The run-set delegation must ask about THIS quote, not about runs in general.
+///
+/// `!runs.iter().any(|(_, end)| end == open)` reads "no run ends AT this quote".
+/// The mutation gate found that flipping the comparison to `end != open` - which
+/// reads "every run ends at this quote", vacuously true when there are none -
+/// survived every other test on the branch. It is the round-3 too-wide bug
+/// wearing a different spelling: whenever ANY run exists elsewhere in the LHS,
+/// the mutant suppresses the glued-opener candidate that this input needs.
+///
+/// `alice, x"b c" = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with
+/// `User_List [alice, x]` and `Host_List [b c]` (rs-oracle9, sudo 1.9.17p2,
+/// 2026-08-03). The run after the comma is REJECTED as a boundary because its
+/// `before` ends with `,`, so the glued opener at the quote is the only
+/// candidate that can produce the correct split. Under the mutant there is no
+/// candidate at all and the line becomes a false `sudo-F01` that drops the
+/// grant - the same fail-open signature as #651 itself.
+///
+/// The spaced control `alice, x "b c" = ...` is rc 0 with the identical parse
+/// and reaches it through the whitespace run, so it does NOT distinguish the
+/// mutant. It is here to show the difference is the glued spelling.
+#[test]
+fn a_glued_opener_is_still_a_boundary_when_a_run_exists_elsewhere() {
+    for src in [
+        "alice, x\"b c\" = NOPASSWD: ALL\n",
+        // Control: reaches the same parse via the whitespace run.
+        "alice, x \"b c\" = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            0,
+            "visudo rc 0: no sudo-F01 may fire: {src:?}"
+        );
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["alice".to_string(), "x".to_string()],
+            "cvtsudoers reports two usernames: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["\"b c\"".to_string()],
+            "the host is the quoted token: {src:?}"
+        );
+    }
+}
+
 /// A quoted principal whose value CONTAINS whitespace. This is the case a
 /// whitespace-run boundary can never reach on its own: the only space in the
 /// line sits INSIDE the quoted span, so before the fix there was no candidate
