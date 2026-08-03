@@ -142,37 +142,69 @@ jobs:
       - name: Capture-write guard (bare writes in Tier-2 capture scripts)
         run: bash scripts/check-capture-writes.sh
 
-      # (session 9k-1) Oracle-harness self-tests: the four INSTRUMENTS behind
-      # the differential recipes and the capture-write guard are themselves
-      # gated here. scripts/rs-oracle-diff.sh maps a mess of exit codes onto
-      # the 0/1/2/3 dev-tooling contract and every wrong branch in it fails
-      # toward "clean", so a green `just diff-<lane>` run proves nothing about
-      # it; the fail-closed RS_REQUIRE_<ORACLE> predicate has already been
-      # shipped wrong once as a `== "1"` comparison; and
-      # scripts/check-capture-writes.sh / scripts/rs-capture-guard.sh share the
-      # same "an unverified instrument can report clean having checked
-      # nothing" risk (see the Capture-write guard step's own comment above).
-      # Each suite proves it can catch a real, deliberately-seeded bad
-      # implementation with NAMED cases, so none of the four can pass having
-      # checked nothing. Pure bash - cargo and docker are stubbed, no
-      # containers, no network - so they belong in the lint tier alongside the
-      # other guards.
-      #
-      # Invoked as four direct `bash` steps rather than via `just
-      # oracle-harness-test` because `just` is not on the GitHub-hosted runner
-      # (see the trustdb-contention job, which installs it); separate steps
-      # also name which instrument failed without reading the log.
-      - name: Oracle-required predicate self-test (fail-closed parsing)
-        run: bash scripts/rs-oracle-required-test.sh
+  # (#665) Instrument tier: every scripts/*-test.sh self-test, plus the
+  # corpus-growth guard. An unverified instrument is the exact failure this
+  # project's contract exists to prevent - a gate that reports clean having
+  # scanned nothing is indistinguishable downstream from a real pass.
+  #
+  # This job REPLACES four hand-typed `bash` self-test steps that used to live
+  # in fmt-clippy. Those four ran; the other SIX did not run in any CI job at
+  # all, including check-corpus-growth-test.sh and the extended
+  # check-doc-citations-test.sh. Worse, `scripts/check-corpus-growth.sh` itself
+  # was invoked by no workflow, so the gate that exists to make non-accumulating
+  # ATL evidence impossible to ship silently could not fail anyone's PR - a
+  # local convention wearing the costume of an enforced one, which is the same
+  # shape as #572.
+  #
+  # `just instrument-test` rather than ten `bash` steps, deliberately. The
+  # recipe carries two anti-vacuity assertions that exist nowhere else: every
+  # non-test script in scripts/ must appear in its loop (`guards` count) and the
+  # loop must actually have run (`ran` count). Hand-typed steps leave both
+  # unrun in CI, so the step list can drift out of sync with scripts/ again -
+  # precisely the gap that let six self-tests go unrun. The cost is that a
+  # failure names the instrument in the log rather than in the step title;
+  # the recipe prints `instrument-test: <name>-test rc=<n>` per suite, so the
+  # name is still one grep away.
+  #
+  # No toolchain, no build deps, no rust-cache: `instrument-test` is pure bash
+  # (cargo and docker are stubbed inside the suites) and `corpus-growth-guard`
+  # is pure git. Only `just` itself has to be installed.
+  instruments:
+    name: instrument self-tests + corpus-growth guard (#665)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 is REQUIRED here and is set on no other checkout in this
+      # file. check-corpus-growth.sh defaults its base to
+      # `git merge-base origin/main HEAD`; at the default depth 1 there is no
+      # origin/main and no merge base, so the guard would correctly report rc 2
+      # on every run. Wiring the step without the fetch depth converts a silent
+      # non-gate into a permanently red one. It stays confined to this job so
+      # the other checkouts keep their shallow-clone speed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Differential driver self-test (exit-code contract)
-        run: bash scripts/rs-oracle-diff-test.sh
+      # `just` is not on the GitHub-hosted runner; install it from the prebuilt
+      # release via taiki-e/install-action (same SHA-pinned action the audit /
+      # deny / llvm-cov / trustdb-contention jobs use) so the recipes stay the
+      # single source of truth.
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        with:
+          tool: just
 
-      - name: Capture-guard helper self-test (rs_checked / rs_checked_write / rs_capture_verify_output)
-        run: bash scripts/rs-capture-guard-test.sh
+      # Runs all 10 suites and asserts the two counts. Each suite proves it can
+      # catch a real, deliberately-seeded bad implementation with NAMED cases,
+      # so none of them can pass having checked nothing.
+      - name: Instrument self-tests (all 10, with the count assertions)
+        run: just instrument-test
 
-      - name: Capture-write gate self-test (bare-write detection)
-        run: bash scripts/check-capture-writes-test.sh
+      # (#658) A branch that changes crates/X/src/** must ADD a file under
+      # crates/X/tests/corpus/**. On a pull_request event HEAD is the merge
+      # commit, so the merge base is the current main tip and the examined
+      # range is exactly the PR's own changes. A base that cannot be resolved
+      # is rc 2, never a clean report.
+      - name: Corpus-growth guard (ATL evidence must accumulate)
+        run: just corpus-growth-guard
 
   # rocky-suite: per-Rocky test + musl smoke in a single container.
   # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
