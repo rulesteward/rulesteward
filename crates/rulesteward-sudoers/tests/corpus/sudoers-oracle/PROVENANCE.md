@@ -612,7 +612,50 @@ see section 10), `negated-user`, `negated-host` (added 2026-07-27, round 4,
 none xfailed - project cleanly, first end-to-end negation-mark coverage -
 see section 16), `negated-uid-subject` (added 2026-07-27, round 4; L1 xfail
 - a tracked `rulesteward-core` parser bug, drafted but not filed - AND L3
-xfail; see section 16).
+xfail; see section 16), `glued-closing-quote-principal`,
+`glued-closing-quote-with-inner-space`, `glued-closing-quote-after-comma-list`,
+`spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
+L3 xfail #667 - see section 17).
+
+## Section 17: the corpus's first quoted principals (2026-08-03, #651)
+
+Four scenarios added alongside the #651 fix, for a glued CLOSING quote in the
+principal list. Their inputs, all `visudo -c -f -` rc 0 `parsed OK` on all three
+targets:
+
+| scenario | input | oracle User_List / Host_List |
+|---|---|---|
+| `glued-closing-quote-principal` | `"ab"ALL = NOPASSWD: ALL` | `["ab"]` / `["ALL"]` |
+| `glued-closing-quote-with-inner-space` | `"ops team"web1 = NOPASSWD: /bin/ls` | `["ops team"]` / `["web1"]` |
+| `glued-closing-quote-after-comma-list` | `alice,"b c"ALL = NOPASSWD: ALL` | `["alice","b c"]` / `["ALL"]` |
+| `spaced-closing-quote-control` | `"ab" ALL = NOPASSWD: ALL` | `["ab"]` / `["ALL"]` |
+
+The fourth is the one-byte control: a single added space is the whole difference
+from the first, which is what isolates the defect to the glued closing quote
+rather than to quoting in a principal generally.
+
+**These are the corpus's FIRST quoted principals.** Checked mechanically when they
+were added: `grep -l '"' */input.sudoers` returned exactly these four, so not one
+of the 41 pre-existing scenarios contained a double quote. That gap sat on the
+most defect-dense surface this parser has - #622, #629, #630, #631, #643 and #651
+are all quote-boundary bugs - and it is the reason a shipped fail-open
+(`"ab"ALL = ...` reported a false `sudo-F01` and dropped its NOPASSWD grant)
+survived every differential run.
+
+All four are L3 xfail against **#667**, a quote-RETENTION divergence they were the
+first to reach: the AST keeps the surrounding quotes and `cvtsudoers` reports the
+dequoted value, with every structural field agreeing. That is independent of #651
+- the SPACED control parses correctly with or without the fix, its L1 passes in
+both states, and it still diverges at L3. L1 compares all four on all three
+targets and is the layer that witnesses the fix.
+
+Captured with `capture_sudoers.sh` into a staging directory, never hand-authored.
+Re-capturing the 41 pre-existing scenarios first reproduced all 123 committed
+files byte-for-byte, which is what makes the four new verdicts trustworthy.
+
+Note the script's header claim that it may be invoked with its own directory as
+the output dir is FALSE: `cp` then sees source and destination as the same file
+and it exits rc 2. Capture to a staging dir and copy back.
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -

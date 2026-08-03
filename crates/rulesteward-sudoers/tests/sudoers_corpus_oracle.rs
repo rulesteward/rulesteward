@@ -534,20 +534,38 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// OWN (drafted, unfiled) issue rather than being folded in.
 /// The four `Some(667)` entries (added with #651's corpus rows) are a QUOTE-
 /// RETENTION divergence, not a structural one: for a quoted principal the two
-/// projections agree on `tuple_count`, arity, order, hosts and commands, and
-/// differ only in that the AST keeps the surrounding `"` (`ast.rs`: "kept
-/// verbatim", frozen by `boundary_substrate.rs`'s `["\"a=b\""]` and `["\"a b\""]`)
-/// while `cvtsudoers` reports the dequoted value.
+/// projections agree on `tuple_count`, arity, hosts and commands, and differ only
+/// in that the AST keeps the surrounding `"` while `cvtsudoers` reports the
+/// dequoted value. ORDER is deliberately NOT among the things checked - every
+/// comparison here goes through [`sorted_eq`], which is documented multiset
+/// equality, so an order regression on these rows is out of scope for this gate
+/// as it is for every other.
+///
+/// The verbatim-quote convention is stated at `boundary_substrate.rs:115-117`
+/// ("Values are kept VERBATIM from the source bytes, quotes included, per the
+/// crate's convention") and frozen by its `["\"a=b\""]` and `["\"a b\""]`
+/// assertions. `ast.rs`'s own "kept verbatim" is about `!`-negation, not quoting,
+/// so it is deliberately not cited here.
 ///
 /// They are xfailed rather than fixed here because resolving it means either
 /// editing this differential gate's own comparison or changing the public AST,
 /// and #651's implementer does not alter a barrier test to reach green. #667
 /// carries the three candidate resolutions.
 ///
-/// NOTHING about #651 rests on these entries. L1 compares all four scenarios and
-/// is the layer that witnesses the fix: with the `close + 1` guard reverted, L1
-/// fails with `our F01 verdict (rejects=true) disagrees with the oracle
-/// (rejects=false)`. Measured, not reasoned - the mutant was built and run.
+/// NOTHING about #651 rests on these entries. L1 is the PRIMARY witness: it
+/// compares all four scenarios on all three targets and, with the `close + 1`
+/// guard reverted, fails with `our F01 verdict (rejects=true) disagrees with the
+/// oracle (rejects=false)`. The `#667` arm below is a SECOND witness rather than
+/// inert - the same reverted guard trips its own `tuple_count` assertion
+/// (`ast=0 cvt=1`), which is exactly what an arm pinned this tightly is built to
+/// do.
+///
+/// verified: 2026-08-03 - guard deleted, `cargo test -p rulesteward-sudoers
+/// --no-fail-fast` gives rc 101, 600 passed / 6 failed, with BOTH
+/// `l1_f01_matches_visudo_verdict_per_target` and
+/// `l3_structure_projection_matches_cvtsudoers` among the failures.
+/// `--no-fail-fast` is REQUIRED to observe this: without it the run stops after
+/// `boundary_substrate` fails and neither corpus layer executes at all.
 ///
 /// Reaching them at all required the corpus's FIRST quoted principals: none of
 /// the 41 pre-existing scenarios contained a double quote, on the most
@@ -2036,16 +2054,38 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.commands,
                             cvt_proj.commands
                         );
-                        let dequoted: Vec<String> = ast_proj
-                            .users
-                            .iter()
-                            .map(|u| u.trim_matches('"').to_string())
-                            .collect();
+                        // EXACTLY ONE BALANCED PAIR, never `trim_matches('"')`.
+                        //
+                        // `trim_matches` strips ANY number of quotes from BOTH
+                        // ends independently, so it also absorbs an UNBALANCED
+                        // token - and an unbalanced principal quote is precisely
+                        // what this defect family produces. `simple_quote_pairs`
+                        // silently drops a trailing unmatched quote
+                        // (`chunks_exact(2)`), and an off-by-one in the very
+                        // guard #651 adds yields users `"ops team` with a clean
+                        // host `web1`: tuple_count, hosts and commands all agree
+                        // and `trim_matches` would have eaten the stray quote.
+                        //
+                        // Measured with `trim_matches`: a corpus scenario whose
+                        // input was changed to `"ab ALL = NOPASSWD: ALL` (one
+                        // unbalanced quote) passed EVERY layer, rc 0. #667 is a
+                        // BALANCED one-pair divergence, so the assertion states
+                        // exactly that and nothing wider.
+                        let unwrap_one_pair = |u: &str| -> String {
+                            let b = u.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                u[1..u.len() - 1].to_string()
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> =
+                            ast_proj.users.iter().map(|u| unwrap_one_pair(u)).collect();
                         assert!(
                             sorted_eq(&dequoted, &cvt_proj.users),
-                            "L3 {id} ({target}): #667 predicts the users lists agree once the \
-                             AST's retained quotes are stripped; got ast={:?} dequoted={:?} \
-                             cvt={:?}",
+                            "L3 {id} ({target}): #667 predicts the users lists agree once ONE \
+                             balanced quote pair is removed from each AST token; got ast={:?} \
+                             unwrapped={:?} cvt={:?}",
                             ast_proj.users,
                             dequoted,
                             cvt_proj.users

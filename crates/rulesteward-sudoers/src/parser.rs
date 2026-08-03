@@ -2072,18 +2072,30 @@ fn comma_split(s: &str) -> Vec<String> {
 /// `cvtsudoers -f json` reports `User_List ["ab"]` / `Host_List ["ALL"]`
 /// (re-derived on rs-oracle9, sudo 1.9.17p2, 2026-08-02).
 ///
-/// This is the SAME `close + 1` rule [`option_value_end`] and [`parse_cmnd_spec`]
-/// already model on the value/command side. Three recognizers of one concept, and
-/// until #651 the principal one was the odd out - the recurring shape on this
-/// surface (#622, #629, #630, #631, #643).
+/// The shared abstraction is "the next token starts one byte past the CLOSING
+/// DELIMITER", and it is worth naming precisely rather than loosely:
+///
+///   * [`option_value_end`] is the same rule for the same delimiter - a closing
+///     QUOTE (`return close + 1`, #631).
+///   * [`parse_cmnd_spec`] is the same rule for a different delimiter: its
+///     `close` comes from `after_open.find(')')`, a closing PAREN of the runas
+///     group. Do NOT read it as a co-model of the quote rule - that `find(')')`
+///     is quote-BLIND, stops at a quoted paren and truncates `"a)b"` to `"a`,
+///     and is filed as #650.
+///
+/// So two quote recognizers and one paren recognizer, and until #651 the
+/// principal-side quote one was the odd out. Recognizers of one concept
+/// disagreeing is the recurring shape on this surface (#622, #629, #630, #631,
+/// #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
     let lhs = lhs.trim();
     let bytes = lhs.as_bytes();
 
     // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
     // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
-    // resume after the run; a glued-quote candidate resumes AT the quote itself
-    // (no whitespace to skip).
+    // resume after the run; a glued-OPENER candidate resumes AT the quote itself
+    // (no whitespace to skip); a glued-CLOSER candidate (#651) resumes one byte
+    // PAST the closing quote, which is where the next token begins.
     let mut candidates: Vec<(usize, usize)> = unquoted_whitespace_runs(lhs);
     for (open, close) in simple_quote_pairs(lhs) {
         if open > 0 {
@@ -2102,8 +2114,24 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         //
         // A `close` at the very end of `lhs` yields no candidate (`get` is None).
         // A following `,` or whitespace is excluded for the same reasons as in
-        // the opener rule: whitespace is already a candidate via
+        // the opener rule: whitespace already yields a candidate via
         // `unquoted_whitespace_runs`, and a `,` means the run continues.
+        //
+        // Neither exclusion is observable ON ITS OWN - drop the whitespace one
+        // and `comma_split`'s `str::trim` absorbs the stray candidate, drop the
+        // comma one and the continuation filter below rejects it. They become
+        // load-bearing only where the two cases MEET, on `"ab" ,alice ALL`,
+        // which `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        // pins. Both mutants of this `close + 1` survived until that test
+        // existed.
+        //
+        // `is_ascii_whitespace` here vs `char::is_whitespace` in
+        // `unquoted_whitespace_runs` is a real asymmetry, shared with the
+        // pre-existing opener guard above: a NON-ASCII whitespace char after the
+        // closing quote is not excluded, so this candidate is pushed and, sorting
+        // first, wins over the run candidate. The split stays correct because
+        // `str::trim` is Unicode-aware and removes it downstream; the exclusion
+        // is simply inert there rather than wrong.
         if let Some(&next) = bytes.get(close + 1)
             && next != b','
             && !next.is_ascii_whitespace()
@@ -2118,9 +2146,12 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         let after = &lhs[resume..];
         // The run continues across this boundary if a comma sits on either side
         // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
-        // its own token and both adjacent runs continue). A glued-quote candidate
-        // never itself ends with `,` (excluded above) and never starts with `,`
-        // (it starts with `"`), so it always passes this check.
+        // its own token and both adjacent runs continue). Both glued candidates
+        // always pass this check, but for DIFFERENT reasons, and stating one
+        // reason for both was wrong once already: an OPENER candidate's `after`
+        // literally starts with `"`, while a CLOSER candidate's `after` starts
+        // with the next token's first byte, which is `,`-excluded at the push
+        // site instead. Neither `before` ends with `,` (excluded above).
         if !before.ends_with(',') && !after.starts_with(',') {
             // `lhs` is trimmed and `after` starts right after the boundary (a
             // non-whitespace char, a quote, or the string end), so both halves

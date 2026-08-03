@@ -773,8 +773,11 @@ fn control_single_backslash_still_escapes_the_quote() {
 // The principal side modelled the glued OPENER and not the glued CLOSER. That
 // asymmetry is the bug.
 //
-// PRE-EXISTING, not a regression: identical on the fork point `96038c9` and on
-// `fix/sudoers-boundary-substrate`.
+// PRE-EXISTING, not a regression: identical on `96038c9` (the fork point of the
+// PREVIOUS branch, `fix/sudoers-boundary-substrate`, not of this one - this
+// branch forks at `ee250aa`) and on that branch's tip. `96038c9` is the right
+// baseline for the claim because it PRECEDES the change being exonerated;
+// `split_user_list` there still reads `for (open, _close) in ...`.
 //
 // Ground truth re-derived on rs-oracle9 (sudo 1.9.17p2) 2026-08-02, every row
 // `visudo -c -f -` rc 0 `parsed OK`, every row carrying a one-byte space
@@ -807,19 +810,26 @@ fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
 /// difference, which is what isolates the defect to the glued CLOSING quote
 /// rather than to quoting in a principal generally.
 ///
-/// The STRUCTURAL assertion is what makes this a control rather than decoration,
-/// and it is here because the mutation gate proved the lint-count pair alone was
-/// blind. `bytes.get(close + 1)` -> `bytes.get(close - 1)` survived: the mutated
-/// guard inspects a byte INSIDE the quoted token (`b`), which is neither
-/// whitespace nor `,`, so it pushes a candidate at `close + 1` even here - where
-/// `close + 1` IS the space. That candidate sorts BEFORE the whitespace-run
-/// candidate `(close + 1, close + 2)` and wins, so the host list comes back as
-/// `" ALL"` with a leading space instead of `"ALL"`.
+/// The structural assertion below pins the split shape for its own sake. It is
+/// deliberately NOT claimed as a mutant-killer, and the correction is recorded
+/// because getting it wrong once already cost a false comment on this branch.
 ///
-/// `f01_count` and `w01_count` both stayed at their correct values through that,
-/// because the downstream host matching tolerates the stray byte. Only reading
-/// the split itself sees it. Verified by building both mutants and running them
-/// (verified: 2026-08-03, `close - 1` and `close * 1`, both then RED here).
+/// The `bytes.get(close + 1)` -> `close - 1` / `close * 1` mutants SURVIVE this
+/// test, structural assertion included. The mutated guard does push a spurious
+/// candidate `(close + 1, close + 1)` here, where `close + 1` IS the space, and
+/// that candidate does sort ahead of the whitespace run and win - but
+/// `comma_split` maps `str::trim` over the halves, so `host_groups[0].hosts`
+/// comes back `["ALL"]` either way and the stray byte never reaches an
+/// assertion. That is exactly WHY the mutants survived the original five tests.
+///
+/// The kill belongs to `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`,
+/// where the comma-continuation filter, not trimming, is what the spurious
+/// candidate defeats. See that test for the mechanism.
+///
+/// Both mutants were built and run: this test PASSES under each, while
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` goes RED under
+/// each.
+/// verified: 2026-08-03
 #[test]
 fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
     let src = "\"ab\" ALL = NOPASSWD: ALL\n";
@@ -907,6 +917,12 @@ fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
 fn quoted_principal_containing_a_space_glued_to_its_host_still_reports_the_grant() {
     let src = "\"ops team\"web1 = NOPASSWD: /bin/ls\n";
     assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    assert_eq!(
+        w05_count(src),
+        1,
+        "the name promises a reported grant, so assert one: cvtsudoers gives \
+         authenticate false on /bin/ls"
+    );
     let s = only_spec(src);
     assert_eq!(s.users, vec!["\"ops team\"".to_string()]);
     assert_eq!(s.host_groups[0].hosts, vec!["web1".to_string()]);
