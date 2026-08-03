@@ -33,11 +33,16 @@
 //! surface. Do not read a green run of this file as covering them.
 //!
 //! GROUNDING. Every expectation below was re-derived on THIS host on 2026-08-02,
-//! not copied from the issues: `visudo -c -f -` for the rc and `cvtsudoers -f json`
+//! and the #651 cases again on 2026-08-03, not copied from the issues:
+//! `visudo -c -f -` for the rc and `cvtsudoers -f json`
 //! for the AST, both on sudo 1.9.17p2 (`visudo grammar version 50`), both reading
 //! stdin only. The oracle's discrimination was positive-controlled in the same run:
-//! `alice h1 = ` returns rc 1, so the rc 0 behind every case here is meaningful
-//! rather than an oracle that accepts anything.
+//! `alice h1 = ` returns rc 1, so the oracle VERDICT behind every case here is
+//! meaningful rather than an oracle that accepts anything.
+//!
+//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL. The
+//! exceptions are the two `#[ignore]`d #669 cases, which are genuinely rc 1 and
+//! assert an F01 as the CORRECT verdict; see `f01_count`.
 
 use std::path::Path;
 
@@ -72,8 +77,12 @@ fn count_code(src: &str, code: &str) -> usize {
         .count()
 }
 
-/// `sudo-F01`: the file does not parse. On every input in this file real
-/// `visudo` returns rc 0, so any F01 here is a false FATAL on a valid file.
+/// `sudo-F01`: the file does not parse.
+///
+/// On every input in this file real `visudo` returns rc 0 EXCEPT the two
+/// `#[ignore]`d #669 cases, which are rc 1 (`a\ "b"c` -> `stdin:1:7: syntax
+/// error`, `a\ "b" c` -> `stdin:1:8`) and therefore assert `f01_count == 1` as
+/// the CORRECT verdict. Everywhere else an F01 is a false FATAL on a valid file.
 fn f01_count(src: &str) -> usize {
     count_code(src, "sudo-F01")
 }
@@ -865,14 +874,23 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
     );
 }
 
-/// The guard's two EXCLUSIONS are load-bearing, and this is what proves it.
+/// The guard's WHITESPACE exclusion is load-bearing, and this is its witness.
 ///
-/// `close + 1` is only a boundary when the next byte is neither whitespace (the
-/// whitespace run already supplies a candidate) nor `,` (the user list
-/// continues). Both exclusions look redundant in isolation: drop the whitespace
-/// one and trimming hides it, drop the comma one and the continuation filter
-/// below rejects the candidate anyway. They stop being redundant where the two
-/// cases MEET - a space followed by a comma.
+/// An earlier version of this doc said BOTH exclusions were, and were observable
+/// only where the two cases meet. That was wrong in both directions, measured by
+/// deleting each conjunct separately and running the whole suite: deleting the
+/// whitespace exclusion gives rc 101 and fails THIS test, while deleting the
+/// comma exclusion gives rc 0 and a fully green suite.
+///
+/// So the comma exclusion is redundant against the continuation filter - any
+/// candidate it would admit has `after` beginning with `,`, which that filter
+/// rejects unconditionally - and nothing pins it. It is defence-in-depth.
+///
+/// What this test actually pins is narrower and more interesting than "both
+/// exclusions matter": that the whitespace exclusion cannot be dropped even
+/// though trimming appears to make it harmless. It appears harmless because on
+/// every simpler input it IS - `comma_split` maps `str::trim` and absorbs the
+/// stray candidate. The input below is where trimming stops being enough.
 ///
 /// `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with
 /// `User_List ["ab","alice"]`, `Host_List ["ALL"]`, `authenticate false`
@@ -883,8 +901,12 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
 /// A guard that inspects the wrong byte pushes an extra candidate `(4, 4)` whose
 /// `after` is `" ,alice ALL"` - beginning with the SPACE, so
 /// `after.starts_with(',')` is false and the continuation filter no longer fires.
-/// It sorts first, wins, and the line parses as user `"ab"` with host list
-/// `,alice ALL`.
+/// It sorts first, wins, and the line parses as user `"ab"` with the host TEXT
+/// `" ,alice ALL"`. `comma_split` then splits on `,`, trims, and drops empties,
+/// so the leading comma never survives into the AST and `hosts` reads
+/// `["alice ALL"]` - the `alice` that belonged in the USER list, swallowed into
+/// a host token. The users assertion below is what fires; the hosts one is
+/// stated for shape.
 ///
 /// This is the case the mutation gate found: `bytes.get(close + 1)` ->
 /// `bytes.get(close - 1)` and `-> bytes.get(close * 1)` both survived the
@@ -905,7 +927,8 @@ fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
     assert_eq!(
         s.host_groups[0].hosts,
         vec!["ALL".to_string()],
-        "the host list is exactly `ALL`, not `,alice ALL`"
+        "the host list is exactly `ALL`, not `alice ALL` (comma_split drops the \
+         leading comma, so the mutant's damage shows up as a swallowed principal)"
     );
 }
 
@@ -972,10 +995,23 @@ fn a_three_token_left_hand_side_with_a_spaced_quote_is_also_rejected() {
     assert_eq!(f01_count(src), 1, "visudo rc 1: sudo-F01 must fire");
 }
 
-/// The two-token controls, which must keep parsing. If either of these ever
-/// fires `sudo-F01`, the arity check above has become a false-FATAL generator -
-/// the worst regression shape for a compliance linter, and the reason the check
-/// reuses the splitter's own candidate logic instead of a fresh whitespace scan.
+/// The two-token controls, which must keep parsing.
+///
+/// There is NO arity check in the tree - an earlier version of this doc said
+/// "the arity check above", pointing at an `#[ignore]`d test rather than at any
+/// code, and describing an internal design property of a repair that was
+/// reverted (see #669). This is a forward-looking constraint on whatever fix
+/// #669 eventually takes: if it ever makes one of these ten shapes fire
+/// `sudo-F01`, it has become a false-FATAL generator, which is the worst
+/// regression shape for a compliance linter. Whatever detects the arity should
+/// reuse the splitter's own candidate logic rather than a fresh whitespace scan,
+/// so that "where does a token end" has one recognizer and not two.
+///
+/// Honest about its own strength: `f01_count == 0` is a Malformed-ABSENCE check,
+/// not a parse-CORRECTNESS one. `a b c = NOPASSWD: ALL` also scores 0 here while
+/// producing a garbage host token. All ten shapes were verified correct against
+/// `cvtsudoers` when this was written, but eight of them carry no structural pin
+/// in this test.
 #[test]
 fn control_two_token_left_hand_sides_still_parse() {
     for src in [
@@ -991,6 +1027,44 @@ fn control_two_token_left_hand_sides_still_parse() {
         "my\\ user ALL = ALL\n",
     ] {
         assert_eq!(f01_count(src), 0, "must still parse: {src:?}");
+    }
+}
+
+/// The same MEET case with a NON-ASCII space, which the first version of the
+/// closer guard got wrong.
+///
+/// The guard shipped testing the BYTE at `close + 1` with
+/// `u8::is_ascii_whitespace`, while `unquoted_whitespace_runs` tests the CHAR
+/// with `char::is_whitespace`. U+00A0 is whitespace to the second and not to the
+/// first, so the closer candidate was pushed AND a run was emitted; the
+/// candidate sorted first and won, `after` began with the NBSP rather than with
+/// `,`, the continuation filter could not fire, and `alice` was swallowed into a
+/// host token. The fork point `ee250aa` split this correctly, so it was a
+/// regression from #651's own fix.
+///
+/// `visudo -c -f -` gives rc 1 on this line (U+00A0 is not a sudoers
+/// separator), so NEITHER sha reaches the right verdict - that belongs to #669's
+/// three-token gap. What is pinned here is the SPLIT: the user list must keep
+/// `alice`, which is the axis where HEAD had become strictly worse than base.
+///
+/// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
+#[test]
+fn a_non_ascii_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+    for src in [
+        "\"ab\"\u{a0},alice ALL = NOPASSWD: ALL\n",
+        "\"ab\"\u{b},alice ALL = NOPASSWD: ALL\n",
+    ] {
+        let s = only_spec(src);
+        assert_eq!(
+            s.users,
+            vec!["\"ab\"".to_string(), "alice".to_string()],
+            "the comma continues the USER list even after a non-ASCII space: {src:?}"
+        );
+        assert_eq!(
+            s.host_groups[0].hosts,
+            vec!["ALL".to_string()],
+            "the host list must not swallow `alice`: {src:?}"
+        );
     }
 }
 

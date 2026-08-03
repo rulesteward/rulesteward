@@ -389,8 +389,29 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-negated-user`, `accept-negated-host`) added 2026-07-27 (round 4),
 /// where the first two give the round-3 negation MARK its first end-to-end
 /// (parser -> captured-oracle) coverage, and the third is L1's first-ever
-/// xfail (see the module doc's "L1" section and `L1_XFAIL`).
-const SCENARIO_FLOOR: usize = 41;
+/// xfail (see the module doc's "L1" section and `L1_XFAIL`); 4 more `accept-*`
+/// scenarios (`accept-glued-closing-quote-principal`,
+/// `accept-glued-closing-quote-with-inner-space`,
+/// `accept-glued-closing-quote-after-comma-list`,
+/// `accept-spaced-closing-quote-control`) added 2026-08-03 with #651, the
+/// corpus's first quoted principals - see `PROVENANCE.md` section 17.
+/// 22 + 8 + 2 + 6 + 3 + 4 = 45.
+///
+/// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
+/// #651 initially forgot. The floor is a ONE-SIDED anti-DELETION guard, so it
+/// does not fail when it is too low - it silently stops binding. Left at 41
+/// against a corpus of 45, four scenario directories could be deleted and all
+/// three layers still reported `607 passed`, byte-identical to a clean run
+/// (measured 2026-08-03 in a detached worktree: `reject-cmnd-alias-empty-members`,
+/// `reject-defaults-bare`, `reject-defaults-scope-no-target` and
+/// `reject-no-equals-garbage` removed, rc 0). Half the reject side can vanish
+/// unnoticed. That is exactly the #572 shape this project's `no-mnt-guard`
+/// exists to prevent: a corpus destroyed and the harness reporting success
+/// forever after.
+///
+/// verified: 2026-08-03 - with the floor at 45, deleting ONE scenario fails
+/// again, which is this constant's own positive control.
+const SCENARIO_FLOOR: usize = 45;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -429,11 +450,20 @@ const SCENARIO_FLOOR: usize = 41;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: 33 accept scenarios x 3
-/// targets = 99 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 98 attempted; minus 3 xfail hits (the 1 remaining `L3_XFAIL`
-/// scenario x 3 targets, minus 0 scope-out/xfail overlap now that
+/// Cross-check, which AGREES with the measurement: **37** accept scenarios x 3
+/// targets = 111 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 110 attempted; minus **15** xfail hits (the **5** `L3_XFAIL`
+/// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
 /// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 95.
+///
+/// Those numbers were 33 / 99 / 98 / 3 until 2026-08-03 and every one of them
+/// was stale, while the RESULT stayed 95 and nothing failed. #651 added 4 accept
+/// scenarios and 4 `L3_XFAIL` entries, so each new scenario contributed +1
+/// attempted and +1 xfail hit per target and the two errors cancelled exactly.
+/// A cross-check that survives its own inputs going wrong is not cross-checking
+/// anything, which matters because this const's doc tells a later reader to
+/// investigate if the number MOVES. Update all four figures in the same commit
+/// that adds a scenario or an `L3_XFAIL` entry.
 ///
 /// 84 -> 95 is exactly the four #538 scenarios leaving `L3_XFAIL`:
 /// `accept-user-list-whitespace-bug`, `accept-notbefore` and
@@ -534,9 +564,21 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// OWN (drafted, unfiled) issue rather than being folded in.
 /// The four `Some(667)` entries (added with #651's corpus rows) are a QUOTE-
 /// RETENTION divergence, not a structural one: for a quoted principal the two
-/// projections agree on `tuple_count`, arity, hosts and commands, and differ only
-/// in that the AST keeps the surrounding `"` while `cvtsudoers` reports the
-/// dequoted value. ORDER is deliberately NOT among the things checked - every
+/// projections agree on `tuple_count`, hosts and commands, and differ only in
+/// that the AST keeps the surrounding `"` while `cvtsudoers` reports the
+/// dequoted value. (`StructureProjection` has exactly four fields -
+/// `tuple_count`, `users`, `hosts`, `commands` - so those ARE the axes; an
+/// earlier version of this line also named "arity", which is not one of them.)
+///
+/// What these rows canNOT witness, stated because a reader may reasonably assume
+/// otherwise: `StructureProjection` carries no OPTIONS/TAGS axis and no RUNAS
+/// axis, so dropping `NOPASSWD:` from any of these four inputs, or adding a
+/// `(root)` runas, leaves every corpus layer green. The grant itself is
+/// witnessed only by the `w01_count` / `w05_count` assertions in
+/// `boundary_substrate.rs`, never by a corpus row. Full AST-vs-AST fidelity is
+/// the module doc's declared follow-up.
+///
+/// ORDER is deliberately NOT among the things checked - every
 /// comparison here goes through [`sorted_eq`], which is documented multiset
 /// equality, so an order regression on these rows is out of scope for this gate
 /// as it is for every other.
@@ -561,11 +603,17 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// do.
 ///
 /// verified: 2026-08-03 - guard deleted, `cargo test -p rulesteward-sudoers
-/// --no-fail-fast` gives rc 101, 600 passed / 6 failed, with BOTH
+/// --no-fail-fast` gives rc 101 with BOTH
 /// `l1_f01_matches_visudo_verdict_per_target` and
 /// `l3_structure_projection_matches_cvtsudoers` among the failures.
 /// `--no-fail-fast` is REQUIRED to observe this: without it the run stops after
 /// `boundary_substrate` fails and neither corpus layer executes at all.
+///
+/// The two NAMED tests are the claim; a failure COUNT deliberately is not. An
+/// earlier version of this line said "600 passed / 6 failed" and was falsified
+/// within the same branch by a later commit adding one more test that also
+/// fails on guard deletion. Any count here is invalidated by any added test,
+/// which is how a `verified:` sentinel rots while still looking authoritative.
 ///
 /// Reaching them at all required the corpus's FIRST quoted principals: none of
 /// the 41 pre-existing scenarios contained a double quote, on the most
@@ -2031,9 +2079,12 @@ fn l3_structure_projection_matches_cvtsudoers() {
                         // of these scenarios later developed a REAL structural
                         // regression - a wrong split, a lost host, a swallowed
                         // command - which is precisely the fail-open #651 is
-                        // about. Here a mis-split `"b c"` into `"b` / `c"`
-                        // dequotes to `b` / `c` and still trips the users
-                        // assertion below.
+                        // about. Here a mis-split `"b c"` into `"b` / `c"` is
+                        // left UNCHANGED by `unwrap_one_pair` (neither half has
+                        // a quote at both ends) and so trips the users assertion
+                        // below. `trim_matches` would have stripped both to
+                        // `b` / `c` and absorbed the mis-split - which is the
+                        // whole reason for the difference.
                         assert_eq!(
                             ast_proj.tuple_count, cvt_proj.tuple_count,
                             "L3 {id} ({target}): #667 is quote-retention only, so tuple_count \
@@ -2054,7 +2105,15 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.commands,
                             cvt_proj.commands
                         );
-                        // EXACTLY ONE BALANCED PAIR, never `trim_matches('"')`.
+                        // Removes ONE leading and ONE trailing quote, and only
+                        // when BOTH are present - never `trim_matches('"')`,
+                        // which strips any number from either end
+                        // independently. (It checks the first and last bytes,
+                        // so it is not a true balance check: on `"a"b"` it
+                        // removes two quotes that are not a matched pair. That
+                        // is deliberate simplicity, not an oversight - the
+                        // property it must have is refusing an UNBALANCED
+                        // token, which it does.)
                         //
                         // `trim_matches` strips ANY number of quotes from BOTH
                         // ends independently, so it also absorbs an UNBALANCED

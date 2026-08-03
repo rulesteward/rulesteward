@@ -6,14 +6,15 @@ re-derivation - there is no second, separately-maintained capture path).
 
 ## What is captured
 
-41 scenario directories (33 `accept-*`, 8 `reject-*`) - 30 captured
+45 scenario directories (37 `accept-*`, 8 `reject-*`), 135 JSON documents - 30 captured
 2026-07-25, plus 2 more `accept-*` scenarios added 2026-07-26 (review found
 L2's original xfail table was empty for the wrong reason; see section 5),
 plus 6 more `accept-*` scenarios added 2026-07-27 (review found the users/
 hosts type tag, command negation, and uid/gid canonicalization findings;
 see section 10), plus 3 more `accept-*` scenarios added 2026-07-27, round 4
 (the negation mark's first parser-to-oracle coverage, plus L1's first-ever
-xfail; see section 16), each holding:
+xfail; see section 16), plus 4 more `accept-*` scenarios added 2026-08-03 with
+#651 (the corpus's first quoted principals; see section 17), each holding:
 
 - `input.sudoers` - the raw sudoers source, fed unchanged over stdin.
 - `el8.json` / `el9.json` / `el10.json` - one JSON document per target,

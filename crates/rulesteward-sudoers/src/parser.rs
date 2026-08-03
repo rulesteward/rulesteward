@@ -2117,24 +2117,45 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // the opener rule: whitespace already yields a candidate via
         // `unquoted_whitespace_runs`, and a `,` means the run continues.
         //
-        // Neither exclusion is observable ON ITS OWN - drop the whitespace one
-        // and `comma_split`'s `str::trim` absorbs the stray candidate, drop the
-        // comma one and the continuation filter below rejects it. They become
-        // load-bearing only where the two cases MEET, on `"ab" ,alice ALL`,
-        // which `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
-        // pins. Both mutants of this `close + 1` survived until that test
-        // existed.
+        // The two exclusions are NOT equally load-bearing, and an earlier
+        // version of this comment claimed they were. Measured by deleting each
+        // conjunct separately and running the whole suite:
         //
-        // `is_ascii_whitespace` here vs `char::is_whitespace` in
-        // `unquoted_whitespace_runs` is a real asymmetry, shared with the
-        // pre-existing opener guard above: a NON-ASCII whitespace char after the
-        // closing quote is not excluded, so this candidate is pushed and, sorting
-        // first, wins over the run candidate. The split stays correct because
-        // `str::trim` is Unicode-aware and removes it downstream; the exclusion
-        // is simply inert there rather than wrong.
-        if let Some(&next) = bytes.get(close + 1)
-            && next != b','
-            && !next.is_ascii_whitespace()
+        //   whitespace exclusion deleted -> rc 101,
+        //       `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        //       fails. LOAD-BEARING, and individually observable.
+        //   comma exclusion deleted      -> rc 0, fully green. REDUNDANT.
+        //
+        // The comma one is redundant against the continuation filter below by
+        // construction, not by luck: any candidate it would admit has `after`
+        // beginning with `,`, which that filter rejects unconditionally. It is
+        // kept as defence-in-depth and as a statement of intent, and nothing
+        // pins it - say so rather than implying a test would catch its removal.
+        //
+        // This tests the CHAR at `close + 1` with `char::is_whitespace`, the
+        // SAME predicate `unquoted_whitespace_runs` uses, and that agreement is
+        // deliberate. It first shipped as a byte-level `u8::is_ascii_whitespace`
+        // and the mismatch was a real defect, not a stylistic one: a whitespace
+        // char outside the ASCII set (any non-ASCII one, and ASCII `0x0B`
+        // VERTICAL TAB, which `char::is_whitespace` accepts and the byte test
+        // does not) was NOT excluded here while `unquoted_whitespace_runs` DID
+        // emit a run for it. The candidate was pushed, sorted ahead of the run,
+        // and won.
+        //
+        // On `"ab"<U+00A0>,alice ALL` that swallowed a principal: `after` began
+        // with the NBSP rather than with `,`, so the continuation filter could
+        // not fire, and `alice` - which belongs to the USER list - ended up
+        // inside a host token. The fork point split it correctly. Two
+        // recognizers of "where does whitespace end a token" disagreeing is the
+        // exact shape of every prior regression on this surface, so the fix is
+        // to make them the same predicate rather than to document the gap.
+        // `a_non_ascii_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+        // pins it.
+        //
+        // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.
+        if let Some(next) = lhs[close + 1..].chars().next()
+            && next != ','
+            && !next.is_whitespace()
         {
             candidates.push((close + 1, close + 1));
         }
@@ -2154,8 +2175,10 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // site instead. Neither `before` ends with `,` (excluded above).
         if !before.ends_with(',') && !after.starts_with(',') {
             // `lhs` is trimmed and `after` starts right after the boundary (a
-            // non-whitespace char, a quote, or the string end), so both halves
-            // are already trimmed.
+            // non-whitespace char, a quote, the string end, or - since #651 -
+            // a whitespace char outside `u8::is_ascii_whitespace`'s set, which
+            // the closer guard above deliberately does not exclude), so both
+            // halves are trimmed by the time `comma_split` sees them.
             return (before, after);
         }
     }
