@@ -806,11 +806,33 @@ fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
 /// The one-byte control for face A. A single added space is the whole
 /// difference, which is what isolates the defect to the glued CLOSING quote
 /// rather than to quoting in a principal generally.
+///
+/// The STRUCTURAL assertion is what makes this a control rather than decoration,
+/// and it is here because the mutation gate proved the lint-count pair alone was
+/// blind. `bytes.get(close + 1)` -> `bytes.get(close - 1)` survived: the mutated
+/// guard inspects a byte INSIDE the quoted token (`b`), which is neither
+/// whitespace nor `,`, so it pushes a candidate at `close + 1` even here - where
+/// `close + 1` IS the space. That candidate sorts BEFORE the whitespace-run
+/// candidate `(close + 1, close + 2)` and wins, so the host list comes back as
+/// `" ALL"` with a leading space instead of `"ALL"`.
+///
+/// `f01_count` and `w01_count` both stayed at their correct values through that,
+/// because the downstream host matching tolerates the stray byte. Only reading
+/// the split itself sees it. Verified by building both mutants and running them
+/// (verified: 2026-08-03, `close - 1` and `close * 1`, both then RED here).
 #[test]
 fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
     let src = "\"ab\" ALL = NOPASSWD: ALL\n";
     assert_eq!(f01_count(src), 0);
     assert_eq!(w01_count(src), 1);
+    let s = only_spec(src);
+    assert_eq!(s.users, vec!["\"ab\"".to_string()]);
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host must be exactly `ALL`: a candidate placed ON the space instead \
+         of after it yields a leading-space host that every lint-code count misses"
+    );
 }
 
 /// The structural face, sharper than a lint-code count: the boundary must land
@@ -830,6 +852,50 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
         s.host_groups[0].hosts,
         vec!["ALL".to_string()],
         "the host list starts at close + 1, not at the next whitespace"
+    );
+}
+
+/// The guard's two EXCLUSIONS are load-bearing, and this is what proves it.
+///
+/// `close + 1` is only a boundary when the next byte is neither whitespace (the
+/// whitespace run already supplies a candidate) nor `,` (the user list
+/// continues). Both exclusions look redundant in isolation: drop the whitespace
+/// one and trimming hides it, drop the comma one and the continuation filter
+/// below rejects the candidate anyway. They stop being redundant where the two
+/// cases MEET - a space followed by a comma.
+///
+/// `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with
+/// `User_List ["ab","alice"]`, `Host_List ["ALL"]`, `authenticate false`
+/// (rs-oracle9, sudo 1.9.17p2, 2026-08-03). The whitespace-run candidate
+/// `(4, 5)` is correctly REJECTED because its `after` begins `,alice`, so the
+/// split falls through to the real boundary before `ALL`.
+///
+/// A guard that inspects the wrong byte pushes an extra candidate `(4, 4)` whose
+/// `after` is `" ,alice ALL"` - beginning with the SPACE, so
+/// `after.starts_with(',')` is false and the continuation filter no longer fires.
+/// It sorts first, wins, and the line parses as user `"ab"` with host list
+/// `,alice ALL`.
+///
+/// This is the case the mutation gate found: `bytes.get(close + 1)` ->
+/// `bytes.get(close - 1)` and `-> bytes.get(close * 1)` both survived the
+/// original five tests, including a structural assertion on the spaced control,
+/// because every one of those inputs let trimming or the comma filter absorb the
+/// stray candidate (verified: 2026-08-03, both mutants built and run; RED here,
+/// green everywhere else).
+#[test]
+fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+    let src = "\"ab\" ,alice ALL = NOPASSWD: ALL\n";
+    assert_eq!(f01_count(src), 0, "visudo rc 0: no sudo-F01 may fire");
+    let s = only_spec(src);
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string(), "alice".to_string()],
+        "the comma continues the USER list; it must not be swallowed into the hosts"
+    );
+    assert_eq!(
+        s.host_groups[0].hosts,
+        vec!["ALL".to_string()],
+        "the host list is exactly `ALL`, not `,alice ALL`"
     );
 }
 
