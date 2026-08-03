@@ -14,9 +14,12 @@
 # back into a COPY of the driver and assert that NAMED cases catch it. Without
 # those, this file could pass while testing nothing.
 #
-# NINE, not "each": the driver has 28 `die 2` sites and they are not all
-# controlled. Saying "each" invited the next person to skip adding a control for
-# a new guard because the comment claimed one already existed.
+# NINE, not "each": the driver has substantially more `die 2` sites than that and
+# they are not all controlled. Saying "each" invited the next person to skip
+# adding a control for a new guard because the comment claimed one already
+# existed. No exact site count is quoted, deliberately - the first version of this
+# comment said "28" in the very commit that made it 34, and it was 38 two commits
+# later. Count it with `grep -c 'die 2 '` if you need the number today.
 #
 # Usage: bash scripts/rs-branch-diff-test.sh
 # Exit:  0 all cases pass, 1 a case failed, 2 the suite could not run.

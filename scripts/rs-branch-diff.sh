@@ -63,7 +63,12 @@
 # legitimate precondition to skip on. Inventing one would rebuild #572, where
 # `just diff-fapolicyd` exited 0 with a skip message on every run while checking
 # nothing, from the 2026-07-13 NFS rebuild that destroyed its corpus until the
-# recipe was retired on 2026-07-25: 12 days. Its self-test asserts no case ever yields 3.
+# recipe was retired on 2026-07-25: 12 days.
+#
+# Its self-test asserts that no case in its FIRST pass yields 3 (the suite scopes
+# this correctly; an earlier version of this line dropped the scope). Exit codes
+# from the positive-control phases, where the driver is deliberately sabotaged,
+# are not covered and should not be.
 
 set -uo pipefail
 
@@ -674,15 +679,21 @@ EOF
     # executed.
     #
     # Demanding it unconditionally broke this instrument's own payload case, and
-    # the reason generalises. Three of the four lanes announce the count AFTER
-    # parsing the corpus; only sudoers obeys the invariant its own `announce` doc
-    # states ("call this FIRST, before anything that could panic, with a fixed
-    # count known upfront"). So when the base binary chokes on HEAD's GROWN corpus
+    # the reason generalises. When the base binary chokes on HEAD's GROWN corpus
     # during enumeration - exactly the R2-FAILED signal this driver exists to
-    # report - it never reaches the announcement, and an unconditional guard
-    # turned a DISCRIMINATED row into rc 2. Measured by running the real auditd
-    # and selinux binaries against an override tree carrying one scenario the base
-    # cannot parse.
+    # report - a lane that announces its count after parsing never reaches the
+    # announcement, and an unconditional guard turned a DISCRIMINATED row into
+    # rc 2. Measured against a real auditd binary and an override tree carrying
+    # one scenario it cannot parse: banner emitted, no `scenarios=` line, rc 101.
+    #
+    # As of this commit that is auditd and sysctld. selinux announced late too and
+    # was fixed in this same branch; sudoers is fine for the count that matters
+    # here. Do NOT read sudoers as the model of "always announce first" - its
+    # `announce` doc says the opposite for three of its five call sites, and says
+    # why: L1/L2/L3 announce AFTER their comparison loop with the real accumulated
+    # tally, because how much they compare is data-dependent and unknowable
+    # upfront. An earlier version of this comment cited that doc for the reverse
+    # claim.
     #
     # The BANNER stays mandatory for every run regardless: it is what proves which
     # corpus was read, and nothing else can establish that.

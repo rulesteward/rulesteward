@@ -250,10 +250,15 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
 fn scenarios() -> Vec<(PathBuf, Manifest)> {
     let (root, mode) = corpus_root();
 
-    // Enumeration is split from LOADING so the announcement can precede every
-    // fallible step, which is the invariant sudoers' `announce` doc states: "call
-    // this FIRST, before anything that could panic, with a fixed count known
-    // upfront".
+    // Enumeration is split from LOADING so the announcement precedes the
+    // PER-SCENARIO parse.
+    //
+    // Not "every fallible step", which an earlier version of this comment
+    // claimed: `read_dir` below still panics ahead of the announcement, so an
+    // unreadable corpus ROOT emits no sentinel at all. That case is a corpus the
+    // driver cannot use under any binary, and it is caught as such; the case this
+    // split addresses is a corpus this binary cannot fully parse, which is the
+    // one the driver must be able to attribute.
     //
     // It is not a style point. `Manifest::load` panics on a manifest this binary
     // cannot parse, and the case that produces is precisely the one

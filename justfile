@@ -838,7 +838,7 @@ sudoers-stig-derive product="all":
 # (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30 days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
 # re-seeds that bug into a copy of it and requires named cases to catch it.
 #
-# Exit codes: 0 clean (the success line carries a non-zero scenario count), 1 drift,
+# Exit codes: 0 clean (the success line carries a non-zero count), 1 drift,
 # 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane
 # RS_REQUIRE_AUDITCTL / RS_REQUIRE_SYSTEMD_SYSCTL / RS_REQUIRE_VISUDO - promotes every
 # rc-3 skip to a hard rc-2 failure, which is what the weekly drift workflows set.

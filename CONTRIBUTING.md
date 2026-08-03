@@ -155,10 +155,15 @@ separately.
 
 Adding a lane takes two things. First, the lane's replay test must resolve its
 corpus through `rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
-`sentinel_banner` + `sentinel_count` BEFORE anything that can panic; the driver
-refuses to interpret a run that did not announce the exact path it was handed, and
-a lane that announces only after parsing loses that evidence in precisely the case
-the driver exists to report. Second, a row in the frozen lane table in
+`sentinel_banner` + `sentinel_count`. The BANNER should precede anything that can
+panic, because the driver refuses to interpret a run that did not announce the
+path it was handed. The COUNT is best announced early too, but is not always
+possible: sudoers' L1/L2/L3 announce after their comparison loop with the real
+accumulated tally, because how much they compare is data-dependent. That is why
+the driver requires a count only on a GREEN run. Stated plainly rather than as an
+aspiration: as of 2026-08-03 auditd and sysctld announce their count after
+parsing, so neither is a model for early announcement. Second, a row in the frozen
+lane table in
 `scripts/rs-branch-diff.sh` plus a recipe. Note `selinux` appears in that lane
 table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
 offline-only.
@@ -173,7 +178,7 @@ them when reading a CI log.
 
 | rc | meaning |
 |---|---|
-| 0 | verified clean. The success line MUST carry a non-zero count, e.g. `OK (0 drift, 214 scenarios)` |
+| 0 | verified clean. The success line MUST carry a non-zero count, e.g. `OK (0 drift, 214 scenarios)`. `rs-branch-diff.sh` enforces this as a final gate before printing OK, because its per-run count requirement is green-run-only |
 | 1 | drift: the product and the oracle disagree |
 | 2 | tool/environment error: unparseable transcript, zero data rows, or the oracle was required but missing |
 | 3 | precondition unmet, a legitimate skip (no docker, image absent) |
