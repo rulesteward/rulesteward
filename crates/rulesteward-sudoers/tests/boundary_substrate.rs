@@ -1219,6 +1219,45 @@ fn escaped_whitespace_before_an_opening_quote_still_reports_the_grant() {
     }
 }
 
+/// KNOWN-OPEN, filed as #677. `#[ignore]`d rather than deleted, per this repo's
+/// convention: removing the `#[ignore]` is how the fix gets demonstrated.
+///
+/// An empty quoted principal `""` is not a legal sudoers token - `visudo -c -f -`
+/// gives rc 1, `stdin:1:2: empty string`, on every spelling below, and
+/// `cvtsudoers` refuses identically. `RuleSteward` accepts all four.
+///
+/// Three of them were accepted at the fork point too. The GLUED spelling was
+/// not: `ee250aa` rejected it by accident, having no boundary candidate at all
+/// and falling through to `(lhs, "")`. #651 supplies the missing candidate, so
+/// the accident stops happening and that row flipped from a (correct) Fatal to
+/// silence. Same shape as #669, different scope - an empty principal is not a
+/// three-token LHS, so #669 does not cover it.
+///
+/// The three pre-existing spellings share this test deliberately, so a fix
+/// cannot be a special case for the glued one.
+///
+/// Severity is lower than the fail-opens on this surface and the test says so
+/// rather than leaving it to be inferred: this is a missed Fatal on a file sudo
+/// will NOT load, not a dropped grant on a valid line.
+#[test]
+#[ignore = "#677: an empty quoted principal is accepted; the glued spelling is a #651 regression"]
+fn an_empty_quoted_principal_is_rejected() {
+    for src in [
+        // The #651 regression: rejected at ee250aa, accepted now.
+        "\"\"ALL = /bin/ls\n",
+        // Pre-existing on both shas.
+        "\"\" ALL = /bin/ls\n",
+        "alice \"\" = /bin/ls\n",
+        "alice\"\"ALL = /bin/ls\n",
+    ] {
+        assert_eq!(
+            f01_count(src),
+            1,
+            "visudo rc 1 `empty string`: a Fatal is owed: {src:?}"
+        );
+    }
+}
+
 /// A quoted principal whose value CONTAINS whitespace. This is the case a
 /// whitespace-run boundary can never reach on its own: the only space in the
 /// line sits INSIDE the quoted span, so before the fix there was no candidate
