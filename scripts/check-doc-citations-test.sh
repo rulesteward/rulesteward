@@ -62,7 +62,10 @@ run_case() {
     local name="$1" want_rc="$2" want_sub="$3" comment="$4"
     local box
     box="$(make_repo "${name}")" || { echo "SUITE ERROR: repo build failed" >&2; exit 2; }
-    printf '%s\nfn user() {}\n' "${comment}" >"${box}/crates/thing/src/user.rs"
+    # %b, not %s: the UNWITNESSED-CLAIM cases need MULTI-LINE fixtures to exercise
+    # the 3-line lookahead window, and `\n` in the argument is how they say so.
+    # None of the citation fixtures contain a backslash, so this is inert for them.
+    printf '%b\nfn user() {}\n' "${comment}" >"${box}/crates/thing/src/user.rs"
     git -C "${box}" add -A >/dev/null 2>&1
     local out rc
     out="$(bash "${GATE_UNDER_TEST}" "${box}" 2>&1)"
@@ -117,6 +120,32 @@ run_all_cases() {
     # permanent blind spot rather than a one-off miss.
     run_case case9_historical_word_far_from_the_citation_does_not_exempt 1 'OUT-OF-RANGE' \
         '// the old parser is gone now; see target.rs:99 for the shape'
+
+    # --- Class 2: UNWITNESSED-CLAIM -----------------------------------------
+    # A claim about a test/mutant relationship with nothing saying anyone ran it.
+    run_case case10_claim_without_verified_is_violation 1 'UNWITNESSED-CLAIM' \
+        '// this test goes RED when the guard is deleted'
+
+    run_case case11_verified_on_the_claim_line_witnesses_it 0 'claims scanned' \
+        '// this test goes RED without the guard (verified: 2026-08-02)'
+
+    # The marker is allowed to trail the claim, because the natural way to write
+    # this is claim, then reasoning, then evidence.
+    run_case case12_verified_within_three_lines_witnesses_it 0 'claims scanned' \
+        '// this test goes RED without the guard\n// see the mutant run below\n// verified: 0343c56'
+
+    # Four lines away is not "next to the claim" any more; at that distance the
+    # marker starts belonging to something else.
+    run_case case13_verified_beyond_the_window_is_still_a_violation 1 'UNWITNESSED-CLAIM' \
+        '// this test goes RED without the guard\n//\n//\n//\n// verified: 0343c56'
+
+    run_case case14_claim_exempt_marker_exempts 0 'claims scanned' \
+        '// this test goes RED without the guard (claim-exempt: predates the rule, see #658)'
+
+    # The class is comment-scoped like every other. A string literal that happens
+    # to contain the phrase is not a claim about anything.
+    run_case case15_claim_outside_a_comment_is_ignored 2 'scanned 0 citations' \
+        'fn f() { let s = "goes RED"; }'
 }
 
 GATE_UNDER_TEST="${GATE}"
@@ -179,6 +208,15 @@ run_positive_control vacuity-guard \
     "s/^    sys.exit(2)$/    pass/" \
     case7_citation_outside_a_comment_is_ignored case8_no_citations_at_all_is_vacuous
 
-printf '\ncheck-doc-citations-test: %d cases passed, 2 positive controls\n' "${BASELINE_PASS}"
+# Class 2 silenced: the UNWITNESSED-CLAIM branch stops counting a violation. Its
+# `viol += 1` sits at a DIFFERENT indent from the DEAD-FILE and OUT-OF-RANGE ones
+# (24 spaces against 20), which is what keeps this control scoped to class 2
+# rather than quietly disarming all three at once.
+run_positive_control unwitnessed-claim-detection \
+    "s/^                        viol += 1$/                        pass/" \
+    case10_claim_without_verified_is_violation \
+    case13_verified_beyond_the_window_is_still_a_violation
+
+printf '\ncheck-doc-citations-test: %d cases passed, 3 positive controls\n' "${BASELINE_PASS}"
 echo "CHECK-DOC-CITATIONS TEST PASSED"
 exit 0
