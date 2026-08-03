@@ -200,12 +200,23 @@ if [ "${1-}" = "status" ]; then
     for a in "$@"; do case "${a}" in -uno|--untracked-files=no) uno=1 ;; esac; done
     if [ "${in_worktree}" -eq 1 ]; then
         [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
+        # UNTRACKED inside the cached base worktree. The corpus is enumerated from
+        # the filesystem, so an untracked scenario dir IS part of the base's
+        # replay input - which is why this site must NOT pass -uno.
+        [ -n "${STUB_WT_UNTRACKED:-}" ] && [ "${uno}" -eq 0 ] &&
+            echo "?? crates/rulesteward-auditd/tests/corpus/auditd-oracle/zz-extra/"
     else
         [ -n "${STUB_TREE_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
         # Untracked-only: visible to a bare `status --porcelain`, invisible to -uno.
         [ -n "${STUB_TREE_UNTRACKED:-}" ] && [ "${uno}" -eq 0 ] && echo "?? .serena/"
     fi
     exit 0
+fi
+
+if [ "${1-}" = "diff" ]; then
+    # `git diff --quiet <base> <head> -- <paths>`: 0 = identical, 1 = they differ.
+    [ -n "${STUB_TREES_IDENTICAL:-}" ] && exit 0
+    exit 1
 fi
 
 if [ "${1-}" = "worktree" ] && [ "${2-}" = "add" ]; then
@@ -556,6 +567,19 @@ run_all_cases() {
     run_case head_removed_a_test 0 "base-only (removed at HEAD)" \
         "STUB_R3_TESTS=replay_alpha:ok"
 
+    # A test the branch ADDED and left RED has no base counterpart, so it cannot
+    # be a REGRESSION by definition - and it was therefore collected under the
+    # neutral "added by the branch" label and never consulted for the verdict.
+    # rc 0 while R3's libtest exited 101.
+    run_case head_only_test_that_fails 1 "exist only at HEAD and are FAILING" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED"
+
+    # The same shape with R3 red BEFORE it announces: rc 0 with a ZERO count on
+    # the success line, contradicting the rc-0 contract stated in this driver's
+    # header, in the justfile, and in CONTRIBUTING.
+    run_case rc_zero_must_carry_a_nonzero_count 1 "exist only at HEAD and are FAILING" \
+        "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED" STUB_NO_COUNT=3
+
     # --- rc must agree with the table ----------------------------------------
     # rc IS the gate and a derived count is never the pass condition; a count
     # that disagrees with rc is a defect in the INSTRUMENT, not a detail to wave
@@ -597,6 +621,12 @@ run_all_cases() {
     # that looked clean and getting rc 0: a single `?? .serena/` was enough.
     run_case base_equals_head_untracked_only_is_refused 2 "there is nothing to vary" \
         STUB_HEAD_SHA=aaaaaaaabbbbbbbbccccccccdddddddd00000000 STUB_TREE_UNTRACKED=1
+    # DIFFERENT shas, IDENTICAL sources. The guard always claimed "identical
+    # sources" and tested sha equality, so this sibling walked straight through:
+    # on this very branch, two commits differing only under scripts/ produced
+    # three runs of the same computation at rc 0.
+    run_case identical_trees_different_shas_refused 2 "there is nothing to vary" \
+        STUB_TREES_IDENTICAL=1
 
     # --- the cached base worktree must BE the base ---------------------------
     # Directory existence was the whole reuse predicate, while the report kept
@@ -606,6 +636,12 @@ run_all_cases() {
         STUB_PRECREATE_WT=1 STUB_WT_SHA=deadbeefdeadbeefdeadbeefdeadbeef00000000
     run_case cached_worktree_is_dirty 2 "has uncommitted changes" \
         STUB_PRECREATE_WT=1 STUB_WT_DIRTY=1
+    # An UNTRACKED file in the cached base worktree is part of the base's replay
+    # input, because the corpus is read from the filesystem and not from git.
+    # Measured on the real driver: one untracked scenario dir dropped into the
+    # cached base turned "2 discriminated" into "0 discriminated" at rc 0.
+    run_case cached_worktree_has_untracked_corpus_file 2 "has uncommitted changes" \
+        STUB_PRECREATE_WT=1 STUB_WT_UNTRACKED=1
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -795,8 +831,9 @@ run_positive_control summary-crosscheck-removed \
 # discriminated, 228 scenarios)` from two builds of identical source.
 # shellcheck disable=SC2016
 run_positive_control nothing-to-vary-guard-removed \
-    's|^if \[ "${BASE_SHA}" = "${HEAD_SHA}" \] && \[ -z "$(git status --porcelain -uno)" \]; then|if false; then|' \
-    base_equals_head_is_refused base_equals_head_untracked_only_is_refused
+    's|^if \[ "${same_sources}" -eq 1 \] && \[ -z "$(git status --porcelain -uno -- crates/ Cargo.toml Cargo.lock)" \]; then|if false; then|' \
+    base_equals_head_is_refused base_equals_head_untracked_only_is_refused \
+    identical_trees_different_shas_refused
 
 # shellcheck disable=SC2016
 run_positive_control cache-sha-guard-removed \
@@ -806,6 +843,6 @@ run_positive_control cache-sha-guard-removed \
 # shellcheck disable=SC2016
 run_positive_control cache-dirty-guard-removed \
     's|^if \[ -n "${wt_dirty}" \]; then|if false; then|' \
-    cached_worktree_is_dirty
+    cached_worktree_is_dirty cached_worktree_has_untracked_corpus_file
 
 exit 0

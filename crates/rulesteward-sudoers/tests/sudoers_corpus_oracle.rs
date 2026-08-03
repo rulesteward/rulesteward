@@ -1702,6 +1702,45 @@ fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
 // Positive control: the oracle itself must not be broken.
 // ---------------------------------------------------------------------------
 
+/// Assert the corpus cardinality: EXACTLY for the committed corpus, a floor for an
+/// override.
+///
+/// d0c2975 made this `==` deliberately, and that reasoning is preserved verbatim
+/// for the corpus this binary was built alongside: a one-sided floor fails only
+/// downward, #651 added four scenarios without bumping the constant, and four
+/// directories could then be deleted with every layer still reporting success.
+/// `just test` and `just ci` never set the override, so they still get equality in
+/// both directions.
+///
+/// Under an override the binary has been pointed at ANOTHER TREE's corpus by
+/// `scripts/rs-branch-diff.sh`, whose entire job is to replay a GROWN corpus
+/// against a binary compiled before it grew. `SCENARIO_FLOOR` is compiled in, so
+/// equality there asserts "the other tree holds exactly as many scenarios as this
+/// binary was built with" - a claim about a tree this binary knows nothing about,
+/// and one that #658 guarantees will be false: it MANDATES corpus growth for any
+/// branch touching this crate's `src/`. The failure lands in the driver's R2 run
+/// and is reported as DISCRIMINATED, i.e. a discrimination signal whose only
+/// content is "the constant moved". Adversarial review, session 9p round 2.
+fn assert_scenario_cardinality(ids: &[String], mode: CorpusMode) {
+    match mode {
+        CorpusMode::Committed => assert_eq!(
+            ids.len(),
+            SCENARIO_FLOOR,
+            "expected exactly {SCENARIO_FLOOR} scenarios in the committed corpus, found {}. \
+             A DELETED scenario and an ADDED one are both defects here (d0c2975).",
+            ids.len()
+        ),
+        CorpusMode::Fresh => assert!(
+            ids.len() >= SCENARIO_FLOOR,
+            "expected >= {SCENARIO_FLOOR} scenarios in the overridden corpus, found {}. \
+             An override may hold MORE than this binary was built with (that is what a \
+             branch differential replays); fewer means the corpus shrank below what this \
+             binary requires.",
+            ids.len()
+        ),
+    }
+}
+
 #[test]
 fn positive_control_oracle_accepts_and_rejects_distinctly() {
     let (root, mode) = corpus_root();
@@ -1711,18 +1750,7 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
     // corpus size, so the true count is known upfront - not `ids.len()`,
     // which is the unrelated corpus-directory count.
     announce(&root, mode, TARGETS.len());
-    assert_eq!(
-        ids.len(),
-        SCENARIO_FLOOR,
-        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
-         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
-         a one-sided floor fails only downward: #651 added 4 scenarios without \
-         bumping the constant, and four directories could then be deleted with \
-         every layer still reporting success. Equality makes the next addition \
-         fail until the constant is updated, which is a one-line fix, instead of \
-         silently widening the slack again.",
-        ids.len()
-    );
+    assert_scenario_cardinality(&ids, mode);
 
     for target in TARGETS {
         let accept_doc = read_target(&root, POSITIVE_CONTROL_ACCEPT, target);
@@ -1807,18 +1835,7 @@ fn per_version_identity_control() {
 fn l1_f01_matches_visudo_verdict_per_target() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    assert_eq!(
-        ids.len(),
-        SCENARIO_FLOOR,
-        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
-         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
-         a one-sided floor fails only downward: #651 added 4 scenarios without \
-         bumping the constant, and four directories could then be deleted with \
-         every layer still reporting success. Equality makes the next addition \
-         fail until the constant is updated, which is a one-line fix, instead of \
-         silently widening the slack again.",
-        ids.len()
-    );
+    assert_scenario_cardinality(&ids, mode);
 
     let mut compared = 0usize;
     let mut xfail_hit: Vec<String> = Vec::new();

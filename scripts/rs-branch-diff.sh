@@ -239,8 +239,45 @@ fi
 # guard - caught by running it on what looked like a clean tree and getting rc 0,
 # because `?? .serena/` was enough to make the tree read as modified. A guard that
 # has never been observed firing is not known to be a guard.
-if [ "${BASE_SHA}" = "${HEAD_SHA}" ] && [ -z "$(git status --porcelain -uno)" ]; then
-    die 2 "base ref '${BASE_REF}' resolves to this tree's own commit (${BASE_SHA:0:12}) and the tree is clean, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
+# Two different shas can still produce two identical binaries. The guard's own
+# message has always claimed "identical SOURCES"; testing sha equality was a
+# narrower question that let the sibling case through. Measured on this branch:
+# `diff-sudoers-branch 31ad4564` from 744bded differs only under `scripts/`, so
+# `crates/` is byte-identical, and the driver built the same source twice and
+# reported `OK (0 regressions, 0 discriminated, 362 ...)` at rc 0.
+#
+# `--quiet` exits 0 when there is NO difference. rc 1 means they differ (proceed);
+# anything else is git failing, and "git could not say" must not become "they
+# differ", so it is refused.
+#
+# RESIDUE, stated rather than papered over: this compares the whole of `crates/`,
+# not the specific lane's dependency closure. `just diff-sudoers-branch <ref>`
+# where <ref> differs only in `crates/rulesteward-selinux/` still varies nothing
+# for the sudoers binary and will not be caught here. Narrowing it to the lane's
+# closure needs a cargo-metadata walk; that is a design decision, not an oversight.
+same_sources=0
+if [ "${BASE_SHA}" = "${HEAD_SHA}" ]; then
+    same_sources=1
+else
+    git diff --quiet "${BASE_SHA}" "${HEAD_SHA}" -- crates/ Cargo.toml Cargo.lock 2>"${WORK}/tree-diff.err"
+    tree_rc=$?
+    case "${tree_rc}" in
+    0) same_sources=1 ;;
+    1) ;;
+    *)
+        tail -5 "${WORK}/tree-diff.err" >&2
+        die 2 "could not compare the base and HEAD trees (git diff exited ${tree_rc}); refusing to assume they differ"
+        ;;
+    esac
+fi
+# The dirty check is scoped to the SAME paths as the tree comparison above.
+# Scanning the whole tree while comparing only crates/ was inconsistent: an
+# uncommitted edit under scripts/ made the tree read as "varying" when the two
+# binaries were still byte-identical, so the guard silently stood down. Found by
+# running it - the identical-tree witness returned rc 0 because this file itself
+# was uncommitted at the time.
+if [ "${same_sources}" -eq 1 ] && [ -z "$(git status --porcelain -uno -- crates/ Cargo.toml Cargo.lock)" ]; then
+    die 2 "base ref '${BASE_REF}' (${BASE_SHA:0:12}) and this tree carry identical sources under crates/, Cargo.toml and Cargo.lock, and the tree has no uncommitted changes, so both builds would come from identical sources; there is nothing to vary and a verdict from that run would mean nothing"
 fi
 
 # ---------------------------------------------------------------------------
@@ -267,16 +304,38 @@ BASE_TARGET_DIR="${CACHE_ROOT}/target-${BASE_SHA}"
 
 if [ ! -d "${WT}" ]; then
     mkdir -p "${CACHE_ROOT}" || die 2 "could not create the worktree cache root ${CACHE_ROOT}"
-    # Self-heal a registration left behind by a swept /tmp: git refuses to re-add
-    # a path it still has registered but that no longer exists, and without this
-    # every subsequent round fails until someone prunes by hand.
-    git worktree prune >/dev/null 2>&1
+    # Self-heal a registration left behind by a swept /tmp: git refuses to re-add a
+    # path it still has registered but that no longer exists.
+    #
+    # GATED on the cache ROOT existing, and that gate is the whole point. `prune`
+    # deregisters every worktree whose path is currently unreachable, and this
+    # project's cache lives on an NFS mount - so running it unconditionally meant
+    # that one invocation while /mnt was down would deregister every OTHER cached
+    # worktree too, permanently (`fatal: not a git repository` thereafter, even
+    # once the mount returns). git's own manual names this exact hazard and its
+    # remedy: "If the working tree ... is stored on a portable device or network
+    # share which is not always mounted, you can prevent its administrative files
+    # from being pruned by issuing the `git worktree lock` command." So: prune only
+    # when the cache root is actually present, and LOCK what we create.
+    if [ -d "${CACHE_ROOT}" ]; then
+        git worktree prune --verbose >"${WORK}/worktree-prune.log" 2>&1
+        prune_rc=$?
+        if [ "${prune_rc}" -ne 0 ]; then
+            tail -10 "${WORK}/worktree-prune.log" >&2
+            die 2 "git worktree prune exited ${prune_rc}; refusing to continue with an unknown registration state"
+        fi
+    fi
     git worktree add --detach "${WT}" "${BASE_SHA}" >"${WORK}/worktree.log" 2>&1
     wt_rc=$?
     if [ "${wt_rc}" -ne 0 ]; then
         tail -20 "${WORK}/worktree.log" >&2
         die 2 "could not create the base worktree at ${WT} (git worktree add exited ${wt_rc})"
     fi
+    # git's documented remedy for a worktree on a share that is not always
+    # mounted. Advisory only, and deliberately non-fatal: failing to lock is not a
+    # reason to refuse a comparison, but leaving it unlocked is how an unrelated
+    # `prune` silently deregisters the cache.
+    git worktree lock "${WT}" >/dev/null 2>&1 || true
 fi
 
 # VALIDATE THE CACHE, every run, including the run that just created it.
@@ -306,7 +365,31 @@ fi
 if [ "${wt_sha}" != "${BASE_SHA}" ]; then
     die 2 "the cached base worktree ${WT} is at ${wt_sha:0:12}, not the requested base ${BASE_SHA:0:12}; refusing to report a comparison against a sha nothing established (remove that directory to rebuild it)"
 fi
-wt_dirty="$(git -C "${WT}" status --porcelain -uno 2>/dev/null)"
+# NO `-uno` HERE, and that is the opposite of the nothing-to-vary guard above.
+#
+# The two checks ask different questions of the same command. Up there the
+# question is "would these two commits BUILD differently", and an untracked file
+# is not a build input, so `-uno` is right. Here the question is "is this worktree
+# still the base", and the corpus is enumerated with `std::fs::read_dir` (see
+# every lane's `scenarios()` / `target_files()`), which does not consult git at
+# all. An UNTRACKED scenario directory dropped into the cached base worktree is
+# therefore part of the base's replay input.
+#
+# Measured: copying one untracked scenario dir into the cached base's corpus
+# turned `2 discriminated, rc 0` into `0 discriminated, rc 0` with this guard
+# silent - the instrument reporting "your new corpus proves nothing" when it
+# proves everything. A previous commit applied "the identical fix" to both sites;
+# that sentence was the defect.
+#
+# rc is CHECKED and stderr CAPTURED: a `git status` that FAILS (corrupt index,
+# safe.directory refusal on the NFS cache) prints nothing, and "git could not say"
+# is not "the tree is clean".
+wt_dirty="$(git -C "${WT}" status --porcelain 2>"${WORK}/wt-status.err")"
+wt_status_rc=$?
+if [ "${wt_status_rc}" -ne 0 ]; then
+    tail -5 "${WORK}/wt-status.err" >&2
+    die 2 "could not read the cached base worktree's status (git exited ${wt_status_rc}); refusing to treat 'git could not say' as 'the tree is clean'"
+fi
 if [ -n "${wt_dirty}" ]; then
     printf '%s\n' "${wt_dirty}" | head -10 >&2
     die 2 "the cached base worktree ${WT} has uncommitted changes, so the binary built from it is not ${BASE_SHA:0:12}; remove that directory to rebuild it"
@@ -675,8 +758,20 @@ for name in "${!R1[@]}"; do
     fi
 done
 
+ONLY_HEAD_FAILING=()
 for name in "${!R3[@]}"; do
-    [ -z "${R1[${name}]+set}" ] && ONLY_HEAD+=("${name}")
+    if [ -z "${R1[${name}]+set}" ]; then
+        # Split by verdict. A test the branch ADDED and left RED is not a neutral
+        # "added by the branch" note: it has no base counterpart, so it cannot be
+        # a REGRESSION by this driver's definition, but reporting it under the
+        # same reassuring label as a passing addition is how a red new test rode
+        # out at rc 0.
+        if [ "${R3[${name}]}" = "FAILED" ]; then
+            ONLY_HEAD_FAILING+=("${name}")
+        else
+            ONLY_HEAD+=("${name}")
+        fi
+    fi
 done
 
 # Zero comparable rows has two distinct causes and they point at different files,
@@ -721,13 +816,35 @@ for name in "${DISCRIMINATED[@]+"${DISCRIMINATED[@]}"}"; do row "${name}" "DISCR
 for name in "${UNATTRIBUTABLE[@]+"${UNATTRIBUTABLE[@]}"}"; do row "${name}" "UNATTRIBUTABLE"; done
 for name in "${ONLY_BASE[@]+"${ONLY_BASE[@]}"}"; do row "${name}" "base-only (removed at HEAD)"; done
 for name in "${ONLY_HEAD[@]+"${ONLY_HEAD[@]}"}"; do row "${name}" "HEAD-only (added by the branch)"; done
+for name in "${ONLY_HEAD_FAILING[@]+"${ONLY_HEAD_FAILING[@]}"}"; do row "${name}" "HEAD-only and FAILING"; done
 printf '\n%d clean row(s) not listed. Scenario announcements: R1=%d R2=%d R3=%d.\n' \
     "${CLEAN}" "${SCEN[1]}" "${SCEN[2]}" "${SCEN[3]}"
+
+# A test the branch added and left RED is a failure of the branch even though it
+# has no base counterpart to regress against. Silence here would let `just test`
+# be the only thing standing between it and a merge.
+if [ "${#ONLY_HEAD_FAILING[@]}" -ne 0 ]; then
+    printf '%s: %d test(s) exist only at HEAD and are FAILING: %s\n' \
+        "${LABEL}" "${#ONLY_HEAD_FAILING[@]}" "${ONLY_HEAD_FAILING[*]}" >&2
+    finish 1
+fi
 
 if [ "${#REGRESSIONS[@]}" -ne 0 ]; then
     printf '%s: REGRESSION (%d row(s)); HEAD diverges where base %s did not: %s\n' \
         "${LABEL}" "${#REGRESSIONS[@]}" "${BASE_SHA:0:12}" "${REGRESSIONS[*]}" >&2
     finish 1
+fi
+
+# The rc-0 contract, restated in this file's header, in the justfile and in
+# CONTRIBUTING: a success line MUST carry a non-zero count.
+#
+# Placed LAST, so it guards the OK path and only that path. The per-run count
+# requirement in validate_run is green-run-only (a red run has failing rows as its
+# evidence instead), which left the OK line reachable with SCEN[3] = 0 when the
+# run was red for a reason outside the comparison. A real failure above must be
+# reported as itself, not converted into "no announcements".
+if [ "${SCEN[3]}" -eq 0 ]; then
+    die 2 "about to report OK, but no run announced a scenario count; the rc-0 contract requires the success line to carry a non-zero count, and a clean verdict over zero announced comparisons is exactly the vacuous pass this instrument exists to refuse"
 fi
 
 # A discrimination count of zero is reported loudly but is NOT a failure: a
