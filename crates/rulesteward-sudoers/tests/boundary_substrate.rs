@@ -40,9 +40,10 @@
 //! `alice h1 = ` returns rc 1, so the oracle VERDICT behind every case here is
 //! meaningful rather than an oracle that accepts anything.
 //!
-//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL, but not
-//! all of them are; each test's own doc states the verdict its input expects.
-//! See `f01_count` for why that is stated as a rule rather than as a list.
+//! Most cases here are rc 0 and any `sudo-F01` on them is a false FATAL. The few
+//! that are rc 1 say so, in the owning test's doc or in the section header above
+//! it; silence means rc 0. See `f01_count` for why that convention is stated in
+//! that direction rather than as a list or as a universal.
 
 use std::path::Path;
 
@@ -80,18 +81,28 @@ fn count_code(src: &str, code: &str) -> usize {
 /// `sudo-F01`: the file does not parse.
 ///
 /// MOST inputs in this file are real-`visudo` rc 0, and on those an F01 is a
-/// false FATAL on a valid file. Some are rc 1. **The expected `visudo` verdict
-/// for an input is stated in the doc of the test that OWNS it, and nowhere
-/// else** - `f01_count == 0` is meaningful only where that doc says rc 0.
+/// false FATAL on a valid file. A few are rc 1.
 ///
-/// This deliberately does not enumerate the exceptions. Two successive attempts
-/// to do so were wrong within hours: the first said "every input here is rc 0"
-/// while two `#[ignore]`d #669 cases were rc 1, and its correction said "except
-/// the two #669 cases" in the same commit that added two MORE rc-1 inputs (the
-/// non-ASCII whitespace pair), while never noticing a fifth that pre-dated the
-/// branch (`%bad"group ALL = ALL`, whose own doc has always said rc 1). Any
-/// enumeration here is invalidated by any added input, which is the same
-/// argument this branch already applied to failure COUNTS.
+/// **The convention: an rc-1 input SAYS SO, in the owning test's doc or in the
+/// section header above it. A doc that states no verdict means rc 0.** So
+/// `f01_count == 0` is the meaningful assertion by default, and the rc-1 cases
+/// are the ones that announce themselves.
+///
+/// That is weaker than it looks and is stated this way on purpose. Measured
+/// 2026-08-03: of 43 tests, 18 state a verdict in their own doc and 25 do not
+/// (3 carry no doc at all), so a rule requiring every test to state one would be
+/// false for most of the file. What IS true is the direction that matters -
+/// every rc-1 input is documented as such.
+///
+/// Two earlier attempts here were wrong within hours, and the shape of the
+/// failures is why this is a convention rather than a list or a universal. The
+/// first said "every input here is rc 0" while two `#[ignore]`d #669 cases were
+/// rc 1. Its correction said "except the two #669 cases" in the same commit that
+/// added two MORE rc-1 inputs, and never noticed a fifth that pre-dated the
+/// branch (`%bad"group ALL = ALL`, whose own doc has always said rc 1). The
+/// third attempt replaced the enumeration with a universal that was false for 25
+/// of 43 tests. An enumeration rots on every added input; an unmeasured
+/// universal was simply never true.
 fn f01_count(src: &str) -> usize {
     count_code(src, "sudo-F01")
 }
@@ -832,22 +843,32 @@ fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
 /// deliberately NOT claimed as a mutant-killer, and the correction is recorded
 /// because getting it wrong once already cost a false comment on this branch.
 ///
-/// The `bytes.get(close + 1)` -> `close - 1` / `close * 1` mutants SURVIVE this
-/// test, structural assertion included. The mutated guard does push a spurious
+/// HISTORY, against a guard spelling that no longer exists. The closer guard
+/// read `bytes.get(close + 1)` when this was written; round 2 replaced it with
+/// `lhs[close + 1..].chars().next()` and round 4 replaced the whitespace test
+/// again, so the `close - 1` / `close * 1` mutants named below are not
+/// constructible against the current code and MUST NOT be re-derived from this
+/// paragraph.
+///
+/// What happened, and why it is worth keeping: those two mutants SURVIVED this
+/// test, structural assertion included. The mutated guard pushed a spurious
 /// candidate `(close + 1, close + 1)` here, where `close + 1` IS the space, and
-/// that candidate does sort ahead of the whitespace run and win - but
-/// `comma_split` maps `str::trim` over the halves, so `host_groups[0].hosts`
-/// comes back `["ALL"]` either way and the stray byte never reaches an
-/// assertion. That is exactly WHY the mutants survived the original five tests.
+/// it did sort ahead of the whitespace run and win - but `comma_split` maps
+/// `str::trim` over the halves, so `host_groups[0].hosts` came back `["ALL"]`
+/// either way and the stray byte never reached an assertion. That is exactly WHY
+/// they survived the original five tests, and the reason this test is documented
+/// as NOT a mutant-killer.
 ///
-/// The kill belongs to `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`,
-/// where the comma-continuation filter, not trimming, is what the spurious
-/// candidate defeats. See that test for the mechanism.
+/// The kill belonged, and still belongs, to
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`, where the
+/// comma-continuation filter rather than trimming is what the spurious candidate
+/// defeats. See that test for the mechanism.
 ///
-/// Both mutants were built and run: this test PASSES under each, while
-/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` goes RED under
-/// each.
-/// verified: 2026-08-03
+/// The sibling paragraph on that test was marked as history when the guard was
+/// rewritten; this one was not, and carried a `verified:` date stamped the same
+/// night the code it described was deleted. That is the failure mode a
+/// `verified:` sentinel is supposed to prevent, so the stamp is removed rather
+/// than refreshed: there is nothing left to re-verify.
 #[test]
 fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
     let src = "\"ab\" ALL = NOPASSWD: ALL\n";
@@ -1108,22 +1129,29 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
 /// the NBSP as whitespace, so it pushed a spurious candidate AT the quote. That
 /// won, and the USER principal `"b c"` was swallowed into a host token.
 ///
-/// `visudo -c -f -` gives rc 1 here (three LHS tokens - #669's gap), so as with
-/// the closer mirror the pinnable axis is the SPLIT, not the verdict. The
-/// one-byte ASCII-space control `alice, "b c" ALL` is rc 1 too and splits
-/// correctly on every sha, which is what isolates this to the whitespace
-/// predicate rather than to quoting or to commas.
+/// `visudo -c -f -` gives rc 1 on the NBSP and VT rows (three LHS tokens -
+/// #669's gap), so for those the pinnable axis is the SPLIT, not the verdict.
+///
+/// The one-byte ASCII-space control `alice, "b c" ALL` is **rc 0**, not rc 1:
+/// the comma makes `alice, "b c"` a single `User_List`, so the LHS has TWO
+/// tokens and #669's gap does not touch it. That is what makes it a control.
+/// Its verdict IS therefore pinnable, and is pinned below. (An earlier version
+/// of this doc called it rc 1, which under this file's own rule would have told
+/// a maintainer that `RuleSteward` should emit `sudo-F01` on a line sudo
+/// accepts - the false-FATAL direction this file exists to prevent.)
 ///
 /// VT (`0x0B`) is the same case with no multi-byte encoding. sudo treats both as
 /// WORD characters, not separators: `alice,<0x0B>bob ALL = NOPASSWD: ALL` is
-/// rc 0 with `User_List [alice, "bob"]` (rs-oracle9, sudo 1.9.17p2,
+/// rc 0 with `User_List [alice, "<0x0B>bob"]` (rs-oracle9, sudo 1.9.17p2,
 /// 2026-08-03).
 #[test]
 fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
     for src in [
         "alice,\u{a0}\"b c\" ALL = NOPASSWD: ALL\n",
         "alice,\u{b}\"b c\" ALL = NOPASSWD: ALL\n",
-        // The ASCII-space control, correct on every sha.
+        // The ASCII-space control, correct on every sha. This row is visudo
+        // rc 0 (two LHS tokens), so unlike the two above its VERDICT is
+        // pinnable too.
         "alice, \"b c\" ALL = NOPASSWD: ALL\n",
     ] {
         let s = only_spec(src);

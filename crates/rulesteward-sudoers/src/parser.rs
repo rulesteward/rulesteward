@@ -2053,9 +2053,15 @@ fn comma_split(s: &str) -> Vec<String> {
 /// whitespace outside the quoted span to find at all - the single space sits
 /// INSIDE the pair), so the loop below also treats the OPEN position of a
 /// [`simple_quote_pairs`] pair as a candidate boundary whenever it is glued to a
-/// preceding non-whitespace, non-`,` byte. A quote at `lhs`'s own start, or one
-/// reached after whitespace or a comma, is not "glued" - it is either the run's
-/// first token or already reachable through the whitespace-run candidates.
+/// preceding non-`,` char at a position where no whitespace RUN ends. A quote at
+/// `lhs`'s own start, or one reached after a comma, is not "glued"; one reached
+/// after whitespace is already reachable through the whitespace-run candidates,
+/// which is why the guard ASKS the run set rather than testing the char.
+///
+/// That phrasing is deliberate. This said "non-whitespace byte" until #651, and
+/// re-deciding "is this whitespace a separator" here instead of asking the one
+/// function that models it produced two fail-opens in opposite directions - see
+/// the guard's own comment.
 ///
 /// # #651: the mirror-image CLOSING quote
 ///

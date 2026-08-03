@@ -630,9 +630,15 @@ Captured with `capture_sudoers.sh` into a staging directory, never hand-authored
 Re-capturing the 41 pre-existing scenarios first reproduced all 123 committed
 files byte-for-byte, which is what makes the four new verdicts trustworthy.
 
-Note the script's header claim that it may be invoked with its own directory as
-the output dir is FALSE: `cp` then sees source and destination as the same file
-and it exits rc 2. Capture to a staging dir and copy back.
+The script CANNOT be pointed at its own directory - `cp` then sees source and
+destination as the same file and exits 1, which `rs_capture_die` turns into rc 2
+on the first scenario. Capture to a staging dir and copy back; the script's own
+header says so and gives the command.
+
+(This paragraph used to warn that the script's header claimed the opposite. That
+claim was corrected in the header itself later on the same branch, so the warning
+outlived what it warned about and pointed a reader at text that no longer exists.
+It also attributed the rc 2 to `cp`, which returns 1.)
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
