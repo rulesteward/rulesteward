@@ -596,10 +596,19 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// `["\"a b\""]`. `ast.rs`'s own "kept verbatim" is about `!`-negation, not
 /// quoting, so it is deliberately not cited here.
 ///
-/// Cited by TEST NAME, not `file:line`. The line form was `:115-117` and was
-/// already dead when written; `check-doc-citations.sh` cannot see that class,
-/// because it decides only whether the cited path and line EXIST - and they did,
-/// pointing at an unrelated comment. A name survives every insertion above it.
+/// Cited by TEST NAME, not `file:line`, and the case history is the argument.
+///
+/// The line form was `boundary_substrate.rs:115-117`. It was CORRECT when
+/// written: at that commit those three lines were exactly the "kept VERBATIM"
+/// comment and the `["\"a=b\""]` assertion it claimed to cite. It died ONE COMMIT
+/// LATER, when a correction on this same branch inserted lines above it, and by
+/// then `:115-117` pointed at an unrelated doc comment.
+///
+/// `check-doc-citations.sh` is structurally blind to that: it decides only
+/// whether the cited path and line EXIST, and they still did. So the failure
+/// mode is not careless authoring - a `file:line` citation is correct at most
+/// until the next insertion above it, and nothing mechanical can tell. A name
+/// survives every insertion.
 ///
 /// They are xfailed rather than fixed here because resolving it means either
 /// editing this differential gate's own comparison or changing the public AST,

@@ -1996,7 +1996,13 @@ fn comma_split(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Split a user-spec's pre-`=` text into `(User_List, Host_List)`, both trimmed.
+/// Split a user-spec's pre-`=` text into `(User_List, Host_List)`.
+///
+/// `Host_List` is trimmed; `User_List` may carry trailing ESCAPED whitespace
+/// (`a\ "b c"` splits as `a\ ` / `"b c"`), so callers trim - the sole caller
+/// maps `comma_split`, which does. This said "both trimmed" until #651 and was
+/// already false then for non-ASCII whitespace; four sweeps of this function
+/// did not catch it because the caller's trim masks it.
 ///
 /// `User_Spec ::= User_List Host_List '='...` and `User_List ::= User | User ','
 /// User_List` (sudoers(5), sudo 1.9.17p2). The two lists are separated by
@@ -2222,19 +2228,24 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // with the next token's first byte, which is `,`-excluded at the push
         // site instead. Neither `before` ends with `,` (excluded above).
         if !before.ends_with(',') && !after.starts_with(',') {
-            // `lhs` is trimmed and `after` starts right after the boundary (a
-            // non-whitespace char, a quote, or the string end), so both halves
-            // are already trimmed.
+            // `after` starts right after the boundary - a non-whitespace char,
+            // a quote, or the string end - so the HOST half is trimmed. That
+            // holds exhaustively over the three candidate producers:
+            // whitespace-run candidates resume at the first non-whitespace char
+            // (or at a `\`), opener candidates resume at `"`, and closer
+            // candidates are excluded by `!next.is_whitespace()` above, the SAME
+            // predicate `unquoted_whitespace_runs` uses. An intermediate version
+            // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,
+            // which broke it for non-ASCII whitespace and swallowed a principal;
+            // do not restore it.
             //
-            // That holds exhaustively over the three candidate producers, and
-            // #651 kept it that way rather than widening it: whitespace-run
-            // candidates resume at the first non-whitespace char (or at a `\`),
-            // opener candidates resume at `"`, and closer candidates are
-            // excluded by `!next.is_whitespace()` above - the SAME predicate
-            // `unquoted_whitespace_runs` uses. An intermediate version of the
-            // closer guard tested the BYTE with `u8::is_ascii_whitespace`, which
-            // broke this invariant for non-ASCII whitespace and swallowed a
-            // principal; do not restore it.
+            // `before` is NOT guaranteed trimmed, and #651 widened that rather
+            // than keeping it: since the opener guard began delegating to the run
+            // set, an opener candidate whose preceding whitespace is ESCAPED is
+            // admitted, so `a\ "b c"` splits with `before == "a\ "`. That is the
+            // intended fix (the fork point returned `(lhs, "")` there), but it
+            // means the caller trims - `comma_split` maps `str::trim`. A second
+            // caller must not assume otherwise.
             return (before, after);
         }
     }

@@ -640,13 +640,6 @@ claim was corrected in the header itself later on the same branch, so the warnin
 outlived what it warned about and pointed a reader at text that no longer exists.
 It also attributed the rc 2 to `cp`, which returns 1.)
 
-`reject-*` (oracle REJECTs on every target; each independently confirmed to
-also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
-i.e. a clean agreement, not a divergence): `no-equals-garbage`,
-`user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
-`user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
-`equals-only` (the L1/L2 positive-control REJECT input).
-
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -670,6 +663,13 @@ xfail; see section 16), `glued-closing-quote-principal`,
 `glued-closing-quote-with-inner-space`, `glued-closing-quote-after-comma-list`,
 `spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
 L3 xfail #667 - see section 17).
+
+`reject-*` (oracle REJECTs on every target; each independently confirmed to
+also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
+i.e. a clean agreement, not a divergence): `no-equals-garbage`,
+`user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
+`user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
+`equals-only` (the L1/L2 positive-control REJECT input).
 
 ## Re-capturing
 

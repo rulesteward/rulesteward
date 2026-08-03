@@ -843,32 +843,35 @@ fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
 /// deliberately NOT claimed as a mutant-killer, and the correction is recorded
 /// because getting it wrong once already cost a false comment on this branch.
 ///
-/// HISTORY, against a guard spelling that no longer exists. The closer guard
-/// read `bytes.get(close + 1)` when this was written; round 2 replaced it with
-/// `lhs[close + 1..].chars().next()` and round 4 replaced the whitespace test
-/// again, so the `close - 1` / `close * 1` mutants named below are not
-/// constructible against the current code and MUST NOT be re-derived from this
-/// paragraph.
+/// The `close + 1` arithmetic mutants SURVIVE this test, structural assertion
+/// included. The mutated guard pushes a spurious candidate `(close + 1,
+/// close + 1)` here, where `close + 1` IS the space, and it does sort ahead of
+/// the whitespace run and win - but `comma_split` maps `str::trim` over the
+/// halves, so `host_groups[0].hosts` comes back `["ALL"]` either way and the
+/// stray byte never reaches an assertion. That is exactly WHY they survived the
+/// original five tests, and the reason this test is documented as NOT a
+/// mutant-killer.
 ///
-/// What happened, and why it is worth keeping: those two mutants SURVIVED this
-/// test, structural assertion included. The mutated guard pushed a spurious
-/// candidate `(close + 1, close + 1)` here, where `close + 1` IS the space, and
-/// it did sort ahead of the whitespace run and win - but `comma_split` maps
-/// `str::trim` over the halves, so `host_groups[0].hosts` came back `["ALL"]`
-/// either way and the stray byte never reached an assertion. That is exactly WHY
-/// they survived the original five tests, and the reason this test is documented
-/// as NOT a mutant-killer.
+/// The kill belongs to
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` (and now also
+/// to its non-ASCII sibling), where the comma-continuation filter rather than
+/// trimming is what the spurious candidate defeats.
 ///
-/// The kill belonged, and still belongs, to
-/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`, where the
-/// comma-continuation filter rather than trimming is what the spurious candidate
-/// defeats. See that test for the mechanism.
+/// The guard's SPELLING has changed twice - `bytes.get(close + 1)` when this was
+/// first written, `lhs[close + 1..].chars().next()` since round 2 - but the
+/// mutants remain constructible at that `+`, and a `--list` reports them at
+/// `parser.rs`'s closer guard to this day. A previous version of this paragraph
+/// declared them "not constructible" and removed the `verified:` stamp on the
+/// grounds that nothing was left to re-verify. That was an OVER-correction: only
+/// the spelling was stale, the substance was true, and the stamp was earned.
+/// Re-deriving gives the right answer, so re-derive rather than trusting either
+/// this paragraph or that one.
 ///
-/// The sibling paragraph on that test was marked as history when the guard was
-/// rewritten; this one was not, and carried a `verified:` date stamped the same
-/// night the code it described was deleted. That is the failure mode a
-/// `verified:` sentinel is supposed to prevent, so the stamp is removed rather
-/// than refreshed: there is nothing left to re-verify.
+/// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the current
+/// spelling: rc 101, with exactly
+/// `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary` and
+/// `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
+/// failing, and THIS test passing.
 #[test]
 fn control_principal_spaced_from_a_closing_quote_is_unaffected() {
     let src = "\"ab\" ALL = NOPASSWD: ALL\n";
@@ -938,20 +941,22 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
 /// a host token. The users assertion below is what fires; the hosts one is
 /// stated for shape.
 ///
-/// HISTORY, and it no longer describes a constructible mutant. The guard this
-/// test was written against was `bytes.get(close + 1)`, and the mutation gate
-/// found that `-> bytes.get(close - 1)` and `-> bytes.get(close * 1)` both
-/// survived the original five tests, including a structural assertion on the
-/// spaced control, because every one of those inputs let trimming or the comma
-/// filter absorb the stray candidate. Both mutants were built and run at the
-/// time, and this test was the only thing that went RED.
+/// This test is the KILLER for the closer guard's `close + 1` arithmetic. The
+/// mutation gate found that mutating that `+` survived the original five tests,
+/// including a structural assertion on the spaced control, because every one of
+/// those inputs let trimming or the comma filter absorb the stray candidate.
+/// This input is the shape where BOTH stop absorbing it.
 ///
-/// The guard has since been rewritten to `lhs[close + 1..].chars().next()`
-/// (see `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
-/// for why), so neither named mutant exists to re-derive. The INPUT below is
-/// what still earns this test its place: it is the shape where trimming and the
-/// continuation filter both stop absorbing a stray candidate, whatever spelling
-/// the guard takes.
+/// The guard's spelling has changed - `bytes.get(close + 1)` when this was
+/// written, `lhs[close + 1..].chars().next()` since round 2 - and an earlier
+/// version of this paragraph concluded from that that "neither named mutant
+/// exists to re-derive". Wrong: the `+` is still there and still mutable, and a
+/// `--list` reports both mutants at that site today. A spelling change is not a
+/// mutant's disappearance, and treating it as one retires a live witness.
+///
+/// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the
+/// current spelling: rc 101, with this test and its non-ASCII sibling failing
+/// and `control_principal_spaced_from_a_closing_quote_is_unaffected` passing.
 #[test]
 fn a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
     let src = "\"ab\" ,alice ALL = NOPASSWD: ALL\n";
