@@ -1742,6 +1742,41 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // that second `=`'s preceding token as just `"CWD"` from the first
                 // rejection's landing point and was wrongly accepted as a genuine
                 // leading option (9m round 2 fix, #538).
+                //
+                // WHY THIS ARM CARRIES NO REGISTRY GUARD, unlike every other
+                // boundary arm in either splitter. The sibling
+                // `split_top_level_segments` gates its own `'='` on BOTH
+                // `principal_quotes` and `runas_quotes`, and its `')'` and `','`
+                // arms are registry-gated too; here `')'` and `','` are, and this
+                // one is not. That asymmetry is deliberate but it was never written
+                // down, and "a registry wired into SOME arms and not others" is
+                // exactly the shape of the fail-opens this branch kept
+                // reintroducing (#622, #629, #630, #631, #643).
+                //
+                // It is safe because this arm cannot fire at `depth > 0` AT ALL,
+                // which rests on two facts that only hold TOGETHER:
+                //   1. The `,` arm above is `depth == 0`-gated, so no comma inside
+                //      a runas group advances `tok_start`. (The sibling splitter
+                //      needs `runas_quotes` on its own `,` arm precisely because
+                //      that one is NOT depth-gated - the two splitters buy the same
+                //      safety by different means.)
+                //   2. `tok_start` therefore still points at or before the group's
+                //      opening `(` at every `=` inside it, so `preceding_token`
+                //      returns a slice that still CONTAINS that `(`, and
+                //      `parse_option_key` is an exact match against bare keywords,
+                //      so it answers None.
+                // The rejection is self-sustaining: a rejected `=` leaves
+                // `tok_start` untouched (the paragraph above), so every later `=` in
+                // the same group is still measured from the same pre-`(` anchor.
+                //
+                // EITHER fact re-arms this arm if it changes. Relaxing the `,` arm's
+                // depth gate, or making `parse_option_key` tolerant of leading
+                // punctuation, would let a quoted runas principal like
+                // `(root, CWD="/a,b")` be read as a genuine option anchor: it pushes
+                // a bogus span into `quotes` and desyncs the `,` arm's own
+                // `inside_a_clean_quoted_region` test for the next REAL top-level
+                // comma, dropping or merging a `Cmnd_Spec`. Add the `runas_quotes`
+                // guard here if either moves.
                 let is_option_eq = parse_option_key(preceding_token(s, tok_start, i)).is_some();
                 if is_option_eq {
                     let after_eq = i + c.len_utf8();
