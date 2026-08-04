@@ -232,7 +232,15 @@ if [ "${1-}" = "status" ]; then
         # Untracked-only: visible to a bare `status --porcelain`, invisible to -uno.
         [ -n "${STUB_TREE_UNTRACKED:-}" ] && [ "${uno}" -eq 0 ] && echo "?? .serena/"
     fi
-    exit 0
+    # A FAILING `git status`, which this arm could not express until round 6. A
+    # mutation probe showed the driver's rc guard on this command survived all 68
+    # cases when removed, and removing it yields `OK` at rc 0: a failing status
+    # writes nothing to stdout, so the driver's `-n "${wt_dirty}"` test reads
+    # "could not check" as "checked, and clean". The reachable trigger is a corrupt
+    # or stale-locked index in the long-lived cached worktree (`git status`
+    # refreshes and writes the index; `rev-parse --verify HEAD` reads refs only, so
+    # the earlier guard passes). A stub that cannot state the bug cannot catch it.
+    exit "${STUB_GIT_STATUS_RC:-0}"
 fi
 
 if [ "${1-}" = "diff" ]; then
@@ -255,6 +263,19 @@ if [ "${1-}" = "diff" ]; then
         *) refs=$((refs + 1)) ;;
         esac
     done
+    # A git that could not ANSWER, which is neither 0 nor 1 and which this arm
+    # could not express until round 6. The driver's `*)` catch-all was therefore
+    # dead code from the suite's point of view, and a mutation probe confirmed it:
+    # gutting the catch-all survived all 68 cases and yields `OK` at rc 0.
+    #
+    # The existing `nothing-to-vary-guard-removed` control does NOT cover it, and
+    # that is the part worth remembering: it seeds `false` over the whole `git
+    # diff` invocation, and `false` exits 1, so it drives the "they differ,
+    # proceed" arm and credits the gate with coverage the catch-all lacks.
+    #
+    # Reachable via a partial or shallow clone whose promisor fetch fails, where
+    # `git rev-parse --verify <ref>^{commit}` still passes cleanly.
+    [ -n "${STUB_GIT_DIFF_RC:-}" ] && exit "${STUB_GIT_DIFF_RC}"
     if [ "${refs}" -le 1 ]; then
         [ -n "${STUB_WORKTREE_MATCHES_BASE:-}" ] && exit 0
         exit 1
@@ -762,7 +783,7 @@ run_all_cases() {
     # instance of the thing that gate exists to fail, not a diagnostic dead end.
     run_case every_row_silenced_at_head 1 "ran at base" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
-    run_case every_row_ignored_at_base 2 "no row has a baseline verdict to compare against" \
+    run_case every_row_ignored_at_base 2 "0 base-only, 0 HEAD-only" \
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
@@ -805,6 +826,51 @@ run_all_cases() {
     run_case r2_reports_an_extra_test 2 "must report the same test set" \
         "STUB_R1_TESTS=replay_alpha:ok" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:ok" \
+        "STUB_R3_TESTS=replay_alpha:ok"
+
+    # --- "git could not say" must never become an answer ----------------------
+    # Both guards below were CORRECT in the driver and structurally unwitnessable:
+    # a round-6 mutation probe over 20 single-guard mutants found exactly two that
+    # survive all 68 cases AND fail OPEN when removed, i.e. yield `OK` at rc 0.
+    # These are those two. The other eight survivors fail closed and deliberately
+    # get no case, because a case per unwitnessed guard is not the goal - a case
+    # per guard whose absence produces a false clean is.
+    run_case wt_status_cannot_answer 2 "refusing to treat 'git could not say'" \
+        STUB_PRECREATE_WT=1 STUB_GIT_STATUS_RC=128
+    run_case tree_diff_cannot_answer 2 "refusing to assume they differ" \
+        STUB_GIT_DIFF_RC=128
+
+    # --- a zero-comparable diagnostic must name every bucket it holds ---------
+    # Round 4 split this gate into three messages BECAUSE one was refuted by its
+    # own counts, gave the third arm every bucket, and wrote "every bucket is
+    # named, so the reader is never handed a count that contradicts the sentence
+    # around it" - then did not apply that rule to the two arms the same repair
+    # created. Both fire here with base-only and HEAD-only rows unnamed, and the
+    # second one used to end "that is a property of <base>, not of this branch"
+    # when the branch's own rename is what emptied the comparable set.
+    run_case unattributable_with_renamed_rows 2 "base-only" \
+        "STUB_R1_TESTS=replay_alpha:FAILED replay_beta:ok" \
+        "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
+        "STUB_R3_TESTS=replay_alpha:FAILED replay_gamma:ok"
+    run_case base_ignored_with_renamed_rows 2 "1 base-only, 1 HEAD-only" \
+        "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ok" \
+        "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ok" \
+        "STUB_R3_TESTS=replay_alpha:ignored replay_gamma:ok"
+
+    # --- absent-at-HEAD wins over the R1 column, which the table now says -----
+    # The classification loop tests `R3` absence FIRST, so a row that was FAILED or
+    # #[ignore]d at the base and is gone at HEAD is base-only, NOT unattributable
+    # and NOT ignored-at-base. Round 5 asserted the table was EXHAUSTIVE without
+    # re-deriving it, which turned that gap into a provable falsehood; three
+    # round-6 reviewers found it. These two pin the precedence so the table cannot
+    # drift back.
+    run_case failed_at_base_and_removed_at_head 0 "base-only (removed at HEAD)" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:FAILED" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:FAILED" \
+        "STUB_R3_TESTS=replay_alpha:ok"
+    run_case ignored_at_base_and_removed_at_head 0 "base-only (removed at HEAD)" \
+        "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
+        "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ok"
 
     # --- a test ADDED already parked gets its own label, at rc 0 ---------------
@@ -1123,6 +1189,26 @@ run_positive_control r1_r2_cardinality_guard_removed \
 run_positive_control r1_r2_containment_guard_removed \
     's#^    \[ -n "${R2\[${name}\]+set}" \] || die 2 .*#    :#' \
     r2_reports_a_different_test_set
+
+# The two guards a round-6 mutation probe found to be the ONLY ones of 20 that
+# both survive the whole suite and fail OPEN when removed: gutting either yields
+# `OK (0 regressions, 0 discriminated)` at rc 0. Both were correct in the driver
+# and unwitnessable, because the stub `git` could not express a status or a diff
+# that FAILED - only ones that answered.
+# shellcheck disable=SC2016
+run_positive_control wt_status_rc_guard_removed \
+    's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
+    wt_status_cannot_answer
+
+# Seeded on the `die 2` itself, NOT on the `git diff` invocation. The
+# nothing-to-vary control above replaces that invocation with `false`, which exits
+# 1 and therefore drives the "they differ, proceed" arm - so it exercises the
+# gate's proceed path and cannot reach this catch-all at all. A control that looks
+# adjacent is not a control.
+# shellcheck disable=SC2016
+run_positive_control tree_diff_catchall_removed \
+    's#^    die 2 "could not compare base ref .*#    :#' \
+    tree_diff_cannot_answer
 
 # The split inside the base-ignored arm. Without it the arm excludes on R1 alone
 # and a test red at HEAD rides out at rc 0 with `FAILED` printed in its own row.

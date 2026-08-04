@@ -43,22 +43,32 @@
 # one-ref question; three earlier versions of this header said "committed" and a
 # guard written to match that word compared a pair the driver never builds.
 #
-# EXHAUSTIVE over the verdicts libtest can report, which the earlier version of
-# this table was not: it listed two of the three `absent` rows and omitted the
-# base-only row entirely, so a reader could reasonably infer coverage it did not
-# have. `*` means the run's verdict does not affect the classification.
+# EXHAUSTIVE over the verdicts libtest can report, and THE ROWS ARE TESTED IN
+# ORDER: the first matching row wins. That ordering is not decoration. `R3 absent`
+# is tested before anything else, so it takes precedence over the R1 column
+# entirely - which is what made two rows of the previous version of this table
+# false. That version said `FAILED * *` -> UNATTRIBUTABLE and `ignored * other`
+# -> ignored-at-base, while the code classifies BOTH as base-only when the test is
+# absent at HEAD. Round 5 added the word EXHAUSTIVE and a `*` legend to a table
+# that already had that gap, which turned a quiet omission into a provable
+# falsehood: asserting exhaustiveness without re-deriving it against the code is
+# strictly worse than not asserting it. Three round-6 reviewers found it.
+#
+# `*` means the run's verdict does not affect the classification AT THAT ROW.
+# `(absent, absent)` cannot occur - a name reaches this table from R1 or R3.
 #
 #   R1      R2      R3        verdict
-#   FAILED  *       *         UNATTRIBUTABLE - base was already red, excluded
+#   *       *       absent    base-only      - removed at HEAD (rc 0; a rename is
+#                                              indistinguishable from a deletion
+#                                              at this granularity)
+#   FAILED  *       present   UNATTRIBUTABLE - base was already red, excluded
 #   ok      FAILED  ok        DISCRIMINATED  - the growth catches the old code
 #   ok      ok      ok        clean          - this lane's corpus did not discriminate
 #   ok      *       FAILED    REGRESSION     - HEAD diverges where the base did not
 #   ok      *       ignored   SILENCED       - the base ran it, HEAD skips it (rc 1)
-#   ok      *       absent    base-only      - removed at HEAD (rc 0; a rename is
-#                                              indistinguishable from a deletion
-#                                              at this granularity)
 #   ignored *       FAILED    no baseline and FAILING - un-parked, left red (rc 1)
-#   ignored *       other     ignored at base - no baseline to compare, excluded
+#   ignored *       ok        ignored at base - no baseline to compare, excluded
+#   ignored *       ignored   ignored at base - no baseline to compare, excluded
 #   absent  *       FAILED    no baseline and FAILING - added, left red (rc 1)
 #   absent  *       ignored   HEAD-only and PARKED    - added already parked (rc 0)
 #   absent  *       ok        HEAD-only      - added and passing (rc 0)
@@ -1050,10 +1060,17 @@ if [ "${COMPARABLE}" -eq 0 ] &&
     [ "${#SILENCED[@]}" -eq 0 ] &&
     [ "${#ONLY_HEAD_FAILING[@]}" -eq 0 ]; then
     if [ "${#UNATTRIBUTABLE[@]}" -ne 0 ]; then
-        die 2 "no row could be compared; ${#UNATTRIBUTABLE[@]} was/were UNATTRIBUTABLE (the base was already red against its own corpus) and ${#BASE_IGNORED[@]} #[ignore]d at the base. Nothing was actually compared, so neither 'clean' nor 'regression' would be truthful"
+        die 2 "no row could be compared: ${#UNATTRIBUTABLE[@]} UNATTRIBUTABLE (the base was already red against its own corpus), ${#BASE_IGNORED[@]} #[ignore]d at the base, ${#ONLY_BASE[@]} base-only, ${#ONLY_HEAD[@]} HEAD-only, ${#ONLY_HEAD_PARKED[@]} HEAD-only and parked. Nothing was actually compared, so neither 'clean' nor 'regression' would be truthful"
     fi
     if [ "${#BASE_IGNORED[@]}" -ne 0 ]; then
-        die 2 "every shared row is #[ignore]d at the BASE (${#BASE_IGNORED[@]} of them), so no row has a baseline verdict to compare against; nothing was actually compared, and that is a property of ${BASE_SHA:0:12}, not of this branch"
+        # NO CAUSE ATTRIBUTION HERE. An earlier version ended "that is a property
+        # of <base>, not of this branch", which is false whenever the branch's own
+        # rename or deletion is what emptied the comparable set: the base-only and
+        # HEAD-only counts below can be non-zero, and had the branch not renamed
+        # those rows they would have been comparable. It routed the operator to
+        # change their base ref when the remedy was in their own diff, with no
+        # table to contradict it (every `die 2` here precedes the report block).
+        die 2 "no row could be compared: ${#BASE_IGNORED[@]} shared row(s) are #[ignore]d at the BASE so have no baseline verdict, alongside ${#ONLY_BASE[@]} base-only, ${#ONLY_HEAD[@]} HEAD-only and ${#ONLY_HEAD_PARKED[@]} HEAD-only-and-parked row(s). Check both the base ref and this branch's own renames before concluding which side is responsible"
     fi
     # Every bucket is named, so the reader is never handed a count that contradicts
     # the sentence around it.

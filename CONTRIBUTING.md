@@ -146,8 +146,10 @@ comparing two commits.
 
 R1 `ok` + R2 `FAILED` + R3 `ok` is proof the growth catches the old code. R1 `ok`
 + R3 `FAILED` is a regression, and takes precedence: `ok / FAILED / FAILED` is a
-REGRESSION, not a discrimination. R1 `FAILED` is unattributable and excluded:
-that failure predates the branch.
+REGRESSION, not a discrimination. R1 `FAILED` with the test still PRESENT at HEAD
+is unattributable and excluded: that failure predates the branch. A test the
+branch REMOVED is reported base-only regardless of its base verdict, because the
+absent-at-HEAD check runs first.
 
 The four `#[ignore]` cases are deliberately asymmetric, because `cargo test`
 skips ignored tests by default and this is the last gate able to see a replay
@@ -160,8 +162,12 @@ test that is not being checked:
 | `#[ignore]`d | ran, or still `#[ignore]`d | ignored at base, rc 0; rc **2** if EVERY shared row is in this state |
 | absent | `#[ignore]`d | HEAD-only and PARKED, rc 0 |
 
-The third row is the most common of the four: it is what any unrelated branch
-produces against a base carrying `boundary_substrate.rs`'s parked #669/#677 pins.
+The third row is what a branch produces against a base that parks a replay test in
+the lane's own `*_corpus_oracle.rs` target. No lane's replay target carries an
+`#[ignore]` today, so that row is currently unreachable for all four lanes.
+`boundary_substrate.rs`'s parked #669/#677 pins are cited above as the repo's
+CONVENTION, not as rows in this table: they live in a different cargo test target,
+and this driver builds only `--test <lane>_corpus_oracle`.
 
 The last row is rc 0 because adding a parked pin for a known-open bug is this
 repo's convention (`boundary_substrate.rs`: "`#[ignore]`d rather than deleted,
