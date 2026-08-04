@@ -878,8 +878,11 @@ diff-sudoers:
 # explicit that the middle one is NOT a regression, so the separators matter, and
 # "and PASSED" is not decoration: the SILENCED arm sits behind the R1 == FAILED
 # check, so a base row that ran and FAILED is UNATTRIBUTABLE at rc 0 no matter
-# what HEAD does with it. Measured on the real driver with R1=FAILED R3=ignored:
-# rc 0. This recipe is the operator's entry point, so an unqualified "silencing
+# what HEAD does with it. Measured on the real driver, one such row alongside a
+# comparable row: rc 0, with the row printed UNATTRIBUTABLE. (A lane in which
+# EVERY row is that shape is rc 2 instead, "no row could be compared" - the
+# row-level claim is the one this sentence makes.) This recipe is the operator's
+# entry point, so an unqualified "silencing
 # fails the gate" here promises a safety property the instrument does not have,
 # 2 tool error (including "these two
 # builds cannot be compared"). Positive-controlled by

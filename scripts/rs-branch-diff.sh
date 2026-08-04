@@ -504,7 +504,38 @@ fi
 # rc is CHECKED and stderr CAPTURED: a `git status` that FAILS (corrupt index,
 # safe.directory refusal on the NFS cache) prints nothing, and "git could not say"
 # is not "the tree is clean".
-wt_dirty="$(git -C "${WT}" status --porcelain 2>"${WORK}/wt-status.err")"
+#
+# `-unormal` IS PINNED, on this call and on the `--ignored` one below, because
+# neither question survives `status.showUntrackedFiles=no`. That is a documented
+# performance knob, and it is honoured from `~/.gitconfig`,
+# `$XDG_CONFIG_HOME/git/config`, `/etc/gitconfig` and the MAIN CLONE's
+# `.git/config` - which reaches every cached worktree here for the same reason
+# `.git/info/exclude` does, since config resolves through the common dir. All
+# unversioned, exactly like the exclude files the `--ignored` guard below exists
+# for.
+#
+# Measured on git 2.55.0, one worktree contaminated three ways at once (a tracked
+# modification, an untracked scenario dir, and an ignored-name scenario dir):
+#
+#   default config          -> ` M src/main.rs` + `?? corpus/zz-untracked/`
+#   showUntrackedFiles=no   -> ` M src/main.rs`                    <- ?? LOST
+#   ...and the --ignored call below, under that same config, returns ZERO BYTES:
+#   it loses the ignored half AND the untracked half, because with `-uno` git
+#   does not walk untracked directories at all and so cannot find the ignored
+#   ones inside them.
+#
+# Both calls then return empty AT RC 0, so neither rc guard helps: git said
+# nothing SUCCESSFULLY. That is the precise inversion of the sentence in the
+# `--ignored` guard's own `die` below ("refusing to treat 'git could not say' as
+# 'the corpus is uncontaminated'"), and it is #572's shape - a harness reporting
+# success while checking nothing.
+#
+# It does NOT re-open the widening this file rejects. Measured with a `target/`
+# present and default config: `--porcelain` and `--porcelain -unormal` are
+# byte-identical and both silent, while whole-tree `--porcelain --ignored` prints
+# `!! target/`. `-unormal` restores what the config suppressed; it does not add a
+# question.
+wt_dirty="$(git -C "${WT}" status --porcelain -unormal 2>"${WORK}/wt-status.err")"
 wt_status_rc=$?
 if [ "${wt_status_rc}" -ne 0 ]; then
     tail -5 "${WORK}/wt-status.err" >&2
@@ -554,7 +585,11 @@ fi
 # drop detection of a modified tracked `src/` file, which builds a WRONG BASE BINARY
 # and is worse than corpus contamination. Two questions, two commands: the tree
 # must be clean, and the replay input must contain nothing git is not tracking.
-wt_ignored="$(git -C "${WT}" status --porcelain --ignored -- "${CORPUS_SUBPATH}" 2>"${WORK}/wt-ignored.err")"
+# `-unormal` for the reason given at the whole-tree call above, which bites HARDER
+# here: under `status.showUntrackedFiles=no` this call returns ZERO BYTES at rc 0,
+# losing both the `!!` rows it is here for and the `??` rows the call above would
+# otherwise have caught.
+wt_ignored="$(git -C "${WT}" status --porcelain --ignored -unormal -- "${CORPUS_SUBPATH}" 2>"${WORK}/wt-ignored.err")"
 wt_ignored_rc=$?
 if [ "${wt_ignored_rc}" -ne 0 ]; then
     tail -5 "${WORK}/wt-ignored.err" >&2

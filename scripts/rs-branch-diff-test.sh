@@ -129,9 +129,10 @@ make_sandbox() {
     # docker genuinely absent; no case here needs a missing tool, so that is a
     # property of the design rather than something exercised.)
     local tool resolved
-    # `head` was missing until round 7, so the driver's two `| head -N` pipes
-    # ("the cached worktree is dirty, here are the first 10 lines" and the
-    # committed-mode banner dump) failed with `command not found` inside EVERY
+    # `head` was missing until round 7, so the driver's `| head -N` pipes - two of
+    # them then ("the cached worktree is dirty, here are the first 10 lines" and
+    # the committed-mode banner dump), three since round 8 added the ignored-path
+    # dump - failed with `command not found` inside EVERY
     # case and nothing noticed: the suite asserts an rc and one substring of the
     # `die` message, never that the transcript arrived. Same shape as the
     # multi-operand `tail` defect found in the same round.
@@ -179,7 +180,14 @@ done
 exit "${rc}"
 STUB
 
-    # Stub git. Only the two subcommands the driver uses.
+    # Stub git. The four subcommands the driver uses: `rev-parse`, `status`,
+    # `diff` and `worktree`.
+    #
+    # This read "the two subcommands" from the first commit, where it was true
+    # (`rev-parse` and `worktree add`). Round 1 added `status` and round 2 added
+    # `diff`, and the sentence stayed. It was false for nine commits and survived a
+    # dedicated doc-truth pass plus six review rounds, because a count phrased as
+    # prose scans as boilerplate rather than as a claim.
     #
     # `worktree add` materialises a base tree carrying its own committed corpus,
     # so that R1 (base binary against the BASE corpus) has something real to read.
@@ -222,10 +230,19 @@ if [ "${1-}" = "status" ]; then
     #
     # The driver no longer passes `-uno` ANYWHERE: round 3 replaced the
     # nothing-to-vary `status --porcelain -uno` scan with a one-ref `git diff`,
-    # which reads tracked content by construction. Its only `status` call is
-    # `git -C <wt> status --porcelain` on the cached worktree, which deliberately
-    # omits `-uno` because the corpus is enumerated from the filesystem and an
-    # untracked scenario dir IS part of the base's replay input.
+    # which reads tracked content by construction. Its TWO `status` calls are both
+    # on the cached worktree: `status --porcelain -unormal`, and
+    # `status --porcelain --ignored -unormal -- <CORPUS_SUBPATH>`. Both deliberately
+    # omit `-uno` and pin `-unormal`, because the corpus is enumerated from the
+    # filesystem and an untracked or ignored scenario dir IS part of the base's
+    # replay input.
+    #
+    # This said "its only `status` call" until round 9. Round 8 added the second
+    # call and, eleven lines below this sentence, a paragraph explaining why the
+    # second one needs its own rc knob - falsifying this one without touching it.
+    # A maintainer reading here first believes the `status` branch below serves a
+    # single driver call site, which is the exact misreading that made
+    # `STUB_GIT_STATUS_IGNORED_RC` necessary.
     #
     # So every `status` reaching this stub arrives with `-C`, and the `else` arm
     # below is currently unreachable. Both are kept so a future caller that does
@@ -245,12 +262,28 @@ if [ "${1-}" = "status" ]; then
     # A stub that cannot state the bug cannot catch it.
     ign=0
     for a in "$@"; do case "${a}" in --ignored|--ignored=*) ign=1 ;; esac; done
+    # `status.showUntrackedFiles=no`, modelled. Until round 9 the stub could only
+    # express what the driver ASKED, never what the developer's git CONFIG did to
+    # the answer - and that config is unversioned, reaches every cached worktree
+    # through the common dir, and silently turns BOTH cleanliness guards off.
+    #
+    # Measured on git 2.55.0: under that config `--porcelain` loses its `??` rows
+    # and `--porcelain --ignored` returns ZERO BYTES, losing `!!` as well, because
+    # with `-uno` git does not walk untracked directories at all and so never
+    # reaches the ignored entries inside them. Both still exit 0, which is why the
+    # rc guards cannot see it. Modelled by folding the config into `uno`, so the
+    # single suppression path serves both rows exactly as real git does.
+    unorm=0
+    for a in "$@"; do case "${a}" in -unormal|--untracked-files=normal) unorm=1 ;; esac; done
+    if [ "${STUB_GIT_UNTRACKED_NO:-0}" = "1" ] && [ "${unorm}" -eq 0 ]; then
+        uno=1
+    fi
     if [ "${in_worktree}" -eq 1 ] && [ "${ign}" -eq 1 ]; then
         # The driver scopes this call with `-- <CORPUS_SUBPATH>`, so a modification
         # OUTSIDE the corpus is correctly not reported here; that is the whole-tree
         # call's job. Modelled rather than merged, or the case would pass for the
         # wrong reason.
-        [ -n "${STUB_WT_IGNORED:-}" ] &&
+        [ -n "${STUB_WT_IGNORED:-}" ] && [ "${uno}" -eq 0 ] &&
             echo "!! crates/rulesteward-auditd/tests/corpus/auditd-oracle/docs/"
     elif [ "${in_worktree}" -eq 1 ]; then
         [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
@@ -722,6 +755,32 @@ run_all_cases() {
         STUB_IGNORES_ENV=3
     run_case no_banner_at_all 2 "did not read the corpus it was handed" \
         STUB_NO_BANNER=2
+    # THE SAME GUARD, on the transcript that pins the `0 failed;` half of the
+    # `ran_any` conjunct. The case above cannot: it leaves the test lists at their
+    # ALL-OK default, so its summary is `2 passed; 0 failed` and a weakening of
+    # `'0 passed; 0 failed;'` to `'0 passed;'` never matches it.
+    #
+    # That weakening is a FALSE CLEAN of the worst sub-class. `ran_any` would read
+    # 0 for any run with zero passes and one or more failures, standing down THE
+    # anti-vacuity guard, so a run that never announced reading the corpus it was
+    # handed is accepted and every FAILED row is then classified DISCRIMINATED.
+    # Measured against a seeded driver: rc 0 with `OK (0 regressions, 2
+    # discriminated)`. Not an under-report - a FABRICATED payload claim.
+    #
+    # The transcript is reachable, not a stub artifact.
+    # `rulesteward-core/src/oracle_corpus.rs` panics on a resolution failure
+    # BEFORE it announces (`Err(e) => panic!("{e}")` precedes the banner
+    # `eprintln!`), and every lane resolves inside a `#[test]` body, so a bad
+    # corpus root fails every test and emits zero banners: exactly
+    # `0 passed; N failed`, no banner.
+    #
+    # The hole is younger than the guard. The pre-round-8 derivation was a row
+    # regex, which matched `test x ... FAILED` structurally and so had no conjunct
+    # to lose; round 8's summary tally is better in every other way and shipped
+    # this one unpinned.
+    run_case no_banner_on_an_all_failed_run 2 "did not read the corpus it was handed" \
+        STUB_NO_BANNER=2 \
+        "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:FAILED"
     # The guard above is EXISTENTIAL: it proves something read the handed tree,
     # never that nothing read a different one. A binary resolving the corpus
     # correctly in one place and from a compiled-in CARGO_MANIFEST_DIR in another
@@ -1148,6 +1207,25 @@ run_all_cases() {
     # stdout is empty, and "could not check" reads as "checked, and uncontaminated".
     run_case wt_ignored_status_cannot_answer 2 "the corpus is uncontaminated" \
         STUB_PRECREATE_WT=1 STUB_GIT_STATUS_IGNORED_RC=128
+    # THE DEVELOPER'S GIT CONFIG, which silently turned BOTH guards above off.
+    #
+    # `status.showUntrackedFiles=no` is a documented performance knob read from
+    # `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`, `/etc/gitconfig` and the MAIN
+    # CLONE's `.git/config` - which reaches every cached worktree through the
+    # common dir, for the same reason `.git/info/exclude` does. Under it the
+    # whole-tree call loses its `??` rows and the `--ignored` call returns ZERO
+    # BYTES, both AT RC 0, so neither rc guard fires: git said nothing
+    # SUCCESSFULLY. Measured end to end on the real driver before `-unormal` was
+    # pinned: a contaminated cache gave rc 2 with the config unset and rc 0,
+    # `OK (2 discriminated)`, with it set.
+    #
+    # Two cases because the config breaks two different guards and each `-unormal`
+    # has to be witnessed where it sits; one case would leave the other flag free
+    # to be deleted.
+    run_case config_hides_an_ignored_corpus_path 2 "git is ignoring" \
+        STUB_PRECREATE_WT=1 STUB_WT_IGNORED=1 STUB_GIT_UNTRACKED_NO=1
+    run_case config_hides_an_untracked_corpus_file 2 "has uncommitted changes" \
+        STUB_PRECREATE_WT=1 STUB_WT_UNTRACKED=1 STUB_GIT_UNTRACKED_NO=1
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1382,25 +1460,36 @@ run_positive_control ran_any_read_from_rows \
     's|^    ran_tally="$(grep -m1 -E .*|    ran_tally="$(grep -m1 -E '"'"'^test '"'"' "${out}" \|\| true)"|' \
     every_row_silenced_with_a_dotted_reason
 
-# The two guards a round-6 mutation probe found to be the ONLY ones of 20 that
-# both survive the whole suite and fail OPEN when removed: gutting either yields
-# `OK (0 regressions, 0 discriminated)` at rc 0. Both were correct in the driver
-# and unwitnessable, because the stub `git` could not express a status or a diff
-# that FAILED - only ones that answered.
+# A round-6 mutation probe found exactly two guards, of 20, that both survive the
+# whole suite and fail OPEN when removed: gutting either yields `OK (0
+# regressions, 0 discriminated)` at rc 0. They are **`wt_status_rc_guard_removed`
+# and `tree_diff_catchall_removed`**, named here rather than pointed at, and both
+# were correct in the driver but unwitnessable, because the stub `git` could not
+# express a status or a diff that FAILED - only ones that answered.
 #
-# This paragraph described the two controls immediately below it until round 7
-# spliced the all-parked block in between, with no blank line, leaving it reading
-# as the preamble to a control that did not exist when the probe ran, whose mutant
-# is refused at rc 2 rather than yielding rc 0, and which has nothing to do with
-# stub `git`. Moved back, not rewritten.
+# NAMED, NOT POSITIONAL, because "the two controls immediately below" has now
+# been falsified TWICE by two different insertions. Round 7 spliced the all-parked
+# block between this paragraph and its subjects. Round 8's repair moved the
+# paragraph back and then inserted THREE more controls below it in the same
+# commit, putting `tree_diff_catchall_removed` 30 lines and three controls away
+# again - two of those three being about stub `git` failing, so a reader following
+# the paragraph downward lands on exactly the wrong one. Re-ordering only holds
+# until the next insertion; a name does not move.
 # shellcheck disable=SC2016
 run_positive_control wt_status_rc_guard_removed \
     's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
     wt_status_cannot_answer
 
-# The IGNORED-path half of the same question, and its own rc guard. Both fail open
-# the way the two above do - git says nothing, and nothing reads as clean - but
-# neither is reachable through the whole-tree call, which dies first.
+# The IGNORED-path half of the same question, and its own rc guard. Neither is
+# reachable through the whole-tree call, which dies first.
+#
+# They fail open by DIFFERENT mechanisms, and conflating them is an argument for
+# deleting one as redundant. `wt_ignored_rc_guard_removed` is the "git says
+# nothing, and nothing reads as clean" shape, the twin of
+# `wt_status_rc_guard_removed`. `wt_ignored_guard_removed` is not: its case emits
+# `!! .../docs/` and exits 0, so git says something and the guard's absence
+# DISCARDS A NON-EMPTY ANSWER - structurally the twin of `cache-dirty-guard-removed`
+# below, which is also an `-n` test.
 # shellcheck disable=SC2016
 run_positive_control wt_ignored_guard_removed \
     's|^if \[ -n "${wt_ignored}" \]; then|if false; then|' \
@@ -1409,6 +1498,29 @@ run_positive_control wt_ignored_guard_removed \
 run_positive_control wt_ignored_rc_guard_removed \
     's|^if \[ "${wt_ignored_rc}" -ne 0 \]; then|if false; then|' \
     wt_ignored_status_cannot_answer
+
+# The `-unormal` on each status call, controlled SEPARATELY because the two flags
+# sit on two different commands and a single control would leave the other free to
+# be deleted. Without them `status.showUntrackedFiles=no` silences both guards at
+# rc 0.
+# shellcheck disable=SC2016
+run_positive_control wt_status_untracked_mode_unpinned \
+    's|status --porcelain -unormal|status --porcelain|' \
+    config_hides_an_untracked_corpus_file
+# shellcheck disable=SC2016
+run_positive_control wt_ignored_untracked_mode_unpinned \
+    's|status --porcelain --ignored -unormal|status --porcelain --ignored|' \
+    config_hides_an_ignored_corpus_path
+
+# The `0 failed;` half of the `ran_any` pattern. Weakening it to `'0 passed;'`
+# makes any zero-pass run look parked, standing down THE anti-vacuity guard and
+# turning a run that never announced its corpus into `2 discriminated` at rc 0.
+# NOT covered by `all_parked_carveout_removed`, which seeds the `;;` arm that this
+# weakening leaves intact.
+# shellcheck disable=SC2016
+run_positive_control ran_any_conjunct_weakened \
+    "s|^    '0 passed; 0 failed;'|    '0 passed;'|" \
+    no_banner_on_an_all_failed_run
 
 # Evidence retention on the DISCRIMINATED run. Reverting to `rc -eq 0` alone is the
 # defect this branch already shipped once: it deletes the logs for the one outcome
