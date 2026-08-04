@@ -871,25 +871,33 @@ diff-sudoers:
 # adversary's is re-rolled each time, which is how session 9o declared a round DRY
 # over a live fail-open.
 #
-# No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3:
-# 0 clean (the success line carries a non-zero announcement count), 1 a REGRESSION,
-# OR a test with no baseline left FAILING at HEAD (added, or un-parked), OR a test
-# the base ran AND PASSED that HEAD silences with #[ignore] - the driver is
-# explicit that the middle one is NOT a regression, so the separators matter, and
-# "and PASSED" is not decoration: the SILENCED arm sits behind the R1 == FAILED
-# check, so a base row that ran and FAILED is UNATTRIBUTABLE at rc 0 no matter
-# what HEAD does with it. Measured on the real driver, one such row alongside a
-# comparable row: rc 0, with the row printed UNATTRIBUTABLE. (A lane in which
-# EVERY row is that shape is rc 2 instead, "no row could be compared" - the
-# row-level claim is the one this sentence makes.) This recipe is the operator's
-# entry point, so an unqualified "silencing
-# fails the gate" here promises a safety property the instrument does not have,
-# 2 tool error (including "these two
-# builds cannot be compared"). Positive-controlled by
-# scripts/rs-branch-diff-test.sh, which re-seeds SOME of the driver's guards into
-# a copy of it and requires named cases to catch each. Not every guard is
-# controlled; that file's header says why, and gives the two commands that count
-# both numbers rather than quoting either.
+# No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3.
+# The three codes, listed without interruption because the previous version put
+# ten lines of qualification between rc 1 and rc 2 and the rc-2 item then read as
+# the tail of a sentence about something else:
+#
+#   0  clean; the success line carries a non-zero announcement count
+#   1  a REGRESSION, OR a test with no baseline left FAILING at HEAD (added, or
+#      un-parked), OR a test the base ran AND PASSED that HEAD silences with
+#      #[ignore]
+#   2  tool error, including "these two builds cannot be compared"
+#
+# Two qualifications on rc 1, kept because this recipe is the operator's entry
+# point and an unqualified "silencing fails the gate" would promise a safety
+# property the instrument does not have:
+#
+#   - the MIDDLE item is NOT a regression, so the separators matter.
+#   - "and PASSED" is not decoration. The SILENCED arm sits behind the
+#     R1 == FAILED check, so a base row that ran and FAILED is UNATTRIBUTABLE at
+#     rc 0 no matter what HEAD does with it. Measured on the real driver, one such
+#     row alongside a comparable row: rc 0, with the row printed UNATTRIBUTABLE. A
+#     lane in which EVERY row is that shape is rc 2 instead, "no row could be
+#     compared"; the row-level claim is the one this sentence makes.
+#
+# Positive-controlled by scripts/rs-branch-diff-test.sh, which re-seeds SOME of
+# the driver's guards into a copy of it and requires named cases to catch each.
+# Not every guard is controlled; that file's header says why, and gives the two
+# commands that count both numbers rather than quoting either.
 #
 # The base build is cached per sha under TMPDIR, so repeated rounds against the
 # same fork point pay for it once. Deliberately NOT in `just ci`: it takes a base

@@ -180,14 +180,20 @@ done
 exit "${rc}"
 STUB
 
-    # Stub git. The four subcommands the driver uses: `rev-parse`, `status`,
-    # `diff` and `worktree`.
+    # Stub git. The five subcommands the driver uses: `rev-parse`, `status`,
+    # `ls-files`, `diff` and `worktree`.
     #
     # This read "the two subcommands" from the first commit, where it was true
     # (`rev-parse` and `worktree add`). Round 1 added `status` and round 2 added
     # `diff`, and the sentence stayed. It was false for nine commits and survived a
     # dedicated doc-truth pass plus six review rounds, because a count phrased as
     # prose scans as boilerplate rather than as a claim.
+    #
+    # Round 9 repaired it to "four". Round 10's `ls-files` guard made that false in
+    # the very next commit, which is the useful half of the story: the count is not
+    # hard to get right, it is hard to keep right, because the thing that falsifies
+    # it is always a feature somewhere else. The sweep for this line now happens
+    # BEFORE a subcommand is added rather than a round after.
     #
     # `worktree add` materialises a base tree carrying its own committed corpus,
     # so that R1 (base binary against the BASE corpus) has something real to read.
@@ -238,11 +244,21 @@ if [ "${1-}" = "status" ]; then
     # replay input.
     #
     # This said "its only `status` call" until round 9. Round 8 added the second
-    # call and, eleven lines below this sentence, a paragraph explaining why the
-    # second one needs its own rc knob - falsifying this one without touching it.
+    # call, and the paragraph that falsified this sentence is the one beginning
+    # "`--ignored` is the SECOND question the driver asks of this command", added
+    # in that same commit and sitting below it ever since without touching it.
     # A maintainer reading here first believes the `status` branch below serves a
     # single driver call site, which is the exact misreading that made
     # `STUB_GIT_STATUS_IGNORED_RC` necessary.
+    #
+    # Round 9's repair of that sentence then said "eleven lines below ... a
+    # paragraph explaining why the second one needs its own rc knob". It named the
+    # right OFFSET and the wrong paragraph: eleven lines below sits the "SECOND
+    # question" text, while the rc-knob explanation is fifty-six lines down. So a
+    # commit whose whole thesis was that positional references rot introduced a
+    # positional reference in the prose explaining why. Verifying a pointer has two
+    # halves - does a target exist at that offset, and is it the one you named -
+    # and checking the first half feels like checking both. Name the paragraph.
     #
     # So every `status` reaching this stub arrives with `-C`, and the `else` arm
     # below is currently unreachable. Both are kept so a future caller that does
@@ -321,6 +337,40 @@ if [ "${1-}" = "status" ]; then
         exit "${STUB_GIT_STATUS_IGNORED_RC:-0}"
     fi
     exit "${STUB_GIT_STATUS_RC:-0}"
+fi
+
+if [ "${1-}" = "ls-files" ]; then
+    # THE THIRD MEMBER OF THE SUPPRESSED-ROW SET, and the stub could not state it
+    # until round 10. Round 8 taught this stub to hide the `!!` row, round 9 the
+    # `??` row; this is the ` M` row - a TRACKED file that is modified and that
+    # `git status` does not report, because the index says stop looking at it.
+    #
+    # It needs its own arm rather than another `status` knob, because the driver
+    # asks a different COMMAND: `status` reports what git can see, and no answer
+    # from it can describe what git has been told not to look at. Modelling the
+    # blindness inside the `status` arm would have made the two indistinguishable,
+    # which is the mistake round 3's `diff` arm records ("a stub that cannot state
+    # the bug cannot catch it").
+    #
+    # `-v` prefixes each path with its index flag. `H` is the normal cached entry;
+    # any LOWERCASE letter is assume-unchanged (what `core.ignoreStat` burns in at
+    # `worktree add` time), and `S` is skip-worktree (what `git sparse-checkout`
+    # sets). Both suppress identically, so both get a case - a remedy aimed at one
+    # cause would leave the other open, which is why the driver reads the FLAGS
+    # rather than guarding any single mechanism.
+    if [ -n "${STUB_WT_LSFILES_EMPTY:-}" ]; then
+        # No tracked files at all. A count over zero lines is zero, so without the
+        # driver's vacuity guard this reads as "nothing is suppressed" when it
+        # means "nothing was examined".
+        exit "${STUB_GIT_LSFILES_RC:-0}"
+    fi
+    echo "H crates/rulesteward-auditd/src/lib.rs"
+    echo "H crates/rulesteward-auditd/tests/corpus/auditd-oracle/aa-one/input.rules"
+    case "${STUB_WT_SUPPRESSED:-}" in
+    assume) echo "h crates/rulesteward-auditd/src/parser.rs" ;;
+    skip) echo "S crates/rulesteward-auditd/src/parser.rs" ;;
+    esac
+    exit "${STUB_GIT_LSFILES_RC:-0}"
 fi
 
 if [ "${1-}" = "diff" ]; then
@@ -770,9 +820,21 @@ run_all_cases() {
     # The transcript is reachable, not a stub artifact.
     # `rulesteward-core/src/oracle_corpus.rs` panics on a resolution failure
     # BEFORE it announces (`Err(e) => panic!("{e}")` precedes the banner
-    # `eprintln!`), and every lane resolves inside a `#[test]` body, so a bad
-    # corpus root fails every test and emits zero banners: exactly
-    # `0 passed; N failed`, no banner.
+    # `eprintln!`), so a test that fails to resolve emits NO banner while libtest
+    # still prints a complete result line for it. The guard has to hold on any
+    # transcript of that shape, whatever else ran alongside it.
+    #
+    # This used to add "and every lane resolves inside a `#[test]` body, so a bad
+    # corpus root fails every test: exactly `0 passed; N failed`". That inference
+    # was false for three of the four lanes. auditd (15 tests, 2 `#[cfg(test)]`
+    # mods), sysctld (18) and sudoers (27) all carry corpus-INDEPENDENT tests that
+    # pass regardless of the root, measured at `13 passed; 2 failed`,
+    # `17 passed; 1 failed` and `22 passed; 5 failed`. Only selinux, the one lane
+    # with no unit-test module, gives `0 passed`. The summary SHAPE was never what
+    # made the case legitimate, so the claim is gone rather than narrowed to the
+    # single lane where it happens to hold - a sentence pinned to selinux's current
+    # test composition would go silently false the day selinux gains a
+    # `#[cfg(test)]` mod, with nothing to flag it.
     #
     # The hole is younger than the guard. The pre-round-8 derivation was a row
     # regex, which matched `test x ... FAILED` structurally and so had no conjunct
@@ -799,6 +861,20 @@ run_all_cases() {
     # with failing_run_may_lack_a_count below, these two pin the exact boundary:
     # the count is required where, and only where, its absence is unfalsifiable.
     run_case missing_count_line 2 "for a green run" STUB_NO_COUNT=3
+    # THE SAME GATE, ASKED OF R1 AND OF A GREEN R2. `STUB_NO_COUNT` was only ever
+    # set to 3, or to 2 alongside a FAILING R2 (`failing_run_may_lack_a_count`,
+    # which asserts the gate must NOT fire), so the gate's application to the other
+    # two runs was unwitnessed: a run-scope conjunct could be added to it and the
+    # whole suite would stay green.
+    #
+    # The shipped driver already refuses both, so these are pure witness and cost
+    # the implementer nothing. They are here because round 9's worst finding was
+    # exactly this shape - a guard present, correct, and under-specified, which a
+    # mutation sweep is structurally blind to because there is no wrong branch to
+    # flip. `run_positive_control count_seen_gate_scoped_to_r3` below is what makes
+    # them load-bearing rather than decorative.
+    run_case r1_green_without_a_count 2 "for a green run" STUB_NO_COUNT=1
+    run_case r2_green_without_a_count 2 "for a green run" STUB_NO_COUNT=2
     run_case unparseable_count 2 "unparseable scenario count" \
         STUB_R1_SCENARIOS=many
 
@@ -1226,6 +1302,37 @@ run_all_cases() {
         STUB_PRECREATE_WT=1 STUB_WT_IGNORED=1 STUB_GIT_UNTRACKED_NO=1
     run_case config_hides_an_untracked_corpus_file 2 "has uncommitted changes" \
         STUB_PRECREATE_WT=1 STUB_WT_UNTRACKED=1 STUB_GIT_UNTRACKED_NO=1
+    # THE INDEX ITSELF, which is the third and last member of that set and the one
+    # no flag at either `status` call can reach.
+    #
+    # `core.ignoreStat` true at `git worktree add` time burns the assume-unchanged
+    # bit into the new linked worktree's index, and `git sparse-checkout` sets
+    # `skip-worktree`. Both make a MODIFIED TRACKED FILE invisible to `status`:
+    # zero bytes at rc 0. Measured on git 2.55.0, and measured again on the
+    # already-built worktree to establish that this is STATE and not configuration:
+    # `git config --unset core.ignoreStat` leaves it blind, and
+    # `git -c core.ignoreStat=false ... status` leaves it blind. That is why the
+    # driver reads `ls-files -v` FLAGS instead of pinning a third flag - a remedy
+    # aimed at the config protects only caches created afterwards, which is the
+    # failure this file already records at the `worktree lock` call.
+    #
+    # Two cases because the two flags are different suppression mechanisms that a
+    # single-cause remedy would split; the driver's guard is deliberately
+    # mechanism-agnostic and both cases pin that.
+    run_case cached_worktree_index_assume_unchanged 2 "assume-unchanged or skip-worktree" \
+        STUB_PRECREATE_WT=1 STUB_WT_SUPPRESSED=assume
+    run_case cached_worktree_index_skip_worktree 2 "assume-unchanged or skip-worktree" \
+        STUB_PRECREATE_WT=1 STUB_WT_SUPPRESSED=skip
+    # Its rc guard, the same shape as the two above it.
+    run_case wt_lsfiles_cannot_answer 2 "git can see this tree" \
+        STUB_PRECREATE_WT=1 STUB_GIT_LSFILES_RC=128
+    # AND ITS VACUITY GUARD, which is the one this guard could most easily have
+    # got wrong: a suppressed-entry COUNT over a zero-line answer is zero, so
+    # without it the new check would report "nothing is suppressed" on a worktree
+    # where nothing was examined - re-creating, inside the fix, the exact shape the
+    # fix exists to close.
+    run_case wt_lsfiles_reports_no_tracked_files 2 "no tracked files at all" \
+        STUB_PRECREATE_WT=1 STUB_WT_LSFILES_EMPTY=1
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1299,6 +1406,32 @@ run_positive_control() {
 
     local broken="${SANDBOX_BASE}/rs-branch-diff-FAIL-OPEN-${label}.sh"
     sed "${sed_expr}" "${DRIVER}" >"${broken}"
+    local sed_rc=$?
+    # THREE WAYS A SEED CAN LIE, and `cmp` alone only catches the first.
+    #
+    # 1. It matched nothing, so the driver is unmodified and every case passes:
+    #    indistinguishable from a guard that held. That is the `cmp -s` check
+    #    below, and it has already fired for real (round 8, when the `ran_any`
+    #    rework moved a seeded source line).
+    # 2. `sed` ERRORED and wrote a truncated file. `cmp` sees a difference and is
+    #    satisfied, but the seeded "driver" is a fragment that fails every case,
+    #    so the control reports CAUGHT for reasons having nothing to do with the
+    #    guard. Found in round 10, when a seed's `|` delimiter collided with the
+    #    `|` inside `0 | 101` and sed died; the probe scored it a catch, and it is
+    #    really a survivor.
+    # 3. It inserted or deleted lines rather than substituting in place, which
+    #    silently moves every line number the rest of the suite reasons about.
+    #
+    # rc and a structural invariant catch 2 and 3. Both are cheap and neither can
+    # be satisfied by a seed that did the right thing.
+    if [ "${sed_rc}" -ne 0 ]; then
+        echo "SUITE ERROR: positive control '${label}' sed exited ${sed_rc}; a truncated driver 'catches' every case for the wrong reason" >&2
+        exit 2
+    fi
+    if [ "$(wc -l <"${DRIVER}")" -ne "$(wc -l <"${broken}")" ]; then
+        echo "SUITE ERROR: positive control '${label}' changed the driver's line count; seeds must substitute in place" >&2
+        exit 2
+    fi
     if cmp -s "${DRIVER}" "${broken}"; then
         echo "SUITE ERROR: positive control '${label}' edited nothing; its guard's source line moved" >&2
         exit 2
@@ -1472,9 +1605,18 @@ run_positive_control ran_any_read_from_rows \
 # block between this paragraph and its subjects. Round 8's repair moved the
 # paragraph back and then inserted THREE more controls below it in the same
 # commit, putting `tree_diff_catchall_removed` 30 lines and three controls away
-# again - two of those three being about stub `git` failing, so a reader following
-# the paragraph downward lands on exactly the wrong one. Re-ordering only holds
-# until the next insertion; a name does not move.
+# again - and exactly ONE of those three (`wt_ignored_rc_guard_removed`) is about
+# stub `git` failing, so a reader following the paragraph downward lands on the
+# wrong control twice before reaching the right one. Re-ordering only holds until
+# the next insertion; a name does not move.
+#
+# That sentence said "two of those three" until round 10, and the commit that
+# wrote it contradicted itself 15 lines further down, where
+# `wt_ignored_guard_removed` is correctly described as the twin of
+# `cache-dirty-guard-removed`: its case emits `!! .../docs/` and exits 0, so git
+# ANSWERS and the guard's absence discards a non-empty answer. `git failed` and
+# `git answered, and the answer was discarded` are different shapes, and this
+# paragraph's whole argument depends on the distinction it blurred.
 # shellcheck disable=SC2016
 run_positive_control wt_status_rc_guard_removed \
     's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
@@ -1499,6 +1641,27 @@ run_positive_control wt_ignored_rc_guard_removed \
     's|^if \[ "${wt_ignored_rc}" -ne 0 \]; then|if false; then|' \
     wt_ignored_status_cannot_answer
 
+# The index-flag guard and its two supporting refusals. All three are `die 2`
+# sites on the cached worktree, but they fail open in three different ways and so
+# get three controls: `wt_index_flag_guard_removed` discards a NON-EMPTY answer
+# (the `cache-dirty-guard-removed` shape), `wt_lsfiles_rc_guard_removed` accepts
+# "git could not say" (the `wt_ignored_rc_guard_removed` shape), and
+# `wt_lsfiles_vacuity_guard_removed` accepts a count taken over nothing (the shape
+# every other guard in this file exists to prevent, re-created inside the newest
+# one if its vacuity check were dropped).
+# shellcheck disable=SC2016
+run_positive_control wt_index_flag_guard_removed \
+    's|^if \[ "${wt_suppressed}" -ne 0 \]; then|if false; then|' \
+    cached_worktree_index_assume_unchanged cached_worktree_index_skip_worktree
+# shellcheck disable=SC2016
+run_positive_control wt_lsfiles_rc_guard_removed \
+    's|^if \[ "${wt_lsfiles_rc}" -ne 0 \]; then|if false; then|' \
+    wt_lsfiles_cannot_answer
+# shellcheck disable=SC2016
+run_positive_control wt_lsfiles_vacuity_guard_removed \
+    's|^if \[ -z "${wt_lsfiles}" \]; then|if false; then|' \
+    wt_lsfiles_reports_no_tracked_files
+
 # The `-unormal` on each status call, controlled SEPARATELY because the two flags
 # sit on two different commands and a single control would leave the other free to
 # be deleted. Without them `status.showUntrackedFiles=no` silences both guards at
@@ -1521,6 +1684,19 @@ run_positive_control wt_ignored_untracked_mode_unpinned \
 run_positive_control ran_any_conjunct_weakened \
     "s|^    '0 passed; 0 failed;'|    '0 passed;'|" \
     no_banner_on_an_all_failed_run
+
+# The count-seen gate applied to ALL THREE runs, not just R3. This seeds the one
+# weakening its existing cases could not see: a run-scope conjunct, which leaves
+# `missing_count_line` (R3) green while R1 and a green R2 stop being checked.
+#
+# Unlike every other control in this file it does not REMOVE a conjunct, it ADDS
+# one - because the gate's defect shape is narrowing rather than deletion. That is
+# also why the mutation sweep could never have found it: there is no wrong branch
+# to flip, only a right branch that was never asked about two of its three inputs.
+# shellcheck disable=SC2016
+run_positive_control count_seen_gate_scoped_to_r3 \
+    's|\[ "${count_seen}" -eq 0 \]; then|[ "${count_seen}" -eq 0 ] \&\& [ "${run}" -eq 3 ]; then|' \
+    r1_green_without_a_count r2_green_without_a_count
 
 # Evidence retention on the DISCRIMINATED run. Reverting to `rc -eq 0` alone is the
 # defect this branch already shipped once: it deletes the logs for the one outcome

@@ -479,6 +479,65 @@ fi
 if [ "${wt_sha}" != "${BASE_SHA}" ]; then
     die 2 "the cached base worktree ${WT} is at ${wt_sha:0:12}, not the requested base ${BASE_SHA:0:12}; refusing to report a comparison against a sha nothing established (remove that directory to rebuild it)"
 fi
+
+# CAN GIT SEE THIS TREE AT ALL? A precondition for BOTH `status` calls below,
+# which is why it is asked first: each of them reports what git can see, and
+# neither can report what git has been told to stop looking at.
+#
+# `core.ignoreStat` is a documented performance knob, motivated in git-config(1)
+# by "systems where lstat() calls are very slow, such as CIFS" - the family this
+# project's mandated NFS worktree cache belongs to, so it is a plausible thing
+# for an operator to have set. When it is true AT `git worktree add` TIME, git
+# burns the assume-unchanged bit into the NEW linked worktree's own index. A
+# tracked file modified afterwards is then invisible to `status`: ZERO BYTES at
+# rc 0, so neither the rc guard nor the `-n` guard below fires. Git said nothing
+# SUCCESSFULLY, which is F9-1's sentence reached by a second mechanism.
+#
+# Measured on git 2.55.0, one tracked file modified inside a linked worktree:
+#
+#   ignoreStat unset at add time  -> status ` M src/main.rs`   ls-files `H`
+#   ignoreStat true  at add time  -> status ZERO BYTES rc 0    ls-files `h`
+#
+# THE REASON THIS IS NOT ANOTHER PINNED FLAG, unlike `-unormal` below. The bit is
+# STATE, not configuration: it is written into the index once, at add time, and
+# read from there forever after. Both measured on the already-built worktree:
+#
+#   git config --unset core.ignoreStat        -> still ZERO BYTES
+#   git -c core.ignoreStat=false ... status   -> still ZERO BYTES
+#
+# So no flag at either `status` call site can undo it, and pinning the config at
+# `worktree add` would protect only caches created afterwards - the identical
+# failure this file already records at the `worktree lock` call above, where a
+# cache built before the line was added stayed unprotected forever.
+#
+# It is also not the only route in. `git sparse-checkout` sets `skip-worktree`,
+# which produces byte-identical blindness (`ls-files` flag `S`, status ZERO BYTES
+# at rc 0), and a hand-run `git update-index --assume-unchanged` needs no config
+# at all. Reading the INDEX FLAGS is therefore mechanism-agnostic in a way that
+# guarding any single cause is not.
+#
+# `ls-files -v` flags: uppercase `H` is the normal cached entry; any LOWERCASE
+# letter means assume-unchanged, and `S` means skip-worktree. Measured across the
+# three fixtures: 0 suppressed entries on a healthy worktree, 1 under
+# `core.ignoreStat`, 1 under `skip-worktree`.
+wt_lsfiles="$(git -C "${WT}" ls-files -v 2>"${WORK}/wt-lsfiles.err")"
+wt_lsfiles_rc=$?
+if [ "${wt_lsfiles_rc}" -ne 0 ]; then
+    tail -5 "${WORK}/wt-lsfiles.err" >&2
+    die 2 "could not read the cached base worktree's index flags (git exited ${wt_lsfiles_rc}); refusing to treat 'git could not say' as 'git can see this tree'"
+fi
+# EMPTY IS NOT CLEAN, and this guard would otherwise re-create the exact defect it
+# was added to close: a zero count out of a zero-line answer reads as "nothing is
+# suppressed" when it means "nothing was examined".
+if [ -z "${wt_lsfiles}" ]; then
+    die 2 "the cached base worktree ${WT} reports no tracked files at all, so an index-flag check over it would pass vacuously; that is a broken worktree, not a clean one (remove that directory to rebuild it)"
+fi
+wt_suppressed="$(printf '%s\n' "${wt_lsfiles}" | grep -cE '^[a-z]|^S' || true)"
+if [ "${wt_suppressed}" -ne 0 ]; then
+    printf '%s\n' "${wt_lsfiles}" | grep -E '^[a-z]|^S' | head -10 >&2
+    die 2 "the cached base worktree ${WT} has index entries marked assume-unchanged or skip-worktree (${wt_suppressed} of them, listed above), so \`git status\` cannot see a modified tracked file there and the two cleanliness checks below would pass on a contaminated tree; the binary built from it may not be ${BASE_SHA:0:12} (remove that directory to rebuild it)"
+fi
+
 # NO `-uno` HERE, and the reason is not the one an earlier version of this comment
 # gave. It described the nothing-to-vary guard as a `git status --porcelain -uno`
 # scan and called this site "the opposite" of it. Round 3 replaced that guard with
