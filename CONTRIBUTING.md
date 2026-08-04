@@ -157,9 +157,9 @@ test that is not being checked:
 
 | at base | at HEAD | verdict |
 |---|---|---|
-| ran | `#[ignore]`d | SILENCED, **rc 1**: a loss of coverage |
+| ran and PASSED | `#[ignore]`d | SILENCED, **rc 1**: a loss of coverage |
 | `#[ignore]`d | failing | no baseline and FAILING, **rc 1**: un-parked and left red |
-| `#[ignore]`d | ran, or still `#[ignore]`d | ignored at base, rc 0; rc **2** if EVERY shared row is in this state |
+| `#[ignore]`d | ran, or still `#[ignore]`d | ignored at base, rc 0; rc **2** if EVERY shared row is in this state AND nothing else failed (a row FAILING with no baseline, or a SILENCED row, stands that gate down and the run is rc 1) |
 | absent | `#[ignore]`d | HEAD-only and PARKED, rc 0 |
 
 The third row is what a branch produces against a base that parks a replay test in

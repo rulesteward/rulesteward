@@ -92,8 +92,19 @@
 #
 # Exit codes (the dev-tooling contract, NOT the rulesteward binary's own):
 #   0  no regressions; the success line carries a non-zero announcement count
-#   1  one or more REGRESSION rows, a HEAD-only test left FAILING, or a test the
-#      base ran that HEAD SILENCES with #[ignore]
+#   1  one or more REGRESSION rows, a test with no baseline verdict left FAILING
+#      at HEAD (added by the branch, or #[ignore]d at the base and un-parked), or
+#      a test the base ran and PASSED that HEAD SILENCES with #[ignore]
+#
+#      Both halves of that sentence were wrong until round 7, and both for the
+#      same reason: it was written in round 3 and the code moved underneath it.
+#      Round 4 gave ONLY_HEAD_FAILING a second population (rows PRESENT at the
+#      base, un-parked and left red), so "HEAD-only" stopped being true; and the
+#      SILENCED arm sits behind the `R1 == FAILED` check, so a base row that ran
+#      and FAILED is UNATTRIBUTABLE at rc 0 no matter what HEAD does with it.
+#      The first half had already been repaired in the printf, the justfile and
+#      CONTRIBUTING.md - this header was the fourth site and was never revisited,
+#      with the ruling explaining why sitting 1000 lines below it in this file.
 #   2  tool/environment error, including "these two builds cannot be compared"
 #
 # rc 1 is also what bash itself exits on a `set -u` unbound-variable abort, so a
@@ -626,7 +637,7 @@ HEAD_BIN="${RESOLVED_BIN}"
 declare -A R1 R2 R3
 SCEN=(0 0 0 0) # 1-indexed by run; SCEN[0] unused
 
-# validate_run <run 1|2|3> <log> <corpus handed in> <exit code>
+# validate_run <run 1|2|3> <stdout> <stderr> <corpus handed in> <exit code>
 #
 # Every guard here runs BEFORE any verdict is read out of the log, because each
 # one describes a way the run's exit code and table can be entirely meaningless.
@@ -635,6 +646,32 @@ validate_run() {
     # A nameref onto the global R1 / R2 / R3 for this run.
     local -n results="R${run}"
 
+    # DID ANY TEST BODY RUN? The two announcement guards below both assume one
+    # did, and that assumption is false for a lane whose replay tests are all
+    # `#[ignore]`d.
+    #
+    # Every lane resolves its corpus inside a `#[test]` fn (via `corpus_root()` or
+    # `scenarios()`), so a parked test announces NOTHING. Measured on rustc 1.97.0
+    # rather than recalled: a binary whose every test is `#[ignore]`d prints a
+    # complete per-test table, emits `test result: ok. 0 passed; 0 failed; N
+    # ignored`, exits 0, and writes ZERO bytes to stderr.
+    #
+    # Before this carve-out the sentinel guard fired first and returned rc 2, "its
+    # exit code and per-test table therefore mean nothing" - about a table that is
+    # complete and entirely meaningful. That contradicted three separate
+    # specifications (this file's SILENCED-wins paragraph, its verdict table's
+    # `ok * ignored` row, and CONTRIBUTING's SILENCED row, all of which promise
+    # rc 1), and it reported a branch that switched off every replay test as an
+    # environment fault. Operator ruling: classify from the table.
+    #
+    # NARROW BY CONSTRUCTION. It stands down only when no row could have
+    # announced. A run with even one non-ignored row still owes a banner, so the
+    # anti-vacuity story is intact for every transcript that has one.
+    local ran_any=0
+    if grep -qE '^test .+ \.\.\. (ok|FAILED)$' "${out}"; then
+        ran_any=1
+    fi
+
     # THE anti-vacuity guard.
     #
     # If this driver and the test disagree about the override variable's name, or
@@ -642,8 +679,18 @@ validate_run() {
     # corpus, agrees with itself, and exits 0. Every row would be `ok`, the count
     # would be healthy, and the table would be a self-comparison. Only confirming
     # the run announced the exact path we handed it can detect that.
-    if ! grep -qF "${SENTINEL}: mode=fresh corpus=${want_corpus}" "${err}" "${out}"; then
-        tail -30 "${err}" "${out}" >&2
+    if [ "${ran_any}" -eq 1 ] &&
+        ! grep -qF "${SENTINEL}: mode=fresh corpus=${want_corpus}" "${err}" "${out}"; then
+        # `-n 30`, NOT `-30`. The obsolete `-N` form is rejected outright when
+        # there is more than one FILE operand: GNU coreutils 9.10 prints
+        # "tail: option used in invalid context -- 3" and exits 1, emitting NOTHING.
+        # These are the only two multi-operand tails in this file, and they are
+        # the two paths where the transcript IS the diagnosis - the header spends
+        # a paragraph on exactly that ("the retained evidence directory was then
+        # empty because the only explanation had gone to /dev/null"). Measured,
+        # not recalled: `tail -30 a b` -> rc 1 and no output; `tail -n 30 a b` ->
+        # both files with `==>` headers, rc 0.
+        tail -n 30 "${err}" "${out}" >&2
         die 2 "run R${run} did not read the corpus it was handed (${want_corpus}); its exit code and per-test table therefore mean nothing"
     fi
 
@@ -689,7 +736,16 @@ validate_run() {
     case "${rc}" in
     0 | 101) ;;
     *)
-        tail -30 "${err}" "${out}" >&2
+        # `-n 30`, NOT `-30`. The obsolete `-N` form is rejected outright when
+        # there is more than one FILE operand: GNU coreutils 9.10 prints
+        # "tail: option used in invalid context -- 3" and exits 1, emitting NOTHING.
+        # These are the only two multi-operand tails in this file, and they are
+        # the two paths where the transcript IS the diagnosis - the header spends
+        # a paragraph on exactly that ("the retained evidence directory was then
+        # empty because the only explanation had gone to /dev/null"). Measured,
+        # not recalled: `tail -30 a b` -> rc 1 and no output; `tail -n 30 a b` ->
+        # both files with `==>` headers, rc 0.
+        tail -n 30 "${err}" "${out}" >&2
         die 2 "run R${run} exited ${rc}, which is neither 0 nor 101; treating it as a tool error rather than guessing what it meant"
         ;;
     esac
@@ -891,7 +947,10 @@ EOF
     #
     # The BANNER stays mandatory for every run regardless: it is what proves which
     # corpus was read, and nothing else can establish that.
-    if [ "${rc}" -eq 0 ] && [ "${count_seen}" -eq 0 ]; then
+    # `ran_any` for the same reason as the sentinel guard: a run in which every
+    # test was parked announces no count because no test body executed, and the
+    # per-test table it DOES print is what the classification then uses.
+    if [ "${rc}" -eq 0 ] && [ "${ran_any}" -eq 1 ] && [ "${count_seen}" -eq 0 ]; then
         die 2 "run R${run} passed but printed no '${SENTINEL}: scenarios=' line; for a green run 'nothing fired' and 'nothing ran' are the same transcript, so the count cannot be confirmed non-zero"
     fi
 }

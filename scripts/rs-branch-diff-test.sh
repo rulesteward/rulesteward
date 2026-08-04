@@ -129,7 +129,20 @@ make_sandbox() {
     # docker genuinely absent; no case here needs a missing tool, so that is a
     # property of the design rather than something exercised.)
     local tool resolved
-    for tool in mktemp mkdir rm tail grep cut env bash dirname cat cp; do
+    # `head` was missing until round 7, so the driver's two `| head -N` pipes
+    # ("the cached worktree is dirty, here are the first 10 lines" and the
+    # committed-mode banner dump) failed with `command not found` inside EVERY
+    # case and nothing noticed: the suite asserts an rc and one substring of the
+    # `die` message, never that the transcript arrived. Same shape as the
+    # multi-operand `tail` defect found in the same round.
+    # `tr` was missing too, found by the check above on its first run: the
+    # `cargo said: $(tail -3 ... | tr '\n' ' ')` diagnostic that round 3 added
+    # specifically to stop stderr being discarded produced an EMPTY tail inside
+    # the sandbox, and `json_phase_failure` passed regardless because it asserts
+    # only the substring BEFORE that interpolation. The driver is fine in
+    # production, where `tr` is on PATH; the CASE was vacuous for the half it
+    # exists to pin.
+    for tool in mktemp mkdir rm tail head tr grep cut env bash dirname cat cp; do
         resolved="$(command -v "${tool}")" || {
             echo "SUITE ERROR: required tool '${tool}' not found" >&2
             return 2
@@ -237,9 +250,14 @@ if [ "${1-}" = "status" ]; then
     # cases when removed, and removing it yields `OK` at rc 0: a failing status
     # writes nothing to stdout, so the driver's `-n "${wt_dirty}"` test reads
     # "could not check" as "checked, and clean". The reachable trigger is a corrupt
-    # or stale-locked index in the long-lived cached worktree (`git status`
-    # refreshes and writes the index; `rev-parse --verify HEAD` reads refs only, so
-    # the earlier guard passes). A stub that cannot state the bug cannot catch it.
+    # index in the long-lived cached worktree (`git status` refreshes and writes
+    # the index; `rev-parse --verify HEAD` reads refs only, so the earlier guard
+    # passes). Measured on git 2.55.0: a corrupt index gives rc 128 with EMPTY
+    # stdout and `fatal: .../index: index file smaller than expected`, which is
+    # exactly this knob's shape. NOT a stale `index.lock`, which an earlier
+    # version of this comment also claimed: status takes that lock non-blocking
+    # and simply skips writing, returning rc 0 and empty output.
+    # A stub that cannot state the bug cannot catch it.
     exit "${STUB_GIT_STATUS_RC:-0}"
 fi
 
@@ -376,11 +394,29 @@ else
     mode="committed"
     root="/its/own/corpus"
 fi
+# DOES ANY TEST BODY RUN? Announcements come from test BODIES in every real lane
+# (the corpus is resolved inside a `#[test]` fn), so a binary whose tests are all
+# `#[ignore]`d announces NOTHING - measured on rustc 1.97.0: complete per-test
+# table, `0 passed; 0 failed; N ignored`, rc 0, and zero bytes on stderr.
+#
+# This stub announced unconditionally until round 7, which let cases pin
+# transcripts the real system cannot emit: an all-parked run that still produced a
+# banner. One of those cases was a `must_catch` for round 5's control, so that
+# control was witnessing a fiction.
+any_ran=0
+for entry in ${tests}; do
+    case "${entry##*:}" in
+    ignored | ignoredr) ;;
+    *) any_ran=1 ;;
+    esac
+done
+
 # Announcements go to STDERR and the per-test table to STDOUT, exactly as a real
 # replay binary does it: libtest writes its own progress to stdout, and the replay
 # tests announce with `eprintln!`. The driver relies on that split, so the stub
 # must honour it or the suite would be testing a shape that does not occur.
-[ "${STUB_NO_BANNER:-0}" = "${run}" ] || echo "${SENTINEL}: mode=${mode} corpus=${root}" >&2
+[ "${any_ran}" -eq 1 ] && [ "${STUB_NO_BANNER:-0}" != "${run}" ] &&
+    echo "${SENTINEL}: mode=${mode} corpus=${root}" >&2
 
 # A SECOND resolution in the same process that did NOT consult the override, and
 # therefore announces committed mode against its own tree. This is the shape
@@ -396,7 +432,8 @@ fi
 # passes `--test-threads=1`.) The healthy count lands last on purpose, because
 # that is the ordering under which a `tail -1` sampler reports success.
 [ "${STUB_ZERO_COUNT_FIRST:-0}" = "${run}" ] && echo "${SENTINEL}: scenarios=0" >&2
-[ "${STUB_NO_COUNT:-0}" = "${run}" ] || echo "${SENTINEL}: scenarios=${scen}" >&2
+[ "${any_ran}" -eq 1 ] && [ "${STUB_NO_COUNT:-0}" != "${run}" ] &&
+    echo "${SENTINEL}: scenarios=${scen}" >&2
 [ "${STUB_ORACLE_BROKEN:-0}" = "${run}" ] &&
     echo "${SENTINEL}: ORACLE-BROKEN accept and reject controls returned the same verdict" >&2
 
@@ -511,6 +548,29 @@ run_case() {
     if [ "${want_sub}" != "-" ] && [[ "${out}" != *"${want_sub}"* ]]; then
         ok=0
     fi
+
+    # THE DRIVER'S OWN TOOLING MUST NOT BE BROKEN, checked on every case rather
+    # than asserted anywhere in particular.
+    #
+    # Round 7 found two defects of the same shape, both invisible to 74 cases:
+    # `tail -30 "${err}" "${out}"` is rejected outright by GNU coreutils when
+    # given two FILE operands ("option used in invalid context"), and the sandbox
+    # never provided `head`, so the driver's two `| head -N` pipes failed with
+    # `command not found`. In BOTH cases the driver printed its verdict with an
+    # EMPTY transcript, and every case still passed - because a case asserts an rc
+    # and one substring of the `die` message, never that the evidence arrived.
+    #
+    # This check is its own positive control: it fires on the pre-round-7 driver
+    # and is silent on the current one, which is why it is worth more than a case
+    # per site. A tool that could not run must never look like a tool that ran and
+    # found nothing.
+    case "${out}" in
+    *'option used in invalid context'* | *'command not found'* | *'No such file or directory'*)
+        ok=0
+        printf '%s %s: the driver invoked a tool that could not run; its diagnostics are empty\n' \
+            "$(case_marker)" "${name}" >&2
+        ;;
+    esac
 
     if [ "${ok}" -eq 1 ]; then
         PASS=$((PASS + 1))
@@ -783,7 +843,15 @@ run_all_cases() {
     # instance of the thing that gate exists to fail, not a diagnostic dead end.
     run_case every_row_silenced_at_head 1 "ran at base" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
-    run_case every_row_ignored_at_base 2 "0 base-only, 0 HEAD-only" \
+    # The substring is ARM-UNIQUE and THEN discriminating, in that order. Round 6
+    # changed this from an arm-unique phrase to bare bucket counts so that this
+    # case and `base_ignored_with_renamed_rows` would differ from EACH OTHER - and
+    # succeeded, while silently destroying what mattered more: those counts are
+    # rendered identically by the fall-through arm three lines below, so gutting
+    # the base-ignored arm left both cases green. Two round-7 reviewers found it.
+    # Optimising for the distinction you are thinking about can destroy one you
+    # are not.
+    run_case every_row_ignored_at_base 2 "so have no baseline verdict, alongside 0 base-only" \
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
@@ -848,11 +916,11 @@ run_all_cases() {
     # created. Both fire here with base-only and HEAD-only rows unnamed, and the
     # second one used to end "that is a property of <base>, not of this branch"
     # when the branch's own rename is what emptied the comparable set.
-    run_case unattributable_with_renamed_rows 2 "base-only" \
+    run_case unattributable_with_renamed_rows 2 "UNATTRIBUTABLE (the base was already red" \
         "STUB_R1_TESTS=replay_alpha:FAILED replay_beta:ok" \
         "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
         "STUB_R3_TESTS=replay_alpha:FAILED replay_gamma:ok"
-    run_case base_ignored_with_renamed_rows 2 "1 base-only, 1 HEAD-only" \
+    run_case base_ignored_with_renamed_rows 2 "so have no baseline verdict, alongside 1 base-only" \
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ok" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ok" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_gamma:ok"
@@ -1135,7 +1203,7 @@ printf 'rs-branch-diff-test: %d cases passed against the real driver.\n' "${BASE
 
 # shellcheck disable=SC2016
 run_positive_control sentinel-guard-removed \
-    's|^    if ! grep -qF "${SENTINEL}: mode=fresh corpus=${want_corpus}" "${err}" "${out}"; then|    if false; then|' \
+    's|^    if \[ "${ran_any}" -eq 1 \] &&|    if false \&\&|' \
     base_baseline_ignores_override base_on_head_corpus_ignores_override \
     head_run_ignores_override no_banner_at_all
 
@@ -1195,6 +1263,17 @@ run_positive_control r1_r2_containment_guard_removed \
 # `OK (0 regressions, 0 discriminated)` at rc 0. Both were correct in the driver
 # and unwitnessable, because the stub `git` could not express a status or a diff
 # that FAILED - only ones that answered.
+# The all-parked carve-out. Forcing `ran_any` back to 1 restores the pre-round-7
+# behaviour, where a lane whose replay tests are ALL `#[ignore]`d was refused at
+# rc 2 ("its exit code and per-test table therefore mean nothing") about a table
+# that is complete and meaningful - contradicting three specifications that
+# promise rc 1 SILENCED. Seeded on the initialiser rather than the `if`, so it is
+# independent of `sentinel-guard-removed` above, which removes the guard outright.
+# shellcheck disable=SC2016
+run_positive_control all_parked_carveout_removed \
+    's|^    local ran_any=0|    local ran_any=1|' \
+    every_row_silenced_at_head
+
 # shellcheck disable=SC2016
 run_positive_control wt_status_rc_guard_removed \
     's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
