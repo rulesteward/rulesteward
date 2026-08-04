@@ -203,11 +203,33 @@ STUB
 # Stub git. Distinguishes calls made INSIDE the cached base worktree (`git -C
 # <dir> ...`) from calls against the repo, because the driver now validates the
 # cache and those two must be able to disagree.
+#
+# GLOBAL OPTIONS ARE CONSUMED IN A LOOP, not with a single `-C` test, because the
+# driver now passes `-c core.fsmonitor=` as well and real git accepts them in any
+# order before the subcommand. A stub that consumed only `-C` would see `-c` as
+# the subcommand and fall through every arm, which fails in the direction that
+# looks like a passing test.
 in_worktree=0
-if [ "${1-}" = "-C" ]; then
-    in_worktree=1
-    shift 2
-fi
+fsmon_pinned=0
+while :; do
+    case "${1-}" in
+    -C)
+        in_worktree=1
+        shift 2
+        ;;
+    -c)
+        # Only the pin the driver actually relies on is modelled; any other `-c`
+        # is consumed and ignored, exactly as an unrelated config would be.
+        case "${2-}" in
+        core.fsmonitor=*) fsmon_pinned=1 ;;
+        esac
+        shift 2
+        ;;
+    *)
+        break
+        ;;
+    esac
+done
 
 BASE_DEFAULT="aaaaaaaabbbbbbbbccccccccdddddddd00000000"
 HEAD_DEFAULT="1111111122222222333333334444444455555555"
@@ -251,14 +273,19 @@ if [ "${1-}" = "status" ]; then
     # single driver call site, which is the exact misreading that made
     # `STUB_GIT_STATUS_IGNORED_RC` necessary.
     #
-    # Round 9's repair of that sentence then said "eleven lines below ... a
-    # paragraph explaining why the second one needs its own rc knob". It named the
-    # right OFFSET and the wrong paragraph: eleven lines below sits the "SECOND
-    # question" text, while the rc-knob explanation is fifty-six lines down. So a
-    # commit whose whole thesis was that positional references rot introduced a
-    # positional reference in the prose explaining why. Verifying a pointer has two
-    # halves - does a target exist at that offset, and is it the one you named -
-    # and checking the first half feels like checking both. Name the paragraph.
+    # Round 9's repair of that sentence pointed at "a paragraph explaining why the
+    # second one needs its own rc knob" by counting lines to it, and landed on the
+    # "SECOND question" text instead. So a commit whose whole thesis was that
+    # positional references rot introduced a positional reference in the prose
+    # explaining why.
+    #
+    # Round 10's repair of THAT then quoted two offsets, and one of them was
+    # measured in the wrong tree - the anchor sentence did not yet exist in the
+    # commit the number came from. Both offsets are gone rather than corrected,
+    # because they carry no load: the paragraph names both referents already, and
+    # an offset is the only part of a reference that can rot. Verifying a pointer
+    # has two halves - does a target exist there, and is it the one you named -
+    # and a line count checks neither unless you also check the anchor.
     #
     # So every `status` reaching this stub arrives with `-C`, and the `else` arm
     # below is currently unreachable. Both are kept so a future caller that does
@@ -302,7 +329,15 @@ if [ "${1-}" = "status" ]; then
         [ -n "${STUB_WT_IGNORED:-}" ] && [ "${uno}" -eq 0 ] &&
             echo "!! crates/rulesteward-auditd/tests/corpus/auditd-oracle/docs/"
     elif [ "${in_worktree}" -eq 1 ]; then
-        [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
+        # THE ` M` ROW, and the FOURTH thing that can suppress it. An
+        # under-reporting `core.fsmonitor` makes git skip the stat entirely and
+        # report the entry clean, so this row vanishes at rc 0 with the file
+        # modified on disk. Measured: it eats ONLY this row - the `??` and `!!`
+        # rows below are unaffected - which is why the suppression is modelled
+        # here rather than in the `uno` path those two share.
+        [ -n "${STUB_WT_DIRTY:-}" ] &&
+            { [ -z "${STUB_GIT_FSMONITOR:-}" ] || [ "${fsmon_pinned}" -eq 1 ]; } &&
+            echo " M crates/rulesteward-auditd/src/lib.rs"
         # UNTRACKED inside the cached base worktree. The corpus is enumerated from
         # the filesystem, so an untracked scenario dir IS part of the base's
         # replay input - which is why this site must NOT pass -uno.
@@ -358,16 +393,53 @@ if [ "${1-}" = "ls-files" ]; then
     # sets). Both suppress identically, so both get a case - a remedy aimed at one
     # cause would leave the other open, which is why the driver reads the FLAGS
     # rather than guarding any single mechanism.
+    # THIS ARM READS ITS ARGUMENTS, and until round 11 it did not - which made
+    # the `-v` flag and the call's SCOPE both unwitnessable. Seeding `-v` -> `-t`
+    # left all 87 cases green while re-opening the `core.ignoreStat` half the
+    # guard exists for; so did scoping the call to the corpus, because the
+    # suppressed entry below sits outside it. The `status` arm scans `"$@"` in
+    # three places for exactly this reason and round 9 gave its two flags two
+    # controls under that rule; round 10 shipped a flag with the same property
+    # and gave it none. A guard has a QUESTION and a VERDICT, and controls that
+    # attack only the verdict leave the question free to drift.
+    lsv=0
+    scoped=0
+    for a in "$@"; do
+        case "${a}" in
+        -v) lsv=1 ;;
+        --) scoped=1 ;;
+        esac
+    done
     if [ -n "${STUB_WT_LSFILES_EMPTY:-}" ]; then
         # No tracked files at all. A count over zero lines is zero, so without the
         # driver's vacuity guard this reads as "nothing is suppressed" when it
         # means "nothing was examined".
         exit "${STUB_GIT_LSFILES_RC:-0}"
     fi
+    if [ "${scoped}" -eq 1 ]; then
+        # Scoped to the corpus by a pathspec: the `src/` entries are outside it
+        # and real git would not list them, so the suppressed one vanishes too.
+        # That is the whole harm of narrowing this call, and it is invisible
+        # unless the stub honours the pathspec.
+        echo "H crates/rulesteward-auditd/tests/corpus/auditd-oracle/aa-one/input.rules"
+        exit "${STUB_GIT_LSFILES_RC:-0}"
+    fi
     echo "H crates/rulesteward-auditd/src/lib.rs"
     echo "H crates/rulesteward-auditd/tests/corpus/auditd-oracle/aa-one/input.rules"
     case "${STUB_WT_SUPPRESSED:-}" in
-    assume) echo "h crates/rulesteward-auditd/src/parser.rs" ;;
+    # `-v` is what lowercases an assume-unchanged entry. Without it real git
+    # prints `H` (measured: `ls-files -t` gives `H src/assume.rs`), so the guard
+    # sees nothing. `S` is in the BASE tag set and appears with or without `-v`
+    # (measured: `-t` still gives `S src/skip.rs`), so skip-worktree stays
+    # visible under the weakening - which is why its case must NOT go red for
+    # the `-v` control, and does not.
+    assume)
+        if [ "${lsv}" -eq 1 ]; then
+            echo "h crates/rulesteward-auditd/src/parser.rs"
+        else
+            echo "H crates/rulesteward-auditd/src/parser.rs"
+        fi
+        ;;
     skip) echo "S crates/rulesteward-auditd/src/parser.rs" ;;
     esac
     exit "${STUB_GIT_LSFILES_RC:-0}"
@@ -829,12 +901,19 @@ run_all_cases() {
     # was false for three of the four lanes. auditd (15 tests, 2 `#[cfg(test)]`
     # mods), sysctld (18) and sudoers (27) all carry corpus-INDEPENDENT tests that
     # pass regardless of the root, measured at `13 passed; 2 failed`,
-    # `17 passed; 1 failed` and `22 passed; 5 failed`. Only selinux, the one lane
-    # with no unit-test module, gives `0 passed`. The summary SHAPE was never what
-    # made the case legitimate, so the claim is gone rather than narrowed to the
-    # single lane where it happens to hold - a sentence pinned to selinux's current
-    # test composition would go silently false the day selinux gains a
-    # `#[cfg(test)]` mod, with nothing to flag it.
+    # `17 passed; 1 failed` and `22 passed; 5 failed`. Only selinux gives
+    # `0 passed`. The summary SHAPE was never what made the case legitimate, so the
+    # claim is gone rather than narrowed to the single lane where it happens to
+    # hold - any such sentence is pinned to today's test composition and would go
+    # silently false when that changes, with nothing to flag it.
+    #
+    # Round 10 wrote the narrowed version anyway, as "selinux, the one lane with no
+    # unit-test module", and that was false on its own terms: `sudoers_corpus_oracle.rs`
+    # has no `#[cfg(test)]` mod either - no `mod` declaration of any kind - and it
+    # gives `22 passed`. The determinant is whether EVERY test in the target
+    # resolves the corpus, not whether the file has a unit-test module. Which is
+    # the same lesson twice: a cause stated for a measurement is a second claim,
+    # and it needs its own check.
     #
     # The hole is younger than the guard. The pre-round-8 derivation was a row
     # regex, which matched `test x ... FAILED` structurally and so had no conjunct
@@ -1317,13 +1396,20 @@ run_all_cases() {
     # failure this file already records at the `worktree lock` call.
     #
     # Two cases because the two flags are different suppression mechanisms that a
-    # single-cause remedy would split; the driver's guard is deliberately
-    # mechanism-agnostic and both cases pin that.
+    # single-cause remedy would split; the driver's guard is deliberately agnostic
+    # about HOW either bit was set, and both cases pin that.
+    #
+    # It is NOT agnostic about which BITS it reads, and round 10 said it was.
+    # `ls-files` exposes assume-unchanged under `-v` and fsmonitor-clean under
+    # `-f`; there are three suppression bits, not two. The third is handled by the
+    # `-c core.fsmonitor=` pin on the status call, witnessed separately by
+    # `config_hides_a_modified_tracked_file`.
     run_case cached_worktree_index_assume_unchanged 2 "assume-unchanged or skip-worktree" \
         STUB_PRECREATE_WT=1 STUB_WT_SUPPRESSED=assume
     run_case cached_worktree_index_skip_worktree 2 "assume-unchanged or skip-worktree" \
         STUB_PRECREATE_WT=1 STUB_WT_SUPPRESSED=skip
-    # Its rc guard, the same shape as the two above it.
+    # Its rc guard, the same shape as `cached_worktree_index_assume_unchanged` and
+    # `cached_worktree_index_skip_worktree`.
     run_case wt_lsfiles_cannot_answer 2 "git can see this tree" \
         STUB_PRECREATE_WT=1 STUB_GIT_LSFILES_RC=128
     # AND ITS VACUITY GUARD, which is the one this guard could most easily have
@@ -1333,6 +1419,14 @@ run_all_cases() {
     # fix exists to close.
     run_case wt_lsfiles_reports_no_tracked_files 2 "no tracked files at all" \
         STUB_PRECREATE_WT=1 STUB_WT_LSFILES_EMPTY=1
+    # AN UNDER-REPORTING `core.fsmonitor`, the fourth suppressor and the one the
+    # index-flag guard above cannot see: `ls-files -v` reports `H` for an
+    # fsmonitor-clean entry, so only the `-c core.fsmonitor=` pin on the status
+    # call catches this. Measured on git 2.55.0 with a v2 hook returning an empty
+    # change list: contaminated tree, plain status ZERO BYTES rc 0; same tree with
+    # the pin, ` M src/f3.rs`.
+    run_case config_hides_a_modified_tracked_file 2 "has uncommitted changes" \
+        STUB_PRECREATE_WT=1 STUB_WT_DIRTY=1 STUB_GIT_FSMONITOR=1
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1419,8 +1513,10 @@ run_positive_control() {
     #    guard. Found in round 10, when a seed's `|` delimiter collided with the
     #    `|` inside `0 | 101` and sed died; the probe scored it a catch, and it is
     #    really a survivor.
-    # 3. It inserted or deleted lines rather than substituting in place, which
-    #    silently moves every line number the rest of the suite reasons about.
+    # 3. It inserted or deleted lines rather than substituting in place. Nothing
+    #    here reasons about driver line numbers, so this is not a correctness
+    #    hazard today; it is a cheap structural check that a seed did what a seed
+    #    is supposed to do, and it is what catches case 2 above.
     #
     # rc and a structural invariant catch 2 and 3. Both are cheap and neither can
     # be satisfied by a seed that did the right thing.
@@ -1661,6 +1757,36 @@ run_positive_control wt_lsfiles_rc_guard_removed \
 run_positive_control wt_lsfiles_vacuity_guard_removed \
     's|^if \[ -z "${wt_lsfiles}" \]; then|if false; then|' \
     wt_lsfiles_reports_no_tracked_files
+
+# The `ls-files` call's QUESTION, which round 10 shipped unwitnessed. The three
+# controls above all seed the guard's LOGIC (`if false; then`); these two seed
+# what it ASKS. Both weakenings were measured to survive the whole suite before
+# the stub was taught to read its arguments.
+#
+# `-v` -> `-t` re-opens the assume-unchanged half only, so exactly ONE index case
+# goes red - `cached_worktree_index_skip_worktree` correctly stays green, because
+# `S` is in the base tag set and real `ls-files -t` still prints it.
+# shellcheck disable=SC2016
+run_positive_control wt_lsfiles_v_flag_unpinned \
+    's|ls-files -v 2>|ls-files -t 2>|' \
+    cached_worktree_index_assume_unchanged
+# Scoping the call to the corpus discards the SOURCE-file case the guard exists
+# for, so both index cases go red.
+# shellcheck disable=SC2016
+run_positive_control wt_lsfiles_scope_narrowed \
+    's|ls-files -v 2>|ls-files -v -- "${CORPUS_SUBPATH}" 2>|' \
+    cached_worktree_index_assume_unchanged cached_worktree_index_skip_worktree
+
+# The `-c core.fsmonitor=` pin on the whole-tree status call. Only this one is
+# controlled: the `--ignored` call is SCOPED to the corpus, so any ` M` row
+# fsmonitor could hide from it is also hidden from this unscoped call, where the
+# guard fires first. Its absence cannot produce a false clean, which is the bar
+# standing ruling 3 sets, and modelling one would mean a transcript real git
+# cannot emit.
+# shellcheck disable=SC2016
+run_positive_control wt_status_fsmonitor_unpinned \
+    's|-c core.fsmonitor= status --porcelain -unormal|status --porcelain -unormal|' \
+    config_hides_a_modified_tracked_file
 
 # The `-unormal` on each status call, controlled SEPARATELY because the two flags
 # sit on two different commands and a single control would leave the other free to

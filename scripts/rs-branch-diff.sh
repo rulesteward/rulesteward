@@ -491,7 +491,8 @@ fi
 # burns the assume-unchanged bit into the NEW linked worktree's own index. A
 # tracked file modified afterwards is then invisible to `status`: ZERO BYTES at
 # rc 0, so neither the rc guard nor the `-n` guard below fires. Git said nothing
-# SUCCESSFULLY, which is F9-1's sentence reached by a second mechanism.
+# SUCCESSFULLY, which is round 9's `status.showUntrackedFiles` finding reached by
+# a second mechanism.
 #
 # Measured on git 2.55.0, one tracked file modified inside a linked worktree:
 #
@@ -510,11 +511,30 @@ fi
 # failure this file already records at the `worktree lock` call above, where a
 # cache built before the line was added stayed unprotected forever.
 #
-# It is also not the only route in. `git sparse-checkout` sets `skip-worktree`,
-# which produces byte-identical blindness (`ls-files` flag `S`, status ZERO BYTES
-# at rc 0), and a hand-run `git update-index --assume-unchanged` needs no config
-# at all. Reading the INDEX FLAGS is therefore mechanism-agnostic in a way that
-# guarding any single cause is not.
+# It is also not the only route to these two bits. `git sparse-checkout` sets
+# `skip-worktree`, which produces byte-identical blindness (`ls-files` flag `S`,
+# status ZERO BYTES at rc 0), and a hand-run `git update-index --assume-unchanged`
+# needs no config at all. So this guard is agnostic about HOW either bit was set,
+# which is what guarding `core.ignoreStat` by name would not be.
+#
+# IT IS NOT AGNOSTIC ABOUT WHICH BITS IT READS, and an earlier version of this
+# sentence claimed it was. `git update-index --help` exposes THREE per-entry
+# suppression bits, and `git ls-files --help` names their flags on adjacent lines:
+#
+#   -v   use lowercase letters for 'assume unchanged' files
+#   -f   use lowercase letters for 'fsmonitor clean' files
+#
+# `-v` covers assume-unchanged; `S` in the base tag set covers skip-worktree;
+# NOTHING in `-v`'s output can express `CE_FSMONITOR_VALID`. That third bit is
+# handled by the `-c core.fsmonitor=` pins on the two `status` calls below,
+# because it is re-derived per run rather than burned into the index.
+#
+# `-f` IS NOT THE ANSWER HERE, measured rather than assumed: on a CLEAN worktree
+# with a healthy fsmonitor, `ls-files -f` lowercases EVERY tracked entry (3 of 3
+# on the fixture, 11 of 11 on another), so a `-v -f` guard would `die 2` on every
+# run for any fsmonitor user - the deterministic-denial shape this file rejects
+# two paragraphs down. Recorded so a later round does not "fix" this the obvious
+# way.
 #
 # `ls-files -v` flags: uppercase `H` is the normal cached entry; any LOWERCASE
 # letter means assume-unchanged, and `S` means skip-worktree. Measured across the
@@ -594,7 +614,32 @@ fi
 # byte-identical and both silent, while whole-tree `--porcelain --ignored` prints
 # `!! target/`. `-unormal` restores what the config suppressed; it does not add a
 # question.
-wt_dirty="$(git -C "${WT}" status --porcelain -unormal 2>"${WORK}/wt-status.err")"
+#
+# `-c core.fsmonitor=` IS PINNED for a THIRD mechanism, found in round 11 and
+# distinct from both of the above. `core.fsmonitor` names a file-system monitor
+# (a hook, or the builtin daemon) that git asks "what changed?" instead of
+# stat-ing the tree. When the monitor UNDER-REPORTS - its documented failure
+# mode, and what a watchman watch scoped to the main clone does when asked about
+# a linked worktree, which is exactly the topology this driver creates - git
+# marks the entries fsmonitor-clean and `status` returns ZERO BYTES at rc 0 with
+# a tracked file modified on disk.
+#
+# Measured on git 2.55.0 with a v2 hook returning an empty change list:
+#
+#   contaminated, no fsmonitor       -> ` M src/f3.rs`
+#   contaminated, fsmonitor primed   -> ZERO BYTES rc 0      <- the fail-open
+#   same tree, -c core.fsmonitor=    -> ` M src/f3.rs`       <- the remedy
+#
+# This is round 9's shape and NOT round 10's, which is why it is a flag here and
+# an index-flag read up there: the fsmonitor bit is RE-DERIVED each run, so a
+# call-site override cures it, whereas `core.ignoreStat`'s bit is written into
+# the index once and survives any flag. The two remedies are not interchangeable
+# and neither replaces the other.
+#
+# It suppresses ONLY the ` M` row; `??` and `!!` still appear. The pin is
+# repeated on the `--ignored` call below for consistency, but see the note there
+# about why only this one is separately controlled.
+wt_dirty="$(git -C "${WT}" -c core.fsmonitor= status --porcelain -unormal 2>"${WORK}/wt-status.err")"
 wt_status_rc=$?
 if [ "${wt_status_rc}" -ne 0 ]; then
     tail -5 "${WORK}/wt-status.err" >&2
@@ -648,7 +693,15 @@ fi
 # here: under `status.showUntrackedFiles=no` this call returns ZERO BYTES at rc 0,
 # losing both the `!!` rows it is here for and the `??` rows the call above would
 # otherwise have caught.
-wt_ignored="$(git -C "${WT}" status --porcelain --ignored -unormal -- "${CORPUS_SUBPATH}" 2>"${WORK}/wt-ignored.err")"
+# `-c core.fsmonitor=` for the reason given at the whole-tree call, with ONE
+# honest qualification: this pin gets no positive control of its own, and that is
+# a deliberate ruling rather than an oversight. This call is SCOPED to the corpus
+# and the call above is not, so the tree it examines is a SUBSET: any ` M` row
+# fsmonitor could hide from this call is also hidden from that one, where the
+# guard fires first. Its absence therefore cannot produce a false clean, which is
+# the bar standing ruling 3 sets. Modelling one in the stub would mean modelling
+# a transcript real git cannot emit, which is the mistake round 7 recorded.
+wt_ignored="$(git -C "${WT}" -c core.fsmonitor= status --porcelain --ignored -unormal -- "${CORPUS_SUBPATH}" 2>"${WORK}/wt-ignored.err")"
 wt_ignored_rc=$?
 if [ "${wt_ignored_rc}" -ne 0 ]; then
     tail -5 "${WORK}/wt-ignored.err" >&2
