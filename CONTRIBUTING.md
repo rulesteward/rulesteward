@@ -241,7 +241,8 @@ that made `just diff-fapolicyd` report success while checking nothing (#572).
 OFFLINE tier throughout - no docker, no root, no live oracle - so it has no
 legitimate precondition to skip on. Everything a live recipe would skip for
 (a base that predates the corpus, a base whose harness will not build, a run
-that announced the wrong corpus) is `2`, "these two builds cannot be compared".
+that announced the wrong corpus, a cached base worktree whose corpus holds a path
+git is ignoring) is `2`, "these two builds cannot be compared".
 Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
 asserts that no case in its FIRST pass, against the real driver, ever yields `3`.
 Exit codes from its positive-control phases, where the driver is deliberately

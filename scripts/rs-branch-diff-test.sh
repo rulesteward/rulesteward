@@ -233,7 +233,26 @@ if [ "${1-}" = "status" ]; then
     # modelled rather than silently mis-answered.
     uno=0
     for a in "$@"; do case "${a}" in -uno|--untracked-files=no) uno=1 ;; esac; done
-    if [ "${in_worktree}" -eq 1 ]; then
+    # `--ignored` is the SECOND question the driver asks of this command, and the
+    # stub could not express its answer at all until round 8.
+    #
+    # Real `git status --porcelain` OMITS ignored paths (git-status(1): `--ignored`
+    # is what "show ignored files as well" takes), while the lanes enumerate the
+    # corpus with `read_dir`, which ignores nothing. So a scenario directory whose
+    # name `.gitignore` matches is replay input AND invisible - and with only
+    # STUB_WT_DIRTY and STUB_WT_UNTRACKED there was no way to state "a file is
+    # present that `git status` does not report", which is precisely the bug.
+    # A stub that cannot state the bug cannot catch it.
+    ign=0
+    for a in "$@"; do case "${a}" in --ignored|--ignored=*) ign=1 ;; esac; done
+    if [ "${in_worktree}" -eq 1 ] && [ "${ign}" -eq 1 ]; then
+        # The driver scopes this call with `-- <CORPUS_SUBPATH>`, so a modification
+        # OUTSIDE the corpus is correctly not reported here; that is the whole-tree
+        # call's job. Modelled rather than merged, or the case would pass for the
+        # wrong reason.
+        [ -n "${STUB_WT_IGNORED:-}" ] &&
+            echo "!! crates/rulesteward-auditd/tests/corpus/auditd-oracle/docs/"
+    elif [ "${in_worktree}" -eq 1 ]; then
         [ -n "${STUB_WT_DIRTY:-}" ] && echo " M crates/rulesteward-auditd/src/lib.rs"
         # UNTRACKED inside the cached base worktree. The corpus is enumerated from
         # the filesystem, so an untracked scenario dir IS part of the base's
@@ -258,6 +277,16 @@ if [ "${1-}" = "status" ]; then
     # version of this comment also claimed: status takes that lock non-blocking
     # and simply skips writing, returning rc 0 and empty output.
     # A stub that cannot state the bug cannot catch it.
+    #
+    # The `--ignored` call gets its OWN rc knob rather than sharing this one. Both
+    # calls carry an rc guard and both fail open the same way when it is removed
+    # (git fails, stdout is empty, "could not check" reads as "checked, and
+    # clean"), so both need a witness - but STUB_GIT_STATUS_RC makes the FIRST
+    # call die, and the second is then never reached. One knob could only ever
+    # witness one of the two guards.
+    if [ "${ign}" -eq 1 ]; then
+        exit "${STUB_GIT_STATUS_IGNORED_RC:-0}"
+    fi
     exit "${STUB_GIT_STATUS_RC:-0}"
 fi
 
@@ -464,7 +493,14 @@ for entry in ${tests}; do
         # `$`-anchored regex rejected it for two rounds while every case in this
         # file used the bare form, so round 3's whole SILENCED feature was
         # witnessed only on a rendering the repo does not produce.
-        ignoredr) echo "test ${name} ... ignored, flaky under NFS" ;;
+        # STUB_IGNORE_REASON exists because the REASON TEXT is load-bearing, which
+        # is not obvious and cost a round to learn. The driver derived "did a test
+        # body run" from `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`, whose `.+` is
+        # greedy and unanchored in the middle, so a reason containing " ... ok"
+        # satisfied it and an all-parked lane was refused at rc 2 instead of the
+        # rc 1 SILENCED three specifications promise. Hardcoding one benign reason
+        # made that inexpressible.
+        ignoredr) echo "test ${name} ... ignored, ${STUB_IGNORE_REASON:-flaky under NFS}" ;;
         *) echo "test ${name} ... ${verdict}" ;;
         esac
     fi
@@ -636,6 +672,29 @@ run_all_cases() {
     # THE payload case. Base was green on its own corpus, goes red on HEAD's, and
     # HEAD is green: the corpus this branch added actually catches the old code.
     run_case discrimination_reported 0 "OK (0 regressions, 1 discriminated" \
+        "STUB_R1_TESTS=${ALL_OK}" \
+        "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
+        "STUB_R3_TESTS=${ALL_OK}"
+
+    # THE SAME RUN, asserting the evidence SURVIVES it.
+    #
+    # A round-8 mutation probe found `finish`'s retention branch entirely
+    # unwitnessed: reverting it to `if [ "${rc}" -eq 0 ]` - the defect this branch
+    # ALREADY SHIPPED ONCE, which discarded the DISCRIMINATED run's logs - left 74
+    # of 74 cases green, and so did deleting the evidence on every rc.
+    #
+    # It has to be THIS shape. On rc 1 and rc 2 both the correct code and the
+    # reverted defect retain, so only a run that is rc 0 AND discriminated can tell
+    # them apart, and that is exactly the run whose R2 stderr is the artifact the
+    # documented per-round ATL use wants. A case asserting the rc alone is blind to
+    # it: the verdict was never wrong, only the record of how it was reached.
+    #
+    # Recorded because the standing ruling reads "a case per guard whose absence
+    # produces a false clean", and this one does not - it produces evidence LOSS
+    # with a true verdict. The operator ruled that harm in scope; A (`worktree
+    # prune`, whose verdict stays true when removed) and C (`cargo said:`, still
+    # vacuous) stay accepted residue.
+    run_case discriminated_run_retains_its_evidence 0 "evidence retained in" \
         "STUB_R1_TESTS=${ALL_OK}" \
         "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
         "STUB_R3_TESTS=${ALL_OK}"
@@ -843,6 +902,26 @@ run_all_cases() {
     # instance of the thing that gate exists to fail, not a diagnostic dead end.
     run_case every_row_silenced_at_head 1 "ran at base" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
+    # THE SAME LANE, with a reason string that used to change the answer.
+    #
+    # The all-parked carve-out derived "did a test body run" from a second pass over
+    # the per-test ROWS, `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`. `.+` is greedy
+    # and unanchored in the middle, so a reason containing " ... ok" matched:
+    #
+    #   test replay_alpha ... ignored, blocked on #677 ... ok       <- MATCHED
+    #
+    # The carve-out then did not fire, the sentinel guard did, and an all-parked
+    # lane came back rc 2 ("its exit code and per-test table therefore mean
+    # nothing") about a table that is complete and meaningful. Same shape as the
+    # `$`-anchor lockout an earlier round routed: a second, weaker parse of
+    # something the driver reads correctly elsewhere. It now reads libtest's own
+    # `0 passed; 0 failed` tally, which cannot express that ambiguity.
+    #
+    # Zero in-tree reachability today - no `#[ignore]` reason under `crates/`
+    # contains " ... " - so this pins a latent contradiction, not a live break.
+    run_case every_row_silenced_with_a_dotted_reason 1 "ran at base" \
+        "STUB_R3_TESTS=replay_alpha:ignoredr replay_beta:ignoredr" \
+        "STUB_IGNORE_REASON=blocked on #677 ... ok"
     # The substring is ARM-UNIQUE and THEN discriminating, in that order. Round 6
     # changed this from an arm-unique phrase to bare bucket counts so that this
     # case and `base_ignored_with_renamed_rows` would differ from EACH OTHER - and
@@ -1051,6 +1130,24 @@ run_all_cases() {
     # cached base turned "2 discriminated" into "0 discriminated" at rc 0.
     run_case cached_worktree_has_untracked_corpus_file 2 "has uncommitted changes" \
         STUB_PRECREATE_WT=1 STUB_WT_UNTRACKED=1
+    # THE SAME BUG ONE STEP FURTHER OUT, and the case above cannot reach it.
+    #
+    # `git status --porcelain` omits IGNORED paths, and `read_dir` ignores nothing,
+    # so the untracked check above answers only half its own stated question. The
+    # driver now asks the other half with a corpus-scoped `--ignored` call.
+    #
+    # Reproduced against the REAL driver before this case existed: the same scenario
+    # directory named `zz-adversary-probe` gives rc 2, and named `docs` (a bare
+    # unanchored entry in this repo's own .gitignore) gives rc 0 with `0
+    # discriminated` - the contaminating scenario turns R1 red for exactly the rows
+    # that would otherwise have been DISCRIMINATED, so the instrument's whole
+    # payload evaporates while it reports success.
+    run_case cached_worktree_has_ignored_corpus_path 2 "git is ignoring" \
+        STUB_PRECREATE_WT=1 STUB_WT_IGNORED=1
+    # Its rc guard, which fails open exactly like the whole-tree one: git fails,
+    # stdout is empty, and "could not check" reads as "checked, and uncontaminated".
+    run_case wt_ignored_status_cannot_answer 2 "the corpus is uncontaminated" \
+        STUB_PRECREATE_WT=1 STUB_GIT_STATUS_IGNORED_RC=128
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1258,26 +1355,69 @@ run_positive_control r1_r2_containment_guard_removed \
     's#^    \[ -n "${R2\[${name}\]+set}" \] || die 2 .*#    :#' \
     r2_reports_a_different_test_set
 
+# The all-parked carve-out. Neutering the arm that clears `ran_any` leaves it at
+# its default 1, restoring the pre-carve-out behaviour where a lane whose replay
+# tests are ALL `#[ignore]`d was refused at rc 2 ("its exit code and per-test table
+# therefore mean nothing") about a table that is complete and meaningful -
+# contradicting three specifications that promise rc 1 SILENCED. Seeded on the
+# case arm rather than the `if`, so it is independent of `sentinel-guard-removed`
+# above, which removes the guard outright.
+#
+# This seed was `s|^    local ran_any=0|    local ran_any=1|` until round 8 changed
+# the derivation, at which point it silently matched nothing. The
+# control-of-the-control is what caught that ("edited nothing; its guard's source
+# line moved"), which is the whole reason it exists.
+# shellcheck disable=SC2016
+run_positive_control all_parked_carveout_removed \
+    's|ran_any=0 ;;|: ;;|' \
+    every_row_silenced_at_head
+
+# `ran_any` SOURCED FROM A PER-TEST ROW rather than from libtest's summary tally.
+# That is the CLASS of the round-7 defect: any row-shaped derivation inherits the
+# ambiguity of a reason string, because `#[ignore = "..."]` renders the reason into
+# the same line as the verdict. The summary line cannot express that ambiguity, and
+# this control is what pins the difference.
+# shellcheck disable=SC2016
+run_positive_control ran_any_read_from_rows \
+    's|^    ran_tally="$(grep -m1 -E .*|    ran_tally="$(grep -m1 -E '"'"'^test '"'"' "${out}" \|\| true)"|' \
+    every_row_silenced_with_a_dotted_reason
+
 # The two guards a round-6 mutation probe found to be the ONLY ones of 20 that
 # both survive the whole suite and fail OPEN when removed: gutting either yields
 # `OK (0 regressions, 0 discriminated)` at rc 0. Both were correct in the driver
 # and unwitnessable, because the stub `git` could not express a status or a diff
 # that FAILED - only ones that answered.
-# The all-parked carve-out. Forcing `ran_any` back to 1 restores the pre-round-7
-# behaviour, where a lane whose replay tests are ALL `#[ignore]`d was refused at
-# rc 2 ("its exit code and per-test table therefore mean nothing") about a table
-# that is complete and meaningful - contradicting three specifications that
-# promise rc 1 SILENCED. Seeded on the initialiser rather than the `if`, so it is
-# independent of `sentinel-guard-removed` above, which removes the guard outright.
-# shellcheck disable=SC2016
-run_positive_control all_parked_carveout_removed \
-    's|^    local ran_any=0|    local ran_any=1|' \
-    every_row_silenced_at_head
-
+#
+# This paragraph described the two controls immediately below it until round 7
+# spliced the all-parked block in between, with no blank line, leaving it reading
+# as the preamble to a control that did not exist when the probe ran, whose mutant
+# is refused at rc 2 rather than yielding rc 0, and which has nothing to do with
+# stub `git`. Moved back, not rewritten.
 # shellcheck disable=SC2016
 run_positive_control wt_status_rc_guard_removed \
     's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
     wt_status_cannot_answer
+
+# The IGNORED-path half of the same question, and its own rc guard. Both fail open
+# the way the two above do - git says nothing, and nothing reads as clean - but
+# neither is reachable through the whole-tree call, which dies first.
+# shellcheck disable=SC2016
+run_positive_control wt_ignored_guard_removed \
+    's|^if \[ -n "${wt_ignored}" \]; then|if false; then|' \
+    cached_worktree_has_ignored_corpus_path
+# shellcheck disable=SC2016
+run_positive_control wt_ignored_rc_guard_removed \
+    's|^if \[ "${wt_ignored_rc}" -ne 0 \]; then|if false; then|' \
+    wt_ignored_status_cannot_answer
+
+# Evidence retention on the DISCRIMINATED run. Reverting to `rc -eq 0` alone is the
+# defect this branch already shipped once: it deletes the logs for the one outcome
+# the instrument exists to produce. A round-8 probe found both this and the
+# delete-always form leaving all cases green.
+# shellcheck disable=SC2016
+run_positive_control evidence_retention_removed \
+    's|^    if \[ "${rc}" -eq 0 \] && \[ "${#DISCRIMINATED\[@\]}" -eq 0 \]; then|    if [ "${rc}" -eq 0 ]; then|' \
+    discriminated_run_retains_its_evidence
 
 # Seeded on the `die 2` itself, NOT on the `git diff` invocation. The
 # nothing-to-vary control above replaces that invocation with `false`, which exits

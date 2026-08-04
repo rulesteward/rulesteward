@@ -223,9 +223,12 @@ impl Manifest {
 /// Sentinel token for this lane's corpus announcements.
 ///
 /// `scripts/rs-branch-diff.sh` refuses to classify a run's exit code until it has
-/// grepped for the banner below carrying the exact corpus path it handed in. That
-/// grep is what catches a binary reading its OWN tree's corpus instead: it would
-/// agree with itself, exit 0, and report a full table having compared nothing.
+/// grepped for the banner below carrying the exact corpus path it handed in,
+/// unless libtest's summary reports that no test body executed at all (every
+/// replay test `#[ignore]`d), in which case there is no banner to demand and the
+/// run is classified from its per-test table. That grep is what catches a binary
+/// reading its OWN tree's corpus instead: it would agree with itself, exit 0, and
+/// report a full table having compared nothing.
 const SENTINEL: &str = "RS-DIFF-SELINUX";
 
 /// Minimum enumerated scenarios (45 grammar + 21 xver + 3 vm-live).

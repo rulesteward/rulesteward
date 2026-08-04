@@ -515,6 +515,56 @@ if [ -n "${wt_dirty}" ]; then
     die 2 "the cached base worktree ${WT} has uncommitted changes, so the binary built from it is not ${BASE_SHA:0:12}; remove that directory to rebuild it"
 fi
 
+# SECOND CHECK, and the paragraph above is worth much less without it.
+#
+# `git status --porcelain` OMITS IGNORED PATHS (git-status(1): `--ignored` is what
+# "show ignored files as well" takes). The comment above is therefore correct about
+# `read_dir` and still under-implemented: `read_dir` does not consult git, which is
+# exactly as true of an IGNORED path as of an untracked one, and only the untracked
+# half was ever checked.
+#
+# Measured on git 2.55.0, in a throwaway repo whose `.gitignore` is one line
+# reading `docs`, with a scenario dir dropped in as `corpus/docs/`:
+#
+#   git status --porcelain            -> ZERO bytes      <- the guard's whole input
+#   git status --porcelain --ignored  -> !! corpus/docs/
+#   ls corpus/                        -> docs  real      <- what read_dir sees
+#
+# Reproduced end to end against the real driver: the SAME directory named
+# `zz-adversary-probe` gives rc 2, and named `docs` gives rc 0 with `0
+# discriminated`, because the contaminating scenario turns R1 red for exactly the
+# tests that would otherwise have been DISCRIMINATED. That is the identical
+# inversion the paragraph above records, reached by a different route.
+#
+# The load-bearing point is NOT that anyone will name a scenario `docs`. It is that
+# a fail-closed guard's coverage would otherwise be decided by `.gitignore` - which
+# carries NINE bare unanchored names matching at any depth (`debug`, `target`,
+# `rust_out`, `librust_out.rlib`, `.claude`, `.private-docs`, `.rtk`, `.wolf`,
+# `docs`), and which is extended per-developer through `.git/info/exclude` and
+# `$XDG_CONFIG_HOME/git/ignore`, both unversioned. `rev-parse --git-common-dir`
+# resolves to the main clone, so a local exclude there applies inside every cached
+# worktree. Adding a tenth bare name is a one-line change nobody would connect to a
+# differential instrument's false-clean surface.
+#
+# SCOPED to the corpus, and the whole-tree check above is deliberately NOT given
+# `--ignored`. Widening that one instead would make a `target/` left behind by any
+# manual `cargo build` inside the cached worktree read as "uncommitted changes",
+# locking that base sha out at rc 2 until an operator deleted it - the same
+# deterministic-denial shape round 4 routed as a defect. Narrowing it instead would
+# drop detection of a modified tracked `src/` file, which builds a WRONG BASE BINARY
+# and is worse than corpus contamination. Two questions, two commands: the tree
+# must be clean, and the replay input must contain nothing git is not tracking.
+wt_ignored="$(git -C "${WT}" status --porcelain --ignored -- "${CORPUS_SUBPATH}" 2>"${WORK}/wt-ignored.err")"
+wt_ignored_rc=$?
+if [ "${wt_ignored_rc}" -ne 0 ]; then
+    tail -5 "${WORK}/wt-ignored.err" >&2
+    die 2 "could not read the cached base worktree's ignored-path status (git exited ${wt_ignored_rc}); refusing to treat 'git could not say' as 'the corpus is uncontaminated'"
+fi
+if [ -n "${wt_ignored}" ]; then
+    printf '%s\n' "${wt_ignored}" | head -10 >&2
+    die 2 "the cached base worktree's corpus (${WT}/${CORPUS_SUBPATH}) contains path(s) git is ignoring; the lanes enumerate it with read_dir, which ignores nothing, so the base would replay a corpus that is not ${BASE_SHA:0:12}'s (remove that directory to rebuild it)"
+fi
+
 # ---------------------------------------------------------------------------
 # Corpus preconditions.
 #
@@ -664,13 +714,39 @@ validate_run() {
     # rc 1), and it reported a branch that switched off every replay test as an
     # environment fault. Operator ruling: classify from the table.
     #
-    # NARROW BY CONSTRUCTION. It stands down only when no row could have
-    # announced. A run with even one non-ignored row still owes a banner, so the
-    # anti-vacuity story is intact for every transcript that has one.
-    local ran_any=0
-    if grep -qE '^test .+ \.\.\. (ok|FAILED)$' "${out}"; then
-        ran_any=1
-    fi
+    # NARROW BY CONSTRUCTION, in BOTH directions. It stands down only on positive
+    # evidence that no test body executed, and a run with even one non-ignored row
+    # still owes a banner, so the anti-vacuity story is intact for every transcript
+    # that has one.
+    #
+    # Derived from libtest's own SUMMARY TALLY, not from a second pass over the
+    # per-test rows. The row form was `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`, and
+    # `.+` is greedy and unanchored in the middle, so an ignore REASON containing
+    # " ... ok" satisfied a predicate that is supposed to mean "a test body ran":
+    #
+    #   $ printf 'test a ... ignored, blocked on #677 ... ok\n' | \
+    #       grep -E '^test .+ \.\.\. (ok|FAILED)$'
+    #   test a ... ignored, blocked on #677 ... ok          <- MATCHED
+    #
+    # An all-parked lane whose reason happened to contain " ... ok" then returned
+    # rc 2 instead of the rc 1 SILENCED that this file's header, its verdict table's
+    # `ok * ignored` row and CONTRIBUTING all promise - the exact pre-carve-out
+    # behaviour, restored by a reason string. Same shape as the `ignored, <reason>`
+    # lockout an earlier round already routed: a second, weaker parse of something
+    # the driver reads correctly elsewhere.
+    #
+    # The summary line cannot express that ambiguity: `0 passed; 0 failed` is the
+    # only state in which no body ran, whatever any reason string says.
+    #
+    # DEFAULTS TO 1, so an absent or unreadable summary leaves every guard ARMED
+    # rather than standing them down on a transcript nobody could read. Both of
+    # those states are refused below on their own terms (no `test result:` line, or
+    # counts that will not parse), and both are rc 2 either way.
+    local ran_any=1 ran_tally
+    ran_tally="$(grep -m1 -E '^test result: ' "${out}" || true)"
+    case "${ran_tally#*. }" in
+    '0 passed; 0 failed;'*) ran_any=0 ;;
+    esac
 
     # THE anti-vacuity guard.
     #
@@ -945,11 +1021,22 @@ EOF
     # upfront. An earlier version of this comment cited that doc for the reverse
     # claim.
     #
-    # The BANNER stays mandatory for every run regardless: it is what proves which
-    # corpus was read, and nothing else can establish that.
     # `ran_any` for the same reason as the sentinel guard: a run in which every
     # test was parked announces no count because no test body executed, and the
     # per-test table it DOES print is what the classification then uses.
+    #
+    # This carried a sentence reading "The BANNER stays mandatory for every run
+    # regardless: it is what proves which corpus was read, and nothing else can
+    # establish that." That was true when it was written and the carve-out
+    # falsified it three lines below its own text: the banner guard now carries
+    # the IDENTICAL `ran_any` conjunct (see it above), so an all-parked run is
+    # classified with no banner at all and the asymmetry that sentence asserted
+    # is gone. The correct scoped statement lives beside the guard it describes.
+    #
+    # What still holds, and is the reason rc 0 stays unreachable here: an
+    # all-parked run cannot produce a green. `COMPARABLE >= 1` needs a row with
+    # `R1 = ok` and `R3` in `{ok, FAILED}`, which forces a body to have executed
+    # in both of those runs.
     if [ "${rc}" -eq 0 ] && [ "${ran_any}" -eq 1 ] && [ "${count_seen}" -eq 0 ]; then
         die 2 "run R${run} passed but printed no '${SENTINEL}: scenarios=' line; for a green run 'nothing fired' and 'nothing ran' are the same transcript, so the count cannot be confirmed non-zero"
     fi
