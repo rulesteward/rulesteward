@@ -12,8 +12,8 @@
 //! The frozen `TriageReport { groups: Vec<DenialGroup> }` is the Phase-0
 //! placeholder shape. P3 MAY reshape it (add per-group explanation + suggestion
 //! fields). These tests assert what MUST be true AFTER P3 fills the body:
-//! that the output is a valid JSON envelope, that `TeAllowable` (and, per the
-//! round-3 contract change, `Permissive`) groups include the narrow suggest rule,
+//! that the output is a valid JSON envelope, that `TeAllowable` (and
+//! `Permissive`) groups include the narrow suggest rule,
 //! and that the decline kinds (MLS/role/constraint/bounds/context-invalid) are
 //! reported without a suggested allow.
 //!
@@ -22,8 +22,8 @@
 //! The JSON produced by `serde_json::to_string(&build_report(&groups))` must
 //! include per-group rendered output. The minimum required shape per group is:
 //!
-//! - `suggested_rule`: present and non-null for `TeAllowable` groups and (as of
-//!   the round-3 sanctioned contract change) `Permissive` groups; absent or null
+//! - `suggested_rule`: present and non-null for `TeAllowable` groups and
+//!   `Permissive` groups; absent or null
 //!   for `MlsSuspected` / `RoleSuspected` (and constraint/bounds/context-invalid)
 //!   groups.
 //! - `explanation`: present and non-empty for every group (f4 §6.2).
@@ -284,18 +284,15 @@ fn r5_permissive_denial_preserves_permissive_true_in_report() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-R5b: Permissive denial report DOES contain a suggested allow rule (round-3
-//          SANCTIONED contract change), AND still carries permissive=true.
+// TC-R5b: Permissive denial report DOES contain a suggested allow rule, AND
+//          still carries permissive=true.
 //
-// SANCTIONED CONTRACT CHANGE (user decision 2026-06-05): this test previously
-// asserted that a permissive denial's JSON suggested_rule was ABSENT (f4 §2.5
-// invariant 6: "permissive=1 -> report only, no allow"). The user explicitly
-// REVERSED invariant 6 for the JSON path too (round-2 had already reversed it
-// for the HUMAN render via the PERMISSIVE-MODE banner; round-3 extends that
-// reversal to the machine-readable JSON for CONSISTENCY). The JSON now populates
-// `suggested_rule` for permissive denials; the per-entry `permissive: true`
-// field (asserted by TC-R5 / re-asserted below) is the machine-readable caveat
-// in place of the human banner.
+// The JSON report path populates `suggested_rule` for a permissive denial,
+// reversing the original f4 §2.5 invariant 6 wording ("permissive=1 -> report
+// only, no allow") for the triage surface, matching the human render's
+// PERMISSIVE-MODE banner treatment; the per-entry `permissive: true` field
+// (asserted by TC-R5 / re-asserted below) is the machine-readable caveat in
+// place of the human banner.
 //
 // The suggested rule MUST be IDENTICAL to what the human path emits for the same
 // (source, target, class, perm): the bare single-perm `allow logrotate_t

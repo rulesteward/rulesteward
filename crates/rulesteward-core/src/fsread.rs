@@ -40,7 +40,7 @@
 //! Consumed via the full path (`rulesteward_core::fsread::read_to_string`);
 //! `lib.rs` re-exports are consolidated at integration, not per-lane.
 //!
-//! # `read_stream_to_string` (#583/#561 lane 3)
+//! # `read_stream_to_string` (#583/#561)
 //!
 //! [`read_to_string`] rejects EVERY FIFO, including one with a live writer on
 //! the other end -- correct for a config-file target (a real config file is
@@ -77,7 +77,7 @@
 //!    even though a writer is about to attach. `POLLHUP` cannot disambiguate
 //!    this either: it only reports "no writer *right now*", the same instant
 //!    a plain read already samples. There is no race-free primitive here, so
-//!    the operator has ruled (#583 lane 3): retry the read within a FIXED,
+//!    the operator has ruled (#583): retry the read within a FIXED,
 //!    small ceiling ([`FIFO_EMPTY_RETRY_BUDGET`], `thread::sleep`-spaced by
 //!    [`FIFO_EMPTY_RETRY_INTERVAL`] -- never a busy-spin) before concluding
 //!    the FIFO is genuinely writerless. The ceiling bounds only how long an
@@ -134,23 +134,21 @@ use std::time::{Duration, Instant};
 /// not sufficient.
 ///
 /// Defined as an alias for `libc::O_NONBLOCK` rather than a hand-rolled
-/// `0o4000`. An earlier revision hardcoded the literal and justified it by
-/// claiming that consolidating onto `libc::O_NONBLOCK` would mean touching
-/// frozen test source (the tests build their fixture readers with
-/// `super::O_NONBLOCK`). That justification was false: keeping the NAME
-/// `O_NONBLOCK` and changing only what it is bound to leaves every
-/// `super::O_NONBLOCK` use site compiling unchanged, so no test source is
-/// touched and the #583/#561 frozen-tests rule is not engaged. The literal's
-/// only real effect was a latent portability gap -- `0o4000` is correct on
-/// `x86_64`/`aarch64` but wrong on mips/sparc/parisc/alpha Linux, which use a
-/// different `O_NONBLOCK` bit pattern -- so the alias closes that gap at zero
-/// cost. `libc` is linked either way for [`clear_nonblock`]'s `fcntl` calls.
+/// `0o4000`: keeping the NAME `O_NONBLOCK` and changing only what it is
+/// bound to leaves every `super::O_NONBLOCK` use site -- including the
+/// tests, which build their fixture readers with `super::O_NONBLOCK` --
+/// compiling unchanged, so no frozen test source needs touching. A
+/// hand-rolled `0o4000` literal would also leave a latent portability gap --
+/// it is correct on `x86_64`/`aarch64` but wrong on mips/sparc/parisc/alpha
+/// Linux, which use a different `O_NONBLOCK` bit pattern -- so the alias
+/// closes that gap at zero cost. `libc` is linked either way for
+/// [`clear_nonblock`]'s `fcntl` calls.
 const O_NONBLOCK: i32 = libc::O_NONBLOCK;
 
 /// Hard ceiling on how long [`read_stream_to_string`] will retry an empty FIFO
-/// read before concluding the FIFO is genuinely writerless (#583 lane 3
-/// operator ruling; see the module docs' "WHY" section for the race this
-/// closes and the measurement behind the number). 200ms is comfortably above
+/// read before concluding the FIFO is genuinely writerless (#583 operator
+/// ruling; see the module docs' "WHY" section for the race this closes and
+/// the measurement behind the number). 200ms is comfortably above
 /// realistic scheduler jitter -- the measured flake (1/20 under 6 CPU
 /// spinners, 0/20 unloaded) is a single missed scheduling window, not a
 /// seconds-scale delay -- while staying far below every writerless-FIFO
@@ -339,11 +337,9 @@ fn clear_nonblock(file: &std::fs::File) -> io::Result<()> {
     let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) };
     // Same fcntl(2) sentinel as the `F_GETFL` check above: exactly `-1` is
     // the documented failure value for `F_SETFL` too, so both checks use the
-    // same `== -1` form (an earlier version of this function checked `< 0`
-    // here, which is looser than the documented contract with no behavioral
-    // difference on this fd -- but leaves a reader wondering whether the
-    // difference is meaningful). The `delete -` mutant on this check (see
-    // the `F_GETFL` check's comment above) is the same documented, parked
+    // same `== -1` form, matching the documented contract exactly rather
+    // than the looser `< 0`. The `delete -` mutant on this check (see the
+    // `F_GETFL` check's comment above) is the same documented, parked
     // survivor for the same reason.
     if result == -1 {
         return Err(io::Error::last_os_error());
@@ -398,10 +394,9 @@ mod tests {
 
     /// A minimal RAII temp-directory guard. `rulesteward-core`'s
     /// `dev-dependencies` do not carry `tempfile` today (only `proptest` and
-    /// `serde_json`), and lane-2's claimed-paths discipline (session 9i)
-    /// covers `fsread.rs` itself but not this crate's `Cargo.toml`, so these
-    /// tests build their own tiny std-only equivalent rather than adding a
-    /// new dependency. Creates a uniquely-named directory under
+    /// `serde_json`), so these tests build their own tiny std-only
+    /// equivalent rather than adding a new dependency. Creates a
+    /// uniquely-named directory under
     /// `std::env::temp_dir()` and removes it (recursively) on drop.
     struct TempDir(std::path::PathBuf);
 
@@ -545,8 +540,8 @@ mod tests {
     /// for reading returns `Err` promptly, never `Ok`, never a hang. Note:
     /// on Linux, `open()` on a bound `AF_UNIX` socket fails with `ENXIO`
     /// BEFORE any fd-metadata check ever runs -- empirically confirmed
-    /// against the canonical contract-following implementation (round 6
-    /// adversarial review) -- so, unlike the directory/FIFO/character-device
+    /// against the canonical contract-following implementation -- so,
+    /// unlike the directory/FIFO/character-device
     /// cases above, no TOCTOU-compliant impl (metadata-of-the-opened-fd,
     /// never a separate `stat`/`lstat`) CAN produce an error whose message
     /// names "socket" or "non-regular file" here: the OS itself refuses the
@@ -642,7 +637,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // read_stream_to_string (#583/#561 lane 3 -- adversarial review miss 1)
+    // read_stream_to_string (#583/#561)
     // -------------------------------------------------------------------
 
     /// The happy path is unchanged from `read_to_string`: a regular file
@@ -720,9 +715,8 @@ mod tests {
     /// the whole point of this function (restoring pipe / process-substitution
     /// support `read_to_string` removed for stream-shaped inputs).
     ///
-    /// Deterministic BY CONSTRUCTION, not by luck. An earlier version of this
-    /// test spawned the writer and reader with no handshake and claimed "no
-    /// explicit handshake is needed" -- that claim was false: the writer's
+    /// Deterministic BY CONSTRUCTION, not by luck. Spawning the writer and
+    /// reader with no handshake is NOT sufficient: the writer's
     /// blocking `open(O_WRONLY)` does unblock the instant a reader fd exists,
     /// but the content write and the reader's first `read()` are then
     /// UNORDERED, so under load the reader can call `read()` before the

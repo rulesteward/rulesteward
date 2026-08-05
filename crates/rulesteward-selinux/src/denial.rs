@@ -68,11 +68,10 @@ pub enum DenialKind {
     RoleSuspected,
     /// The denial had `permissive=1`: the access was NOT actually blocked.
     ///
-    /// Round-2 reversal of f4 §2.5 invariant 6 (user decision 2026-06-05): the
-    /// HUMAN triage render offers a suggested allow gated behind a PERMISSIVE-MODE
-    /// caveat banner. Round-3 (2026-06-05) extended the reversal to the JSON path:
-    /// `build_report` now POPULATES `suggested_rule` for this kind too (the same
-    /// narrow allow the human path emits), with `any_permissive: true` as the
+    /// The HUMAN triage render offers a suggested allow gated behind a
+    /// PERMISSIVE-MODE caveat banner; `build_report`'s JSON path also
+    /// POPULATES `suggested_rule` for this kind (the same narrow allow the
+    /// human path emits), with `any_permissive: true` as the
     /// machine-readable caveat. See `triage.rs`.
     Permissive,
 }
@@ -124,8 +123,8 @@ pub struct DenialGroup {
 ///
 /// Returns `true` ONLY for [`DenialKind::TeAllowable`] (or [`DenialKind::Permissive`],
 /// but note that [`DenialKind::Permissive`] is handled SEPARATELY by `emit_te`
-/// (invariant 6) and `triage` (the 2026-06-05 reversal) - callers MUST check
-/// Permissive independently). Granted-verdict records are dropped before
+/// (invariant 6, skip) and `triage` (suggests an allow with a caveat) -
+/// callers MUST check Permissive independently). Granted-verdict records are dropped before
 /// grouping, so they never reach this predicate.
 #[must_use]
 pub fn is_te_representable(group: &DenialGroup) -> bool {

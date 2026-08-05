@@ -142,7 +142,7 @@ const FLOOR_XFAIL: &[&str] = &[];
 // AUTHORITATIVE-layer FINDINGS: scenarios whose `categorize` output disagrees
 // with the manifest `authoritative_category` for a reason that is NOT the
 // synthetic-type scope-out AND NOT the locked Reason(0)-tolerance rule below.
-// (All nine previously-provisional xfails have been RESOLVED by the tolerance
+// (All nine provisional xfails have been RESOLVED by the tolerance
 // rule; no entries remain here. The list is kept as a named constant so the
 // xfail-enumeration guard at the bottom of the authoritative test can still
 // assert it is empty.)
@@ -315,7 +315,7 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
     // (`parsed_count >= 68`, `checked >= 18`, and the full `SYNTHETIC_SCOPE_OUT`
     // set), so a collapsed comparison fails a test rather than passing quietly.
     // A lane WITHOUT those floors must announce comparisons performed, not
-    // directories found. Senior integration review, session 9p.
+    // directories found.
     eprintln!("{}", sentinel_count(SENTINEL, dirs.len()));
     assert!(
         dirs.len() >= SCENARIO_FLOOR,
@@ -550,11 +550,10 @@ fn floor_layer_matches_manifest_label() {
     // manifest; the dual-format scenario is parsed twice, once per variant, so
     // the parse count exceeds the scenario count).
     //
-    // The scenario-count assertion that used to sit here was unreachable:
-    // `scenarios()` above already asserts `dirs.len() >= SCENARIO_FLOOR` over the
-    // same quantity and panics first, so this one could never fire. Two asserts
+    // A scenario-count assertion here would be unreachable: `scenarios()`
+    // above already asserts `dirs.len() >= SCENARIO_FLOOR` over the same
+    // quantity and panics first, so it could never fire. Two asserts
     // reading as independent checks when one is dead is worse than one.
-    // Senior integration review, session 9p.
     assert!(
         parsed_count >= 68,
         "expected >= 68 parsed scenario-variants (69 minus the 1 parse-excluded), got {parsed_count}"
@@ -821,7 +820,7 @@ fn authoritative_layer_matches_manifest_category() {
         SYNTHETIC_SCOPE_OUT.len()
     );
 
-    // AUTH_XFAIL must stay empty (all nine previously-provisional xfails are now
+    // AUTH_XFAIL must stay empty (all nine provisional xfails are now
     // resolved by the Reason(0)-tolerance rule and the hex-perm specific assertion).
     assert_eq!(
         AUTH_XFAIL.len(),

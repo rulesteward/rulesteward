@@ -10,7 +10,7 @@ mod denial;
 mod te_emit;
 mod triage;
 
-// STIG boot-configuration surface (#520, session 9d lane 2b): the
+// STIG boot-configuration surface (#520): the
 // /etc/selinux/config reader, the se-W01/se-W02 lint passes, the RHEL target
 // model, and the STIG control-family table. Feature-UNCONDITIONAL (the
 // apache-only --no-default-features build must compile them; unlike the

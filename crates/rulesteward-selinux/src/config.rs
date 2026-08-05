@@ -93,8 +93,8 @@ fn lines_with_spans(text: &str) -> Vec<RawLine<'_>> {
 /// (the post-`=` skip in `selinux_getenforcemode()` and the leading-key skip
 /// in `init_selinux_config()`) use the C-locale `isspace()`, whose set is
 /// `is_ascii_whitespace()`'s set (space/\t/\n/\x0C/\r) UNION `{\x0B}`.
-/// (Adversarial round 1: grounded on libselinux's `isspace()` including VT;
-/// do not widen beyond this single byte.)
+/// (Grounded on libselinux's `isspace()` including VT; do not widen beyond
+/// this single byte.)
 fn is_c_isspace(c: char) -> bool {
     c.is_ascii_whitespace() || c == '\u{0B}'
 }
@@ -506,7 +506,7 @@ mod tests {
     }
 
     // --- mutation-hardening: distinguish the right-trim `||` from `&&` -----
-    // (mutation round 1 survivor, config.rs:135:62). `\r`/`\n` satisfy BOTH
+    // (config.rs:135:62). `\r`/`\n` satisfy BOTH
     // `is_ascii_whitespace()` AND `is_ascii_control()`, so g4_14 above can't
     // tell the two operators apart. A plain trailing SPACE satisfies ONLY
     // `is_ascii_whitespace()` (a space is not a control byte), so it is the
@@ -526,7 +526,7 @@ mod tests {
         );
     }
 
-    // --- Adversarial round 1 (impl-aware review): libselinux's C `isspace()`
+    // --- libselinux's C `isspace()`
     // includes VERTICAL TAB (0x0B, `\v`); Rust's `char::is_ascii_whitespace()`
     // does NOT (it covers space/\t/\n/\x0C/\r only). `selinux_config.c`'s
     // `isspace((unsigned char)*tag)` (post-`=` skip, line ~108) and

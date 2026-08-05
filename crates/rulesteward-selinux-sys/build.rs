@@ -1,5 +1,5 @@
 //! Build libsepol 3.10 from the in-tree vendored C source and statically link it
-//! (#120). Replaces the previously committed prebuilt `libsepol.a`.
+//! (#120).
 //!
 //! # Feature-gated (the whole build is a no-op without `vendored`)
 //!
