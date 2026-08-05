@@ -244,10 +244,17 @@ legitimate precondition to skip on. Everything a live recipe would skip for
 that announced the wrong corpus, a cached base worktree whose corpus holds a path
 git is ignoring, a cached base worktree whose index marks entries
 assume-unchanged or skip-worktree so `git status` cannot see a contaminated
-tracked file) is `2`, "these two builds cannot be compared". Note that git has a
-THIRD per-entry suppression bit, fsmonitor-clean, which `git ls-files -v` cannot
-report; the driver pins `-c core.fsmonitor=` on its `status` calls rather than
-reading that bit, because unlike the other two it is re-derived per run.
+tracked file, a cached base worktree whose tracked CONTENT differs from its index)
+is `2`, "these two builds cannot be compared".
+
+That last one is the authoritative check and it exists to retire a pattern. Three
+review rounds each found a different unversioned git setting that silences
+`git status` about a modified tracked file at rc 0 (`status.showUntrackedFiles`,
+`core.ignoreStat`, `core.fsmonitor`), and that set is open-ended. The driver
+therefore compares the worktree against the index BY CONTENT, which no cache
+setting can affect. It does not replace the `status` checks: those cover staged
+content, untracked files and ignored files, which a worktree-vs-index comparison
+cannot see.
 Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
 asserts that no case in its FIRST pass, against the real driver, ever yields `3`.
 Exit codes from its positive-control phases, where the driver is deliberately

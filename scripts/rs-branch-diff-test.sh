@@ -143,7 +143,14 @@ make_sandbox() {
     # only the substring BEFORE that interpolation. The driver is fine in
     # production, where `tr` is on PATH; the CASE was vacuous for the half it
     # exists to pin.
-    for tool in mktemp mkdir rm tail head tr grep cut env bash dirname cat cp; do
+    # `awk` and `wc` joined the list in round 12, for the content check that
+    # replaced the knob-by-knob `status` patching. They are the ONLY two binaries
+    # that check needs: both sides of the comparison come from one `ls-files -s`
+    # pass in the same order, so it needs no `sort`, `paste` or `comm`. Keeping
+    # this list short is the point of it - every entry is a binary that has to
+    # exist wherever the driver runs, and this check has already caught `tr`,
+    # `head`, and a multi-operand `tail` that printed nothing.
+    for tool in mktemp mkdir rm tail head tr grep cut env bash dirname cat cp awk wc; do
         resolved="$(command -v "${tool}")" || {
             echo "SUITE ERROR: required tool '${tool}' not found" >&2
             return 2
@@ -404,12 +411,30 @@ if [ "${1-}" = "ls-files" ]; then
     # attack only the verdict leave the question free to drift.
     lsv=0
     scoped=0
+    lss=0
     for a in "$@"; do
         case "${a}" in
         -v) lsv=1 ;;
+        -s) lss=1 ;;
         --) scoped=1 ;;
         esac
     done
+    # `-s` is the CONTENT check's question: `<mode> <sha> <stage>\t<path>`, where
+    # the path is everything after the TAB and the sha is the INDEX's blob. The
+    # driver pairs these against `hash-object` output below, so the two arms have
+    # to agree on both the path set and its ORDER.
+    if [ "${lss}" -eq 1 ]; then
+        if [ -n "${STUB_WT_LSFILES_EMPTY:-}" ]; then
+            exit "${STUB_GIT_LSFILES_RC:-0}"
+        fi
+        printf '100644 aaaa000000000000000000000000000000000001 0\t%s\n' \
+            "crates/rulesteward-auditd/src/lib.rs"
+        printf '100644 bbbb000000000000000000000000000000000002 0\t%s\n' \
+            "crates/rulesteward-auditd/src/parser.rs"
+        printf '100644 cccc000000000000000000000000000000000003 0\t%s\n' \
+            "crates/rulesteward-auditd/tests/corpus/auditd-oracle/aa-one/input.rules"
+        exit "${STUB_GIT_LSFILES_RC:-0}"
+    fi
     if [ -n "${STUB_WT_LSFILES_EMPTY:-}" ]; then
         # No tracked files at all. A count over zero lines is zero, so without the
         # driver's vacuity guard this reads as "nothing is suppressed" when it
@@ -443,6 +468,49 @@ if [ "${1-}" = "ls-files" ]; then
     skip) echo "S crates/rulesteward-auditd/src/parser.rs" ;;
     esac
     exit "${STUB_GIT_LSFILES_RC:-0}"
+fi
+
+if [ "${1-}" = "hash-object" ]; then
+    # THE WORKING TREE'S SIDE of the content comparison. `--stdin-paths` reads one
+    # path per line and emits one sha per line, IN ORDER, so the driver can
+    # `paste` the two lists. Three knobs, because the three ways this comparison
+    # can go wrong are genuinely different:
+    #
+    #   STUB_WT_CONTENT_DIRTY  a tracked file's content differs from the index -
+    #                          the defect the whole check exists for, and the one
+    #                          `git status` can be silenced about by at least
+    #                          three unversioned config settings.
+    #   STUB_HASH_SHORT        fewer hashes than paths, which is what a FAILING
+    #                          hash-object produces. `paste` joins the short list
+    #                          against the full names and the comparison silently
+    #                          becomes nonsense. Measured for real while building
+    #                          this check: `hash-object` has no `-z`, so it
+    #                          errored and emitted ZERO hashes.
+    #   STUB_GIT_HASHOBJ_RC    it could not answer at all.
+    rc="${STUB_GIT_HASHOBJ_RC:-0}"
+    if [ "${rc}" -ne 0 ]; then
+        echo "fatal: stub hash-object failure" >&2
+        exit "${rc}"
+    fi
+    n=0
+    while IFS= read -r path; do
+        n=$((n + 1))
+        if [ -n "${STUB_HASH_SHORT:-}" ] && [ "${n}" -gt 1 ]; then
+            break
+        fi
+        case "${path}" in
+        */parser.rs)
+            if [ -n "${STUB_WT_CONTENT_DIRTY:-}" ]; then
+                echo "dead000000000000000000000000000000000bee"
+            else
+                echo "bbbb000000000000000000000000000000000002"
+            fi
+            ;;
+        */lib.rs) echo "aaaa000000000000000000000000000000000001" ;;
+        *) echo "cccc000000000000000000000000000000000003" ;;
+        esac
+    done
+    exit 0
 fi
 
 if [ "${1-}" = "diff" ]; then
@@ -1427,6 +1495,26 @@ run_all_cases() {
     # the pin, ` M src/f3.rs`.
     run_case config_hides_a_modified_tracked_file 2 "has uncommitted changes" \
         STUB_PRECREATE_WT=1 STUB_WT_DIRTY=1 STUB_GIT_FSMONITOR=1
+    # THE CONTENT CHECK, which is the guard that retires the pattern the three
+    # cases above are instances of. It compares the worktree against the index by
+    # HASH, so it does not care which config setting silenced `git status`.
+    #
+    # Note this case sets NO suppression knob at all: the point is that the answer
+    # does not depend on one. Measured on git 2.55.0 against all four known
+    # suppressors, this check reports the contamination in every case and reports
+    # nothing on a clean tree in every case.
+    run_case cached_worktree_content_differs_from_index 2 "CONTENT differs from its index" \
+        STUB_PRECREATE_WT=1 STUB_WT_CONTENT_DIRTY=1
+    # It could not answer.
+    run_case wt_hash_object_cannot_answer 2 "could not hash the cached base" \
+        STUB_PRECREATE_WT=1 STUB_GIT_HASHOBJ_RC=128
+    # IT ANSWERED SHORT, which is the failure mode that produces a confident wrong
+    # comparison rather than an error: `paste` joins a truncated hash list against
+    # the full name list and every downstream row is garbage. This is not a
+    # hypothetical - it happened while measuring the remedy, and only a clean-tree
+    # control caught it.
+    run_case wt_hash_object_answered_short 2 "the comparison would be meaningless" \
+        STUB_PRECREATE_WT=1 STUB_HASH_SHORT=1
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1753,9 +1841,26 @@ run_positive_control wt_index_flag_guard_removed \
 run_positive_control wt_lsfiles_rc_guard_removed \
     's|^if \[ "${wt_lsfiles_rc}" -ne 0 \]; then|if false; then|' \
     wt_lsfiles_cannot_answer
+# THE VACUITY DEFENCE, seeded as a WHOLE rather than one guard at a time, and the
+# reason is a real result rather than a preference.
+#
+# Round 12's content check brought a SECOND vacuity guard for the same hazard: a
+# count taken over a zero-line answer is zero, so an empty tracked-file list must
+# never read as "nothing is wrong". With two guards for one property, removing
+# either ALONE produces no false clean - the other catches it - and the original
+# single-guard seed became permanently unsatisfiable. The suite said so out loud
+# ("positive control did not catch"), which is the control-of-the-control doing
+# exactly its job.
+#
+# Standing ruling 3 would permit dropping the control entirely, since neither
+# guard's absence alone is a false clean. Seeding both is strictly better: the
+# PROPERTY is "this driver refuses a worktree with no tracked files", and that
+# property now has two implementations. A control that removes all of them
+# witnesses the property; one that removes half of them witnesses nothing.
 # shellcheck disable=SC2016
-run_positive_control wt_lsfiles_vacuity_guard_removed \
-    's|^if \[ -z "${wt_lsfiles}" \]; then|if false; then|' \
+run_positive_control wt_vacuity_guards_removed \
+    's|^if \[ -z "${wt_lsfiles}" \]; then|if false; then|
+     s|^if \[ ! -s "${WORK}/wt-names" \]; then|if false; then|' \
     wt_lsfiles_reports_no_tracked_files
 
 # The `ls-files` call's QUESTION, which round 10 shipped unwitnessed. The three
@@ -1787,6 +1892,28 @@ run_positive_control wt_lsfiles_scope_narrowed \
 run_positive_control wt_status_fsmonitor_unpinned \
     's|-c core.fsmonitor= status --porcelain -unormal|status --porcelain -unormal|' \
     config_hides_a_modified_tracked_file
+
+# The CONTENT check and its two supporting refusals. The first is the guard that
+# closes the config-suppression class; the other two are what stop it becoming a
+# confident wrong answer.
+#
+# `wt_content_alignment_guard_removed` is the one worth keeping: without it a
+# SHORT hash list is pasted against the full name list, and the comparison reports
+# whatever the misalignment happens to produce. In the measured instance that was
+# "every entry differs" on a clean tree, which is loud; the same bug can just as
+# easily produce "nothing differs" on a dirty one, which is not.
+# shellcheck disable=SC2016
+run_positive_control wt_content_guard_removed \
+    's|^if \[ -n "${wt_content_diff}" \]; then|if false; then|' \
+    cached_worktree_content_differs_from_index
+# shellcheck disable=SC2016
+run_positive_control wt_hash_rc_guard_removed \
+    's|^if \[ "${wt_hash_rc}" -ne 0 \]; then|if false; then|' \
+    wt_hash_object_cannot_answer
+# shellcheck disable=SC2016
+run_positive_control wt_content_alignment_guard_removed \
+    's|^if \[ "${wt_n_names}" -ne "${wt_n_hashes}" \]; then|if false; then|' \
+    wt_hash_object_answered_short
 
 # The `-unormal` on each status call, controlled SEPARATELY because the two flags
 # sit on two different commands and a single control would leave the other free to

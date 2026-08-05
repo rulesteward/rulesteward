@@ -558,6 +558,93 @@ if [ "${wt_suppressed}" -ne 0 ]; then
     die 2 "the cached base worktree ${WT} has index entries marked assume-unchanged or skip-worktree (${wt_suppressed} of them, listed above), so \`git status\` cannot see a modified tracked file there and the two cleanliness checks below would pass on a contaminated tree; the binary built from it may not be ${BASE_SHA:0:12} (remove that directory to rebuild it)"
 fi
 
+# IS THE TRACKED CONTENT STILL THE BASE'S? Asked by CONTENT, not by asking git's
+# index cache, and this is the authoritative answer for tracked files.
+#
+# WHY THIS EXISTS AT ALL, because it retires a pattern rather than a bug. Three
+# consecutive review rounds each found a different unversioned git setting that
+# makes `status` under-report a modified tracked file at rc 0:
+# `status.showUntrackedFiles=no` (round 9), `core.ignoreStat` (round 10), and
+# `core.fsmonitor` (round 11). Each was fixed by pinning that one knob. That set
+# is OPEN-ENDED - `core.untrackedCache`, `.gitattributes` clean filters,
+# `core.autocrlf` and split-index are all unexamined - so pinning one knob per
+# round does not converge. Comparing content does not care how the cache was
+# fooled.
+#
+# Measured on git 2.55.0 against all four known suppressors, contaminated and
+# clean, plus both candidate remedies:
+#
+#   mechanism          status sees it   update-index --really-refresh   this check
+#   none, dirty        yes              rc 1                            1 mismatch
+#   assume-unchanged   NO               rc 1                            1 mismatch
+#   skip-worktree      NO               rc 0  <- misses                 1 mismatch
+#   fsmonitor          NO               rc 0  <- misses                 1 mismatch
+#   any of them, CLEAN -                rc 0                            0 mismatches
+#
+# `--really-refresh` was the cheaper candidate and it only defeats
+# assume-unchanged, so it would have been a fourth knob-patch in disguise.
+#
+# IT DOES NOT REPLACE THE `status` CALLS BELOW, and the reason is worth stating
+# because "this subsumes those" is the obvious wrong conclusion. This compares
+# WORKTREE against INDEX. The `status` calls cover what that cannot see: content
+# already `git add`ed (index differs from HEAD while the worktree matches the
+# index), untracked files, and ignored files inside the corpus. Three questions,
+# three checks.
+#
+# Cost, measured on the real 2384-file NFS cache: 4.4s, against two cargo builds
+# in the same run. Clean-tree false positives: ZERO, on the real tree with its
+# real content.
+git -C "${WT}" ls-files -s >"${WORK}/wt-idx-raw" 2>"${WORK}/wt-content.err"
+wt_idx_rc=$?
+if [ "${wt_idx_rc}" -ne 0 ]; then
+    tail -5 "${WORK}/wt-content.err" >&2
+    die 2 "could not read the cached base worktree's index (git exited ${wt_idx_rc}); refusing to treat 'git could not say' as 'the content is the base's'"
+fi
+# `ls-files -s` is `<mode> <sha> <stage>\t<path>`, so the path is everything after
+# the TAB and may contain spaces. Gitlinks (mode 160000) name a commit rather than
+# a blob and have no file to hash, so they are dropped from BOTH sides here and
+# the count guard below stays meaningful; there are none in this repo today, and a
+# submodule appearing would trip that guard rather than pass silently.
+# NOT SORTED, and not joined with `paste`/`comm`, deliberately. Both lists are
+# derived from the SAME `ls-files -s` output in the same pass, and
+# `hash-object --stdin-paths` emits one sha per input path IN ORDER, so the two
+# align by construction and a positional comparison is exact. That also keeps the
+# tool footprint to `awk` - every extra binary here is one more thing that has to
+# exist on PATH wherever this runs, which the self-test's sandbox enforces and
+# which has already caught `tr`, `head` and a multi-operand `tail` on this branch.
+awk -F'\t' '{split($1, a, " "); if (a[1] != "160000") print a[2] "\t" $2}' \
+    "${WORK}/wt-idx-raw" >"${WORK}/wt-idx"
+awk -F'\t' '{split($1, a, " "); if (a[1] != "160000") print $2}' \
+    "${WORK}/wt-idx-raw" >"${WORK}/wt-names"
+if [ ! -s "${WORK}/wt-names" ]; then
+    die 2 "the cached base worktree ${WT} reports no tracked files at all, so a content comparison over it would pass vacuously; that is a broken worktree, not a clean one (remove that directory to rebuild it)"
+fi
+( cd "${WT}" && git hash-object --stdin-paths <"${WORK}/wt-names" ) >"${WORK}/wt-hashes" 2>>"${WORK}/wt-content.err"
+wt_hash_rc=$?
+if [ "${wt_hash_rc}" -ne 0 ]; then
+    tail -5 "${WORK}/wt-content.err" >&2
+    die 2 "could not hash the cached base worktree's tracked files (git exited ${wt_hash_rc}); a missing or unreadable tracked file is itself a reason not to trust this base"
+fi
+# THE ALIGNMENT GUARD, and it is not paranoia: `paste` will happily join a short
+# hash list against a full name list and report every single entry as a mismatch,
+# or - the dangerous direction - report none. This exact bug was hit while
+# measuring the remedy (`hash-object` has no `-z`, so it errored and produced zero
+# hashes), and it was only visible because the clean-tree control screamed. A
+# count check is what makes the comparison mean anything.
+wt_n_names="$(wc -l <"${WORK}/wt-names")"
+wt_n_hashes="$(wc -l <"${WORK}/wt-hashes")"
+if [ "${wt_n_names}" -ne "${wt_n_hashes}" ]; then
+    tail -5 "${WORK}/wt-content.err" >&2
+    die 2 "hashed ${wt_n_hashes} of ${wt_n_names} tracked files in the cached base worktree; the comparison would be meaningless, and a partial answer is not a clean one"
+fi
+wt_content_diff="$(awk 'NR == FNR { split($0, f, "\t"); want[FNR] = f[1]; path[FNR] = f[2]; next }
+                        $0 != want[FNR] { print path[FNR] }' \
+    "${WORK}/wt-idx" "${WORK}/wt-hashes")"
+if [ -n "${wt_content_diff}" ]; then
+    printf '%s\n' "${wt_content_diff}" | head -10 >&2
+    die 2 "the cached base worktree ${WT} has tracked file(s) whose CONTENT differs from its index, so the binary built from it is not ${BASE_SHA:0:12}; this is checked by content because git's own status can be silenced by at least three unversioned config settings (remove that directory to rebuild it)"
+fi
+
 # NO `-uno` HERE, and the reason is not the one an earlier version of this comment
 # gave. It described the nothing-to-vary guard as a `git status --porcelain -uno`
 # scan and called this site "the opposite" of it. Round 3 replaced that guard with
