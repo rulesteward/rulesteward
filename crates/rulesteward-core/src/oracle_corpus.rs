@@ -1,4 +1,4 @@
-//! Corpus-root resolution for the differential oracle harnesses (session 9k-1).
+//! Corpus-root resolution for the differential oracle harnesses.
 //!
 //! Every Tier-1 replay test (`crates/<crate>/tests/<lane>_corpus_oracle.rs`)
 //! reads a committed corpus by default, and the matching `just diff-<lane>`
@@ -251,10 +251,9 @@ pub fn resolve_and_announce_corpus_root(
 /// fixed-string match on a prefix (`"<SENTINEL>: mode=fresh corpus="`) and stays
 /// correct for a corpus path containing spaces.
 #[must_use]
-// NOT `pub`: every lane stopped importing this when the announcement moved into
-// `resolve_and_announce_corpus_root`, which is the only caller outside this
+// NOT `pub`: `resolve_and_announce_corpus_root` is the only caller outside this
 // module's own unit tests. A public helper with no external caller is API surface
-// nobody is maintaining. Senior integration review, session 9p.
+// nobody is maintaining.
 fn sentinel_banner(sentinel: &str, mode: CorpusMode, root: &Path) -> String {
     format!("{sentinel}: mode={mode} corpus={}", root.display())
 }
