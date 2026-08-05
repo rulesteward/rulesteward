@@ -75,7 +75,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rulesteward_core::Diagnostic;
-use rulesteward_core::oracle_corpus::{resolve_corpus_root, sentinel_count};
+use rulesteward_core::oracle_corpus::{resolve_and_announce_corpus_root, sentinel_count};
 use rulesteward_sysctld::TargetVersion;
 use rulesteward_sysctld::oracle::{
     apply_debug_section, compute_inventory, dotted_to_procpath, materialize, oracle_overwrote,
@@ -197,9 +197,9 @@ impl ScenarioMeta {
 // ---------------------------------------------------------------------------
 
 fn corpus_root() -> PathBuf {
-    // The banner is emitted by `resolve_corpus_root` itself, for every resolution
+    // The banner is emitted by `resolve_and_announce_corpus_root` itself, for every resolution
     // in the process rather than only the ones a lane remembered to announce.
-    let (root, _mode) = resolve_corpus_root(
+    let (root, _mode) = resolve_and_announce_corpus_root(
         SENTINEL,
         "RS_ORACLE_CORPUS_SYSCTLD",
         Path::new(concat!(

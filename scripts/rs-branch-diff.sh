@@ -393,6 +393,13 @@ if [ ! -d "${WT}" ]; then
     # worktree too, permanently (`fatal: not a git repository` thereafter, even
     # once the mount returns).
     #
+    # Precisely: the gate proves the CACHE's mount is up, not that every worktree
+    # registered against this clone is reachable. It fully protects the ones that
+    # share this mount, which today is all of them (session worktrees also live
+    # under /mnt/side-projects/). A worktree registered on some OTHER unreachable
+    # mount would still be pruned by this call. Senior integration review,
+    # session 9p.
+    #
     # The previous version of this gate tested `[ -d "${CACHE_ROOT}" ]` AFTER the
     # `mkdir -p` that creates it, so it could never be false and the protection
     # described here did not exist. With the mount down, `mkdir -p` succeeds
@@ -647,11 +654,14 @@ fi
 # skipping is honest for these - a gitlink names a commit and a symlink names a
 # path, so "the content matches" is not a question this check can answer about
 # them, and answering it anyway in either direction is how both defects happened.
-# Measured against the whole reachable history: ZERO entries of mode 160000 and
-# ZERO of 120000 across 278 commits, against 4329 of 100644 as a positive control,
-# so this cannot fire spuriously today. It is written as "not a known blob mode"
-# rather than as a list of the two bad modes, so a mode nobody has thought of
-# fails closed as well.
+# Measured over the whole reachable history (`git log --all --raw`, both mode
+# columns, positive-controlled against the regular-file count): ZERO entries of
+# mode 160000 and ZERO of 120000 have ever existed here, so this cannot fire
+# spuriously today. The counts themselves are deliberately not pinned - they drift
+# with every commit and with the counting rule, and a stale figure quoted as
+# current is its own defect class. Re-derive rather than trust a number here. It
+# is written as "not a known blob mode" rather than as a list of the two bad
+# modes, so a mode nobody has thought of fails closed as well.
 wt_nonblob="$(awk -F'\t' '{split($1, a, " ");
                            if (a[1] != "100644" && a[1] != "100755") print a[1] " " $2}' \
     "${WORK}/wt-idx-raw")"
@@ -1338,9 +1348,20 @@ EOF
 #
 # `--test-threads=1` keeps the transcript in a deterministic order so the
 # retained evidence reads the same way twice.
+# `RS_BRANCH_DIFF=1` MARKS THE CALLER, not the corpus, and it exists because the
+# corpus override alone cannot tell two callers apart. `scripts/rs-oracle-diff.sh`
+# (`just diff-sudoers`, weekly cron) also sets `RS_ORACLE_CORPUS_<LANE>`, and its
+# fresh capture is derived one-for-one from the committed corpus, so it holds
+# EXACTLY the committed scenario count. This driver's R2 replays ANOTHER TREE's
+# corpus, which #658 mandates will be LARGER.
+#
+# A lane's cardinality assertion that keys on the override alone therefore has to
+# relax for both, which silently drops the addition-direction check from a
+# scheduled gate that had it. Keying on this variable lets the lane relax for THIS
+# driver and keep equality for the other one. Senior integration review, session 9p.
 replay() {
     local bin="$1" corpus="$2" out="$3" err="$4"
-    env "${CORPUS_VAR}=${corpus}" "${bin}" --nocapture --test-threads=1 >"${out}" 2>"${err}"
+    env "${CORPUS_VAR}=${corpus}" RS_BRANCH_DIFF=1 "${bin}" --nocapture --test-threads=1 >"${out}" 2>"${err}"
     REPLAY_RC=$?
 }
 

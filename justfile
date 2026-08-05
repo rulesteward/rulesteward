@@ -836,8 +836,9 @@ sudoers-stig-derive product="all":
 # out three times it would be wrong in three different ways, which is how
 # `just diff-fapolicyd` came to report success while checking nothing for 12 days,
 # from the 2026-07-13 NFS rebuild until the recipe was retired 2026-07-25 (#572).
-# (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30 days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
-# re-seeds that bug into a copy of it and requires named cases to catch it.
+# (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30
+# days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh,
+# which re-seeds that bug into a copy of it and requires named cases to catch it.
 #
 # Exit codes: 0 clean (the success line carries a non-zero count), 1 drift,
 # 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane

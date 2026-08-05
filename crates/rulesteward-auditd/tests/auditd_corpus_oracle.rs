@@ -94,7 +94,7 @@ use std::path::{Path, PathBuf};
 use rulesteward_auditd::oracle::{
     CaptureVerdict, Unusable, Verdict, classify_capture, product_verdict,
 };
-use rulesteward_core::oracle_corpus::{resolve_corpus_root, sentinel_count};
+use rulesteward_core::oracle_corpus::{resolve_and_announce_corpus_root, sentinel_count};
 
 /// Named floor: 76 scenario ids (74 after round-2 + 2 post-implementation
 /// adversarial-review additions: `w-delete-watch`, `d-delete-syscall` - the
@@ -480,9 +480,10 @@ fn corpus_root() -> PathBuf {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/corpus/auditd-oracle"
     ));
-    // The banner is emitted by `resolve_corpus_root` itself, for every resolution
+    // The banner is emitted by `resolve_and_announce_corpus_root` itself, for every resolution
     // in the process rather than only the ones a lane remembered to announce.
-    let (root, _mode) = resolve_corpus_root("RS-DIFF-AUDITD", "RS_ORACLE_CORPUS_AUDITD", &default);
+    let (root, _mode) =
+        resolve_and_announce_corpus_root("RS-DIFF-AUDITD", "RS_ORACLE_CORPUS_AUDITD", &default);
     root
 }
 

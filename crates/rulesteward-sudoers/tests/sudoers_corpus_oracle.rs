@@ -365,7 +365,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rulesteward_core::oracle_corpus::{CorpusMode, resolve_corpus_root, sentinel_count};
+use rulesteward_core::oracle_corpus::{
+    CorpusMode, resolve_and_announce_corpus_root, sentinel_count,
+};
 use rulesteward_sudoers::oracle::{
     UnclassifiedVisudo, VisudoVerdict, classify_visudo, project_ast, project_cvtsudoers_json,
 };
@@ -662,14 +664,14 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/corpus/sudoers-oracle"
     ));
-    resolve_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SUDOERS", &default)
+    resolve_and_announce_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SUDOERS", &default)
 }
 
 /// Print the mandatory sentinel COUNT line.
 ///
 /// The BANNER is not printed here and this helper could not print one: it is
 /// emitted once per resolution by
-/// `rulesteward_core::oracle_corpus::resolve_corpus_root`, which covers callers
+/// `rulesteward_core::oracle_corpus::resolve_and_announce_corpus_root`, which covers callers
 /// that never reach this function. Called in every corpus-driven test (not just
 /// one), so the COUNT survives regardless of which test the default parallel
 /// runner happens to execute or schedule first - `scripts/rs-oracle-diff.sh` only
@@ -687,7 +689,7 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
 /// tally, since how much they compare is data-dependent (L3 legitimately
 /// skips reject-verdict and scope-out rows) and cannot be known in advance.
 fn announce(scenario_count: usize) {
-    // The COUNT only. The BANNER now comes from `resolve_corpus_root`, so it is
+    // The COUNT only. The BANNER now comes from `resolve_and_announce_corpus_root`, so it is
     // emitted once per resolution for every caller in the binary rather than only
     // the ones that remember to call this helper.
     eprintln!("{}", sentinel_count(SENTINEL, scenario_count));
@@ -1716,30 +1718,48 @@ fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
 /// `just test` and `just ci` never set the override, so they still get equality in
 /// both directions.
 ///
-/// Under an override the binary has been pointed at ANOTHER TREE's corpus by
-/// `scripts/rs-branch-diff.sh`, whose entire job is to replay a GROWN corpus
-/// against a binary compiled before it grew. `SCENARIO_FLOOR` is compiled in, so
-/// equality there asserts "the other tree holds exactly as many scenarios as this
-/// binary was built with" - a claim about a tree this binary knows nothing about,
-/// and one that #658 guarantees will be false: it MANDATES corpus growth for any
-/// branch touching this crate's `src/`. The failure lands in the driver's R2 run
-/// and is reported as DISCRIMINATED, i.e. a discrimination signal whose only
-/// content is "the constant moved". Adversarial review, session 9p round 2.
+/// TWO different scripts set the override, and an earlier version of this
+/// function keyed only on `CorpusMode`, which cannot tell them apart:
+///
+/// - `scripts/rs-branch-diff.sh` replays ANOTHER TREE's corpus against a binary
+///   compiled before it grew. `SCENARIO_FLOOR` is compiled in, so equality there
+///   asserts "the other tree holds exactly as many scenarios as this binary was
+///   built with" - a claim about a tree this binary knows nothing about, and one
+///   that #658 guarantees will be false, since it MANDATES corpus growth for any
+///   branch touching this crate's `src/`. The failure would land in the driver's
+///   R2 run and be reported as DISCRIMINATED: a discrimination signal whose only
+///   content is "the constant moved".
+/// - `scripts/rs-oracle-diff.sh` (`just diff-sudoers`, weekly cron via
+///   `.github/workflows/sudoers-oracle-drift.yml`) replays a FRESH CAPTURE, which
+///   `capture_sudoers.sh` derives one-for-one from the committed scenarios. It
+///   holds EXACTLY `SCENARIO_FLOOR` and always has.
+///
+/// Relaxing on `Fresh` alone therefore dropped the addition-direction check from
+/// a scheduled gate that had it since `d0c2975`, for no benefit to that gate.
+/// `RS_BRANCH_DIFF` is set only by the branch driver, so the relaxation now
+/// follows the CALLER rather than the mere presence of an override.
+/// Senior integration review, session 9p; original split, session 9p round 2.
 fn assert_scenario_cardinality(ids: &[String], mode: CorpusMode) {
+    // Not `CorpusMode`, because both scripts produce `Fresh`.
+    let replaying_another_tree = std::env::var_os("RS_BRANCH_DIFF").is_some();
     match mode {
-        CorpusMode::Committed => assert_eq!(
-            ids.len(),
-            SCENARIO_FLOOR,
-            "expected exactly {SCENARIO_FLOOR} scenarios in the committed corpus, found {}. \
-             A DELETED scenario and an ADDED one are both defects here (d0c2975).",
-            ids.len()
-        ),
-        CorpusMode::Fresh => assert!(
+        CorpusMode::Fresh if replaying_another_tree => assert!(
             ids.len() >= SCENARIO_FLOOR,
             "expected >= {SCENARIO_FLOOR} scenarios in the overridden corpus, found {}. \
-             An override may hold MORE than this binary was built with (that is what a \
-             branch differential replays); fewer means the corpus shrank below what this \
+             A branch differential replays ANOTHER TREE's corpus, which may hold MORE \
+             than this binary was built with; fewer means it shrank below what this \
              binary requires.",
+            ids.len()
+        ),
+        // `Committed` (just test / just ci) AND a `Fresh` capture from
+        // rs-oracle-diff.sh, both of which hold exactly SCENARIO_FLOOR.
+        _ => assert_eq!(
+            ids.len(),
+            SCENARIO_FLOOR,
+            "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+             and an ADDED one are both defects here (d0c2975). This applies to the \
+             committed corpus and to a fresh capture derived from it; only a branch \
+             differential, which sets RS_BRANCH_DIFF, is allowed to hold more.",
             ids.len()
         ),
     }

@@ -24,7 +24,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use rulesteward_core::oracle_corpus::resolve_corpus_root;
+use rulesteward_core::oracle_corpus::resolve_and_announce_corpus_root;
 use rulesteward_selinux::Policy;
 use tempfile::TempDir;
 
@@ -51,7 +51,7 @@ fn archive_path() -> PathBuf {
     // match, not the `mode=committed` refusal - so the run passes clean. Change
     // one, change both.
     let (root, _mode) =
-        resolve_corpus_root("RS-DIFF-SELINUX", "RS_ORACLE_CORPUS_SELINUX", &default);
+        resolve_and_announce_corpus_root("RS-DIFF-SELINUX", "RS_ORACLE_CORPUS_SELINUX", &default);
     root.join("_policies/policies.tar.zst")
 }
 

@@ -217,7 +217,7 @@ pub fn checked_corpus_root(
 /// own (a failed assertion is just 101), so panicking with the full message is
 /// how the reason reaches the recipe's log.
 #[must_use]
-pub fn resolve_corpus_root(
+pub fn resolve_and_announce_corpus_root(
     sentinel: &str,
     env_var: &str,
     default_root: &Path,
@@ -251,7 +251,11 @@ pub fn resolve_corpus_root(
 /// fixed-string match on a prefix (`"<SENTINEL>: mode=fresh corpus="`) and stays
 /// correct for a corpus path containing spaces.
 #[must_use]
-pub fn sentinel_banner(sentinel: &str, mode: CorpusMode, root: &Path) -> String {
+// NOT `pub`: every lane stopped importing this when the announcement moved into
+// `resolve_and_announce_corpus_root`, which is the only caller outside this
+// module's own unit tests. A public helper with no external caller is API surface
+// nobody is maintaining. Senior integration review, session 9p.
+fn sentinel_banner(sentinel: &str, mode: CorpusMode, root: &Path) -> String {
     format!("{sentinel}: mode={mode} corpus={}", root.display())
 }
 

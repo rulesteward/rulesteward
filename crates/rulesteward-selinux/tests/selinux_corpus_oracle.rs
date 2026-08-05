@@ -54,7 +54,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use rulesteward_core::oracle_corpus::{CorpusMode, resolve_corpus_root, sentinel_count};
+use rulesteward_core::oracle_corpus::{
+    CorpusMode, resolve_and_announce_corpus_root, sentinel_count,
+};
 use rulesteward_selinux::{
     CategorizeError, DenialKind, ReplayOutcome, categorize, categorize_with_outcome, group_denials,
     parse_avc,
@@ -242,7 +244,7 @@ const SCENARIO_FLOOR: usize = 69;
 /// which is not a differential at all.
 fn corpus_root() -> (PathBuf, CorpusMode) {
     let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
-    resolve_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SELINUX", &default)
+    resolve_and_announce_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SELINUX", &default)
 }
 
 /// Enumerate every scenario directory: `tests/corpus/selinux/*/manifest.json`
@@ -255,7 +257,7 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
     // PER-SCENARIO parse.
     //
     // Not "every fallible step": `read_dir` below still panics ahead of the COUNT
-    // announcement. The BANNER is safe, because `resolve_corpus_root` emits it
+    // announcement. The BANNER is safe, because `resolve_and_announce_corpus_root` emits it
     // before returning from `corpus_root()` above, so an unreadable corpus ROOT
     // does still announce the path it could not read. The only case emitting no
     // sentinel at all is a `CorpusRootError` - a root that is not a directory, or
@@ -296,7 +298,7 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
         dirs.push(dir);
     }
 
-    // The COUNT only. The BANNER now comes from `resolve_corpus_root`, which every
+    // The COUNT only. The BANNER now comes from `resolve_and_announce_corpus_root`, which every
     // corpus resolution in this binary goes through, so it covers entry points
     // this function never sees - `support::policy_corpus`, which reads `_policies/`
     // out of the same overridden root, is exactly such a caller and announced
@@ -304,6 +306,16 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
     //
     // Announce BEFORE asserting, but the assertion is what carries the guarantee
     // (CONTRIBUTING: "assert the count, do not merely print it").
+    //
+    // THIS IS THE RAW DIRECTORY COUNT, which `sudoers_corpus_oracle.rs` warns a
+    // count must never be: "a corpus of entirely unusable or entirely skipped rows
+    // would still satisfy the driver's `scenarios=0` anti-vacuity guard while
+    // comparing nothing". It is acceptable HERE only because all three tests in
+    // this target carry their own internal comparison floors downstream of it
+    // (`parsed_count >= 68`, `checked >= 18`, and the full `SYNTHETIC_SCOPE_OUT`
+    // set), so a collapsed comparison fails a test rather than passing quietly.
+    // A lane WITHOUT those floors must announce comparisons performed, not
+    // directories found. Senior integration review, session 9p.
     eprintln!("{}", sentinel_count(SENTINEL, dirs.len()));
     assert!(
         dirs.len() >= SCENARIO_FLOOR,
@@ -533,14 +545,16 @@ fn floor_layer_matches_manifest_label() {
         }
     }
 
-    // Count guard: 69 manifests enumerated (the parse-excluded scenario is
-    // counted via its manifest; the dual-format scenario is parsed twice, once
-    // per variant, so the PARSE count exceeds the scenario count).
-    assert!(
-        scenarios.len() >= SCENARIO_FLOOR,
-        "expected >= {SCENARIO_FLOOR} enumerated scenarios, found {}",
-        scenarios.len()
-    );
+    // Count guard: the PARSE count, which is the one this test can lose without
+    // any other guard noticing (the parse-excluded scenario is counted via its
+    // manifest; the dual-format scenario is parsed twice, once per variant, so
+    // the parse count exceeds the scenario count).
+    //
+    // The scenario-count assertion that used to sit here was unreachable:
+    // `scenarios()` above already asserts `dirs.len() >= SCENARIO_FLOOR` over the
+    // same quantity and panics first, so this one could never fire. Two asserts
+    // reading as independent checks when one is dead is worse than one.
+    // Senior integration review, session 9p.
     assert!(
         parsed_count >= 68,
         "expected >= 68 parsed scenario-variants (69 minus the 1 parse-excluded), got {parsed_count}"
