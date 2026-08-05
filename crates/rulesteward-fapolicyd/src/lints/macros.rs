@@ -1436,12 +1436,6 @@ mod tests {
     //      overflow set, or one referenced only by STRING attribute(s)
     //      (e.g. `ftype=`), produces NO fapd-E05 (1.4.5 types the set
     //      STRING; the STRING-attribute assignment loads cleanly).
-    //
-    // RED expectation: today's `e05` ignores target entirely (fires
-    // unconditionally on every overflow SetDefinition), so every rhel9/
-    // rhel10 "must NOT fire" assertion below is RED against the frozen
-    // foundation; every "must fire" assertion (A/B, and the non-STRING-
-    // referenced C cases) is already GREEN and serves as a regression pin.
     // -----------------------------------------------------------------
 
     /// Parse `src` and lint it under `target` via the full pipeline seam.
@@ -1489,8 +1483,7 @@ mod tests {
         // %s which has STRING type to uid (UNSIGNED expected)"). `uid=` is
         // UNSIGNED (non-STRING), so under contract C this must still fire at
         // rhel9/rhel10 too (at least one non-STRING reference exists).
-        // GREEN today at every context (today's e05 fires unconditionally);
-        // remains a required pin after the version-aware C gate lands.
+        // A required pin at every context under the version-aware C gate.
         let src = "%s=9223372036854775808\nallow uid=%s : all\n";
         for ctx in E05_ALL_CONTEXTS {
             let diags = lint_src_e05(src, ctx);
@@ -1516,9 +1509,9 @@ mod tests {
         // the overflowing member STRING, and `ftype=` is a STRING attribute,
         // so it loads cleanly.
         //
-        // RED against the frozen foundation for the rhel9/rhel10 assertions:
-        // today's e05 ignores target and fires unconditionally, so it
-        // currently (wrongly) fires here at rhel9/rhel10 too.
+        // RED against a target-blind impl for the rhel9/rhel10 assertions:
+        // an e05 that ignores target fires unconditionally, so it would
+        // (wrongly) fire here at rhel9/rhel10 too.
         let src = "%s=99999999999999999999\nallow perm=open all : ftype=%s\n";
 
         for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
@@ -1560,8 +1553,8 @@ mod tests {
         // at use). __fapd9.txt / __fapd10.txt: "Loaded 1 rules" (VALID) - the
         // macro is simply unused; 1.4.5 never even attempts to type it.
         //
-        // RED against the frozen foundation for the rhel9/rhel10 assertions
-        // (today's e05 fires unconditionally regardless of usage or target).
+        // RED against a target-blind impl for the rhel9/rhel10 assertions
+        // (an e05 that fires unconditionally regardless of usage or target).
         let src = "%s=99999999999999999999\nallow perm=open all : all\n";
 
         for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
@@ -1608,9 +1601,8 @@ mod tests {
         // fapd-E05 fires once per offending SetDefinition (not per usage), so
         // the expected count is 1 regardless of how many rules reference `%s`.
         //
-        // GREEN today at every context (today's e05 fires unconditionally);
-        // remains a required regression guard after the version-aware C gate
-        // lands - it must NOT flip to 0 at rhel9/rhel10.
+        // A required regression guard at every context under the version-aware
+        // C gate: the count must NOT flip to 0 at rhel9/rhel10.
         let src = "%s=99999999999999999999\nallow perm=open uid=%s : all\nallow perm=open all : ftype=%s\n";
         for ctx in E05_ALL_CONTEXTS {
             let diags = lint_src_e05(src, ctx);
@@ -1749,8 +1741,8 @@ mod tests {
         // the referencing attribute is literally `ftype=` instead of
         // checking the attribute's TYPE CATEGORY.
         //
-        // RED against the frozen foundation for the rhel9/rhel10 assertions
-        // (today's e05 fires unconditionally).
+        // RED against a target-blind impl for the rhel9/rhel10 assertions
+        // (an e05 that fires unconditionally).
         let src = "%s=99999999999999999999\nallow perm=open exe=%s : all\n";
 
         for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {
@@ -1799,8 +1791,7 @@ mod tests {
         // Kills a wrong implementation that fires at rhel9+ only when the
         // referencing attribute is literally `uid=`.
         //
-        // GREEN today at every context (today's e05 fires unconditionally);
-        // remains a required pin after the version-aware C gate lands.
+        // A required pin at every context under the version-aware C gate.
         for attr in ["auid", "sessionid"] {
             let src = format!("%s=99999999999999999999\nallow perm=open {attr}=%s : all\n");
             for ctx in E05_ALL_CONTEXTS {

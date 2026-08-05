@@ -20,9 +20,7 @@
 //! VERBATIM from the session's stig-refs grounding
 //! (`stig-refs-rhel{8,9,10}-auditd.txt`, `cis-update` at `CaC` pin `519b5fe8`);
 //! titles from `derive-rhel{8,9,10}-auditd.txt`. Ground-truth join rows cited
-//! inline at each assertion. The accessor is seeded to return an empty `Vec`
-//! and `w06` does not attach yet, so every attach test FAILS (RED) until the
-//! implementer builds the join and wires it into `w06`.
+//! inline at each assertion.
 
 use std::collections::BTreeSet;
 
@@ -254,8 +252,8 @@ fn cis_baseline_rule_mapping_and_control_counts() {
 #[test]
 fn cis_baseline_title_is_consistent_within_a_control() {
     // Every rule mapping sharing a control_id shares one title (a CaC-derived
-    // invariant that holds for all three products). Non-empty guard keeps this
-    // RED pre-impl rather than vacuously green over an empty table.
+    // invariant that holds for all three products). The non-empty guard keeps
+    // this from passing vacuously over an empty table.
     for target in [
         TargetVersion::Rhel8,
         TargetVersion::Rhel9,
@@ -409,10 +407,10 @@ fn cis_join_immutable_control_diverges_per_product() {
 
 #[test]
 fn cis_join_is_product_specific() {
-    // A rhel10-only STIG id joins under rhel10 (this positive anchor keeps the
-    // test RED pre-impl) but is ABSENT from the rhel8/rhel9 joins -- the join
-    // is read from the target's own controls/stig_<p>.yml, never a shared
-    // superset.
+    // A rhel10-only STIG id joins under rhel10 (a positive anchor, so the test
+    // cannot pass on the emptiness checks alone) but is ABSENT from the
+    // rhel8/rhel9 joins -- the join is read from the target's own
+    // controls/stig_<p>.yml, never a shared superset.
     assert_eq!(
         cis_controls_for_stig(TargetVersion::Rhel10, "RHEL-10-500810").len(),
         2,

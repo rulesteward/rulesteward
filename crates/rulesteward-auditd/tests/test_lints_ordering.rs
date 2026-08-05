@@ -1247,22 +1247,18 @@ fn w03_overlapping_never_still_suppresses_219() {
 //
 // All rules below carry NO `-F` fields, only `-C`, so `field_disjoint` (the
 // existing `-F`-only channel) is always false and `traffic_overlaps`'s
-// verdict is driven ENTIRELY by whether the new `-C` channel recognizes the
-// contradiction. Today (before the class-2 promotion) `-C` is completely
-// ignored by `traffic_overlaps` (ordering.rs:144-156 never reads
-// `field_compares`), so every pair below currently overlaps (au-W03 fires,
-// 1 diag) regardless of what the `-C` clauses say. Tests asserting DISJOINT
-// (0 diags, "_is_disjoint" names) are RED today; tests asserting the
-// conservative/excluded NOT-disjoint verdict (1 diag, "_stays_conservative"
-// / "_not_disjoint" names) are already GREEN today and MUST STAY GREEN
-// after the promotion lands -- they are the soundness pins, in particular
-// the two OBJECT-family tests below, which guard the single highest-risk
-// false "provably disjoint" claim in this whole promotion.
+// verdict is driven ENTIRELY by whether the `-C` channel recognizes the
+// contradiction. Tests asserting DISJOINT (0 diags, "_is_disjoint" names)
+// pin the `-C` promotion itself; tests asserting the conservative/excluded
+// NOT-disjoint verdict (1 diag, "_stays_conservative" / "_not_disjoint"
+// names) are the soundness pins, in particular the two OBJECT-family tests
+// below, which guard the single highest-risk false "provably disjoint"
+// claim in this whole promotion.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn w03_c475_complementary_uid_euid_is_disjoint() {
-    // RED. AUDIT_COMPARE_UID_TO_EUID (table row 11). `-C uid=euid` and
+    // AUDIT_COMPARE_UID_TO_EUID (table row 11). `-C uid=euid` and
     // `-C uid!=euid` are exact logical complements for every event
     // (audit_uid_comparator, auditfilter.c:1229-1249, over a single scalar
     // cred->uid/cred->euid pair -- no names_list involved), so the two rules
@@ -1283,7 +1279,7 @@ fn w03_c475_complementary_uid_euid_is_disjoint() {
 
 #[test]
 fn w03_c475_complementary_auid_uid_is_disjoint() {
-    // RED. AUDIT_COMPARE_UID_TO_AUID (table row 10).
+    // AUDIT_COMPARE_UID_TO_AUID (table row 10).
     let input = concat!(
         "-a never,exit -S execve -C auid=uid -k c475_auid_uid_never\n",
         "-a always,exit -S execve -C auid!=uid -k c475_auid_uid_always\n",
@@ -1300,7 +1296,7 @@ fn w03_c475_complementary_auid_uid_is_disjoint() {
 
 #[test]
 fn w03_c475_complementary_gid_egid_is_disjoint() {
-    // RED. AUDIT_COMPARE_GID_TO_EGID (table row 20), the GID-family twin of
+    // AUDIT_COMPARE_GID_TO_EGID (table row 20), the GID-family twin of
     // audit_gid_comparator (auditfilter.c:1251-1271, byte-identical logic).
     let input = concat!(
         "-a never,exit -S execve -C gid=egid -k c475_gid_egid_never\n",
@@ -1318,7 +1314,7 @@ fn w03_c475_complementary_gid_egid_is_disjoint() {
 
 #[test]
 fn w03_c475_operand_order_cross_spelling_contradictory_is_disjoint() {
-    // RED. `-C uid=euid` and `-C euid!=uid` resolve to the SAME wire constant
+    // `-C uid=euid` and `-C euid!=uid` resolve to the SAME wire constant
     // (AUDIT_COMPARE_UID_TO_EUID) regardless of operand order: userspace
     // hard-codes both field1/field2 orderings to the same output constant
     // (libaudit.c:1274-1277 vs 1156-1159), and with opposite ops they are
@@ -1478,7 +1474,7 @@ fn w03_c475_c_vs_absent_c_stays_conservative() {
 
 #[test]
 fn w03_c475_multi_c_conjunction_shared_contradiction_is_disjoint() {
-    // RED. Rule A carries TWO -C comparisons (`uid=euid` AND `gid=egid`);
+    // Rule A carries TWO -C comparisons (`uid=euid` AND `gid=egid`);
     // rule B carries TWO DIFFERENT -C comparisons (`uid!=euid` AND
     // `sgid=fsgid`), sharing no pair with A's second clause. The kernel ANDs
     // every field in a rule (`audit_filter_rules`'s `if (!result) return 0`
@@ -1512,8 +1508,7 @@ fn w03_c475_multi_c_conjunction_shared_contradiction_is_disjoint() {
 // for the other 7 object pairs (e.g. `-C euid=obj_uid` vs `-C euid!=obj_uid`
 // wrongly proven disjoint, dropping a real au-W03 warning). All 9 GREEN pins
 // force the sound design (an allowlist of the 16 safe pairs, or a "contains
-// obj_uid/obj_gid => exclude" rule). Every pin is GREEN now (the `-C` channel
-// is inert today) and MUST STAY GREEN after the promotion. Each uses a legal
+// obj_uid/obj_gid => exclude" rule). Every pin MUST STAY GREEN. Each uses a legal
 // pair (=/!= + a real field pair) on a syscall (rename) that genuinely
 // attaches multiple names_list entries, so the existential-over-names_list
 // co-satisfaction (auditsc.c:332-378) is real, not hypothetical.
@@ -1653,16 +1648,15 @@ fn w03_c475_object_family_fsgid_to_obj_gid_stays_conservative() {
 
 // --- more SAFE-pair disjoint pins: force the full 16-pair table, not a 3-pair overfit ---
 //
-// The five RED disjoint-proving tests above exercise only 3 of the 16 safe
+// The five disjoint-proving tests above exercise only 3 of the 16 safe
 // process-vs-process pairs (UID_TO_EUID 11, UID_TO_AUID 10, GID_TO_EGID 20).
 // These three more (rows 19, 24, 16) spread the coverage across the suid/fsuid,
 // egid/sgid, and auid/euid sub-families so a 3-pair-allowlist impl cannot pass
-// while under-delivering on the rest of the 16. All RED now (the `-C` channel
-// is inert today) and must go GREEN with the sound 16-pair promotion.
+// while under-delivering on the rest of the 16.
 
 #[test]
 fn w03_c475_complementary_suid_fsuid_is_disjoint() {
-    // RED. AUDIT_COMPARE_SUID_TO_FSUID (uapi row 19).
+    // AUDIT_COMPARE_SUID_TO_FSUID (uapi row 19).
     let input = concat!(
         "-a never,exit -S execve -C suid=fsuid -k c475_suid_fsuid_never\n",
         "-a always,exit -S execve -C suid!=fsuid -k c475_suid_fsuid_always\n",
@@ -1679,7 +1673,7 @@ fn w03_c475_complementary_suid_fsuid_is_disjoint() {
 
 #[test]
 fn w03_c475_complementary_egid_sgid_is_disjoint() {
-    // RED. AUDIT_COMPARE_EGID_TO_SGID (uapi row 24).
+    // AUDIT_COMPARE_EGID_TO_SGID (uapi row 24).
     let input = concat!(
         "-a never,exit -S execve -C egid=sgid -k c475_egid_sgid_never\n",
         "-a always,exit -S execve -C egid!=sgid -k c475_egid_sgid_always\n",
@@ -1696,7 +1690,7 @@ fn w03_c475_complementary_egid_sgid_is_disjoint() {
 
 #[test]
 fn w03_c475_complementary_auid_euid_is_disjoint() {
-    // RED. AUDIT_COMPARE_AUID_TO_EUID (uapi row 16). Also cross-checks operand
+    // AUDIT_COMPARE_AUID_TO_EUID (uapi row 16). Also cross-checks operand
     // canonicalization the other direction: spelled auid=euid, the userspace
     // constant is AUID_TO_EUID (libaudit.c AUID/EUID switch arm).
     let input = concat!(
@@ -1715,15 +1709,11 @@ fn w03_c475_complementary_auid_euid_is_disjoint() {
 
 // --- ALL 16 safe pairs pinned: kill every canonical_pair match-arm mutant ---
 //
-// The mutation gate on the class-2 impl left 10 MISSED mutants, one per SAFE
-// process-vs-process pair that had no disjoint-proving test (only 6 of 16 were
-// pinned above). Each survivor is `delete match arm (X, Y)` in
-// `canonical_pair`: dropping an arm makes it return None for that pair, so the
-// promotion silently stops firing for it -- undetected without a test that
-// exercises exactly that arm. The impl-aware adversary independently verified
-// all 16 arms map CORRECTLY (0 mismatches vs an independent oracle), so these
-// 10 are pure test-adequacy pins: GREEN against the current (correct) impl,
-// each one killing its own arm's delete-mutant. With these plus the 6 above,
+// Each test below pins one SAFE process-vs-process pair that no other
+// disjoint-proving test exercises. The mutant each one guards is `delete match
+// arm (X, Y)` in `canonical_pair`: dropping an arm makes it return None for
+// that pair, so the promotion silently stops firing for it -- undetected
+// without a test that exercises exactly that arm. With these plus the 6 above,
 // all 16 safe pairs (uapi_audit.h:221-241, rows 10-25) are pinned. Every
 // fixture uses a legal `=`/`!=` pair the parser accepts (parser.rs:624-672).
 

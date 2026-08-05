@@ -1,4 +1,4 @@
-//! RED barrier tests: kernel FANOTIFY / audit record parsing (#73, #75).
+//! Tests: kernel FANOTIFY / audit record parsing (#73, #75).
 //!
 //! Grounding: f1 s3.2 (kernel record layout, hex fan_info, trust clamp).
 //!

@@ -1,4 +1,4 @@
-//! RED barrier tests for fapd-E01's attribute-SIDE check (issue #545,
+//! Tests for fapd-E01's attribute-SIDE check (issue #545,
 //! [CRITICAL] fail-open).
 //!
 //! Grounded in the overnight audit lane report (2026-07-17,
@@ -12,10 +12,10 @@
 //! diagnoses the crash from raw daemon logs with no `RuleSteward` diagnostic
 //! to point at it.
 //!
-//! Today `fapd-E01` (`lints::walker::e01`) only calls `attrs::is_known(key)`,
-//! which is side-blind (true for a name in ANY of `SUBJECT_ONLY` / `OBJECT_ONLY` /
-//! `BOTH_SIDES` regardless of which side it was found on). `attrs::classify`
-//! (which DOES return a side) is never consulted from `e01`.
+//! `attrs::is_known(key)` alone is side-blind (true for a name in ANY of
+//! `SUBJECT_ONLY` / `OBJECT_ONLY` / `BOTH_SIDES` regardless of which side it was
+//! found on), so `fapd-E01` (`lints::walker::e01`) must also consult
+//! `attrs::classify`, which DOES return a side.
 //!
 //! Driven through the PUBLIC `lint_with_context` seam (not the private
 //! `walker::e01`) so these tests hold regardless of exactly where the side

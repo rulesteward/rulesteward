@@ -987,12 +987,11 @@ mod tests {
         );
     }
 
-    // -- Section 3d: RED adversarial suite for the 3d impl pipeline -----------
-    // The following tests target the stubbed (`todo!()`) bodies:
-    // `TrustSource::from_int`, `parse_trust_value`, `iter_entries`,
-    // `get_entry`, and `verify_entry`. They panic on the `todo!()` until the
-    // implementer fills each body. Every assertion is grounded in a cited
-    // primary source (fapolicyd `fapolicyd-backend.h`, coreutils `sha256sum`).
+    // -- Section 3d: adversarial suite ----------------------------------------
+    // The following tests cover `TrustSource::from_int`, `parse_trust_value`,
+    // `iter_entries`, `get_entry`, and `verify_entry`. Every assertion is
+    // grounded in a cited primary source (fapolicyd `fapolicyd-backend.h`,
+    // coreutils `sha256sum`).
 
     /// Re-derive `KNOWN_SHA256` from `KNOWN_BYTES` via the `sha2` crate and
     /// assert equality. This pins the hard-coded constant to a value the test
@@ -1358,8 +1357,8 @@ mod tests {
     /// `get_entry` must find a path whose byte-length exceeds 511 when the DB
     /// holds the entry under the `path_to_hash` hashed key.
     ///
-    /// RED: current `get_entry` looks up `p.as_bytes()` literally, so the hashed
-    /// key is missed and the call returns `None` instead of `Some(rows)`.
+    /// A literal `p.as_bytes()` lookup misses the hashed key and returns `None`
+    /// instead of `Some(rows)`.
     #[test]
     fn get_entry_long_path_stored_under_hashed_key_returns_some() {
         use sha2::Sha512;
@@ -1538,8 +1537,8 @@ mod tests {
     /// `contains_path` must return `true` for a path whose byte-length exceeds
     /// 511 when the DB holds the entry under the `path_to_hash` hashed key.
     ///
-    /// RED: current `contains_path` looks up `p.as_bytes()` literally, so the
-    /// hashed key is missed and the call returns `false` instead of `true`.
+    /// A literal `p.as_bytes()` lookup misses the hashed key and returns `false`
+    /// instead of `true`.
     #[test]
     fn contains_path_long_path_stored_under_hashed_key_returns_true() {
         use sha2::Sha512;
@@ -1798,14 +1797,14 @@ mod tests {
             .status();
     }
 
-    // ---- CLEAN-3b RED tests: 4-length parse + SHA-512 verify ----------------
+    // ---- 4-length digest parse + SHA-512 verify -----------------------------
 
     /// Parser must accept all four fapolicyd digest lengths: MD5 (32), SHA1 (40),
     /// SHA256 (64), SHA512 (128). Each well-formed line must parse Ok and the
     /// returned digest must round-trip exactly.
     ///
-    /// RED today: the parser's `hex_field.len() != 64` guard rejects lengths 32,
-    /// 40, and 128 with `MalformedValue`.
+    /// A single `hex_field.len() != 64` guard would reject lengths 32, 40, and
+    /// 128 with `MalformedValue`.
     #[test]
     fn parse_accepts_all_four_digest_lengths() {
         for len in [32usize, 40, 64, 128] {
@@ -1853,8 +1852,8 @@ mod tests {
     /// use, so the test is self-consistent (not grounded in an external `sha512sum`
     /// value - a note for future grounding if the impl changes).
     ///
-    /// RED today: `verify_entry` only calls `Sha256`; a 128-hex digest will compare
-    /// against a 64-char actual hex and return `HashMismatch` instead of `Match`.
+    /// A `verify_entry` that only calls `Sha256` compares a 128-hex digest
+    /// against a 64-char actual hex and returns `HashMismatch` instead of `Match`.
     #[test]
     fn verify_matches_sha512_file() {
         use sha2::Sha512;
@@ -1898,9 +1897,9 @@ mod tests {
     /// The md-5 crate is not yet a dependency (the implementer adds it), so the
     /// expected value is a verified literal constant, not computed in the test.
     ///
-    /// RED today: `verify_entry` length-dispatches on `entry.digest.len()`. The
-    /// MD5 arm (`len == 32`) does not exist yet, so a 32-hex digest compared
-    /// against the 64-char SHA-256 actual hex yields `HashMismatch`, not `Match`.
+    /// `verify_entry` length-dispatches on `entry.digest.len()`. Without the
+    /// MD5 arm (`len == 32`), a 32-hex digest is compared against the 64-char
+    /// SHA-256 actual hex and yields `HashMismatch`, not `Match`.
     /// A mutant that swaps or deletes the 32/MD5 arm would also survive without
     /// this test.
     #[test]
@@ -1945,9 +1944,9 @@ mod tests {
     /// The sha-1 crate is not yet a dependency (the implementer adds it), so the
     /// expected value is a verified literal constant, not computed in the test.
     ///
-    /// RED today: `verify_entry` length-dispatches on `entry.digest.len()`. The
-    /// SHA-1 arm (`len == 40`) does not exist yet, so a 40-hex digest compared
-    /// against the 64-char SHA-256 actual hex yields `HashMismatch`, not `Match`.
+    /// `verify_entry` length-dispatches on `entry.digest.len()`. Without the
+    /// SHA-1 arm (`len == 40`), a 40-hex digest is compared against the 64-char
+    /// SHA-256 actual hex and yields `HashMismatch`, not `Match`.
     /// A mutant that swaps or deletes the 40/SHA-1 arm would also survive without
     /// this test.
     #[test]
@@ -2124,14 +2123,7 @@ mod tests {
         }
     }
 
-    // ---- IntegrityMode::enforces -- full 5x4 enforcement table (RED) ---------
-    // These tests assert the INTENDED post-impl behavior. The stub always returns
-    // `true`, so:
-    //   - Tests asserting enforces()==true will PASS (stub agrees).
-    //   - Tests asserting enforces()==false will FAIL (stub returns true instead).
-    // This makes them RED in the right way: they fail because the gating logic
-    // isn't implemented yet, NOT because of a compile or panic.
-    //
+    // ---- IntegrityMode::enforces -- full 5x4 enforcement table --------------
     // Per the grounded contract (fapolicyd.conf(5)):
     //   SizeMismatch: enforced under size|ima|sha256; NOT under none.
     //   HashMismatch: enforced ONLY under sha256.
@@ -2147,7 +2139,6 @@ mod tests {
 
     #[test]
     fn integrity_none_does_not_enforce_size_mismatch() {
-        // RED: stub returns true; real impl must return false.
         assert!(
             !IntegrityMode::None.enforces(&DiskVerdict::SizeMismatch {
                 recorded: 100,
@@ -2195,7 +2186,6 @@ mod tests {
 
     #[test]
     fn integrity_none_does_not_enforce_hash_mismatch() {
-        // RED: stub returns true; real impl must return false.
         assert!(
             !IntegrityMode::None.enforces(&DiskVerdict::HashMismatch {
                 recorded: "a".repeat(64),
@@ -2207,7 +2197,6 @@ mod tests {
 
     #[test]
     fn integrity_size_does_not_enforce_hash_mismatch() {
-        // RED: stub returns true; real impl must return false.
         assert!(
             !IntegrityMode::Size.enforces(&DiskVerdict::HashMismatch {
                 recorded: "a".repeat(64),
@@ -2219,7 +2208,6 @@ mod tests {
 
     #[test]
     fn integrity_ima_does_not_enforce_hash_mismatch() {
-        // RED: stub returns true; real impl must return false.
         // ima checks the IMA xattr hash (not the trust-DB digest), so HashMismatch
         // in the trust DB is NOT enforced under ima.
         assert!(
@@ -2310,12 +2298,7 @@ mod tests {
         );
     }
 
-    // -- Match -- never enforced (it is clean; enforces does not apply to Match
-    // in the gating sense, but we test it returns true for all modes to confirm
-    // the stub doesn't accidentally skip clean verdicts through the exit-code path).
-    // This is a GREEN stability test (stub returns true, real impl should also be
-    // true for Match -- a match is never a gating event but should not be suppressed).
-    // Actually: enforces(Match) is never called in the gating path (only called
+    // -- Match -- enforces(Match) is never called in the gating path (only called
     // for divergence verdicts). We skip Match tests to avoid specification ambiguity.
 }
 

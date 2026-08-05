@@ -240,7 +240,7 @@ fn message(
 
 #[cfg(test)]
 mod tests {
-    //! fapd-E07 RED barrier tests, driven through the public `lint_with_context`
+    //! fapd-E07 tests, driven through the public `lint_with_context`
     //! seam (NOT the private `walk`) so the activation/firing decision is tested
     //! as a whole-pipeline property regardless of where the logic lands.
     //!
@@ -264,9 +264,6 @@ mod tests {
     //!   * NO-SET (`pattern`/`trust`): a `%set` there is already flagged by
     //!     fapd-E04 (macro in trust=/pattern=). E07 DEFERS to E04 - it must NOT
     //!     double-report. Locked by `pattern_setref_is_e04_not_e07` below.
-    //!
-    //! RED expectation: `walk` returns `Vec::new()` unconditionally, so every
-    //! "E07 fires" test FAILS; the "clean"/"E04-not-E07" regression guards pass.
 
     use rulesteward_core::{Diagnostic, Severity};
 
@@ -847,11 +844,6 @@ mod tests {
     // __fapd10.txt: "Loaded 1 rules" (VALID) - the real 1.4.5 daemon types
     // the overflowing member STRING, and `ftype=` is a STRING attribute, so
     // the assignment is compatible and loads cleanly.
-    //
-    // RED today: running this fixture through the CLI currently emits
-    // `[fapd-E07] set `%s` is type-incompatible with `ftype=` ...` at
-    // rhel9/rhel10 (and under None) - a false positive, because
-    // `looks_int("99999999999999999999")` is `true`.
     // -----------------------------------------------------------------
 
     #[test]
@@ -916,12 +908,12 @@ mod tests {
         // STRING type to uid (UNSIGNED expected)" (case 03 gives the same
         // message on fapd9/fapd10 for i64::MAX+1).
         //
-        // RED today at rhel9/rhel10: pre-fix, `looks_int` treats the overflow
-        // member as numeric, the set types UNSIGNED, uid= expects UNSIGNED,
-        // no mismatch, no E07. Kills the "just drop the overflow member from
-        // typing" wrong implementation: a drop-impl leaves this single-member
-        // set with no members contributing STRING-ness and produces no E07
-        // here either.
+        // RED against a pre-fix impl at rhel9/rhel10, where `looks_int` treats
+        // the overflow member as numeric, the set types UNSIGNED, uid= expects
+        // UNSIGNED, no mismatch, no E07. Kills the "just drop the overflow
+        // member from typing" wrong implementation: a drop-impl leaves this
+        // single-member set with no members contributing STRING-ness and
+        // produces no E07 here either.
         //
         // rhel8: NO E07 (GREEN pin) - 1.3.2 types the set UNSIGNED by its
         // first CHARACTER (a digit), which uid= accepts; the real 1.3.2
@@ -980,8 +972,8 @@ mod tests {
         // ftype= is compatible -> no fapd-E07 at rhel9/rhel10, and (mismatch
         // not universal) none under None either.
         //
-        // RED today at all three contexts: pre-fix both members satisfy
-        // `looks_int`, so the set types UNSIGNED on rhel9/rhel10 (and
+        // RED against a pre-fix impl at all three contexts, where both members
+        // satisfy `looks_int`, so the set types UNSIGNED on rhel9/rhel10 (and
         // INT-by-first-element on rhel8), the mismatch wrongly holds on
         // EVERY version, and E07 fires even under None.
         let src = "%s=1,99999999999999999999\nallow perm=open all : ftype=%s\n";

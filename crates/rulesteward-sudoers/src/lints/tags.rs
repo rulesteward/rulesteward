@@ -775,12 +775,11 @@ mod tests {
         // authenticate:false; the tail `ALL` is a literal command ARGUMENT, NOT the
         // reserved ALL built-in. So W01 must fire ZERO times.
         //
-        // RED on the current shared parser: `parse_cmnd_spec_list` splits on a raw `,`
-        // (escape-UNAWARE), so it sees a second token `ALL` and misclassifies it as
-        // `CmndItem::All` -> a spurious W01 false positive. Same root cause as the W05
-        // escaped-comma test; the fix makes the command split `\,`-aware (mirroring the
-        // `\:` handling in split_top_level_segments). Tests only -- the implementer
-        // fixes the parser.
+        // `parse_cmnd_spec_list` splits via `split_cmnd_specs`, which is `\,`-aware
+        // (mirroring the `\:` handling in `split_top_level_segments`), so the escaped
+        // comma never starts a second token that could be misclassified as
+        // `CmndItem::All` -> no spurious W01 false positive. Same command-split
+        // property as the W05 escaped-comma test.
         assert_eq!(
             w01_count("alice ALL = NOPASSWD: /bin/echo a\\,ALL\n"),
             0,
@@ -1628,11 +1627,10 @@ mod w05_tests {
     /// `Cmnd_Spec_List` separator. `cvtsudoers -f json` reports exactly ONE command,
     /// `/bin/echo hi,there`, `authenticate:false`. So W05 must fire EXACTLY ONCE.
     ///
-    /// This is RED on the current shared parser: `parse_cmnd_spec_list` splits on a
-    /// raw `,` (escape-UNAWARE), so it sees two commands (`/bin/echo hi` and `there`)
-    /// and W05 fires twice. sudo escapes `\,` the same way the parser already escapes
-    /// `\:` in `split_top_level_segments`; the fix makes the command split
-    /// `\,`-aware. Tests only -- the implementer fixes the parser.
+    /// sudo escapes `\,` the same way the parser escapes `\:` in
+    /// `split_top_level_segments`, so the command split is `\,`-aware: an
+    /// escape-UNAWARE split on a raw `,` would see two commands (`/bin/echo hi` and
+    /// `there`) and fire W05 twice.
     #[test]
     fn w05_escaped_comma_is_one_command_fires_once() {
         assert_eq!(
@@ -1651,12 +1649,10 @@ mod w05_tests {
     /// with `runasusers` [root, operator] and `authenticate:false`, so NOPASSWD is in
     /// effect on the single command `/bin/ls` -> W05 must fire EXACTLY ONCE.
     ///
-    /// RED on the current shared parser: `split_cmnd_specs` splits on `,` without
-    /// PAREN-DEPTH awareness, so it breaks the runas group apart, the NOPASSWD tag is
-    /// swallowed, and W05 fires ZERO times -- a security FALSE NEGATIVE (a passwordless
-    /// grant goes unflagged). The fix makes the split paren-depth (and quote) aware,
-    /// mirroring `split_top_level_segments`. Tests only -- the implementer fixes the
-    /// parser.
+    /// `split_cmnd_specs` is paren-depth (and quote) aware, mirroring
+    /// `split_top_level_segments`. A split on `,` without PAREN-DEPTH awareness would
+    /// break the runas group apart, swallow the NOPASSWD tag, and fire W05 ZERO times
+    /// -- a security FALSE NEGATIVE (a passwordless grant goes unflagged).
     #[test]
     fn w05_runas_group_comma_is_one_command_fires_once() {
         assert_eq!(

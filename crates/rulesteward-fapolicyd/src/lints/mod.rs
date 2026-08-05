@@ -615,7 +615,6 @@ mod tests {
         // default context reproduces today's behavior exactly:
         //   * `target: Option<TargetVersion>` = None (no --target, implicit 1.4.x)
         //   * `check_identities: bool` = false (fapd-W05 getent check is opt-in)
-        // RED until the fields exist (compile-coupled).
         let ctx = LintContext::default();
         assert!(
             ctx.target.is_none(),
@@ -639,10 +638,8 @@ mod tests {
         // is therefore meaningful: both paths must agree on real diagnostics, not
         // just both-empty.
         //
-        // This test will NOT compile until the impl lands LintContext +
-        // lint_with_context (Task 3). That compile failure is the expected RED.
         // The symbols are re-exported from the crate root (lib.rs pub use), so we
-        // import them from `super::` (same module) where they will be added.
+        // import them from `super::` (same module).
         let src = "allow uid=0 : exe=%undefinedmacro\n";
         let path = std::path::Path::new("rules.d/10-x.rules");
         let entries = parser::parse_rules_file(src, path).unwrap_or_default();
@@ -656,8 +653,6 @@ mod tests {
         );
 
         // THE INVARIANT: lint_with_context with a default context == plain lint.
-        // lint_with_context and LintContext do not exist yet; this line causes
-        // the compile error that marks this test RED.
         assert_eq!(
             lint_with_context(&entries, src, path, &LintContext::default()),
             plain,

@@ -1,4 +1,4 @@
-//! RED barrier tests: explain rule lookup + replay fallback (#74).
+//! Tests: explain rule lookup + replay fallback (#74).
 //!
 //! Grounding: f1 s3.4 / s4.2 / s5.1 / s5.2.
 //!

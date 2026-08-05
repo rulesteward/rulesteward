@@ -1261,8 +1261,7 @@ mod tests {
     /// token trims to `""`). A naive substring-scan impl
     /// (`binding.contains(",,") || binding.starts_with(',') ||
     /// binding.contains("\"\"")`) passes the plain `,,`/leading/quoted cases yet
-    /// is WRONG -- it misses `", ,"`, which only member-splitting detects. RED
-    /// today because the Cmnd scope is still a no-op in `check_defaults_scope`.
+    /// is WRONG -- it misses `", ,"`, which only member-splitting detects.
     #[test]
     fn f02_defaults_cmnd_scope_interior_whitespace_only_member_fires() {
         let d = f02s("Defaults!/bin/ls, ,/bin/cat env_reset");
@@ -3145,11 +3144,11 @@ mod tests {
     /// `alice ALL = (root:#abc) /bin/su` -- runas-GROUP (post-colon) letter-first
     /// `#`-GID token: NO digits at all after the `#`.
     ///
-    /// RED today: `strip_inline_comment` fails `next_is_digit` for `#abc`
-    /// (`a` is not a digit) and swallows `#abc) /bin/su` as a comment, leaving
-    /// `alice ALL = (root:` -- an unbalanced-paren remainder `RuleSteward`'s own
-    /// parser folds into a clean spec, never invoking `check_runas` on the
-    /// malformed token. Zero diagnostics for a `visudo -c`-rejected file.
+    /// The `#abc` token must not be swallowed as an inline comment. A stripper that
+    /// took it (and with it `#abc) /bin/su`) would leave `alice ALL = (root:` -- an
+    /// unbalanced-paren remainder `RuleSteward`'s own parser folds into a clean spec,
+    /// never invoking `check_runas` on the malformed token, so a `visudo -c`-rejected
+    /// file would draw zero diagnostics.
     #[test]
     fn f02_runas_group_letter_first_hash_fires() {
         // Fixture: visudo -c -f rc=1, syntax error at `#abc` (col 17).

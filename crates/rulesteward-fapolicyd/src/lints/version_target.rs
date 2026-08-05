@@ -234,7 +234,7 @@ fn check_pattern(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Ve
 
 #[cfg(test)]
 mod tests {
-    //! Version-target RED barrier tests.
+    //! Version-target tests.
     //!
     //! Every divergent check is driven through the public `lint_with_context`
     //! seam (NOT the private `walk`), because the activation decision ("fire
@@ -254,11 +254,6 @@ mod tests {
     //!     `pattern=ld_preload` LOADS on 1.3.2 (re-confirmed in this session
     //!     via `docker run fapolicyd8 ... fagenrules --load`: "Loaded 15 rules",
     //!     the rule appears in the loaded set), so it stays in the rhel8 set.
-    //!
-    //! RED expectation: the current `walk` returns `Vec::new()` unconditionally
-    //! and `deprecation::w07` is version-agnostic, so every "E06 fires" test and
-    //! the "Rhel8 suppresses W07" test FAIL; the None-context and clean-value
-    //! tests pass (current behavior).
 
     use std::path::Path;
 
@@ -332,8 +327,7 @@ mod tests {
     fn check1_rhel8_suppresses_w07_on_sha256hash() {
         // On fapolicyd 1.3.2 (rhel8) `sha256hash=` is the correct,
         // NON-deprecated spelling (filehash= does not exist there), so fapd-W07
-        // must NOT fire. RED: deprecation::w07 is version-agnostic and still
-        // fires under any target.
+        // must NOT fire.
         let diags = run(
             3,
             vec![],
@@ -451,8 +445,8 @@ mod tests {
         // Task-2 (senior-review nit): the fapd-E06 message for a rejected
         // `filehash=` must name WHICH side carried it so the operator can locate
         // it in a multi-attribute rule. subject-side and object-side messages
-        // must each say their side and must differ from each other. RED: today's
-        // message is the side-agnostic "attribute `filehash=` ..." for both.
+        // must each say their side and must differ from each other. A
+        // side-agnostic "attribute `filehash=` ..." message for both is rejected.
         let subj = run(
             1,
             vec![kv("filehash", HEX64)],
