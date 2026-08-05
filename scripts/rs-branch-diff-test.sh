@@ -53,6 +53,26 @@ CONTROL_PHASE=0
 # against real behaviour rather than merely documented.
 OBSERVED_RCS=""
 
+# Which cases the current pass runs. Empty selects the whole table, which is what
+# pass 1 against the real driver uses; a positive control sets it to the only
+# cases it asserts on.
+#
+# A control asserts its `must_catch` names plus CONTROL_MUST_STILL_PASS, an
+# average of 4.6 of the 93 cases, so running the full table per control did ~93%
+# no-op work: 93 cases x 38 passes = 3534 executions, ~20 minutes. Scoped, the
+# same assertions cost 262 executions.
+CASE_FILTER=""
+
+# The case names the current pass actually reached, so a control can prove the
+# names it selected on are real. See the CASES_RUN check in run_positive_control.
+CASES_RUN=""
+
+case_selected() {
+    [ -z "${CASE_FILTER}" ] && return 0
+    case " ${CASE_FILTER} " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
 # The per-case marker for a case that did NOT meet its expectation.
 #
 # During a positive-control phase the cases are SUPPOSED not to meet it - that is
@@ -792,6 +812,9 @@ run_case() {
     local name="$1" want_rc="$2" want_sub="$3"
     shift 3
 
+    case_selected "${name}" || return 0
+    CASES_RUN="${CASES_RUN} ${name}"
+
     # Sandbox-shaping knobs are properties of the box, not the run, so they are
     # read here before it is built.
     local kv
@@ -866,6 +889,9 @@ run_case() {
 run_argcase() {
     local name="$1" want_rc="$2" want_sub="$3"
     shift 3
+
+    case_selected "${name}" || return 0
+    CASES_RUN="${CASES_RUN} ${name}"
 
     local box
     box="$(make_sandbox "${DRIVER_UNDER_TEST}")" || exit 2
@@ -1569,6 +1595,22 @@ run_all_cases() {
 # Pass 1: the real driver.
 # ---------------------------------------------------------------------------
 DRIVER_UNDER_TEST="${DRIVER}"
+
+# PASS 1 RUNS THE WHOLE TABLE, asserted rather than assumed.
+#
+# Before case selection existed this was structural: `run_all_cases` had no way
+# to run a subset. It is now a property of CASE_FILTER being empty here, and a
+# pass 1 that silently ran five of the cases would still print a plausible
+# "N cases passed" line and exit 0, which is this project's "nothing fired reads
+# the same as nothing ran" defect.
+#
+# Asserted as an INVARIANT and not as a count: the case total drifts with every
+# commit that adds one, and a pinned numeral quoted as current is its own defect
+# class. The `PASS -eq 0` guard below catches only the total wipeout.
+if [ -n "${CASE_FILTER}" ]; then
+    echo "SUITE ERROR: pass 1 ran with a case filter set; it must exercise the whole table" >&2
+    exit 2
+fi
 run_all_cases
 
 if [ "${FAIL}" -ne 0 ]; then
@@ -1653,10 +1695,16 @@ run_positive_control() {
     PASS=0
     FAIL=0
     FAILED_CASES=()
+    CASES_RUN=""
     DRIVER_UNDER_TEST="${broken}"
+    # A control asserts on two sets and nothing else: the cases its removed guard
+    # must make fail, and the cases that guard cannot see, which must still pass.
+    # Every other case is a no-op here, so it is not run.
+    CASE_FILTER="${must_catch[*]} ${CONTROL_MUST_STILL_PASS[*]}"
     CONTROL_PHASE=1
     run_all_cases
     CONTROL_PHASE=0
+    CASE_FILTER=""
 
     # THE CONTROL NEEDS ITS OWN CONTROL.
     #
@@ -1677,6 +1725,32 @@ run_positive_control() {
     #
     # Two cheap assertions close it: some cases must still PASS, and specifically
     # the ones the removed guard cannot see must still behave correctly.
+    #
+    # EVERY SELECTED NAME MUST NAME A REAL CASE, checked before either of them.
+    #
+    # A name the case table does not define breaks both assertions below, in
+    # OPPOSITE directions. `must_catch` fails loudly but blames the wrong thing:
+    # it reports "did not catch" for a case that never ran, indicting the driver
+    # for a typo in this file. CONTROL_MUST_STILL_PASS asks only that a name be
+    # absent from FAILED_CASES, which is trivially true of a case that does not
+    # exist, so it passes. Only the second is a fail-open - renaming a case
+    # silently retires its must-still-pass check - and selecting on these names
+    # makes both load-bearing, so they are proven real here.
+    local want got
+    for want in "${must_catch[@]}" "${CONTROL_MUST_STILL_PASS[@]}"; do
+        case " ${CASES_RUN} " in
+        *" ${want} "*) ;;
+        *)
+            printf 'SUITE ERROR: positive control %s selected case %s, which did not run.\n' \
+                "${label}" "${want}" >&2
+            printf '             Either the case table does not define that name, or case selection\n' >&2
+            printf '             is broken. A control can only assert on cases that ran, so this\n' >&2
+            printf '             verdict certifies nothing either way.\n' >&2
+            exit 2
+            ;;
+        esac
+    done
+
     if [ "${PASS}" -eq 0 ]; then
         printf 'SUITE ERROR: positive control %s left ZERO cases passing.\n' "${label}" >&2
         printf '             A driver with one guard removed still classifies every input that\n' >&2
@@ -1684,7 +1758,7 @@ run_positive_control() {
         printf '             so "caught" here certifies nothing.\n' >&2
         exit 2
     fi
-    local still want got found
+    local still
     for still in "${CONTROL_MUST_STILL_PASS[@]}"; do
         for got in "${FAILED_CASES[@]+"${FAILED_CASES[@]}"}"; do
             if [ "${got}" = "${still}" ]; then
