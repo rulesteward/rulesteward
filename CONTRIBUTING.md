@@ -244,21 +244,25 @@ legitimate precondition to skip on. Everything a live recipe would skip for
 that announced the wrong corpus, a cached base worktree whose corpus holds a path
 git is ignoring, a cached base worktree whose index marks entries
 assume-unchanged or skip-worktree so `git status` cannot see a contaminated
-tracked file, a cached base worktree whose tracked CONTENT differs from its index)
-is `2`, "these two builds cannot be compared".
-
-That last one is the authoritative check and it exists to retire a pattern. Three
-review rounds each found a different unversioned git setting that silences
-`git status` about a modified tracked file at rc 0 (`status.showUntrackedFiles`,
-`core.ignoreStat`, `core.fsmonitor`), and that set is open-ended. The driver
-therefore compares the worktree against the index BY CONTENT, which no cache
-setting can affect. It does not replace the `status` checks: those cover staged
-content, untracked files and ignored files, which a worktree-vs-index comparison
-cannot see.
+tracked file, a cached base worktree whose tracked CONTENT differs from its index,
+a cached base worktree containing a submodule or a tracked symlink) is `2`,
+"these two builds cannot be compared".
 Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
 asserts that no case in its FIRST pass, against the real driver, ever yields `3`.
 Exit codes from its positive-control phases, where the driver is deliberately
 sabotaged, are not covered and should not be.
+
+**Why the cached base is checked by CONTENT rather than by `git status`.** Two
+review rounds found unversioned git settings that hide a MODIFIED TRACKED FILE
+from `git status` at rc 0 (`core.ignoreStat`, `core.fsmonitor`), and a third found
+one that hides untracked and ignored paths the same way
+(`status.showUntrackedFiles`). Each was fixed by pinning that one knob, and the
+set is open-ended, so the driver now compares the worktree against the index by
+hashing file contents - which no cache setting can affect. It does NOT replace the
+`status` checks: those cover staged content, untracked files and ignored files,
+none of which a worktree-vs-index comparison can see. It is also not an absolute
+answer, because `git hash-object` applies gitattributes and `core.autocrlf`
+conversion, so it reports what git would STORE rather than the bytes on disk.
 
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a

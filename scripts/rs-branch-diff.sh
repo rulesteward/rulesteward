@@ -559,20 +559,44 @@ if [ "${wt_suppressed}" -ne 0 ]; then
 fi
 
 # IS THE TRACKED CONTENT STILL THE BASE'S? Asked by CONTENT, not by asking git's
-# index cache, and this is the authoritative answer for tracked files.
+# index cache, so no cache setting can silence it.
 #
-# WHY THIS EXISTS AT ALL, because it retires a pattern rather than a bug. Three
-# consecutive review rounds each found a different unversioned git setting that
-# makes `status` under-report a modified tracked file at rc 0:
-# `status.showUntrackedFiles=no` (round 9), `core.ignoreStat` (round 10), and
-# `core.fsmonitor` (round 11). Each was fixed by pinning that one knob. That set
-# is OPEN-ENDED - `core.untrackedCache`, `.gitattributes` clean filters,
-# `core.autocrlf` and split-index are all unexamined - so pinning one knob per
-# round does not converge. Comparing content does not care how the cache was
-# fooled.
+# It is NOT an absolute answer and an earlier version of this line called it
+# "authoritative", which oversells it in the one direction that matters.
+# `hash-object --stdin-paths` applies gitattributes and `core.autocrlf`
+# conversion, so it answers "what git WOULD STORE for this file", not "what bytes
+# are on disk". Measured: with `core.autocrlf=true` and a CRLF-ified worktree, the
+# index sha and `hash-object` agree (this check says CLEAN) while
+# `hash-object --no-filters` differs and `status` reports ` M`. No fail-open - the
+# `status` call below catches it - but "authoritative" would invite a later round
+# to delete that call.
 #
-# Measured on git 2.55.0 against all four known suppressors, contaminated and
-# clean, plus both candidate remedies:
+# WHY THIS EXISTS AT ALL, because it retires a pattern rather than a bug. Two
+# consecutive review rounds found unversioned git settings that make `status`
+# under-report a MODIFIED TRACKED FILE at rc 0, and a third found one that hides
+# untracked and ignored paths the same way:
+#   round 9   `status.showUntrackedFiles=no`  hides `??` and `!!` rows
+#   round 10  `core.ignoreStat`               hides the ` M` row
+#   round 11  `core.fsmonitor`                hides the ` M` row
+#
+# The rows matter and an earlier version of this comment flattened them, listing
+# all three as modified-tracked-file suppressors. Round 9's knob does NOT hide a
+# modified tracked file - measured, and stated in round 9's own commit message
+# (`30df8ac`): "showUntrackedFiles=no -> ` M src/main.rs`  <- ?? LOST". Its two
+# suite cases are named `config_hides_an_untracked_corpus_file` and
+# `config_hides_an_ignored_corpus_path` for that reason. Getting this wrong is not
+# cosmetic here: this check cannot see untracked or ignored paths either, so
+# listing round 9's knob among the ones it retires would invite a later round to
+# delete the `-unormal` pins as redundant.
+#
+# Each was fixed by pinning that one knob. That set is OPEN-ENDED -
+# `core.untrackedCache`, `.gitattributes` clean filters, `core.autocrlf` and
+# split-index are all unexamined - so pinning one knob per round does not
+# converge. Comparing content does not care how the cache was fooled.
+#
+# Measured on git 2.55.0 against the three ` M`-row suppressors (a clean baseline
+# plus the two index-level ones; round 9's knob is absent because it does not
+# affect this row at all), contaminated and clean, plus both candidate remedies:
 #
 #   mechanism          status sees it   update-index --really-refresh   this check
 #   none, dirty        yes              rc 1                            1 mismatch
@@ -601,20 +625,51 @@ if [ "${wt_idx_rc}" -ne 0 ]; then
     die 2 "could not read the cached base worktree's index (git exited ${wt_idx_rc}); refusing to treat 'git could not say' as 'the content is the base's'"
 fi
 # `ls-files -s` is `<mode> <sha> <stage>\t<path>`, so the path is everything after
-# the TAB and may contain spaces. Gitlinks (mode 160000) name a commit rather than
-# a blob and have no file to hash, so they are dropped from BOTH sides here and
-# the count guard below stays meaningful; there are none in this repo today, and a
-# submodule appearing would trip that guard rather than pass silently.
+# the TAB and may contain spaces.
+#
+# NON-BLOB ENTRIES ARE REFUSED, not skipped, and this is a correction of the first
+# version of this check rather than a new idea. That version dropped gitlinks
+# (mode 160000) from BOTH lists and claimed "a submodule appearing would trip the
+# count guard rather than pass silently". Dropping an entry from both lists is
+# exactly what makes the counts stay equal, so the sentence was refuted by the two
+# lines below it, in the same edit. Measured on a real superproject: `raw=2
+# names=1 hashes=1`, alignment guard silent, content check CLEAN.
+#
+# It also missed the other non-blob mode entirely. A tracked SYMLINK (120000) is
+# stored as a blob containing the link TARGET STRING, while `hash-object` FOLLOWS
+# the link and hashes the target's CONTENTS, so the two can never agree and the
+# check would `die 2` on a pristine tree, every run, with a message whose advice
+# ("remove that directory to rebuild it") cannot clear it. That is the
+# deterministic-denial shape this file rejects for `ls-files -f` a few hundred
+# lines above; shipping it here would have been the same defect by another route.
+#
+# So: any mode outside the regular-blob pair is a refusal. Neither hashing nor
+# skipping is honest for these - a gitlink names a commit and a symlink names a
+# path, so "the content matches" is not a question this check can answer about
+# them, and answering it anyway in either direction is how both defects happened.
+# Measured against the whole reachable history: ZERO entries of mode 160000 and
+# ZERO of 120000 across 278 commits, against 4329 of 100644 as a positive control,
+# so this cannot fire spuriously today. It is written as "not a known blob mode"
+# rather than as a list of the two bad modes, so a mode nobody has thought of
+# fails closed as well.
+wt_nonblob="$(awk -F'\t' '{split($1, a, " ");
+                           if (a[1] != "100644" && a[1] != "100755") print a[1] " " $2}' \
+    "${WORK}/wt-idx-raw")"
+if [ -n "${wt_nonblob}" ]; then
+    printf '%s\n' "${wt_nonblob}" | head -10 >&2
+    die 2 "the cached base worktree ${WT} has index entries that are not regular files (submodule or symlink); this check verifies a base by hashing its file contents and cannot answer that question for them, so it refuses rather than reporting a base it did not fully check"
+fi
 # NOT SORTED, and not joined with `paste`/`comm`, deliberately. Both lists are
 # derived from the SAME `ls-files -s` output in the same pass, and
 # `hash-object --stdin-paths` emits one sha per input path IN ORDER, so the two
-# align by construction and a positional comparison is exact. That also keeps the
-# tool footprint to `awk` - every extra binary here is one more thing that has to
-# exist on PATH wherever this runs, which the self-test's sandbox enforces and
-# which has already caught `tr`, `head` and a multi-operand `tail` on this branch.
-awk -F'\t' '{split($1, a, " "); if (a[1] != "160000") print a[2] "\t" $2}' \
+# align by construction and a positional comparison is exact. That also avoids
+# pulling a join toolchain (`sort`, `paste`, `comm`) onto the PATH this runs on -
+# every added binary is one more thing that has to exist wherever the driver runs,
+# which the self-test's sandbox enforces and which has already caught `tr`, `head`
+# and a multi-operand `tail` on this branch.
+awk -F'\t' '{split($1, a, " "); print a[2] "\t" $2}' \
     "${WORK}/wt-idx-raw" >"${WORK}/wt-idx"
-awk -F'\t' '{split($1, a, " "); if (a[1] != "160000") print $2}' \
+awk -F'\t' '{print $2}' \
     "${WORK}/wt-idx-raw" >"${WORK}/wt-names"
 if [ ! -s "${WORK}/wt-names" ]; then
     die 2 "the cached base worktree ${WT} reports no tracked files at all, so a content comparison over it would pass vacuously; that is a broken worktree, not a clean one (remove that directory to rebuild it)"

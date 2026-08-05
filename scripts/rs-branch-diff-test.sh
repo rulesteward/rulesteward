@@ -144,12 +144,13 @@ make_sandbox() {
     # production, where `tr` is on PATH; the CASE was vacuous for the half it
     # exists to pin.
     # `awk` and `wc` joined the list in round 12, for the content check that
-    # replaced the knob-by-knob `status` patching. They are the ONLY two binaries
-    # that check needs: both sides of the comparison come from one `ls-files -s`
-    # pass in the same order, so it needs no `sort`, `paste` or `comm`. Keeping
-    # this list short is the point of it - every entry is a binary that has to
-    # exist wherever the driver runs, and this check has already caught `tr`,
-    # `head`, and a multi-operand `tail` that printed nothing.
+    # replaced the knob-by-knob `status` patching. They are the only two the list
+    # GAINED: that check also uses `tail` and `head` in its refusal paths, which
+    # were already here. An earlier version of this comment said they were "the
+    # only two binaries that check needs", which is false - the block invokes four.
+    # Keeping this list short is still the point of it - every entry is a binary
+    # that has to exist wherever the driver runs, and this check has already caught
+    # `tr`, `head`, and a multi-operand `tail` that printed nothing.
     for tool in mktemp mkdir rm tail head tr grep cut env bash dirname cat cp awk wc; do
         resolved="$(command -v "${tool}")" || {
             echo "SUITE ERROR: required tool '${tool}' not found" >&2
@@ -427,6 +428,19 @@ if [ "${1-}" = "ls-files" ]; then
         if [ -n "${STUB_WT_LSFILES_EMPTY:-}" ]; then
             exit "${STUB_GIT_LSFILES_RC:-0}"
         fi
+        # A NON-BLOB index entry, which the driver refuses rather than hashing or
+        # skipping. `120000` is a symlink (the blob holds the link TARGET STRING,
+        # while `hash-object` follows the link and hashes the target's CONTENTS,
+        # so they can never agree) and `160000` is a gitlink (a commit, with no
+        # file to hash at all). Two values on one knob because the driver's guard
+        # is written as "not a known blob mode" rather than as a list of bad
+        # modes, and both cases pin that.
+        case "${STUB_WT_NONBLOB:-}" in
+        symlink) printf '120000 dddd000000000000000000000000000000000004 0\t%s\n' \
+            "crates/rulesteward-auditd/tests/corpus/auditd-oracle/aa-one/link" ;;
+        gitlink) printf '160000 eeee000000000000000000000000000000000005 0\t%s\n' \
+            "vendor/sub" ;;
+        esac
         printf '100644 aaaa000000000000000000000000000000000001 0\t%s\n' \
             "crates/rulesteward-auditd/src/lib.rs"
         printf '100644 bbbb000000000000000000000000000000000002 0\t%s\n' \
@@ -472,9 +486,14 @@ fi
 
 if [ "${1-}" = "hash-object" ]; then
     # THE WORKING TREE'S SIDE of the content comparison. `--stdin-paths` reads one
-    # path per line and emits one sha per line, IN ORDER, so the driver can
-    # `paste` the two lists. Three knobs, because the three ways this comparison
-    # can go wrong are genuinely different:
+    # path per line and emits one sha per line, IN ORDER, which is what lets the
+    # driver compare the two lists POSITIONALLY with a single `awk` - it does not
+    # `paste` them, and the driver says so itself ("not joined with `paste`/`comm`,
+    # deliberately"). `paste` appears in no executable position in either script
+    # and is deliberately absent from the sandbox allowlist above, so a maintainer
+    # restoring the join this comment used to describe would be stopped by it.
+    # Three knobs, because the three ways this comparison can go wrong are
+    # genuinely different:
     #
     #   STUB_WT_CONTENT_DIRTY  a tracked file's content differs from the index -
     #                          the defect the whole check exists for, and the one
@@ -1515,6 +1534,16 @@ run_all_cases() {
     # control caught it.
     run_case wt_hash_object_answered_short 2 "the comparison would be meaningless" \
         STUB_PRECREATE_WT=1 STUB_HASH_SHORT=1
+    # NON-BLOB INDEX ENTRIES, refused rather than hashed or skipped. Both defects
+    # this closes were shipped by the check's own first version: it SKIPPED
+    # gitlinks (and claimed the count guard would catch them, which dropping them
+    # from both lists is precisely what prevents), and it never considered
+    # symlinks at all, so a tracked symlink would have made the check `die 2` on a
+    # pristine tree on every run.
+    run_case cached_worktree_has_a_tracked_symlink 2 "not regular files" \
+        STUB_PRECREATE_WT=1 STUB_WT_NONBLOB=symlink
+    run_case cached_worktree_has_a_submodule 2 "not regular files" \
+        STUB_PRECREATE_WT=1 STUB_WT_NONBLOB=gitlink
     # A hand-made directory at the cache path means `git worktree add` never runs,
     # so even its failure is unobservable. Pairing the pre-created tree with a
     # creation failure proves the driver is validating rather than trusting.
@@ -1830,9 +1859,14 @@ run_positive_control wt_ignored_rc_guard_removed \
 # get three controls: `wt_index_flag_guard_removed` discards a NON-EMPTY answer
 # (the `cache-dirty-guard-removed` shape), `wt_lsfiles_rc_guard_removed` accepts
 # "git could not say" (the `wt_ignored_rc_guard_removed` shape), and
-# `wt_lsfiles_vacuity_guard_removed` accepts a count taken over nothing (the shape
-# every other guard in this file exists to prevent, re-created inside the newest
-# one if its vacuity check were dropped).
+# `wt_vacuity_guards_removed` accepts a count taken over nothing.
+#
+# That third name was `wt_lsfiles_vacuity_guard_removed` until round 12 renamed
+# the control, and this sentence kept the dead name - round 9's own "NAME the
+# controls instead of pointing at them" repair, broken by the commit that did the
+# renaming. A name only beats a pointer if it is updated with the thing it names.
+# Its characterisation changed too: the vacuity property now has TWO guards, so
+# the control seeds both, and removing either alone is not a false clean.
 # shellcheck disable=SC2016
 run_positive_control wt_index_flag_guard_removed \
     's|^if \[ "${wt_suppressed}" -ne 0 \]; then|if false; then|' \
@@ -1914,6 +1948,14 @@ run_positive_control wt_hash_rc_guard_removed \
 run_positive_control wt_content_alignment_guard_removed \
     's|^if \[ "${wt_n_names}" -ne "${wt_n_hashes}" \]; then|if false; then|' \
     wt_hash_object_answered_short
+
+# The non-blob refusal, seeded on BOTH cases because the guard is deliberately
+# written as "not a known blob mode" rather than as a list of the two bad modes.
+# One case would leave the driver free to be narrowed to the other.
+# shellcheck disable=SC2016
+run_positive_control wt_nonblob_guard_removed \
+    's|^if \[ -n "${wt_nonblob}" \]; then|if false; then|' \
+    cached_worktree_has_a_tracked_symlink cached_worktree_has_a_submodule
 
 # The `-unormal` on each status call, controlled SEPARATELY because the two flags
 # sit on two different commands and a single control would leave the other free to
