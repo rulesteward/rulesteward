@@ -1,4 +1,4 @@
-//! Differential-oracle adapter for the `sudoers` backend (session 9k-1).
+//! Differential-oracle adapter for the `sudoers` backend.
 //!
 //! Product side of the Tier-1 replay test described in `CONTRIBUTING.md`
 //! "Differential oracle contract". It lets

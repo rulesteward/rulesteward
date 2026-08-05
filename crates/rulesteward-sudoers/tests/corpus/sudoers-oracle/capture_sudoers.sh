@@ -2,7 +2,7 @@
 # Lane C (sudoers) live capture: re-derive the four visudo/cvtsudoers oracle
 # results for every committed scenario's `input.sudoers`, against the three
 # `rs-oracle{8,9,10}` images, and write one JSON document per (scenario,
-# target) into the output directory. Session 9k-1 (#538).
+# target) into the output directory. (#538)
 #
 # Usage: bash capture_sudoers.sh <output-dir>
 #
@@ -14,8 +14,8 @@
 # place - there is only ONE capture implementation, never a second hand-authored
 # one.
 #
-# It CANNOT be pointed at its own directory, and this header used to say it
-# could. With OUT == SELF_DIR the per-scenario `cp "$input" "$OUT/$scen/..."` is
+# It CANNOT be pointed at its own directory. With OUT == SELF_DIR the
+# per-scenario `cp "$input" "$OUT/$scen/..."` is
 # `cp X X`, which exits 1 ("are the same file"), so `rs_capture_die` turns the
 # very first scenario into rc 2 and nothing is captured. Capture into a STAGING
 # directory and copy the wanted files back:
@@ -59,7 +59,7 @@
 #   for the "Disk quota exceeded" incident this defends against). The script
 #   ends with `rs_capture_verify_output` as an independent recount. A docker
 #   invocation's own nonzero exit is NOT a write, and is deliberately left as
-#   a soft per-(scenario,target) skip (tracked via `status`), same as before.
+#   a soft per-(scenario,target) skip (tracked via `status`).
 
 set -uo pipefail
 

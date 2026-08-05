@@ -46,8 +46,7 @@ pub(super) fn is_malformed_gid_tail(name: &str) -> bool {
 ///   `/bin/prog %#2` or `Defaults passprompt=x%#2`. The byte immediately before the
 ///   `#` is `%` (NOT whitespace), so the whitespace arm cannot reach it -- the `%`
 ///   arm is required. Grounded: both forms are visudo-rejected (rc=1, rockylinux:9,
-///   sudo 1.9.17p2, 2026-06-30). (Round-2 wrongly dropped this arm on the claim the
-///   whitespace arm covered it; it does not -- restored in round-3.)
+///   sudo 1.9.17p2, 2026-06-30).
 ///
 /// The `,` preceding char is deliberately NOT checked, but -- unlike the other
 /// three arms -- this is no longer because it is unreachable. Before #405,

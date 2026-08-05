@@ -3,7 +3,7 @@
 //! `rootpw` / `runaspw` pw-family, and `timestamp_timeout`) against the
 //! official DISA XCCDF, per RHEL product (#551).
 //!
-//! # Scope (DISA only, locked 2026-07-24)
+//! # Scope (DISA only)
 //!
 //! This tool covers ONLY the DISA STIG half of sudo-W04. It deliberately does
 //! NOT cover:
@@ -15,7 +15,7 @@
 //! * sudo-W06 (privilege-elevation restriction) -- that control family is
 //!   pinned INLINE and hermetically inside
 //!   `crates/rulesteward-sudoers/src/lints/tags.rs`'s `w06_stig_drift_tests`
-//!   module (LOCKED 2026-07-15): a single-control family did not justify a
+//!   module: a single-control family does not justify a
 //!   whole derive-tool crate (no-speculative-abstraction). W04 is different
 //!   only because it spans THREE DISA control families across three RHEL
 //!   products (nine ids total).
@@ -26,15 +26,6 @@
 //! [`config`] reads the pinned DISA zip refs. The `main` binary wires these
 //! into the `derive` / `check` subcommands. The network fetch is isolated
 //! behind the [`source`] seam so the core is tested offline with fixtures.
-//!
-//! # GREEN (9j lane 6, #551)
-//!
-//! [`xccdf::parse_controls`], [`derive::code_table`], [`derive::diff_controls`],
-//! and [`source::fetch_xccdf`] are implemented. `derive::code_table` reads
-//! `crates/rulesteward-sudoers/src/lints/stig.rs`'s `PW_FAMILY_CONTROLS` /
-//! `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts directly (they
-//! were widened to `pub` for this -- the minimal cross-crate visibility change
-//! the test-author's RED-phase doc comment called for).
 
 pub mod config;
 pub mod derive;
@@ -43,14 +34,16 @@ pub mod xccdf;
 
 #[cfg(test)]
 mod scope_tests {
-    //! Item 6 of the RED test contract (#551), BEHAVIORAL form (adversarial
-    //! round, BLOCKER 4): a bare substring-absence guard on "CIS" cannot
-    //! detect a maintainer adding actual CIS derivation LOGIC (it only
-    //! catches a text mention), and is brittle against words that merely
-    //! CONTAIN "cis" (DECISION, PRECISE, EXCISE, ...). It also once forced
-    //! this tool's own disclaimer text to go VAGUE to dodge the substring
-    //! ban, which was itself a regression (a correct disclaimer legitimately
-    //! needs to say "CIS" to explain the exclusion). Replaced with:
+    //! RULING: guard this tool's DISA-only scope BEHAVIORALLY; never with a
+    //! bare substring-absence check on "CIS".
+    //! Rationale + evidence: #551
+    //!
+    //! A substring ban cannot detect a maintainer adding actual CIS
+    //! derivation LOGIC (it only catches a text mention), is brittle against
+    //! words that merely CONTAIN "cis" (DECISION, PRECISE, EXCISE, ...), and
+    //! forces this tool's own disclaimer text to go VAGUE to dodge itself (a
+    //! correct disclaimer legitimately needs to say "CIS" to explain the
+    //! exclusion). The behavioral form is:
     //!
     //! 1. [`no_source_file_references_cis_derivation_logic`]: a BEHAVIORAL
     //!    guard -- this crate's own sources must never reference
@@ -79,8 +72,7 @@ mod scope_tests {
     /// before scanning for CIS-derivation logic. Without this, the crate's OWN
     /// scope-rationale doc comments (which must legitimately EXPLAIN what
     /// `tools/cis-update` calls, in prose, to justify the exclusion) trip a
-    /// naive whole-file substring scan -- the exact class of false positive
-    /// this test replaced (BLOCKER 4). This filters PROSE, not CODE: an actual
+    /// naive whole-file substring scan. This filters PROSE, not CODE: an actual
     /// `use` statement or function call is never itself a comment line.
     fn non_comment_lines(src: &str) -> String {
         src.lines()
@@ -96,8 +88,7 @@ mod scope_tests {
     /// test's OWN messages can explain the finding WITHOUT reproducing the
     /// exact banned substring inside a string literal -- which would
     /// self-contaminate the scan of `lib.rs` (this very file, via
-    /// `include_str!`) with a false positive, the identical false-positive
-    /// class BLOCKER 4 already fixed once for prose in doc comments.
+    /// `include_str!`) with a false positive.
     const CIS_FN: &str = concat!("cis", "_baseline");
     const CIS_VARIANT: &str = concat!("Framework::", "Cis");
 
@@ -135,7 +126,7 @@ mod scope_tests {
         }
     }
 
-    /// Completeness check (adversarial round 3 concern): [`SCANNED_FILES`] is
+    /// Completeness check: [`SCANNED_FILES`] is
     /// a hand-maintained list, so a NEW top-level `src/*.rs` file (e.g. a
     /// future `cis.rs`) would silently escape
     /// [`no_source_file_references_cis_derivation_logic`] entirely -- neither

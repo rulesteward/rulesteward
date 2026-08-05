@@ -553,7 +553,7 @@ filed):**
   set, so `#` is read as a comment start; the rest of the line is stripped,
   and the lone `!` has nothing after it to complete a `user host = command`
   spec, so the whole line becomes `Malformed`.
-- **The byte-set cannot simply add `b'!'`.** `crates/rulesteward-sudoers/src/lints/tokens/mod.rs:384-388`
+- **The byte-set cannot simply add `b'!'`.** `crates/rulesteward-sudoers/src/lints/tokens/mod.rs:382-386`
   records the EXISTING exclusion of `!` as deliberate and verified, but for a
   DIFFERENT `!`: `Defaults!<cmnd>` scope-binding syntax, where
   `Defaults!#1000` really IS rc 1 in real `visudo`, and treating that `#` as

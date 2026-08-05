@@ -52,7 +52,7 @@ impl Family {
     /// presents the families in (see `xccdf.rs`'s per-fixture document-order
     /// notes), and it is unrelated to whatever internal order
     /// `stig.rs`'s own per-family tables happen to use (an implementation
-    /// detail this tool no longer depends on -- see [`w04_control_ref`]).
+    /// detail this tool does not depend on -- see [`w04_control_ref`]).
     pub const ALL: [Family; 3] = [
         Family::Authenticate,
         Family::PwFamily,
@@ -117,19 +117,19 @@ pub struct DerivedControl {
 ///
 /// `crates/rulesteward-sudoers/src/lints/stig.rs`'s `PW_FAMILY_CONTROLS` /
 /// `AUTHENTICATE_CONTROLS` / `TIMESTAMP_TIMEOUT_CONTROLS` consts stay PRIVATE
-/// to that crate (an earlier version of this tool widened them to `pub` so it
-/// could index them directly by declaration order -- that leaked an
-/// unenforced "index 0 = RHEL-8" convention across a crate boundary, and
-/// nothing inside `rulesteward-sudoers` itself relies on that order, since
-/// `w04`'s own findings cite all three ids at once, version-agnostically).
+/// to that crate. Widening them to `pub` so this tool could index them
+/// directly by declaration order would leak an unenforced "index 0 = RHEL-8"
+/// convention across a crate boundary, and nothing inside
+/// `rulesteward-sudoers` itself relies on that order, since `w04`'s own
+/// findings cite all three ids at once, version-agnostically.
 /// Instead, this function calls the crate's own public, domain-typed
 /// accessor, [`w04_control_ref`], mapping [`Family`] to
 /// [`ControlFamily`] at the boundary via [`Family::to_control_family`] --
 /// mirroring `rulesteward_selinux::stig::{ControlFamily, control_refs}`'s
-/// shape. The frozen `code_table_matches_stig_rs_source_for_all_targets`
-/// oracle below still anchors on `const {NAME}:` as a substring of the raw
-/// source, which matches a private `const {NAME}:` exactly as well as a
-/// `pub const {NAME}:` -- this change does not affect it.
+/// shape. The `code_table_matches_stig_rs_source_for_all_targets` oracle
+/// below anchors on `const {NAME}:` as a substring of the raw source, which
+/// matches a private `const {NAME}:` exactly as well as a
+/// `pub const {NAME}:`.
 ///
 /// Producing exactly 3 rows with empty `v_number` / `title` (see the field
 /// docs on [`DerivedControl`]) -- one per [`Family::ALL`].
@@ -287,10 +287,9 @@ mod tests {
         );
     }
 
-    /// THE #355 REGRESSION CLASS (item 5 of the task): the historical incident
-    /// this tool exists to prevent recurring was TWO controls' ids being
-    /// SWAPPED with each other (the RHEL-08 `!authenticate` and pw-family ids
-    /// were once accidentally exchanged). A permutation of the id SET across
+    /// THE #355 REGRESSION CLASS: TWO controls' ids SWAPPED with each other
+    /// (the RHEL-08 `!authenticate` and pw-family ids exchanged). A
+    /// permutation of the id SET across
     /// families must be caught as drift on BOTH affected families -- a diff
     /// that only checks "is the total set of ids unchanged" would miss this
     /// (the set IS unchanged, just relabeled), so this test simulates exactly
@@ -301,7 +300,7 @@ mod tests {
             ctl(Family::Authenticate, "V-1", "RHEL-08-010381", "auth title"),
             ctl(Family::PwFamily, "V-2", "RHEL-08-010383", "pw title"),
         ];
-        // Simulate the #355 incident: authenticate and pw_family's ids traded
+        // Simulate the #355 class: authenticate and pw_family's ids traded
         // places (the SET {010381, 010383} is unchanged; only which family
         // owns which id changed).
         let swapped = vec![
@@ -354,9 +353,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BLOCKER 3 (adversarial round): `code_table` must be a genuine LIVE read
+    // `code_table` must be a genuine LIVE read
     // of the crate, never a copy frozen in this tool at authoring time -- the
-    // exact internal-self-consistency defect #551 exists to remove.
+    // internal-self-consistency defect #551 exists to remove.
     //
     // `code_table_matches_stig_rs_source_for_all_targets` reads
     // `crates/rulesteward-sudoers/src/lints/stig.rs`'s RAW source text via

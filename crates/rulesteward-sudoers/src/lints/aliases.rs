@@ -944,7 +944,7 @@ mod tests {
         );
     }
 
-    // ---- Bug 1: multi-`!` negation (!! / !!!  ...) ----
+    // ---- multi-`!` negation (!! / !!!  ...) ----
     //
     // The sudoers grammar allows `'!'*` (zero OR MORE `!`) before an alias name.
     // Grounded: `visudo -c -f` rc 0 on all three cases below (sudo 1.9.17p2).
@@ -1004,7 +1004,7 @@ mod tests {
         );
     }
 
-    // ---- Bug 2 (mutation survivors): is_alias_ref predicate pinning ----
+    // ---- is_alias_ref predicate pinning ----
     //
     // Three survivors from the mutation gate, all in `is_alias_ref`:
     //   guard: `c.is_ascii_uppercase()` replaced with `true`

@@ -14,7 +14,7 @@
 //! records the EXPLICIT per-command tags (not inheritance-resolved), so the state
 //! machine lives here and the passes only EMIT - they never re-parse.
 //!
-//! Also carries [`w06`] (#522, v0.8 Wave 2 lane 2d): the reserved literal `ALL`
+//! Also carries [`w06`] (#522): the reserved literal `ALL`
 //! user granted unrestricted `(ALL)`/`(ALL:ALL)` privilege elevation over `ALL`
 //! commands. Unlike W01/W02/W05 this is NOT part of the NOPASSWD tag-state
 //! family (it fires independent of any tag), but it is a `UserSpec`-shaped
@@ -34,7 +34,7 @@ use crate::lints::{SudoersLintContext, anchored};
 /// RHEL-10-600560) cited by BOTH sudo-W01 and sudo-W05. Shared here so the
 /// two emit sites cannot drift; mapped to typed `ControlRef`s via
 /// [`crate::lints::stig::controls`] (the same single conversion point
-/// stig.rs's own emit sites use). RHEL-10-600560 (#563, 9i lane-7) grounded
+/// stig.rs's own emit sites use). RHEL-10-600560 (#563) grounded
 /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
 /// SV-281211r1166585_rule, "RHEL 10 must require users to provide a
 /// password for privilege escalation"; see `lane-7-sudoersids-report.md`).
@@ -114,7 +114,7 @@ fn for_each_nopasswd_command(
 /// DISA STIG RHEL-08-010380 / RHEL-09-611085 / RHEL-10-600560 (`ComplianceAsCode`
 /// `sudo_remove_nopasswd`), re-grounded 2026-06-29 (#363) at `ComplianceAsCode`/
 /// content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`; RHEL-10-600560
-/// grounded #563 (9i lane-7) against the DISA RHEL 10 STIG V1R1 XCCDF. The
+/// grounded #563 against the DISA RHEL 10 STIG V1R1 XCCDF. The
 /// finding message cites these ids; the firing logic (the tag-state machine
 /// below) is unchanged by the citation.
 ///
@@ -229,8 +229,8 @@ pub fn w02(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
 ///
 /// DISA STIG RHEL-08-010380 / RHEL-09-611085 / OL08-00-010380 / RHEL-10-600560
 /// (`ComplianceAsCode` `sudo_remove_nopasswd`, commit
-/// `65ccea603ee2c305fdb4c6f54cb911449d969d55`; RHEL-10-600560 grounded #563,
-/// 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF) -- the SAME control
+/// `65ccea603ee2c305fdb4c6f54cb911449d969d55`; RHEL-10-600560 grounded #563
+/// against the DISA RHEL 10 STIG V1R1 XCCDF) -- the SAME control
 /// W01 cites, with the BROADER trigger: the rule's OVAL check
 /// (`^(?!#).*[\s]+NOPASSWD[\s]*\:.*$`), OCIL (`grep -ri nopasswd`), and fixtext
 /// ("Remove any occurrence of NOPASSWD") flag EVERY non-comment NOPASSWD usage,
@@ -267,7 +267,7 @@ pub fn w05(files: &[SudoersFile], _ctx: &SudoersLintContext) -> Vec<Diagnostic> 
     diags
 }
 
-/// sudo-W06 (#522, v0.8 Wave 2 lane 2d): a `UserSpec` grants the reserved
+/// sudo-W06 (#522): a `UserSpec` grants the reserved
 /// literal `ALL` user unrestricted sudo access to run the reserved `ALL`
 /// command as `ALL` run-as users (and, optionally, `ALL` run-as groups).
 ///
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn quoted_paren_in_command_does_not_hide_a_later_nopasswd_all() {
-        // #345 adversarial-review fix: an unbalanced `(` in a double-quoted command
+        // #345: an unbalanced `(` in a double-quoted command
         // argument in the FIRST segment must not swallow the `: h2 = NOPASSWD: ALL`
         // segment. visudo -c rc 0; cvtsudoers shows h2 with authenticate:false + ALL, so
         // W01 must fire exactly once.
@@ -824,14 +824,11 @@ mod tests {
     /// order (RHEL-08 first, then RHEL-09). The message stays byte-identical;
     /// only `Diagnostic::controls` gains the typed mapping.
     ///
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600560` grounded
+    /// `RHEL-10-600560` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
     /// SV-281211r1166585_rule, "RHEL 10 must require users to provide a
     /// password for privilege escalation"; see
-    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
-    /// that the RHEL-10 addition breaks, so it is updated in place per the
-    /// discipline in the lane-7 brief rather than left stale-red.
+    /// `lane-7-sudoersids-report.md`).
     #[test]
     fn w01_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -856,7 +853,7 @@ mod tests {
         assert_eq!(d.controls[2].id, "RHEL-10-600560");
     }
 
-    /// #563 (9i lane-7): the W01 finding's free-text message must ALSO cite
+    /// #563: the W01 finding's free-text message must ALSO cite
     /// the new `RHEL-10-600560` id (mirroring
     /// `w01_message_cites_grounded_stig_control`'s RHEL-08/RHEL-09 pin,
     /// scoped to the RHEL-10 addition), grounded against the DISA RHEL 10
@@ -1207,7 +1204,7 @@ mod w02_tests {
 
     #[test]
     fn quoted_paren_in_command_does_not_hide_a_later_w02_alias() {
-        // #345 adversarial-review fix (W02 analog of the W01 quoted-paren case): an
+        // #345 (W02 analog of the W01 quoted-paren case): an
         // unbalanced `(` in a double-quoted command argument in h1 must not swallow the
         // `: h2 = NOPASSWD: EVERYTHING` segment where EVERYTHING => ALL. visudo -c rc 0.
         assert_eq!(
@@ -1360,13 +1357,10 @@ mod w05_tests {
     /// citation order (RHEL-08 first, then RHEL-09). Uses a SPECIFIC-command
     /// NOPASSWD fixture so W05 (not W01) is the finding under test. The message
     /// stays byte-identical; only `Diagnostic::controls` gains the mapping.
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600560` grounded
+    /// `RHEL-10-600560` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281211 /
     /// SV-281211r1166585_rule; same control W01 cites, broader trigger; see
-    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
-    /// that the RHEL-10 addition breaks, so it is updated in place per the
-    /// discipline in the lane-7 brief rather than left stale-red.
+    /// `lane-7-sudoersids-report.md`).
     #[test]
     fn w05_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1392,7 +1386,7 @@ mod w05_tests {
         assert_eq!(d.controls[2].id, "RHEL-10-600560");
     }
 
-    /// #563 (9i lane-7): the W05 finding's free-text message must ALSO cite
+    /// #563: the W05 finding's free-text message must ALSO cite
     /// the new `RHEL-10-600560` id, grounded against the DISA RHEL 10 STIG
     /// V1R1 XCCDF (see `lane-7-sudoersids-report.md`). Uses the same
     /// specific-command NOPASSWD fixture as `w05_finding_carries_stig_controls`
@@ -1422,10 +1416,10 @@ mod w05_tests {
         }
     }
 
-    // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` used to MERGE two
-    //      Cmnd_Specs (comma splitter) or two host-groups (colon splitter) in the parser,
-    //      hiding the later `NOPASSWD:` grant -> a W05 FALSE NEGATIVE. After the parser
-    //      fix W05 must fire exactly once on the hidden grant. Each config is `visudo -c`
+    // ---- #416: a visudo-VALID unbalanced quote / mid-command `(` must not MERGE two
+    //      Cmnd_Specs (comma splitter) or two host-groups (colon splitter) in the parser
+    //      and hide the later `NOPASSWD:` grant -> a W05 FALSE NEGATIVE.
+    //      W05 must fire exactly once on the hidden grant. Each config is `visudo -c`
     //      rc 0 and `cvtsudoers -f json` (sudo 1.9.17p2) yields TWO specs, the 2nd
     //      (`/bin/su`) passwordless -- so exactly one W05 (the 1st spec is password-required).
 
@@ -1479,8 +1473,8 @@ mod w05_tests {
 
     #[test]
     fn w05_fires_past_a_mid_command_eq_paren_hiding_a_host_group_grant() {
-        // #416 round 2 (colon splitter): a command arg `X=(y` re-armed the runas position
-        // at the `=`, so the `(` desynced `depth` and swallowed the top-level `:`, hiding
+        // #416 (colon splitter): a command arg `X=(y` must not re-arm the runas position
+        // at the `=`, desyncing `depth` so the `(` swallows the top-level `:` and hides
         // the second host-group's grant. `alice ALL = /bin/echo X=(y : ALL = NOPASSWD:
         // /bin/su` (visudo -c rc 0). cvtsudoers -f json: TWO host-groups, 2nd (`/bin/su`)
         // passwordless -> exactly one W05.
@@ -1544,10 +1538,10 @@ mod w05_tests {
     /// token after the tag list). `RuleSteward`'s parser still folds this into a
     /// clean `UserSpec` with ONE `CmndSpec { tags: [NoPasswd], cmnd: Cmnd("") }`
     /// (`parse_cmnd_spec`'s remainder-is-the-command rule keeps the empty
-    /// remainder verbatim), so `for_each_nopasswd_command` sees NOPASSWD in
-    /// effect on a command that is NOT the reserved `ALL` and W05 fires a
-    /// SPURIOUS warning -- there is no real NOPASSWD grant on this already-
-    /// invalid line to warn about. RED today: W05 currently fires once here.
+    /// remainder verbatim), so `for_each_nopasswd_command` would see NOPASSWD
+    /// in effect on a command that is NOT the reserved `ALL`. W05 must NOT
+    /// fire: there is no real NOPASSWD grant on this already-invalid line to
+    /// warn about.
     ///
     /// In scope here is ONLY suppressing the spurious W05; whether `RuleSteward`
     /// should ALSO raise a Fatal for the empty command itself is a separate
@@ -1778,7 +1772,7 @@ mod w05_tests {
 
 #[cfg(test)]
 mod w06_tests {
-    //! sudo-W06 (#522, v0.8 Wave 2 lane 2d): the literal-`ALL`-user unrestricted
+    //! sudo-W06 (#522): the literal-`ALL`-user unrestricted
     //! privilege-elevation check.
     //!
     //! Grounding: DISA STIG RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520
@@ -1891,8 +1885,7 @@ mod w06_tests {
     /// `User_List=[{username:bob}, {username:ALL}]`, i.e. the reserved `ALL`
     /// principal is a MEMBER of a multi-element subject list, not the sole
     /// entry): grounds which of two candidate readings of the DISA
-    /// check-content is faithful once the `User_List` is not exactly `[ALL]`
-    /// (adversarial re-review finding, ground-and-pin micro-round).
+    /// check-content is faithful once the `User_List` is not exactly `[ALL]`.
     ///
     /// All three pinned check-contents share the same unanchored, whole-word
     /// grep. RHEL-08-010382 / RHEL-09-432030: `sudo grep -iwR 'ALL'
@@ -1916,18 +1909,15 @@ mod w06_tests {
     /// equality (`user_list == ["ALL"]`), is therefore the DISA-faithful
     /// reading: an exact-match impl would silently miss a fixture that the
     /// check's own literal grep command surfaces as a returned candidate
-    /// line. RED against the `Vec::new()` stub.
+    /// line.
     ///
     /// The fixture is written WITHOUT a space after the comma
-    /// (`bob,ALL ...`, not `bob, ALL ...`) for the same reason as
+    /// (`bob,ALL ...`, not `bob, ALL ...`), mirroring
     /// `hash_digits_uid_subject_after_comma_is_not_a_comment` in
-    /// `parser.rs`: at the time this test was first written,
-    /// `classify_user_spec` split the pre-`=` text with `split_first_word`,
-    /// which treated the first whitespace-run as the boundary of the whole
-    /// `User_List` and would have garbled the spaced spelling. Issue #538
-    /// (Gap B) fixed this: `classify_user_spec` now calls the
-    /// comma-continuation-aware `split_user_list` instead, so the spaced
-    /// form (`bob, ALL ALL=(ALL) ALL`) parses correctly too and fires
+    /// `parser.rs`. Both spellings parse:
+    /// `classify_user_spec` calls the
+    /// comma-continuation-aware `split_user_list` (#538 Gap B), so the spaced
+    /// form (`bob, ALL ALL=(ALL) ALL`) fires
     /// `sudo-W06` the same as the unspaced form - see
     /// `tests/iss538_parser_gaps.rs`'s
     /// `gap_b_w06_fires_on_a_spaced_user_list_granting_all`, which pins that
@@ -2041,9 +2031,8 @@ mod w06_tests {
         );
     }
 
-    // ---- ADVERSARIAL STRENGTHENING (#522, post-GREEN Adversarial Testing Loop):
-    // forward Runas_Spec inheritance + list-membership misses the impl-aware
-    // adversary found. All four fixtures below are re-verified `visudo -c -f`
+    // ---- forward Runas_Spec inheritance + list membership (#522). All four
+    // fixtures below are verified `visudo -c -f`
     // rc 0 (sudo 1.9.17p2) and cross-checked against `cvtsudoers -f json`. ----
 
     /// `ALL ALL=(ALL) /bin/ls, ALL` (visudo -c -f rc 0; `cvtsudoers -f json`
@@ -2059,14 +2048,11 @@ mod w06_tests {
     /// until the opposite tag overrides); `Runas_Spec` inheritance is the
     /// analogous rule for the run-as clause.
     ///
-    /// RED against the current impl: `is_unrestricted_privilege_elevation`
-    /// early-returns `false` when `cmnd_spec.runas` is `None` (tags.rs:372-
-    /// 374), and the parser only records an explicit LEADING `(...)` on the
-    /// command it directly precedes (`CmndSpec::runas`, ast.rs:261: "The
-    /// run-as spec, if a `(...)` group preceded THIS command") -- it does
-    /// not forward-resolve `Runas_Spec` inheritance across the list. So the
-    /// trailing `ALL`'s `CmndSpec.runas` is `None` here and `w06` misses
-    /// this hazard entirely (adversarial-impl-reviewer finding, ATL round).
+    /// The parser only records an explicit LEADING `(...)` on the
+    /// command it directly precedes (`CmndSpec::runas`: "The
+    /// run-as spec, if a `(...)` group preceded THIS command"), so the
+    /// trailing `ALL`'s own `CmndSpec.runas` is `None` here. `w06` must
+    /// still resolve the inherited `Runas_Spec` and fire.
     #[test]
     fn w06_fires_when_runas_inherits_forward_to_all_command() {
         assert_eq!(
@@ -2102,10 +2088,8 @@ mod w06_tests {
     /// containing_all` above already grounds for the subject `User_List`;
     /// the reserved `ALL` host means "every host" regardless of what else
     /// shares the list, so membership (not exact list equality) is the
-    /// DISA-faithful reading for `Host_List` too. RED against the current
-    /// impl: `host_group.hosts == ["ALL"]` (tags.rs:328) is an EXACT-
-    /// equality check, so a `[host1, ALL]` list misses (adversarial-impl-
-    /// reviewer finding, ATL round).
+    /// DISA-faithful reading for `Host_List` too. An EXACT-equality check on
+    /// the whole `Host_List` would miss a `[host1, ALL]` list.
     #[test]
     fn w06_fires_when_host_list_contains_all_among_others() {
         assert_eq!(
@@ -2123,10 +2107,8 @@ mod w06_tests {
     /// Same membership grounding as
     /// `w06_fires_when_host_list_contains_all_among_others` above -- the
     /// reserved `ALL` run-as user subsumes any co-members, so every subject
-    /// may run as `root` (or literally any user). RED against the current
-    /// impl: `is_unrestricted_privilege_elevation`'s `runas.users ==
-    /// ["ALL"]` (tags.rs:376) is EXACT-equality, so a `[ALL, root]` list
-    /// misses (adversarial-impl-reviewer finding, ATL round).
+    /// may run as `root` (or literally any user). An EXACT-equality check on
+    /// `runas.users` would miss a `[ALL, root]` list.
     #[test]
     fn w06_fires_when_runas_user_list_contains_all_among_others() {
         assert_eq!(
@@ -2205,7 +2187,7 @@ mod w06_tests {
     /// (`ALL ALL=(ALL) ALL` / `ALL ALL=(ALL:ALL) ALL`) matches a non-ALL
     /// host, so `grep`-equivalent matching would not return this line. Kills
     /// an impl that omits the `Host_List == [ALL]` check and keys only off
-    /// subject/runas/command (adversarial-test-reviewer BLOCKER finding).
+    /// subject/runas/command.
     #[test]
     fn w06_does_not_fire_when_host_is_not_all() {
         assert_eq!(
@@ -2223,7 +2205,7 @@ mod w06_tests {
     /// (users=[ALL], no groups key) or `(ALL:ALL)` (users=[ALL],
     /// groups=[ALL]) -- matches `(ALL:wheel)`. Kills an impl that checks
     /// only `runasusers == [ALL]` (or a bare `.contains("ALL")` scan) while
-    /// ignoring the runas GROUP (adversarial-test-reviewer CONCERN finding).
+    /// ignoring the runas GROUP.
     #[test]
     fn w06_does_not_fire_when_runas_group_is_not_all() {
         assert_eq!(
@@ -2250,10 +2232,9 @@ mod w06_tests {
     /// per-host-group closure (tags.rs: `let mut effective_runas` inside
     /// `spec.host_groups.iter().any(...)`) and lets it leak across `:`
     /// boundaries -- that wrong impl would carry the first segment's `(ALL)`
-    /// into the second segment's bare `ALL` and false-positive-fire here
-    /// (round-2 impl-aware adversary finding: the impl itself is already
-    /// correct -- the reset is declared fresh inside the closure -- this test
-    /// only locks that shape in).
+    /// into the second segment's bare `ALL` and false-positive-fire here.
+    /// The impl is correct -- the reset is declared fresh inside the closure
+    /// -- and this test locks that shape in.
     #[test]
     fn w06_does_not_fire_when_runas_does_not_cross_host_group_segments() {
         assert_eq!(
@@ -2269,13 +2250,12 @@ mod w06_tests {
 
 #[cfg(test)]
 mod w06_stig_drift_tests {
-    //! Hermetic drift guard for the sudo-W06 STIG grounding (#522, v0.8 Wave 2
-    //! lane 2d). ADDITIVE to `w06_tests` above: this module adds NOTHING to the
-    //! frozen fire/no-fire RED contract (that contract stands as-is; see this
-    //! crate's Wave 2 lane 2d history). It instead pins the SOURCE-GROUNDING
-    //! text itself.
+    //! Hermetic drift guard for the sudo-W06 STIG grounding (#522).
+    //! ADDITIVE to `w06_tests` above: this module adds NOTHING to the
+    //! fire/no-fire contract, which stands as-is. It instead pins the
+    //! SOURCE-GROUNDING text itself.
     //!
-    //! # Tooling decision (locked 2026-07-15)
+    //! # Tooling decision
     //!
     //! Unlike the sshd / auditd baselines (`tools/sshd-stig-update`,
     //! `tools/auditd-stig-update`), there is no standalone `sudoers-stig-update`
@@ -2329,11 +2309,11 @@ mod w06_stig_drift_tests {
     //! 4. If a control was RENUMBERED (not just reworded) or the fire condition
     //!    itself changed, that is a `[QUESTION FOR USER]` addressed to the
     //!    frozen contract's author, never a silent edit to `w06_tests` above or
-    //!    to `w06`'s implementation once it lands.
+    //!    to `w06`'s implementation.
     //!
     //! # Provenance
     //!
-    //! RE-VERIFIED 2026-07-17 (#549, session 9e-wave2c pipeline P2 STIG pin
+    //! RE-VERIFIED 2026-07-17 (#549, STIG pin
     //! bump: RHEL 8 V2R4->V2R8, RHEL 9 V2R7->V2R9, RHEL 10 V1R1->V1R2). Per
     //! the bump-time recipe above: diffed this control family's check-content
     //! (RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520) against the newly
@@ -2347,7 +2327,7 @@ mod w06_stig_drift_tests {
     //! (RHEL-09-432030) excerpts are cross-checked against TWO independent
     //! queries of `stigviewer.com`'s mirror of the DISA XCCDF; the RHEL 10
     //! (RHEL-10-600520) excerpt is from a single `stigaview.com` mirror query
-    //! (no independent second source was found for RHEL 10 in-session). The raw
+    //! (no independent second source was found for RHEL 10). The raw
     //! DISA XCCDF zips for all three products are cached locally at
     //! `/home/runner/rulesteward-docs/grounding/auditd-stig/stig_research/`
     //! (`U_RHEL_8_V2R4_STIG.zip` / `U_RHEL_9_V2R7_STIG.zip` /

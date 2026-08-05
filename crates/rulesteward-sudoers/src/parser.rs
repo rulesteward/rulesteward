@@ -410,7 +410,7 @@ pub(crate) fn split_default_settings(s: &str) -> Vec<&str> {
 ///
 /// Replaces a bare first-whitespace split at the Defaults scope site (issue #426):
 /// a valid multi-member list such as `root, root env_reset` is captured whole
-/// (`root, root` + `env_reset`) instead of truncated to `root,`, which previously
+/// (`root, root` + `env_reset`) instead of truncated to `root,`, which
 /// leaked the second member into the settings scan (a false positive).
 fn split_scope_binding(after: &str) -> (&str, &str) {
     let mut escaped = false;
@@ -715,13 +715,12 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
 ///     after the option's VALUE rather than after the `=`, so `TIMEOUT=30 NOEXEC:`
 ///     still leaves `NOEXEC` alone in the span (#538 gap C - see the `'='` arm); a
 ///     REJECTED `=` (a command argument's own) leaves the boundary where it
-///     already was rather than re-arming it mid-argument (9m round 2 fix - see the
-///     `'='` arm).
+///     already was rather than re-arming it mid-argument (see the `'='` arm).
 fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // Byte-range PAIRS of every value-ENCLOSING quoted span in `s`, built
     // INCREMENTALLY by the `'='` arm below, exactly when it recognizes the
-    // CURRENT `=` as a genuine `Option_Spec` anchor (#538 gap C; 9m
-    // regression fix - see `quoted_value_span`'s doc comment): a colon INSIDE
+    // CURRENT `=` as a genuine `Option_Spec` anchor (#538 gap C; see
+    // `quoted_value_span`'s doc comment): a colon INSIDE
     // an `Option_Spec` value's own enclosing quotes (`CWD="/a:b"`) is a value
     // byte, not a tag/separator colon -- but a colon sitting between two
     // UNRELATED quotes (e.g. two different host-groups' commands each ending
@@ -775,8 +774,8 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
     // boundary (`,` / `)` / a consumed colon / the structural `Host_List =
     // Cmnd_Spec_List` `=` / a genuine `Option_Spec`'s own `=` - NOT whitespace, so a
     // tag keyword spaced away from its colon is still recognised, and NOT a
-    // REJECTED `=` (a command argument's own, possibly chained: `X=CWD=...`; 9m
-    // round 2 fix, #538): leaving it untouched on a rejection means a LATER `=` in
+    // REJECTED `=` (a command argument's own, possibly chained: `X=CWD=...`;
+    // #538): leaving it untouched on a rejection means a LATER `=` in
     // the same argument still measures its preceding token from the run's true last
     // boundary instead of from mid-argument. Used only to spot a tag keyword
     // sitting just before a colon. A genuine `Option_Spec`'s `=` moves this past the
@@ -853,9 +852,9 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // the colon became a host-group separator and the whole line was
                 // discarded Malformed -- taking the independent `h2` grant with it.
                 //
-                // The predecessor guard was `i >= tok_start`, which asked instead
-                // "is this `)` past the value the `=` arm already consumed?". That
-                // covers `CWD=/a)b` but NOT a `)` in plain command text, where
+                // A guard of just `i >= tok_start` asks instead "is this `)`
+                // past the value the `=` arm already consumed?". That covers
+                // `CWD=/a)b` but NOT a `)` in plain command text, where
                 // `tok_start` is legitimately behind the cursor: on
                 // `alice ALL = /bin/echo a) CWD="/a, NOPASSWD: /bin/su"` it moved the
                 // marker to just after the `)`, which made the following `CWD` look like
@@ -872,8 +871,9 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // TWO `Cmnd_Spec`s with `NOPASSWD: /bin/su"` second, and masking the `,`
                 // merges them and loses the passwordless grant.
                 //
-                // "Subsumes `i >= tok_start`" holds in one direction only. The case the
-                // old guard covered and this one does not is `depth > 0 && i < tok_start`
+                // "Subsumes `i >= tok_start`" holds in one direction only. The
+                // case `i >= tok_start` alone covers and this one does not is
+                // `depth > 0 && i < tok_start`
                 // -- a `)` inside an already-consumed option value while a runas group is
                 // open, where this arm now decrements `depth` and drags `tok_start`
                 // backwards. Reaching it needs an exact `Option_Spec` keyword inside a
@@ -995,10 +995,10 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                 // is a command argument's own (possibly chained, `X=CWD=...`) and leaves
                 // `tok_start` where it already was, so a LATER `=` in the same argument
                 // still measures its preceding token from the run's true last boundary
-                // rather than from mid-argument - round 1 advanced `tok_start` on EVERY
-                // rejection, so a chained second `=` (`X=CWD=...`) measured its own
-                // preceding token as just `"CWD"` and was wrongly accepted as a genuine
-                // leading option (9m round 2 fix, #538).
+                // rather than from mid-argument - advancing `tok_start` on EVERY
+                // rejection would mean a chained second `=` (`X=CWD=...`) measures its own
+                // preceding token as just `"CWD"` and gets wrongly accepted as a genuine
+                // leading option (#538).
                 let is_option_eq =
                     in_cmnd_list && parse_option_key(preceding_token(s, tok_start, i)).is_some();
                 let after_eq = i + c.len_utf8();
@@ -1339,7 +1339,7 @@ fn opens_principal(spans: &[(usize, usize)], i: usize) -> bool {
 /// itself, and only the FIRST unescaped `"` after that closes it.
 ///
 /// Shared by [`split_top_level_segments`]'s and [`split_cmnd_specs`]'s own
-/// `'='` arms (9m regression fix, #538 gaps A/C): each already knows, from
+/// `'='` arms (#538 gaps A/C): each already knows, from
 /// its own `tok_start`-anchored `preceding_token` check, exactly when the
 /// CURRENT `=` is a genuine `Option_Spec`'s own -- never a command
 /// argument's merely keyword-spelled `=` (`/bin/echo CWD="..."`, where the
@@ -1687,7 +1687,7 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // input this arm can actually see - with the same one-directional
                 // caveat the sibling arm records (`depth > 0 && i < tok_start`,
                 // unreachable for valid input; see there). Its two recorded misses
-                // (9m round 3, #538 gap C) were both `depth == 0`
+                // (#538 gap C) were both `depth == 0`
                 // anyway: on `CHROOT="/a)CWD="` the stray `)` let a glued `CWD=` be
                 // read as a genuine option anchor, opening a bogus quote span that
                 // masked the real top-level comma (MISS-B), or dragged `tok_start`
@@ -1726,8 +1726,8 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // splitter's own quote-span source agrees with it: a
                 // command argument merely SPELLED like a keyword
                 // (`/bin/echo CWD="..."`) is never mistaken for a genuine
-                // leading `Option_Spec` here either (9m regression fix,
-                // #538 gaps A/C). This arm never re-arms `at_spec_start`
+                // leading `Option_Spec` here either (#538 gaps A/C). This
+                // arm never re-arms `at_spec_start`
                 // and never itself becomes a segment boundary - a
                 // command-argument `=` (`X=(y`) stays a literal byte for
                 // every OTHER purpose, exactly as before; the only thing
@@ -1737,11 +1737,11 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
                 // A REJECTED `=` must leave `tok_start` untouched - unlike the
                 // sibling splitter, THIS one has no structural `=` in its domain at
                 // all (see `tok_start`'s declaration comment above), so there is no
-                // exception here: round 1 advanced `tok_start` on EVERY rejection,
-                // so a command argument with a SECOND `=` (`X=CWD=...`) measured
+                // exception here: advancing `tok_start` on EVERY rejection would mean
+                // a command argument with a SECOND `=` (`X=CWD=...`) measures
                 // that second `=`'s preceding token as just `"CWD"` from the first
-                // rejection's landing point and was wrongly accepted as a genuine
-                // leading option (9m round 2 fix, #538).
+                // rejection's landing point and gets wrongly accepted as a genuine
+                // leading option (#538).
                 //
                 // WHY THIS ARM CARRIES NO REGISTRY GUARD, unlike every other
                 // boundary arm in either splitter. The sibling
@@ -2117,11 +2117,11 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // already supplies". Two attempts to express that as a PREDICATE both
         // shipped defects, in opposite directions:
         //
-        //   `u8::is_ascii_whitespace` on `bytes[open - 1]` (through round 2) -
+        //   `u8::is_ascii_whitespace` on `bytes[open - 1]` -
         //       too NARROW. On `alice,<U+00A0>"b c" ALL` it pushed a candidate
         //       the run already covered; that candidate won and swallowed the
         //       USER principal `"b c"` into a host token.
-        //   `char::is_whitespace` on the char (round 3) - too WIDE. It matched
+        //   `char::is_whitespace` on the char - too WIDE. It matched
         //       `unquoted_whitespace_runs`' predicate but not its CONTEXT: that
         //       function ignores whitespace which is backslash-escaped or inside
         //       a quoted region. On `a\<VT>"b c" = NOPASSWD: ALL` the escape
@@ -2161,17 +2161,13 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // and that asymmetry dropped the whole grant on `"ab"ALL = ...`.
         //
         // A `close` at the very end of `lhs` yields no candidate: the slice
-        // `lhs[close + 1..]` is then empty and `chars().next()` is None. (This
-        // said "`get` is None" until #651 round 3, describing the byte-level
-        // `bytes.get(close + 1)` that round 2 had already replaced - the same
-        // commit that swept four neighbouring comments and missed this one.)
+        // `lhs[close + 1..]` is then empty and `chars().next()` is None.
         // A following `,` or whitespace is excluded for the same reasons as in
         // the opener rule: whitespace already yields a candidate via
         // `unquoted_whitespace_runs`, and a `,` means the run continues.
         //
-        // The two exclusions are NOT equally load-bearing, and an earlier
-        // version of this comment claimed they were. Measured by deleting each
-        // conjunct separately and running the whole suite:
+        // The two exclusions are NOT equally load-bearing. Measured by
+        // deleting each conjunct separately and running the whole suite:
         //
         //   whitespace exclusion deleted -> rc 101. TWO tests fail:
         //       `a_space_then_a_comma_after_a_closing_quote_is_not_a_boundary`
@@ -2872,14 +2868,13 @@ mod tests {
     // token_but_strips_a_letter_prefixed_hash through strip_ignores_a_-
     // quoted_close_paren_for_runas_state) pinned the old in-crate
     // `strip_inline_comment`'s `#<digits>` UID/GID exception and the
-    // `in_runas_paren` state machine at the unit level. Removed by lane-3
-    // (#562): `strip_inline_comment` was deleted and replaced by the shared
+    // `in_runas_paren` state machine at the unit level. Removed (#562):
+    // `strip_inline_comment` was deleted and replaced by the shared
     // `rulesteward_core::comment` helper (`StripConfig::SUDOERS`,
     // `uid_gid_exception: true`, now called from `join_physical_lines`
     // above), and every assertion above is reproduced byte-for-byte in
     // `crates/rulesteward-core/src/comment.rs`'s `sudoers_table` unit tests
     // and in `crates/rulesteward-sudoers/tests/comment_strip_equivalence.rs`.
-    // See the lane-3 report for the old-test -> new-table-row mapping.
     // ---- continuation edges (#329 part B) ----
 
     #[test]
@@ -3282,7 +3277,7 @@ mod tests {
         // Real sudo agrees - `cvtsudoers -f json` ACCEPTS (visudo -c rc 0)
         //   `alice h1 = /bin/sh -c "oops : h2 = ALL`
         // and splits it into TWO host-groups {h1 -> `/bin/sh -c "oops`} and {h2 -> ALL}.
-        // Merging them (the old behavior) hid the second grant -- a sudo-W05 FALSE
+        // Merging them hid the second grant -- a sudo-W05 FALSE
         // NEGATIVE. This does NOT mean valid configs never carry a separator inside
         // a "balanced" quote pair, nor that the fix drops quote-based separator
         // suppression entirely. TWO quotes that each merely CLOSE a DIFFERENT command
@@ -3323,9 +3318,7 @@ mod tests {
         // no longer recognised as a separator and the segments collapse into one.
         // (Kills the `depth > 0` -> `depth >= 0` mutant on `split_top_level_segments`'s
         // `')'` MATCH GUARD, which would let a depth-0 `)` enter the arm and take
-        // `depth -= 1` to -1. That guard used to be an `if` INSIDE the arm clamping the
-        // decrement; it is now the arm's own guard, so the protection is by
-        // non-entry rather than by clamping - same invariant, same killed mutant. The
+        // `depth -= 1` to -1. The
         // existing `runas_group_then_segment_colon_splits` uses BALANCED parens so its
         // `)` sits at depth 1 and never exercises this.)
         assert_eq!(
