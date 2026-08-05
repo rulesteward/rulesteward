@@ -408,8 +408,8 @@ exclude_re = [
     # were documented as unreachable in the SOURCE comments when the file
     # landed, but never registered here -- so the nightly `mutants` workflow
     # went red on 2026-07-26 and stayed red, which means it could no longer
-    # report a NEW survivor. Rationale in full at fsread.rs:264-274 and
-    # fsread.rs:322-332; summarized here because this file is the reviewable
+    # report a NEW survivor. Rationale in full at fsread.rs:262-272 and
+    # fsread.rs:320-330; summarized here because this file is the reviewable
     # record:
     #  - `replace < with <=` on the FIFO retry deadline: not semantically
     #    equivalent, but UNREACHABLE -- distinguishing the two forms needs

@@ -772,12 +772,12 @@ mod tests {
 
     #[test]
     fn partial_int_first_member_types_intish_on_rhel8() {
-        // GROUNDED 2026-06-07 (found by the #163 adversarial review, round 3):
-        // fapolicyd 1.3.2 types a set's FIRST element INT iff its first CHARACTER
-        // is a digit (isdigit-style), so a partial-int like `1abc` types INT on
-        // rhel8 (LOADS on an integer attr) but STRING on rhel9/rhel10 (all-element
-        // typing). The old all-digits `looks_int` rhel8 check fired a false
-        // positive on rhel8/None.
+        // GROUNDED 2026-06-07: fapolicyd 1.3.2 types a set's FIRST element INT iff
+        // its first CHARACTER is a digit (isdigit-style), so a partial-int like
+        // `1abc` types INT on rhel8 (LOADS on an integer attr) but STRING on
+        // rhel9/rhel10 (all-element typing). An all-digits check would
+        // false-positive here; only the first character determines the type on
+        // rhel8.
         // Integer attrs: `1abc` loads on rhel8 (no fire) but is rejected on
         // rhel9/10 (fire); divergent -> suppressed under None.
         for attr in ["pid", "uid", "sessionid"] {

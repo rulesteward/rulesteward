@@ -200,10 +200,10 @@ pub(crate) fn c02(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
 /// direction guard, not the match test, is what prevents the overlap).
 ///
 /// Uses `subsume::shadows` (subsumption), mirroring fapd-W04 - the same
-/// reachability relation with the decisions swapped. (Supersedes the original
-/// equality-only W10 from spec §6.1 / PR #33: equality strictly under-reported,
-/// missing dead denies like `allow dir=execdirs` shadowing `deny path=/usr/bin/nc`.
-/// Verified against fapolicyd.rules(5): first-match-wins + terminal decisions.)
+/// reachability relation with the decisions swapped. Subsumption catches cases
+/// an equality-only match (spec §6.1, PR #33) would miss, like `allow
+/// dir=execdirs` shadowing `deny path=/usr/bin/nc`. Verified against
+/// fapolicyd.rules(5): first-match-wins + terminal decisions.
 /// Reuses `build_global_macro_map`, `scoped_rules`, and `is_allow`/`is_deny`.
 pub(crate) fn w10(files: &[(PathBuf, Vec<Entry>)]) -> Vec<Diagnostic> {
     let macro_map = build_global_macro_map(files);

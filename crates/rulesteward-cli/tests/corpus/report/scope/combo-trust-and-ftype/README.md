@@ -6,7 +6,7 @@
 ## Intent
 
 One grant whose OBJECT side combines `trust=` and `ftype=` (both are `Either`-side
-attributes per `attrs.rs:57` `BOTH_SIDES = ["all", "dir", "ftype", "trust"]`, so
+attributes per `attrs.rs:50` `BOTH_SIDES = ["all", "dir", "ftype", "trust"]`, so
 both legally appear on the object side of a single modern rule). This exercises the
 `scope` precedence decision when two scope-keying predicates co-occur on one side.
 

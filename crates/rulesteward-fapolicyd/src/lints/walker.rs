@@ -3,7 +3,7 @@
 //! (broad allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
-//! `Rule.span` (set by the parser in session 3a). `source_id` is set to
+//! `Rule.span` (set by the parser). `source_id` is set to
 //! `file.display().to_string()` on every rule-level diagnostic so ariadne
 //! can key its Source cache.
 //!
@@ -120,7 +120,7 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
                     // exe_dir/exe_type are legal ONLY on the legacy subject
-                    // side (issue #546, ATL round 2 MISS 2): they are unknown
+                    // side (issue #546): they are unknown
                     // to the MODERN table (`attrs::is_known` correctly
                     // rejects them there, unaffected below), but
                     // `parser::grammar::legacy_classify`'s per-token routing
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_mode_placed_on_subject_side() {
-        // `mode` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `mode` is OBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
         // `allow perm=any mode=0755 : all` -> fapolicyd9 (1.4.5) "Field type
         // (mode) is unknown in line 2" + "Subject is missing"; fapolicyd8
         // (1.3.2) "Field type (mode) is unknown in line 2". RuleSteward today:
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_uid_placed_on_object_side() {
-        // `uid` is SUBJECT_ONLY (attrs.rs:41). Daemon fixture (grounded):
+        // `uid` is SUBJECT_ONLY (attrs.rs:37). Daemon fixture (grounded):
         // `allow perm=any all : uid=0` -> fapolicyd9 "Field type (uid) is
         // unknown in line 2" + "Object is missing". RuleSteward today: exit 0,
         // zero diagnostics.
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_path_placed_on_subject_side() {
-        // `path` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `path` is OBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
         // `allow perm=any path=/bin/sh : all` -> fapolicyd9 "Field type (path)
         // is unknown in line 2" + "Subject is missing".
         let entries = vec![modern_rule(
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_exe_placed_on_object_side() {
-        // `exe` is SUBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
+        // `exe` is SUBJECT_ONLY (attrs.rs:41). Daemon fixture (grounded):
         // `allow perm=any all : exe=/bin/sh` -> fapolicyd9 "Field type (exe)
         // is unknown in line 2" + "Object is missing".
         let entries = vec![modern_rule(
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_pattern_placed_on_object_side() {
-        // `pattern` is SUBJECT_ONLY (attrs.rs:52). Daemon fixture (grounded):
+        // `pattern` is SUBJECT_ONLY (attrs.rs:45). Daemon fixture (grounded):
         // `allow perm=any all : pattern=ld_so` -> fapolicyd9 "Field type
         // (pattern) is unknown in line 2" + "Object is missing". Distinct from
         // fapd-E06's `check_pattern` (version_target.rs), which only scans
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_gid_placed_on_object_side() {
-        // `gid` is SUBJECT_ONLY (attrs.rs:43). Live-differential grounded
+        // `gid` is SUBJECT_ONLY (attrs.rs:39). Live-differential grounded
         // 2026-07-17: `allow perm=any all : gid=100` -> fapolicyd8 (1.3.2)
         // AND fapolicyd9 (1.4.5) both reject with "Field type (gid) is
         // unknown in line 2" + "Object is missing in line 2" - confirming
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_sha256hash_placed_on_subject_side() {
-        // `sha256hash` is OBJECT_ONLY (attrs.rs:55). Live-differential
+        // `sha256hash` is OBJECT_ONLY (attrs.rs:48). Live-differential
         // grounded 2026-07-17: `allow perm=any sha256hash=<64 hex> : all`
         // -> fapolicyd8 (1.3.2) AND fapolicyd9 (1.4.5) both reject with
         // "Field type (sha256hash) is unknown in line 2" + "Subject is

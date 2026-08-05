@@ -68,7 +68,7 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
         if let Some((k, v)) = line.split_once('=')
             && k.trim() == "permissive"
         {
-            // Issue #569 round 3 (byte-exact grounding on upstream
+            // Issue #569 (byte-exact grounding on upstream
             // daemon-config.c): strip only LEADING ASCII space (0x20)
             // bytes here, mirroring `_strsplit`'s retry-on-leading-space
             // skip in the real daemon's `nv_split` - never a trailing
@@ -112,8 +112,8 @@ pub fn lint_conf(text: &str, path: &Path, target: Option<TargetVersion>) -> Vec<
 /// True iff `value` is fapolicyd's on-wire representation of a permissive
 /// (fail-open) `permissive=` setting.
 ///
-/// Adversarial round 2 (impl-aware, grounded on upstream
-/// `src/library/daemon-config.c`): the daemon's `permissive_parser`
+/// Grounded on upstream
+/// `src/library/daemon-config.c`: the daemon's `permissive_parser`
 /// delegates to `unsigned_int_parser` - a base-10 `strtoul` of the WHOLE
 /// value - then CLAMPS any parsed value greater than 1 down to 1. So the
 /// daemon runs permissive for `"1"`, `"2"`, `"10"`, `"01"` (leading zeros
@@ -283,28 +283,25 @@ mod tests {
 
     #[test]
     fn inline_hash_after_permissive_one_still_fires_first_token_wins() {
-        // CORRECTED (issue #569, doc-truth-decay fix): the scanner-level
-        // claim ("a trailing `#` is not stripped") is still true and
-        // unchanged - `winner`'s captured value is the raw, untrimmed-of-
-        // comment remainder `"1 # note"`. What was WRONG in the original
-        // version of this test (Adversarial round 1, Finding 3) was the
-        // conclusion drawn from that raw value: it assumed the daemon
+        // Issue #569: the scanner-level claim ("a trailing `#` is not
+        // stripped") is still true and unchanged - `winner`'s captured
+        // value is the raw, untrimmed-of-comment remainder `"1 # note"`. A
+        // tempting-but-wrong reading of that raw value assumes the daemon
         // treats a non-exact-"1" raw remainder as a parse error and stays
-        // enforcing. Issue #567/#569's ATL round 2 grounding (live-verified
-        // on fapolicyd 1.3.2 and 1.4.5, see
+        // enforcing. Issue #567/#569's grounding (live-verified on
+        // fapolicyd 1.3.2 and 1.4.5, see
         // `rulesteward-cli/src/commands/doctor/probe.rs`'s
         // `permissive_value_is_effectively_permissive` doc, ~line 280-298,
-        // and its `daemon-config.c` `nv_split`/`_strsplit` citation) proved
+        // and its `daemon-config.c` `nv_split`/`_strsplit` citation) shows
         // the opposite: the daemon whitespace-tokenizes the raw remainder
         // and binds `nv.value` to ONLY the FIRST token ("1"); a trailing
         // `# note` (or any further token) is separately logged as "Wrong
         // number of arguments" but does NOT stop `permissive_parser` from
         // being called with the first-token value. So the real daemon runs
         // PERMISSIVE for this line, and `lint_conf` must fire fapd-W14
-        // here, not report clean. The doctor probe was already corrected
-        // for this (9e-wave2c); this lint (`fapd-W14`, from PR #565) has
-        // the IDENTICAL miss and is fixed by the same first-token
-        // tokenization before `is_effectively_permissive` (issue #569).
+        // here, not report clean. The doctor probe already applies this
+        // same first-token tokenization; this lint (`fapd-W14`, from PR
+        // #565) is fixed the same way, before `is_effectively_permissive`.
         let diags = lint_conf("permissive = 1 # note\n", &p(), None);
         assert_eq!(
             diags.len(),
@@ -336,9 +333,9 @@ mod tests {
     // Issue #569: first-token tokenization before `is_effectively_permissive`,
     // mirroring the already-fixed doctor probe
     // (`rulesteward-cli/src/commands/doctor/probe.rs::
-    // permissive_value_is_effectively_permissive`, 9e-wave2c / ATL round 2
-    // MISS 1). Ground truth: fapolicyd's `daemon-config.c` `nv_split`/
-    // `_strsplit` whitespace-tokenizes the value text and binds `nv.value`
+    // permissive_value_is_effectively_permissive`). Ground truth: fapolicyd's
+    // `daemon-config.c` `nv_split`/`_strsplit` whitespace-tokenizes the
+    // value text and binds `nv.value`
     // to ONLY the first token after `=`; any further token (a `# comment`
     // or otherwise) is logged as "Wrong number of arguments" but does NOT
     // change which token the keyword's parser (here `permissive_parser`)
@@ -420,8 +417,7 @@ mod tests {
 
     #[test]
     fn conf_inline_permissive_zero_with_trailing_one_stays_clean() {
-        // ATL rework round (adversarial review, BLOCKER): pins the
-        // FIRST-token-only binding against a plausible-but-wrong
+        // Pins the FIRST-token-only binding against a plausible-but-wrong
         // "any token is effectively permissive" impl (e.g.
         // `value.split_whitespace().any(is_effectively_permissive)`), which
         // would wrongly fire here having found "1" as the SECOND token.
@@ -460,14 +456,14 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Byte-accurate span on a later line (mutation-kill: the scanner's
-    // `start`/`end`/`offset` arithmetic, round 2).
+    // `start`/`end`/`offset` arithmetic).
     // ---------------------------------------------------------------------
 
     #[test]
     fn span_and_line_are_byte_accurate_on_a_later_line() {
-        // Mutation round 2 (survivors 1-3): the scanner's byte-offset
-        // arithmetic - `end = start + line.len()` and the next line's
-        // `offset = end + 1` (skipping the consumed `\n`) - was never pinned
+        // The scanner's byte-offset arithmetic - `end = start + line.len()`
+        // and the next line's `offset = end + 1` (skipping the consumed
+        // `\n`) - was never pinned
         // by an exact-span assertion, only by `.line`. A `+` -> `*` or
         // `+` -> `-` mutation in either expression drifts the computed span
         // away from the real byte range while often leaving the winning
@@ -497,17 +493,17 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Adversarial round 2 (impl-aware, grounded on upstream
-    // src/library/daemon-config.c): the daemon's `permissive_parser`
-    // delegates to `unsigned_int_parser` - a base-10 `strtoul` of the WHOLE
-    // value - then CLAMPS any parsed value > 1 down to 1. So the daemon
+    // Grounded on upstream src/library/daemon-config.c: the daemon's
+    // `permissive_parser` delegates to `unsigned_int_parser` - a base-10
+    // `strtoul` of the WHOLE value - then CLAMPS any parsed value > 1 down
+    // to 1. So the daemon
     // runs permissive (fail-open) for ANY non-empty all-ASCII-digit value
     // that isn't all zeros: "1", "2", "10", "01" (leading zeros are valid
     // decimal syntax to `strtoul`), not just the exact string "1". A
     // non-numeric value (trailing garbage after the digits, e.g. "1x") is
     // a parse error and leaves the enforcing default; an all-zero digit
-    // string parses to 0 (enforcing). The old exact-string `value != "1"`
-    // guard was a false negative on every nonzero-numeric-but-not-"1"
+    // string parses to 0 (enforcing). An exact-string `value != "1"`
+    // guard would be a false negative on every nonzero-numeric-but-not-"1"
     // value.
     // ---------------------------------------------------------------------
 
@@ -576,9 +572,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Adversarial round 3 (impl-aware, grounded on upstream
-    // src/library/daemon-config.c): the daemon's own tokenizer, `_strsplit`,
-    // splits a value ONLY on the ASCII space byte (`ptr = strchr(str, ' ');`)
+    // Grounded on upstream src/library/daemon-config.c: the daemon's own
+    // tokenizer, `_strsplit`, splits a value ONLY on the ASCII space byte
+    // (`ptr = strchr(str, ' ');`)
     // and `get_line` strips ONLY a trailing 0x0a, never 0x0d. So a tab (or a
     // stray `\r` from a CRLF-edited conf file) is NOT a token separator to
     // the real daemon - it is part of the single value token handed to

@@ -450,7 +450,7 @@ fn r7_non_teallowable_groups_have_no_suggested_allow_in_json() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-R8: already-allows explanation perm-display format - kills triage.rs:254 mutant
+// TC-R8: already-allows explanation perm-display format - kills triage.rs:252 mutant
 //
 // Source: triage.rs `already_allows_explanation` (private fn, reached via
 // `build_report_with_already_allows`). The branch at line 254 selects:

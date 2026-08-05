@@ -244,8 +244,8 @@ fn e05(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
 
 /// `(name, line, span, offending value)` for each INT-typed `SetDefinition`
 /// containing a member whose strtol-style conversion is out of the `i64`
-/// range. Two 1.3.2 semantics, both daemon-verified (session-7b ATL round-1
-/// fixtures and the grounding `matrix.md`):
+/// range. Two 1.3.2 semantics, both daemon-verified (fixtures and the
+/// grounding `matrix.md`):
 ///
 ///   - Set typing is FIRST-CHARACTER-digit (isdigit-style, mirroring the
 ///     grounded rhel8 `first_is_intish` model in `type_compat.rs`), NOT
@@ -719,10 +719,7 @@ mod tests {
     // -----------------------------------------------------------------
     // B.1 - Cross-file and single-file mode barrier tests for fapd-E03/fapd-W09.
     //
-    // These tests call `e03` with the 4-arg signature introduced in the frozen
-    // foundation. They will be RED against the current frozen foundation because
-    // `e03` ignores `_earlier` and `_single_file`. After the implement phase lands
-    // the real logic, they must turn GREEN.
+    // These tests call `e03` with its 4-arg signature.
     //
     // Test plan:
     //   B.1.1 - earlier-file def suppresses E03
@@ -1821,12 +1818,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // #477 post-GREEN Adversarial Testing Loop round 1: two PRE-EXISTING
-    // false negatives in the shared overflow detector
-    // (`overflow_set_definitions`), daemon-CONFIRMED by the impl-aware
-    // adversary (repro fixtures: /var/tmp/7b-atl-p1/). Orchestrator scope
-    // ruling: fapd-E05 owns BOTH shapes (the daemon's abort is the same
-    // definition-time "Error converting val" class for both).
+    // #477: two PRE-EXISTING false negatives in the shared overflow detector
+    // (`overflow_set_definitions`), daemon-confirmed. fapd-E05 owns BOTH
+    // shapes (the daemon's abort is the same definition-time "Error
+    // converting val" class for both).
     //
     // MISS 1 - partial-int FIRST member: fapolicyd 1.3.2 types a set INT
     // when the FIRST CHARACTER of the first member is a digit (isdigit-
@@ -1843,11 +1838,11 @@ mod tests {
     // Both misses: 1.4.5 loads the unused fixtures cleanly, so the
     // rhel9/rhel10 arms stay silent (same contract-C gate as above).
     //
-    // Message-content pinning is deliberately loose per the orchestrator
-    // ruling: pin that the finding names the offending value; do NOT pin
-    // the exact "exceeds the maximum integer" sentence (the implementer
-    // may widen the wording to cover negative/magnitude overflow
-    // honestly). Count + code are the load-bearing assertions.
+    // Message-content pinning is deliberately loose: pin that the finding
+    // names the offending value; do NOT pin the exact "exceeds the maximum
+    // integer" sentence, since a wider wording that honestly covers
+    // negative/magnitude overflow is still correct. Count + code are the
+    // load-bearing assertions.
     // -----------------------------------------------------------------
 
     #[test]
@@ -1859,11 +1854,8 @@ mod tests {
         // line 2"), usage-independently - 1.3.2 typed the set INT by the
         // first CHARACTER of "1abc" (a digit). Control Actrl1_partial_noover
         // (`%s=1abc,5`) LOADS on 1.3.2: a partial-int first member with only
-        // in-range digit members is daemon-valid, so the fix must not
+        // in-range digit members is daemon-valid, so the detector must not
         // over-fire on it.
-        //
-        // RED today: `looks_int("1abc")` is false, so the detector types the
-        // set STRING and skips it entirely - zero findings.
         let entries = vec![set_def(1, "s", &["1abc", "99999999999999999999"])];
         let diags = e05(&entries, &p());
         assert_eq!(
@@ -1902,8 +1894,7 @@ mod tests {
         // "Error converting val (99999999999999999999) in line 2") and loads
         // cleanly on 1.4.5 (macro unused, never typed).
         //
-        // RED today at portable/rhel8 (detector skips the set entirely);
-        // the rhel9/rhel10 arms assert the same contract-C silence as the
+        // The rhel9/rhel10 arms assert the same contract-C silence as the
         // all-digit unused case above.
         let src = "%s=1abc,99999999999999999999\nallow perm=open all : all\n";
 
@@ -1944,10 +1935,6 @@ mod tests {
         // Bctrl_neg_small (`%s=1,-5`) LOADS on 1.3.2, consistent with
         // grounded matrix case 11 (`%s=1,-5,3` VALID on fapd8): a signed
         // IN-RANGE member is not an overflow and must stay silent.
-        //
-        // RED today at portable/rhel8: `looks_int` has no sign handling, so
-        // the `-99999999999999999999` member is never counted and the set
-        // passes silently.
         let src = "%s=1,-99999999999999999999\nallow perm=open all : all\n";
 
         for ctx in [None, Some(crate::version::TargetVersion::Rhel8)] {

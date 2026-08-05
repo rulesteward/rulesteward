@@ -1,6 +1,5 @@
-//! RED barrier tests for the legacy-grammar `exe_dir=`/`exe_type=` false-
-//! Fatal (issue #546, ATL round 2 MISS 2, impl-AWARE adversarial review
-//! 2026-07-18).
+//! Regression tests for the legacy-grammar `exe_dir=`/`exe_type=` handling
+//! (issue #546, impl-AWARE adversarial review 2026-07-18).
 //!
 //! Ground truth: upstream fapolicyd's `subject-attr.c` table1 (the LEGACY/
 //! ORIG-format subject attribute table, distinct from the MODERN table2)
@@ -15,21 +14,17 @@
 //! `exe-type-unknown.rules` modern-format controls, deliberately not
 //! touched by this change).
 //!
-//! Today: `parser::grammar::legacy_classify("exe_dir"/"exe_type")` returns
-//! `None` (the OLD, modern-only grounding this round re-corrects - see
+//! `parser::grammar::legacy_classify("exe_dir"/"exe_type")` routes both to
+//! the subject side (see
 //! `legacy_classify_exe_dir_and_exe_type_are_subject_anchors` in
-//! `grammar.rs`), so the landed per-token `positional_split` (#546) rejects
-//! the whole rule with "legacy rule references unknown or legacy-illegal
-//! attribute" - surfacing as fapd-F01 Fatal (a NEW false-positive
-//! introduced by the #546 fix; pre-#546 this merely mis-warned via a
-//! different code path). Even once the parser is fixed, `lints::walker::e01`
-//! ALSO needs to become flavor-aware: it currently gates on
-//! `attrs::is_known(key)` unconditionally (ignoring `Rule.syntax`), and
-//! `attrs::is_known("exe_dir")` is (correctly, for the MODERN table)
-//! `false`, so a parser-only fix would still leave a spurious fapd-E01
-//! "unknown attribute" on these legacy rules. The full-lint tests below
-//! are RED for both reasons today and will only go green once both
-//! `legacy_classify` and `e01` are fixed.
+//! `grammar.rs`), so the per-token `positional_split` (#546) accepts these
+//! rules instead of rejecting them with "legacy rule references unknown or
+//! legacy-illegal attribute" (fapd-F01 Fatal). `lints::walker::e01` is also
+//! flavor-aware here: it gates on `attrs::is_known(key)` for the MODERN
+//! table, which correctly returns `false` for `exe_dir`/`exe_type`, but
+//! consults `Rule.syntax` first so a legacy rule using them does not draw a
+//! spurious fapd-E01 "unknown attribute". The full-lint tests below cover
+//! both.
 
 use std::path::Path;
 
@@ -148,9 +143,8 @@ fn legacy_exe_type_full_lint_emits_no_f01_no_e01() {
 /// (e) Negative control: the legacy leniency for `exe_dir`/`exe_type`
 /// extends ONLY to those two names - a genuinely unknown attribute (not in
 /// EITHER the modern or the legacy table) must still be rejected as a
-/// legacy-illegal token, exactly as today. Must PASS both before and after
-/// the implementer's fix (pins that the fix doesn't become a blanket
-/// "anything goes" fallback for the legacy dialect).
+/// legacy-illegal token. Pins that the `exe_dir`/`exe_type` leniency does
+/// not become a blanket "anything goes" fallback for the legacy dialect.
 #[test]
 fn legacy_rule_with_genuinely_unknown_attr_still_errors() {
     let file = Path::new("legacy-bogus.rules");

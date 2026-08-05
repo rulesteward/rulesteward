@@ -248,7 +248,7 @@ pub fn set_definition<'a>() -> impl Parser<'a, &'a str, Entry, extra::Err<Rich<'
 /// * `dir`, `ftype`, `trust` are object-only (in modern they are `Either`).
 /// * `gid`, `ppid` are illegal on the legacy subject side and are NOT valid
 ///   split anchors (return `None`).
-/// * `exe_dir`, `exe_type` are subject-only (ATL round 2 MISS 2, #546) -
+/// * `exe_dir`, `exe_type` are subject-only (#546) -
 ///   legal ONLY in the legacy dialect, unlike modern where they are unknown;
 ///   see `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS` for the shared grounding
 ///   cite (kept in sync with fapd-E01's flavor-aware skip in
@@ -472,24 +472,21 @@ mod tests {
 
     #[test]
     fn positional_split_errors_when_no_subject_attr_present_at_all() {
-        // RE-GROUNDED 2026-07-17 (issue #546). This test used to be named
-        // `positional_split_errors_when_object_attr_first` and its name
-        // implied fapolicyd rejects a legacy rule merely because an
-        // object-side attribute appears BEFORE a subject-side one
-        // positionally - WRONG. Upstream fapolicyd's `nv_split`
-        // (`rules.c:922-1027` v1.4.5, `rules.c:784-892` v1.3.2, cited in the
-        // 2026-07-17 audit lane report Finding F2) classifies each token
+        // Grounded 2026-07-17 (issue #546). fapolicyd does NOT reject a
+        // legacy rule merely because an object-side attribute appears
+        // BEFORE a subject-side one positionally: upstream fapolicyd's
+        // `nv_split` (`rules.c:922-1027` v1.4.5, `rules.c:784-892` v1.3.2,
+        // cited in the 2026-07-17 audit lane report Finding F2) classifies each token
         // INDEPENDENTLY via a name->side lookup with NO positional ordering
         // constraint at all: `allow mode=0755 uid=0` (object-attr `mode`
         // BEFORE subject-attr `uid`) loads clean on both live daemon
         // versions (reproduced 2026-07-17 05:01-05:02 UTC; see
         // `positional_split_classifies_object_first_order_independent`
         // below, which is the actual regression test for that claim). What
-        // THIS fixture still correctly pins - the only part of the old test
-        // that survives the order-independence fix - is that a legacy attr
-        // list with NO subject-side attribute ANYWHERE (not merely "object
-        // first") has nothing to assign to the subject side and must still
-        // error, matching upstream's `finish_up` "Subject is missing" check
+        // THIS fixture pins is that a legacy attr list with NO subject-side
+        // attribute ANYWHERE (not merely "object first") has nothing to
+        // assign to the subject side and must still error, matching
+        // upstream's `finish_up` "Subject is missing" check
         // (`rules.c` ~1016-1026, already cited in the audit's Finding F1
         // evidence for the modern grammar's equivalent check).
         let attrs_flat = vec![Attr::Kv {
@@ -699,17 +696,16 @@ mod tests {
 
     #[test]
     fn legacy_classify_exe_dir_and_exe_type_are_subject_anchors() {
-        // RE-GROUNDED (ATL round 2 MISS 2, 2026-07-18). The prior version of
-        // this test (`legacy_classify_exe_dir_and_exe_type_are_not_anchors`)
-        // asserted `None`, citing "1.3.2/1.4.3/1.4.5 all reject
-        // exe_dir/exe_type" (differential 2026-06-01) - that differential
-        // tested ONLY the MODERN (colon) grammar. Upstream fapolicyd's
-        // `subject-attr.c` table1 (the LEGACY/ORIG-format subject attribute
-        // table) DOES list `EXE_DIR`/`EXE_TYPE` in BOTH 1.3.2 and 1.4.5;
-        // they are unknown ONLY to the separate MODERN table (table2),
-        // which is what `attrs::classify`/`attrs::SUBJECT_ONLY` correctly
-        // models (that removal from `SUBJECT_ONLY` on 2026-05-29 stays
-        // correct and is NOT touched here - see attrs.rs's refreshed note).
+        // Grounded 2026-07-18 (issue #546). A differential that tested ONLY
+        // the MODERN (colon) grammar ("1.3.2/1.4.3/1.4.5 all reject
+        // exe_dir/exe_type", 2026-06-01) does NOT extend to the LEGACY
+        // dialect: upstream fapolicyd's `subject-attr.c` table1 (the
+        // LEGACY/ORIG-format subject attribute table) DOES list
+        // `EXE_DIR`/`EXE_TYPE` in BOTH 1.3.2 and 1.4.5; they are unknown
+        // ONLY to the separate MODERN table (table2), which is what
+        // `attrs::classify`/`attrs::SUBJECT_ONLY` correctly models (that
+        // removal from `SUBJECT_ONLY` on 2026-05-29 stays correct and is
+        // NOT touched here - see attrs.rs's refreshed note).
         //
         // Live-verified 2026-07-18 on BOTH fapolicyd 1.3.2 and 1.4.5:
         //   LEGACY `allow exe_dir=/usr/bin/ trust=1` -> "Loaded 1 rules"
@@ -721,23 +717,21 @@ mod tests {
         //     change - modern still goes through `attrs::classify`, not
         //     `legacy_classify`).
         //
-        // `legacy_classify` must therefore route `exe_dir`/`exe_type` to
+        // `legacy_classify` therefore routes `exe_dir`/`exe_type` to
         // `Subject`, matching upstream `subj_name_to_val(ptr, RULE_FMT_ORIG)`.
-        // Today (pre-fix) `legacy_classify` still returns `None` for both,
-        // which makes the landed per-token `positional_split` (issue #546)
-        // reject this daemon-VALID legacy rule outright as fapd-F01 Fatal -
-        // a NEW false-positive introduced by the #546 fix (pre-#546 it
-        // merely mis-warned via a different path). RED until
-        // `legacy_classify` gains these two `Subject` entries.
+        // If `legacy_classify` ever returned `None` for either, the landed
+        // per-token `positional_split` (issue #546) would reject this
+        // daemon-VALID legacy rule outright as fapd-F01 Fatal - a false
+        // positive.
         assert_eq!(legacy_classify("exe_dir"), Some(AttrSide::Subject));
         assert_eq!(legacy_classify("exe_type"), Some(AttrSide::Subject));
     }
 
     #[test]
     fn exe_device_is_subject_anchor_in_legacy_classify() {
-        // RED barrier test (issue #570, lane-6, grounded via a fresh
-        // WebFetch of upstream `src/library/subject-attr.c` at both pinned
-        // tags, 2026-07-23):
+        // Grounded via a fresh WebFetch of upstream
+        // `src/library/subject-attr.c` at both pinned tags (issue #570,
+        // 2026-07-23):
         //
         //   v1.3.2 (`v1.3.2` tag) table1 (LEGACY/ORIG-format subject table):
         //     all, auid, uid, sessionid, pid, pattern, comm, exe, exe_dir,
@@ -759,16 +753,14 @@ mod tests {
         // fapolicyd 1.3.2 (fapolicyd8) but is rejected "Field type
         // (exe_device) is unknown" on 1.4.5 (fapolicyd9).
         //
-        // Today `legacy_classify("exe_device")` returns `None` (not in any
-        // match arm, including `LEGACY_ONLY_SUBJECT_ATTRS`), so both the
-        // modern AND legacy (`positional_split`, issue #546) parses fail for
-        // this rule. `parser::mod::parse_line` tries `modern_rule()` first
-        // and, on a dual failure, surfaces MODERN's diagnostic rather than
-        // legacy's "unknown or legacy-illegal attribute" message - so the
-        // rule is rejected outright as fapd-F01 Fatal carrying the MODERN
-        // "malformed rule syntax" message, RED until `legacy_classify` (and
-        // `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`, the shared const it
-        // consults) gain this entry. The RHEL9/RHEL10 version-divergence
+        // Without `exe_device` in `crate::attrs::LEGACY_ONLY_SUBJECT_ATTRS`
+        // (the shared const `legacy_classify` consults), both the modern AND
+        // legacy (`positional_split`, issue #546) parses would fail for this
+        // rule: `parser::mod::parse_line` tries `modern_rule()` first and, on
+        // a dual failure, surfaces MODERN's diagnostic rather than legacy's
+        // "unknown or legacy-illegal attribute" message, so the rule would be
+        // rejected outright as fapd-F01 Fatal carrying the MODERN "malformed
+        // rule syntax" message. The RHEL9/RHEL10 version-divergence
         // (post-parse E06 diagnostic) is a separate concern, pinned at the
         // full-lint level in `tests/legacy_exe_device_test.rs`.
         assert_eq!(legacy_classify("exe_device"), Some(AttrSide::Subject));

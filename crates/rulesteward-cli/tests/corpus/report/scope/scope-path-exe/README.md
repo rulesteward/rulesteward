@@ -21,7 +21,7 @@ allow perm=open exe=/usr/bin/rpm : all
 - Single allow-family grant -> one register row, `loadIndex:1`, `source.line:1`.
 - `perm=open` renders `perm:"open"`.
 - Subject side is `exe=/usr/bin/rpm`; object side is `all` (Display-rendered
-  sides, `format.rs:56-74`). `exe` is subject-only (`attrs.rs:48`).
+  sides, `format.rs:56-74`). `exe` is subject-only (`attrs.rs:41`).
 - `exe=` is a concrete path predicate: `scope:"path"`. Per f2 section 2.2 the
   `exe=` value is extracted as a path on the subject side, so
   `subjectPaths:["/usr/bin/rpm"]`. The object side is `all` (not a path), so

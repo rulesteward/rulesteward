@@ -515,7 +515,7 @@ const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
 /// "negated": true}`), but `rulesteward_sudoers::parser::parse` classifies
 /// the WHOLE LINE `Malformed`. Root cause is NOT in this lane -
 /// `rulesteward_core::comment::comment_index`'s `prev_allows_uid` byte-set
-/// (`crates/rulesteward-core/src/comment.rs:149-155`) omits `b'!'`, so in
+/// (`crates/rulesteward-core/src/comment.rs:147-153`) omits `b'!'`, so in
 /// `!#1000` the `#` reads as a comment start, the rest of the line is
 /// stripped, and the lone `!` has no `=` to complete a `UserSpec`. This is
 /// NOT the same `!` `lints/tokens/mod.rs:384-388` deliberately excludes -

@@ -505,8 +505,7 @@ mod tests {
     fn e02_diagnostics_identical_for_legacy_and_modern_flavor() {
         // #295: fapd-E02 validates attribute VALUES and never reads
         // `Rule.syntax`, so a legacy-parsed rule must produce identical
-        // diagnostics to the modern form. The value-lint output tests
-        // previously exercised only `modern_rule`. `uid=bad@name` (illegal name
+        // diagnostics to the modern form. `uid=bad@name` (illegal name
         // char) and `filehash=abc` (off-length) each fire one fapd-E02.
         let modern = walk(
             &[modern_rule(

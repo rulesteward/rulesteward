@@ -364,8 +364,7 @@ mod tests {
     fn catalog_satisfies_shared_invariants() {
         // Delegate the cross-backend catalog-integrity rules to the shared core
         // helper: strictly-sorted-by-code, no duplicates, severity-letter-
-        // matches-code, AND descriptions-non-empty (the latter two of which this
-        // catalog previously did not pin). fapolicyd's `LintCode` is a superset
+        // matches-code, AND descriptions-non-empty. fapolicyd's `LintCode` is a superset
         // of `BaseLintCode` - it adds the SARIF-only `condition` field - so map
         // each entry, dropping `condition` (#306, finishing the #289
         // de-triplication). The fapolicyd-specific membership and SARIF-condition

@@ -163,8 +163,8 @@ mod generators {
     /// Legacy-dialect subject attr generator (see `LEGACY_SUBJECT_ONLY`).
     /// Distinct from the full MODERN `attrs::SUBJECT_ONLY` table (used
     /// directly by `arb_modern_attr()`) precisely because `gid`/`ppid` are
-    /// legacy-illegal - drawing them here previously produced a `Rule` whose
-    /// `Display` rendering the FIXED (#546) parser correctly rejects
+    /// legacy-illegal - drawing them here would produce a `Rule` whose
+    /// `Display` rendering the parser (#546) correctly rejects
     /// (`fapd-F01`), breaking the round-trip property this generator exists
     /// to test.
     pub(super) fn arb_legacy_subject_only_attr() -> impl Strategy<Value = Attr> {
