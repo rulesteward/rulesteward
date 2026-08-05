@@ -1,10 +1,10 @@
 //! au-W01: duplicate rule - normalized-equal across the concatenated
 //! `rules.d/` stream (same or different files).
 //!
-//! Pipeline P1 (#193). Equality is [`super::normalize::canonical_key`]
+//! Issue #193. Equality is [`super::normalize::canonical_key`]
 //! equality: field order, syscall order, `-a` vs `-A`, and `-p` letter order
-//! do not distinguish rules; the `-k` key DOES (a key-differing pair is P2's
-//! au-W02 shadow case per owner decision D2, never au-W01).
+//! do not distinguish rules; the `-k` key DOES (a key-differing pair is
+//! `ordering`'s au-W02 shadow case per owner decision D2, never au-W01).
 //!
 //! Emission convention: N occurrences of one canonical rule yield N-1
 //! findings, each anchored at the LATER occurrence in load order with the
@@ -120,8 +120,8 @@ fn fields_eexist_equal(a: &[FieldFilter], b: &[FieldFilter]) -> bool {
         })
 }
 
-/// EEXIST value equality for a single `-F perm=` field (session 9m lane 1,
-/// round 3 ATL, issues #600/#601). The kernel's `audit_compare_rule`
+/// EEXIST value equality for a single `-F perm=` field (issues #600/#601).
+/// The kernel's `audit_compare_rule`
 /// (`kernel/auditfilter.c`) compares `a->fields[i].val != b->fields[i].val`
 /// -- the ALREADY-PARSED bitmask, never the spelling -- and
 /// `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every `-F
@@ -173,8 +173,6 @@ fn perm_field_bits(raw: &str) -> Option<u8> {
 }
 
 /// au-W01 / au-E03 duplicate-rule pass over the concatenated load-order stream.
-///
-/// Body is pipeline P1's; the signature is Phase-0 frozen.
 #[must_use]
 pub fn w01(rules: &[LocatedRule], opts: LintOptions) -> Vec<Diagnostic> {
     // Map from canonical key to the first occurrence of that rule.

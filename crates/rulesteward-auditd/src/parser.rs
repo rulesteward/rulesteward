@@ -1,6 +1,6 @@
 //! auditd rules file parser.
 //!
-//! Issue #87 -- pipeline P2.
+//! Issue #87.
 //!
 //! # Grounding
 //! - Line-oriented format, `#` begins a comment: `man 7 audit.rules` section 2.
@@ -31,7 +31,7 @@ pub struct ParseError {
     pub message: String,
 }
 
-/// A parse error with file provenance (Phase 0, session 6a / #193).
+/// A parse error with file provenance (#193).
 ///
 /// Same shape as [`ParseError`] plus the source file, so the CLI can map each
 /// error to an `au-F01` diagnostic anchored in the right file. `line == 0`
@@ -257,10 +257,9 @@ fn drop_error_provenance(errs: Vec<LocatedParseError>) -> Vec<ParseError> {
 //     comment). See `rulesteward-core/src/comment.rs` for the parameterized
 //     scan and each backend's exact config.
 //   - sshd      algo_list_value (lints/crypto.rs): token-level, not
-//     line-level, and stays OUT of the shared helper by decision
-//     (2026-07-23) - it ends an already-whitespace-split algorithm list at
-//     the first `#`-prefixed arg, a different unit of work than a raw-line
-//     byte scan.
+//     line-level, and stays OUT of the shared helper by decision - it ends
+//     an already-whitespace-split algorithm list at the first `#`-prefixed
+//     arg, a different unit of work than a raw-line byte scan.
 // sysctld has NONE: sysctl.d(5) defines only whole-line `#`/`;` comments (a `#`
 // mid-value is literal). If you fix an edge case in the shared stripper, check
 // sshd's separate implementation too.
@@ -302,7 +301,7 @@ fn parse_line(line: &str, lineno: usize) -> Result<AuditRule, ParseError> {
         // auditctl's unconditional field-count check in `setopt()` before
         // any netlink call (`src/auditctl.c` `case 'D':`, byte-identical
         // across the RHEL8/9/10-shipped audit-userspace tags
-        // v3.1.2/v3.1.5/v4.0.3 -- see the lane-8 #541 report and the
+        // v3.1.2/v3.1.5/v4.0.3 -- see the #541 report and the
         // `delete_all_accepts_dash_k_key_shape` / sibling tests for the full
         // grounding and truth table).
         "-D" => {
@@ -427,8 +426,7 @@ fn parse_perms(s: &str, lineno: usize) -> Result<PermBits, ParseError> {
     // it examines any letter: `len = strlen(opt); if (len > 4) { ...; return
     // -1; }`. That's the same `return -1` the invalid-letter arm below uses,
     // so a too-long value (even one built entirely from valid letters, e.g.
-    // "rwxar") must reject exactly like an invalid letter would (issue #601
-    // ATL follow-up, MISS-1).
+    // "rwxar") must reject exactly like an invalid letter would (issue #601).
     if s.len() > 4 {
         return Err(ParseError {
             line: lineno,
@@ -614,15 +612,15 @@ fn parse_field_filter(spec: &str, lineno: usize) -> Result<FieldFilter, ParseErr
             // ("Permission can only contain  'rwxa'"). But the kernel/
             // libaudit rejects a non-`=` `-F perm` predicate on the OPERATOR
             // first (`-EAU_OPEQ`, before it ever examines the letters), so
-            // the letter check is gated on `op == CompareOp::Eq` (orchestrator
-            // RULING, 2026-07-30): `-F perm!=zz` and friends still parse so
-            // `au-E02` can report the illegal operator.
+            // the letter check is gated on `op == CompareOp::Eq`: `-F
+            // perm!=zz` and friends still parse so `au-E02` can report the
+            // illegal operator.
             if field == AuditField::Perm && *op == CompareOp::Eq {
                 // libaudit's audit_rule_fieldpair_data (lib/libaudit.c) checks
                 // length BEFORE the letter loop: `len = strlen(v); if (len > 4)
                 // return -EAU_STRTOOLONG;` -- a distinct diagnostic from the
-                // letter-set rejection below (issue #601 ATL follow-up,
-                // MISS-2). Gated on the same `op == Eq` condition as the
+                // letter-set rejection below (issue #601). Gated on the
+                // same `op == Eq` condition as the
                 // letter check: a non-`=` operator returns -EAU_OPEQ before
                 // libaudit ever reaches the length check.
                 if value_str.len() > 4 {
@@ -917,7 +915,7 @@ mod tests {
     }
 
     // --- -D control rule ---
-    // Issue #541 (lane-8 #541 report, 2026-07-23/24): source-grounded against
+    // Issue #541: source-grounded against
     // audit-userspace src/auditctl.c `case 'D':` at v3.1.2/v3.1.5/v4.0.3 (the
     // RHEL8/9/10-shipped audit versions per `rpm -q audit` in the project's
     // own fapolicyd8/9/10 containers) -- byte-identical logic on all three.
@@ -927,11 +925,7 @@ mod tests {
     // "extra"), which is REJECTED: "Wrong number of options for Delete all
     // request" (confirmed live via privileged fapolicyd8/9/10 containers,
     // rc 255, identical message on all three streams). Bare "-D" (`count ==
-    // 2`) is unaffected and stays DeleteAll. History: the old `-D` arm
-    // comment ("-D (with or without trailing args) is DeleteAll per
-    // auditctl(8)") was proven FALSE by this grounding and was corrected by
-    // the implementer alongside the fix (see the `-D` arm's current doc
-    // comment and the lane-8 report).
+    // 2`) is unaffected and stays DeleteAll.
     #[test]
     fn delete_all_bare() {
         let parsed = parse_line("-D", 1).expect("-D should parse");
@@ -940,14 +934,10 @@ mod tests {
 
     #[test]
     fn delete_all_with_extra_token() {
-        // RED (#541): was `parse_line("-D extra", 1).expect("-D extra should
-        // parse")` asserting the lenient (WRONG) behavior -- see the section
-        // doc comment above for the grounding. Updated by the test author
-        // (never the implementer) to pin the real auditctl behavior: a
-        // trailing token that is not "-k <key>" is REJECTED, not silently
-        // absorbed into DeleteAll. (The "-D -k <key>" shape is a distinct,
-        // real auditctl allowance -- initially scoped out of #541, then
-        // pinned in the strengthen round: see
+        // Pins the real auditctl behavior: a trailing token that is not
+        // "-k <key>" is REJECTED, not silently absorbed into DeleteAll --
+        // see the section doc comment above for the grounding. (The
+        // "-D -k <key>" shape is a distinct, real auditctl allowance: see
         // `delete_all_accepts_dash_k_key_shape` and its siblings below.)
         let err = parse_line("-D extra", 1)
             .expect_err("-D extra must be rejected: real auditctl refuses a trailing token here");
@@ -961,10 +951,10 @@ mod tests {
 
     #[test]
     fn delete_all_bare_survives_in_a_multiline_ruleset() {
-        // Green pin (#541): the -D fix must be scoped to THIS line's own
-        // trailing tokens (auditctl's per-line `setopt()` dispatch, per the
-        // lane-8 report) -- a bare "-D" elsewhere in a larger, otherwise
-        // valid ruleset must keep parsing to DeleteAll unchanged.
+        // The -D fix is scoped to THIS line's own trailing tokens
+        // (auditctl's per-line `setopt()` dispatch) -- a bare "-D" elsewhere
+        // in a larger, otherwise valid ruleset must keep parsing to
+        // DeleteAll unchanged.
         let input = "-w /etc/passwd -p wa -k identity\n-D\n-b 8192\n";
         let rules = parse_rules_str(input).expect("a bare -D inside a valid ruleset must parse");
         assert!(
@@ -973,7 +963,7 @@ mod tests {
         );
     }
 
-    // --- Strengthen round (#541): the "-D -k <key>" allowance ---
+    // --- The "-D -k <key>" allowance (#541) ---
     // Grounding: auditctl.c `case 'D':` (v3.1.5 L1000-1024, v3.1.2 L982-1006,
     // v4.0.3 L1005-1029 -- byte-identical on all three RHEL-target tags)
     // does NOT do a blanket reject of every trailing token. The exact shape
@@ -1040,7 +1030,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Located parse API (Phase 0, session 6a / #193): provenance for lint passes
+// Located parse API (#193): provenance for lint passes
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod located_tests {
@@ -1115,7 +1105,7 @@ mod located_tests {
         );
     }
 
-    /// RED (#541, lane-8 report): a "-D extra" line must surface through the
+    /// A "-D extra" line must surface through the
     /// SAME `LocatedParseError` -> au-F01 channel as every other malformed
     /// line (mirrors `located_str_errors_carry_file_and_line`'s "-Z bogus"
     /// case just above), not an invented side-channel. Grounded against real

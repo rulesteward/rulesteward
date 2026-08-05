@@ -1,4 +1,4 @@
-//! Lane A (auditd) differential-oracle replay test (session 9k-1, #584/#601/#489/#491).
+//! Lane A (auditd) differential-oracle replay test (#584/#601/#489/#491).
 //!
 //! Tier 1 of the two-tier contract in `CONTRIBUTING.md` "Differential oracle
 //! contract": pure Rust, reads a COMMITTED corpus of RAW captured facts
@@ -11,21 +11,20 @@
 //! binary at a freshly captured corpus via `RS_ORACLE_CORPUS_AUDITD` to check
 //! for drift.
 //!
-//! # AMENDMENT (session 9k-1, post-barrier): raw facts, not a precomputed verdict
+//! # Raw facts, not a precomputed verdict
 //!
 //! The first draft of this corpus stored a PRECOMPUTED "accept"/"reject"
 //! column, written by a `grep -qF "Error sending add rule data request"` in
 //! the capture script. That string only ever fires on the ADD-RULE path
 //! (`-w`/`-a`), so every control-only line (`-D`, `-b`, ...) was silently
 //! recorded as REJECT - including bare `-D`, the first line of essentially
-//! every real `audit.rules` file. An adversarial review caught this at the
-//! barrier before any implementation landed. The fix (owner-approved, full
-//! remediation): **the capture script records raw facts; Rust classifies.**
+//! every real `audit.rules` file. The fix:
+//! **the capture script records raw facts; Rust classifies.**
 //! [`classify_capture`] is the one place that decides "did the daemon accept
 //! this?", and it lives under `cargo test`, `clippy`, the coverage floor and
 //! the mutation gate - unlike the untested `grep -qF` it replaces.
 //!
-//! # Required product API (frozen by the test-author barrier)
+//! # Required product API
 //!
 //! ```ignore
 //! pub enum Verdict { Accept, Reject }
@@ -42,11 +41,7 @@
 //! the exact entry point the CLI takes, and must NEVER `use rulesteward_auditd::ast`.
 //! A differential whose product side reimplements the grammar is
 //! self-referential: it proves the reimplementation agrees with the corpus
-//! and says nothing about the parser an administrator actually runs. This is
-//! the OPPOSITE requirement from the first draft of this file, which forbade
-//! delegating to the "lenient" parser; that framing is exactly backwards and
-//! was corrected at the barrier - see `rulesteward_auditd::oracle`'s module
-//! doc.
+//! and says nothing about the parser an administrator actually runs.
 //!
 //! # Corpus format
 //!
@@ -77,8 +72,8 @@
 //! `mktemp` nondeterminism circled around). A `#`-prefixed header (5 lines)
 //! precedes the data rows in every file; line 2 carries `target=... image=...
 //! audit_version=<rpm -q audit output>` and line 3 carries `captured=<UTC
-//! timestamp>` on ITS OWN line (moved off the `audit_version=` line in this
-//! amendment: the timestamp is the ONLY thing that changes on every
+//! timestamp>` on ITS OWN line (the timestamp is the ONLY thing that
+//! changes on every
 //! recapture, and keeping it on a separate line means "every line except
 //! `# captured=`" is the exact byte-identity check for "did this recapture
 //! actually change anything").
@@ -87,7 +82,7 @@
 //!
 //! See `tests/corpus/auditd-oracle/PROVENANCE.md` for image versions, capture
 //! date, the safety invariant, the `UNOBSERVABLE`/`XFAIL` findings, and the
-//! `MSG_SYSLOG`-under-`-R` finding that this amendment's regrounding surfaced.
+//! `MSG_SYSLOG`-under-`-R` finding.
 
 use std::path::{Path, PathBuf};
 
@@ -96,8 +91,8 @@ use rulesteward_auditd::oracle::{
 };
 use rulesteward_core::oracle_corpus::{resolve_and_announce_corpus_root, sentinel_count};
 
-/// Named floor: 76 scenario ids (74 after round-2 + 2 post-implementation
-/// adversarial-review additions: `w-delete-watch`, `d-delete-syscall` - the
+/// Named floor: 76 scenario ids (including `w-delete-watch`,
+/// `d-delete-syscall` - the
 /// id count below is the ACTUAL captured count, verified against the corpus
 /// this commit ships), each captured against el8/el9/el10 = 228 rows. Raise
 /// this deliberately, in the same commit, when the corpus grows.
@@ -120,14 +115,14 @@ const EXPECTED_TARGETS: &[&str] = &["el8", "el9", "el10"];
 
 /// The two-sided positive control ids (CONTRIBUTING.md rule 2): a rule the
 /// real oracle must ACCEPT and one it must REJECT, each with non-silent
-/// evidence. `control-reject`'s RULE changed in this amendment (see
+/// evidence. `control-reject`'s RULE changed (see
 /// `capture_auditd.sh`): the old `-F perm=zz` doubled as a product-divergence
 /// row AT THE TIME (`RuleSteward`'s parser did not validate `-F perm=`
 /// letter sets either), which meant a broken harness and a real XFAIL would
 /// have been indistinguishable. `-F nosuchfield=1` is loud on the real
 /// oracle AND rejected by `RuleSteward`'s own field-name table, so product
-/// and oracle AGREE - this can never become an XFAIL. (#601's other half,
-/// session 9m lane 1, has since added that letter-set check, so the old
+/// and oracle AGREE - this can never become an XFAIL. (#601 has since added
+/// that letter-set check, so the old
 /// `-F perm=zz` rule would no longer double this way -- see the corpus's
 /// own `f-perm-invalid-letter` id and `PROVENANCE.md`'s "Positive control
 /// changed" section for the closed-out divergence.)
@@ -151,7 +146,7 @@ const CONTROL_REJECT_ID: &str = "control-reject";
 /// specified LIST) - none of the three validate VALUE content, and none of
 /// today's divergences are an operator- or list-legality question.
 const XFAIL: &[(&str, &str)] = &[
-    // --- Quote stripping (deliberate leniency, parser.rs:277-287): the
+    // --- Quote stripping (deliberate leniency, parser.rs:276-286): the
     // parser strips a token's balanced leading+trailing SINGLE quote for
     // admin-UX reasons; real auditctl's `audit_strsplit` treats quotes as
     // literal bytes, so a quoted field spec glues the quote onto the field
@@ -241,8 +236,7 @@ const XFAIL: &[(&str, &str)] = &[
         "#491 -F devminor=-1, same non-negative requirement as pers. \
          Genuine blind spot.",
     ),
-    // --- Unknown syscall name (new finding, beyond this lane's original
-    // 16-id estimate): the parser accepts ANY string as a -S syscall name
+    // --- Unknown syscall name: the parser accepts ANY string as a -S syscall name
     // with no table lookup; real auditctl validates the name via
     // audit_name_to_syscall and rejects an unknown one (silently, under -R -
     // see PROVENANCE.md "MSG_SYSLOG under -R"). Genuine blind spot: no lint
@@ -289,8 +283,8 @@ const XFAIL: &[(&str, &str)] = &[
 /// Rows whose real-oracle verdict is [`Unusable`] rather than Accept/Reject -
 /// the capture cannot support any comparison for this id, and that is
 /// recorded rather than hidden. Permitted ONLY for an id listed here, WITH
-/// the declared [`Unusable`] KIND matching exactly (round-2 adversarial
-/// review, blocker 4: a two-part guard of "id is listed" AND "kind is one of
+/// the declared [`Unusable`] KIND matching exactly (a two-part guard of "id
+/// is listed" AND "kind is one of
 /// the two allowed variants" - checked independently rather than as a pair -
 /// would let `rocky9-filesystem-list` classify `SilentNonAddLine` instead of
 /// its actual `SandboxLimited` mechanism and still pass, which defeats the
@@ -399,8 +393,7 @@ const UNOBSERVABLE: &[(&str, Unusable, &str)] = &[
 /// rule in `oracle.rs`'s truth table, currently depends on its value.
 /// `class` is used only inside panic/diagnostic strings (grouping label for a
 /// human reading a failure), never in any comparison or assertion. Noted here
-/// (round-2 adversarial review, also-fix 7) so a later session does not
-/// mistake either field for load-bearing.
+/// so a later session does not mistake either field for load-bearing.
 #[derive(Debug, Clone)]
 struct Row {
     target: String,
@@ -795,7 +788,7 @@ fn assert_two_sided_positive_control(all_rows: &[Row], stem: &str) {
                  silent); rule={:?}",
                 reject_row.rule
             );
-            // Round-2 adversarial review: `!complaint.is_empty()` alone is
+            // `!complaint.is_empty()` alone is
             // satisfied by ANY non-empty `&'static str`, including one that
             // was never grounded in the row's actual stderr (e.g. a
             // hardcoded placeholder). Cross-check the complaint is actually
@@ -828,8 +821,8 @@ type TargetIdHits = Vec<(String, String)>;
 
 /// The core comparison this whole file exists for. Every row is first
 /// classified by `classify_capture`; an `Unusable` row is permitted ONLY for
-/// an id on [`UNOBSERVABLE`] whose declared KIND matches exactly (round-2
-/// review, blocker 4) and is excluded from the product comparison entirely -
+/// an id on [`UNOBSERVABLE`] whose declared KIND matches exactly and is
+/// excluded from the product comparison entirely -
 /// never "matched", never "xfailed", simply not comparable. An Accept/Reject
 /// row is compared against `product_verdict`, matched directly or via
 /// [`XFAIL`].
@@ -837,7 +830,7 @@ type TargetIdHits = Vec<(String, String)>;
 /// Returns `(compared, xfail_hits, unobservable_hits)`, each hit list keyed
 /// by `(target, id)` - NOT just `id` - so [`assert_hit_exactly_three`] can
 /// verify the 3 hits for an entry land one PER TARGET rather than merely
-/// three times somewhere in the pooled rows (round-2 review, also-fix 5).
+/// three times somewhere in the pooled rows.
 fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, TargetIdHits, TargetIdHits) {
     let mut xfail_hits: TargetIdHits = Vec::new();
     let mut unobservable_hits: TargetIdHits = Vec::new();
@@ -876,8 +869,8 @@ fn compare_product_to_oracle(all_rows: &[Row]) -> (usize, TargetIdHits, TargetId
 
 /// Validate one `Unusable` row against [`UNOBSERVABLE`] and record the hit.
 /// Panics (`ORACLE-BROKEN`) on an unlisted id, OR an id that IS listed but
-/// whose declared kind does not match this row's actual kind (round-2
-/// review, blocker 4: checking "id is listed" and "kind is one of the two
+/// whose declared kind does not match this row's actual kind (checking "id
+/// is listed" and "kind is one of the two
 /// allowed variants" independently would let `rocky9-filesystem-list`
 /// classify `SilentNonAddLine` instead of its true `SandboxLimited`
 /// mechanism and still pass). No allowlist, ever, for
@@ -902,7 +895,7 @@ fn record_unusable_hit(row: &Row, kind: Unusable, unobservable_hits: &mut Target
 }
 
 /// Every id on `table` must have been hit EXACTLY 3 times, ONE PER TARGET
-/// (`rs-oracle8`/`rs-oracle9`/`rs-oracle10` - round-2 review, also-fix 5: a
+/// (`rs-oracle8`/`rs-oracle9`/`rs-oracle10` - a
 /// version of this check that merely counts occurrences in the POOLED hit
 /// list would pass a corpus where all 3 hits came from a single file and the
 /// other two files dropped the row entirely, which is harmless today only
@@ -979,15 +972,15 @@ fn assert_version_divergence_control(versions: &[(String, String)]) {
 }
 
 // ---------------------------------------------------------------------------
-// Test-side (NOT product) grounding for "loud reject" stderr text (round-2
-// adversarial review, also-fix 4): `classify_capture`'s own complaint table
+// Test-side (NOT product) grounding for "loud reject" stderr text:
+// `classify_capture`'s own complaint table
 // is the implementer's to write inside `oracle.rs`, but nothing in this file
 // independently verified that every loud-reject row in the corpus carries a
 // RECOGNISED, cited diagnostic rather than an accidental catch-all - which is
-// exactly the gap the reviewer's constant-catch-all counterexample
-// (`_ => Reject { complaint: "some diagnostic" }`) exploited. This check runs
-// TODAY, independent of `classify_capture` (still `todo!()`), by reading the
-// corpus directly.
+// exactly the gap a constant-catch-all impl
+// (`_ => Reject { complaint: "some diagnostic" }`) would exploit. This check
+// runs independent of `classify_capture`'s own implementation, by reading
+// the corpus directly.
 // ---------------------------------------------------------------------------
 
 /// Substrings that must appear in a KNOWN loud-reject row's stderr, each cited
@@ -1036,12 +1029,11 @@ fn is_sandbox_limited_stderr(stderr: &str) -> bool {
 /// `oracle.rs`'s `rc_one_unrecognised_nonempty_stderr_is_unusable` synthetic
 /// pin.
 ///
-/// The delete-shaped exclusion (`w-delete-watch`/`d-delete-syscall`,
-/// post-implementation adversarial review MISS 1) matters here too: without
-/// it, those two rows' "Error sending delete rule data request" stderr looks
-/// exactly like an unrecognised loud reject to THIS test's own heuristic,
-/// which would make it fail forever (even once `classify_capture` is fixed
-/// to accept them) rather than only while the bug is unfixed.
+/// The delete-shaped exclusion (`w-delete-watch`/`d-delete-syscall`) matters
+/// here too: without it, those two rows' "Error sending delete rule data
+/// request" stderr looks exactly like an unrecognised loud reject to THIS
+/// test's own heuristic, even though `classify_capture` itself already
+/// recognises them.
 #[test]
 fn known_parse_complaints_cover_every_loud_reject_row() {
     let root = corpus_root();
@@ -1100,7 +1092,7 @@ fn known_parse_complaints_cover_every_loud_reject_row() {
 }
 
 // ---------------------------------------------------------------------------
-// Codec positive control (round-2 adversarial review, also-fix 6): the three
+// Codec positive control: the three
 // `assert_eq!(decoded.len(), recorded_len)` checks in `parse_data_row` have
 // only ever run against a corpus where they pass. This project's own rule is
 // that any instrument gets ONE run against known-bad input before a green

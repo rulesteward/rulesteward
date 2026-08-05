@@ -1,4 +1,4 @@
-//! Differential-oracle adapter for the `auditd` backend (session 9k-1).
+//! Differential-oracle adapter for the `auditd` backend.
 //!
 //! This module is the product side of the Tier-1 replay test described in
 //! `CONTRIBUTING.md` "Differential oracle contract". It exists so
@@ -30,8 +30,8 @@
 //! the rule line, the exit code, and both output streams, verbatim. It makes no
 //! verdict. [`classify_capture`] turns those raw facts into an oracle verdict,
 //! which puts the one piece of logic that decides "did the daemon accept this?"
-//! under `cargo test`, `clippy`, the coverage floor and the mutation gate. The
-//! first draft of this lane put that decision in an untested `grep -qF` inside
+//! under `cargo test`, `clippy`, the coverage floor and the mutation gate. An
+//! earlier version of this logic lived in an untested `grep -qF` inside
 //! the capture script, and it silently recorded `-D` - the first line of
 //! essentially every real `audit.rules` file - as a parse REJECT.
 
@@ -264,7 +264,7 @@ const SILENT_REFUSAL_COMPLAINT: &str = "(no diagnostic text: rc=1 with empty std
 ///
 /// Source-grounded against `audit-userspace` `src/auditctl.c` `setopt()`,
 /// confirmed byte-identical in shape across the three RHEL8/9/10-shipped tags
-/// v3.1.2 / v3.1.5 / v4.0.3 (session 2026-07-26 read of
+/// v3.1.2 / v3.1.5 / v4.0.3 (as of a 2026-07-26 read of
 /// <https://github.com/linux-audit/audit-userspace>):
 ///
 /// - `-D` (`case 'D':`, v3.1.2 L982 / v3.1.5 L1000 / v4.0.3 L1005): an
@@ -282,13 +282,8 @@ const SILENT_REFUSAL_COMPLAINT: &str = "(no diagnostic text: rc=1 with empty std
 ///   `--backlog_wait_time` (`case 2:`, L1116/L1134/L1139): same shape, silent
 ///   on a `<= 0` / negative return.
 ///
-/// `--reset-lost` is DELIBERATELY ABSENT (round-2 adversarial review, session
-/// 2026-07-26): the first draft of this list included it on the strength of
-/// `case 3:`'s shape alone (calls `audit_number_to_errmsg(rc, ...)` on
-/// failure, same as the other entries here), flagged at the time as the
-/// weakest-grounded entry because whether `err_msgtab` even has an `-EPERM`
-/// key was unconfirmed. A live capture (`reset-lost-probe` in the corpus)
-/// settled it: `audit_reset_lost` (`libaudit.c` `audit_get_features() &
+/// `--reset-lost` is DELIBERATELY ABSENT: a live capture
+/// (`reset-lost-probe` in the corpus) shows `audit_reset_lost` (`libaudit.c` `audit_get_features() &
 /// AUDIT_FEATURE_BITMAP_LOST_RESET == 0` check, before any netlink send)
 /// returns `-EAU_FIELDNOSUPPORT` in THIS sandbox (the same blocked
 /// `AUDIT_GET` status call the `-s` canary exercises also blocks the
@@ -334,16 +329,14 @@ const SILENT_SUCCESS_LEADING_FLAGS: &[&str] = &[
 ///
 /// The leading flag is taken as the first `str::split_whitespace` token.
 ///
-/// CORRECTED (post-implementation adversarial review, session 2026-07-26):
-/// this used to claim `split_whitespace` "matches `audit_strsplit`'s own
-/// dispatch". It does NOT - `common/strsplit.c`'s `audit_strsplit` splits on
+/// `split_whitespace` does NOT match `audit_strsplit`'s own dispatch:
+/// `common/strsplit.c`'s `audit_strsplit` splits on
 /// the literal space byte ONLY (`strchr(str, ' ')`), while `split_whitespace`
 /// also splits on TAB (and other Unicode whitespace). The two tokenizers
 /// agree for every leading flag this function currently enumerates (none is
 /// followed by a literal tab in this corpus), so the divergence has not yet
-/// produced a wrong `silence_is_conclusive` answer, but the claim itself was
-/// false and is corrected here rather than left to mislead a future reader
-/// or a future denylist entry. See `iss584-embedded-tab-glues-flag` /
+/// produced a wrong `silence_is_conclusive` answer. See
+/// `iss584-embedded-tab-glues-flag` /
 /// `iss584-all-tabs-separators` in the corpus for where this tokenizer gap
 /// DOES surface (as `product_verdict` divergences, not here). What IS true
 /// regardless of tokenizer choice: a leading flag is always the option
@@ -366,8 +359,8 @@ const SHORT_OPTS_WITH_ATTACHED_ARG: &[&str] = &["-e", "-f", "-r", "-b"];
 /// Normalises a line's leading token to the spelling
 /// [`SILENT_SUCCESS_LEADING_FLAGS`] denylists against, undoing the two
 /// `getopt_long` attached-argument forms that let an enumerated denylist
-/// entry escape its own lookup by spelling (round-2 adversarial finding
-/// `enumerated_flags_with_an_attached_optarg_are_not_conclusive`):
+/// entry escape its own lookup by spelling (see the
+/// `enumerated_flags_with_an_attached_optarg_are_not_conclusive` test):
 ///
 /// - A short option with a glued optarg (`-b8192` for `-b 8192`,
 ///   `-e1`/`-f1`/`-r100`): `getopt_long` dispatches `-b8192` to the same
@@ -431,14 +424,14 @@ mod silence_is_conclusive_tests {
         assert!(!silence_is_conclusive("--loginuid-immutable"));
     }
 
-    /// `--reset-lost` is deliberately NOT on the denylist (round-2 review):
-    /// the live `reset-lost-probe` corpus row shows it is always LOUD in this
+    /// `--reset-lost` is deliberately NOT on the denylist: the live
+    /// `reset-lost-probe` corpus row shows it is always LOUD in this
     /// sandbox (`Field option not supported by kernel: reset-lost`, a
     /// `Unusable::SandboxLimited` case, not the silent-success-path ambiguity
     /// the denylist exists for), so its silence would in fact be conclusive -
     /// it just never happens to BE silent here. Pinned as its own test so a
-    /// future edit that re-adds it to the denylist (undoing the round-2
-    /// finding) fails visibly instead of silently.
+    /// future edit that re-adds it to the denylist fails visibly instead of
+    /// silently.
     #[test]
     fn reset_lost_is_not_on_the_denylist_after_empirical_settlement() {
         assert!(
@@ -468,8 +461,7 @@ mod silence_is_conclusive_tests {
         );
     }
 
-    /// MISS 2 (post-implementation adversarial review, session 2026-07-26):
-    /// an ENUMERATED denylist flag escapes its own entry by legal alternate
+    /// An ENUMERATED denylist flag escapes its own entry by legal alternate
     /// spelling. `getopt_long`'s optstring `"...e:f:r:b:..."` makes `-b8192`
     /// (attached optarg, no space) a legal spelling of `-b 8192` - POSIX
     /// getopt dispatches both to the SAME `case 'b':` arm with
@@ -509,12 +501,11 @@ mod silence_is_conclusive_tests {
 }
 
 /// Synthetic (no corpus row needed - pure function calls) pins on
-/// `classify_capture`'s contract, added at the round-2 adversarial review
-/// (session 2026-07-26) after the reviewer POSITIVE-CONTROLLED its own
-/// instrument (reproduced the round-1 bug, confirmed a constant-`Accept`
-/// stub, both `silence_is_conclusive` polarity inversions, an accept/complaint
-/// probe reorder, and treating the fstype message as `Reject` all pass the
-/// CORPUS-based comparison alone) and found that every one of the 213
+/// `classify_capture`'s contract. A positive control on this instrument
+/// (reproduced a constant-`Accept` stub, both `silence_is_conclusive`
+/// polarity inversions, an accept/complaint probe reorder, and treating the
+/// fstype message as `Reject` - all of which pass the
+/// CORPUS-based comparison alone) found that every one of the 213
 /// corpus rows has `rc == 1`, so nothing in the corpus-driven test forces
 /// `classify_capture` to inspect `rc` at all - `Unusable::Loaded`,
 /// `NoCapability`, `UnexpectedRc` and `UnrecognisedDiagnostic` were reachable
@@ -591,7 +582,7 @@ mod classify_capture_synthetic_tests {
     /// that keys off the companion string alone
     /// (`stderr.contains("There was an error in line")` -> Accept) passes
     /// every corpus row (the two strings are coextensive across all 213
-    /// rows: measured round-2, el9, 42/42/42), so it takes a stderr carrying
+    /// rows: measured el9, 42/42/42), so it takes a stderr carrying
     /// ONLY the companion, deliberately withholding the add-request string,
     /// to catch it.
     #[test]
@@ -609,8 +600,7 @@ mod classify_capture_synthetic_tests {
         );
     }
 
-    /// MISS 1 (post-implementation adversarial review, session 2026-07-26):
-    /// the accept probe only recognises the ADD half of
+    /// The accept probe only recognises the ADD half of
     /// `handle_request()`'s netlink dispatch. `auditctl.c`'s
     /// `else if (del != AUDIT_FILTER_UNSET)` branch (reached by `case 'W':`
     /// and `case 'd':` in `setopt()`) carries the IDENTICAL
@@ -645,8 +635,8 @@ mod classify_capture_synthetic_tests {
         }
     }
 
-    /// MISS 2's `classify_capture`-level consequence (see
-    /// `enumerated_flags_with_an_attached_optarg_are_not_conclusive` in
+    /// The `classify_capture`-level consequence of the enumerated-flag gap
+    /// (see `enumerated_flags_with_an_attached_optarg_are_not_conclusive` in
     /// `silence_is_conclusive_tests` for the root cause): `-b8192` must
     /// classify `Unusable::SilentNonAddLine`, identically to `-b 8192`. The
     /// CURRENT wrong answer (`Reject` via the silent-refusal fallback) is
@@ -666,8 +656,8 @@ mod classify_capture_synthetic_tests {
     }
 }
 
-/// Synthetic pins on `product_verdict`'s "exactly one rule" guard (round-2
-/// adversarial review, session 2026-07-26): the corpus itself contains ZERO
+/// Synthetic pins on `product_verdict`'s "exactly one rule" guard: the
+/// corpus itself contains ZERO
 /// comment-only or blank rows (every scenario line is either a real rule or
 /// unparseable), so nothing in the corpus-driven comparison forces
 /// `product_verdict` to handle the `Ok(vec![])` case

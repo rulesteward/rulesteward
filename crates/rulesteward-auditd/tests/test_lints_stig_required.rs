@@ -1,33 +1,23 @@
-//! RED barrier tests for au-W06 (missing STIG-required audit rules, Warning) --
-//! issue #474, session 7c-v0_6-wave3 pipeline P2.
+//! Tests for au-W06 (missing STIG-required audit rules, Warning) -- issue
+//! #474.
 //!
 //! Emitted by `lints::stig_required::w06(&[LocatedRule], LintOptions,
 //! Option<TargetVersion>)`, version-aware: `target == None` (the portable
 //! default) always stays silent. The scenario tests below exercise the real
 //! matcher via `lints::stig_required::w06_with_baseline(rules, opts,
 //! baseline)`, injecting a small, REAL, appendix-cited test-local baseline
-//! directly rather than depending on the shipped `RHEL*_REQUIRED` tables --
-//! those are intentionally left EMPTY for the implementer to populate from
-//! `tools/auditd-stig-update derive`'s output (see
+//! directly rather than depending on the shipped `RHEL*_REQUIRED` tables (see
 //! `crates/rulesteward-auditd/src/lints/stig_required.rs`'s module doc for
 //! why `w06_with_baseline` is `pub` specifically to make this possible). Every
-//! `BaselineRule` line below is copied verbatim from the session's P2
+//! `BaselineRule` line below is copied verbatim from the P2
 //! grounding doc appendix (real DISA RHEL 9 STIG V2R7 check-content), cited by
 //! its `SV-...` id / `RHEL-09-NNNNNN` control id inline.
 //!
-//! # RED-state note (session 8b, issue #502)
-//! `w06_with_baseline`'s matcher is FULLY IMPLEMENTED (au-W06 shipped in v0.6);
-//! the au-W06 scenario tests below are all GREEN. The only RED tests in this
-//! file are the control-ID backfill assertions added for issue #502
-//! (`w06_missing_finding_carries_its_stig_control_ref` and
-//! `multiple_missing_findings_carry_distinct_per_finding_controls`): they pin
-//! that every au-W06 finding must ALSO carry a typed
+//! Every au-W06 finding also carries a typed
 //! `rulesteward_core::ControlRef { framework: Stig, id: <stig_id>, alias:
-//! <v_number> }`, which the emit sites do not attach yet. They fail on the
-//! `controls.len()` assertion (0 != 1) until the implementer wires the control
-//! onto each `Diagnostic`.
+//! <v_number> }` (issue #502).
 //!
-//! # dir-shape equivalence fold (issue #571, session 9j lane 8) -- why
+//! # dir-shape equivalence fold (issue #571) -- why
 //! # V-258218 is DELIBERATELY not credited by a `-F dir=` ruleset
 //!
 //! Issue #571 was originally reported against V-258218 (RHEL-09-654220,
@@ -40,24 +30,26 @@
 //! against the fixture, not recalled) requires **`-F path=/etc/sudoers.d`**,
 //! not `-F dir=`, for BOTH the b32 and b64 rows -- confirmed byte-for-byte
 //! against the shipped `RHEL9_REQUIRED` table
-//! (`stig_required.rs:747,752`) and independently pinned by the frozen
+//! (`stig_required.rs:743,748`) and independently pinned by the frozen
 //! content test `stig_baseline_rhel9_v2r9_content_pins` above. RHEL10 has
 //! its OWN, DISTINCT STIG id for the analogous `/etc/sudoers.d` requirement
 //! -- V-281155 / RHEL-10-500690, NOT V-258218 -- and that row
-//! (`stig_required.rs:1138,1143`) is ALSO spelled `-F path=/etc/sudoers.d/`,
+//! (`stig_required.rs:1134,1139`) is ALSO spelled `-F path=/etc/sudoers.d/`,
 //! never `-F dir=`. So `-F dir=` appears in neither RHEL9's V-258218 nor
 //! RHEL10's V-281155 -- two separate STIG ids, one per major release, both
 //! independently choosing `path=` for the same directory. Only RHEL8's
-//! V-230410 (`stig_required.rs:171`) is genuinely Watch-shaped
+//! V-230410 (`stig_required.rs:167`) is genuinely Watch-shaped
 //! (`-w /etc/sudoers.d/ -p wa -k identity`), which is why this file's
 //! dir-shape tests below anchor on V-230410/V-230406, not V-258218.
 //!
-//! USER RULING (2026-07-24, confirmed after independent orchestrator
-//! verification of the fixture/table citations above): the dir-shape fold
+//! RULING: the dir-shape fold
 //! credits ONLY genuinely dir-shaped requirements -- `-w DIR` <-> `-F dir=`
 //! and `-F dir=` <-> `-F dir=`. It does NOT fold `-F dir=` into `-F path=`
 //! (or vice versa) to paper over DISA's own `path=`-for-a-directory
-//! spelling. Consequently: **a ruleset that only has a `-F dir=` rule for
+//! spelling.
+//! Rationale + evidence: #571
+//!
+//! Consequently: **a ruleset that only has a `-F dir=` rule for
 //! `/etc/sudoers.d` correctly, truly, and permanently fails V-258218 on
 //! RHEL9/RHEL10 -- this is a TRUE missing, not a false positive.** DISA's
 //! own fixtext (the literal remediation text an admin is told to paste)
@@ -70,16 +62,16 @@
 //! requirement` / `dir_shaped_requirement_not_satisfied_by_an_explicit_
 //! path_syscall`).
 //!
-//! # `is_dir` stays fully ignored (ROUND 3, 2026-07-24) -- the accepted
+//! # `is_dir` stays fully ignored -- the accepted
 //! # file/directory over-credit, and why it is harmless
 //!
-//! Round 2 tried to pin an anti-collapse guard on a `-w /etc/passwd`
+//! An anti-collapse guard on a `-w /etc/passwd`
 //! (real FILE, `is_dir == false`) requirement rejecting a `-F dir=` watch
-//! candidate. That guard was internally UNSATISFIABLE: it and the
+//! candidate is internally UNSATISFIABLE: it and the
 //! required-satisfied positive test for V-230410 (`-w /etc/sudoers.d/`,
 //! `is_dir == true`) are the SAME cross-variant shape with a
 //! structurally identical `-F dir=` candidate -- the ONLY discriminator
-//! available between "accept" and "reject" was the required Watch's
+//! available between "accept" and "reject" is the required Watch's
 //! trailing slash, which would make `is_dir` load-bearing. That is
 //! forbidden: `is_dir` (see `ast.rs`'s `Watch::is_dir` doc comment) is a
 //! `RuleSteward` SPELLING heuristic, not ground truth -- real auditctl
@@ -93,9 +85,12 @@
 //! `dir_syscall_form_satisfies_v274877_cron_d_watch_spelled_without_a_
 //! trailing_slash` below).
 //!
-//! USER RULING (2026-07-24, ROUND 3): `is_dir` stays fully ignored for
-//! the dir-shape fold too (extending the pre-existing, LOCKED path-fold
-//! precedent, grounding Part B.7.2, to the new arm). Consequence,
+//! RULING: `is_dir` stays fully ignored for
+//! the dir-shape fold too (extending the LOCKED path-fold
+//! precedent, grounding Part B.7.2, to this arm).
+//! Rationale + evidence: #571
+//!
+//! Consequence,
 //! explicitly ACCEPTED as harmless rather than treated as a gap: a
 //! `-F dir=X` candidate credits a `-w X` requirement regardless of
 //! whether X is a real file or a real directory (pinned by
@@ -107,11 +102,10 @@
 //! genuine compliance gap. The rejected alternative (a curated per-row
 //! "names a directory" flag on `BaselineRule`) would fix this properly,
 //! but `BaselineRule` is code-generated by
-//! `tools/auditd-stig-update/src/main.rs`, owned by a different lane;
-//! that is filed as a follow-up issue instead of a mid-barrier shared-
-//! surface change.
+//! `tools/auditd-stig-update/src/main.rs`; that is tracked as a follow-up
+//! issue.
 //!
-//! ALSO RULED (2026-07-24): the fold must never resolve file-vs-directory
+//! ALSO RULED: the fold must never resolve file-vs-directory
 //! by `stat()`-ing the ANALYZING host's filesystem -- a linter analyzes
 //! configs FOR a target host, not the machine it happens to run on, so
 //! host-filesystem-dependent behavior would be both a correctness bug and
@@ -193,8 +187,7 @@ const COMPLIANT_RULES: &str = "\
 ";
 
 // ---------------------------------------------------------------------------
-// target=None: always silent (GREEN today -- w06's None branch never reaches
-// a non-empty baseline, so no todo!() is hit)
+// target=None: always silent
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -209,12 +202,10 @@ fn target_none_is_silent_even_on_a_wildly_non_compliant_ruleset() {
 
 #[test]
 fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_required_line() {
-    // The shipped RHEL9_REQUIRED table is now populated (issue #474): a bare
-    // ruleset with zero matching watch/syscall rules is missing every one of
-    // the 67 required lines, so w06's real dispatch (w06 -> baseline_for ->
-    // w06_with_baseline) must report exactly one finding per line - the exact
-    // count this test-author independently confirmed via
-    // `code_table(Rhel9).len()` (mirrors
+    // A bare ruleset with zero matching watch/syscall rules is missing every
+    // one of the shipped RHEL9_REQUIRED table's 81 required lines (issue
+    // #474), so w06's real dispatch (w06 -> baseline_for ->
+    // w06_with_baseline) must report exactly one finding per line (mirrors
     // `tools/auditd-stig-update`'s frozen `rhel9_known_answer_counts`/
     // `rhel9_fixture_reproduces_code_table_exactly` pins). Distinct from the
     // adjacent `w06_real_entrypoint_fires_on_a_bare_ruleset_...` test (which
@@ -222,26 +213,17 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
     // exact count or that EVERY finding is severity=Warning): this adds the
     // count precision that test lacks.
     //
-    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped RHEL9_REQUIRED
-    // table grew from 67 to 69 rows for the two Control-shaped deepening
-    // entries grounded live against the pinned RHEL 9 STIG V2R7 XCCDF
-    // (V-258227/RHEL-09-654265 "-f 2" and V-258229/RHEL-09-654275 "-e 2"; see
-    // the "Deepening (#523)" block below) -- that bump already landed and is
-    // GREEN. The next bump (also #523, additive round 2): 69 -> 70 rows for
-    // the "--loginuid-immutable" deepening entry (V-258228/RHEL-09-654270;
-    // see the "Deepening cont'd (#523)" block further below) -- also landed
-    // and is GREEN.
-    //
-    // #549 RE-GROUNDED (session 9e-wave2c pipeline P2, 2026-07-17): DISA RHEL
-    // 9 STIG V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip; lane3-tooling.md T1
-    // DRIFT-CHECK, "33 change(s)") rewrote 9 identity/login audit rules from
-    // single-line watch form into dual-arch (b32/b64) syscall form (net +9:
-    // 9 old single lines -> 18 new lines) and added a new required rule,
-    // V-279936 (RHEL-09-654097), for `execve` auditing scoped to
-    // `subj_type=crond_t` (cron_exec key), replacing the two old cron watch
-    // lines with 4 new dual-arch syscall lines (net +2). Net table growth:
-    // 70 + 9 + 2 = 81. RED today: the shipped RHEL9_REQUIRED table is still
-    // 70 rows (V2R7-grounded identity/cron content).
+    // Where 81 comes from: a V2R7-grounded 70 rows (67 derived requirement
+    // lines plus the three Control-shaped rows of issue #523 --
+    // V-258227/RHEL-09-654265 "-f 2", V-258229/RHEL-09-654275 "-e 2",
+    // V-258228/RHEL-09-654270 "--loginuid-immutable"), then DISA RHEL 9 STIG
+    // V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip, issue #549) rewrote 9
+    // identity/login audit rules from single-line watch form into dual-arch
+    // (b32/b64) syscall form (net +9: 9 single lines -> 18 lines) and added a
+    // new required rule, V-279936 (RHEL-09-654097), for `execve` auditing
+    // scoped to `subj_type=crond_t` (cron_exec key), replacing the two V2R7
+    // cron watch lines with 4 dual-arch syscall lines (net +2). Net table
+    // growth: 70 + 9 + 2 = 81.
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     assert_eq!(diags.len(), 81, "{diags:?}");
@@ -252,7 +234,7 @@ fn target_some_with_populated_shipped_table_yields_exactly_one_finding_per_requi
 }
 
 // ---------------------------------------------------------------------------
-// Barrier BLOCKER 2: the real w06(rules, opts, Some(target)) entrypoint must
+// The real w06(rules, opts, Some(target)) entrypoint must
 // actually FIRE, not just the injected-baseline w06_with_baseline(...) path
 // every other scenario test below calls directly. Every scenario test in this
 // file bypasses w06's target -> baseline_for -> w06_with_baseline dispatch
@@ -269,13 +251,7 @@ fn w06_real_entrypoint_fires_on_a_bare_ruleset_against_the_shipped_rhel9_table()
     // Goes through the REAL dispatch chain (w06 -> baseline_for ->
     // w06_with_baseline) against the SHIPPED RHEL9_REQUIRED table, on a
     // ruleset with no watch and no syscall audit rule at all (only
-    // control-plane lines). RED today for two independent, stacked reasons:
-    // RHEL9_REQUIRED is still an empty placeholder (dispatch short-circuits to
-    // Vec::new() before ever reaching the matcher -- same as the test above),
-    // AND once the implementer populates it, w06_with_baseline's real matcher
-    // body is todo!(). GREEN only when BOTH the shipped table is populated
-    // (from `auditd-stig-update derive`'s RHEL9 output) AND the matcher
-    // actually fires on a non-compliant ruleset.
+    // control-plane lines).
     let rules = parse("-D\n-b 8192\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     assert!(
@@ -292,7 +268,7 @@ fn w06_real_entrypoint_fires_on_a_bare_ruleset_against_the_shipped_rhel9_table()
     // grounded RHEL9 requirements (P2 grounding doc appendix.txt) that
     // tools/auditd-stig-update's rhel9_fixture_reproduces_code_table_exactly
     // test pins the shipped table must reproduce exactly, so it is guaranteed
-    // to be present in the final RHEL9_REQUIRED table and must be reported
+    // to be present in the RHEL9_REQUIRED table and must be reported
     // missing here.
     assert!(
         diags.iter().any(|d| d.message.contains("RHEL-09-654010")),
@@ -340,7 +316,7 @@ fn removing_one_watch_yields_exactly_one_finding_naming_its_stig_id() {
         "message must name the missing watch's STIG id, got {:?}",
         d.message
     );
-    // CONCERN 1: a plain-missing finding (the required rule has no same-shape
+    // A plain-missing finding (the required rule has no same-shape
     // counterpart anywhere in the ruleset at all, not even with a different
     // key) must NOT reuse the present-but-key-differs wording -- otherwise the
     // two distinct cases (grounding Part C.5's "Missing" vs "Present-but-
@@ -438,51 +414,35 @@ fn narrower_watch_perms_does_not_satisfy_the_requirement() {
 
 // ---------------------------------------------------------------------------
 // Path+Perm+Key syscall spelling satisfies its kernel-equivalent Watch-shaped
-// requirement (RE-DECIDED -- see the comment below).
+// requirement.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn watch_requirement_satisfied_by_a_kernel_equivalent_syscall_spelling() {
-    // RE-DECIDED (was `watch_requirement_not_satisfied_by_a_kernel_equivalent_
-    // syscall_spelling`, added in commit 43cfc5b, v0.6 Wave 3, #493 -- eight
-    // days BEFORE the path-watch equivalence fold (`is_pure_path_watch_shaped`
-    // / `watch_equivalent_axes_match`) existed at all). USER RULING
-    // (2026-07-24, session 9j lane 8, ATL round, issue #571 MISS-2b): this
-    // test predated the whole cross-variant fold, introduced 2026-07-17/18 in
-    // commit ea9f37c (#573, "USER RULING... watch<->syscall EQUIVALENCE"), and
-    // was accidentally missed by that commit's RE-DECIDED sweep -- which
-    // explicitly re-grounded three siblings
-    // (`w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` and its
-    // two neighbors below) but not this one. It kept passing only because of
-    // a SEPARATE bug (issue #571 MISS-2b): `is_pure_path_watch_shaped` forgot
-    // to allow `AuditField::Key` in its field-set membership check, so a
-    // candidate spelled `-F key=` (rather than `-k`) fell OUTSIDE the pure
-    // path-watch shape and never reached the fold at all. Once MISS-2b's fix
-    // landed, `-k KEY` and `-F key=KEY` are the SAME rule everywhere in this
+    // RULING: a same-path/same-perm/same-key Syscall-shaped rule DOES satisfy
+    // a Watch-shaped requirement whenever it is a pure path-watch shape; do
+    // not re-assert the opposite.
+    // Rationale + evidence: #571
+    //
+    // `-k KEY` and `-F key=KEY` are the SAME rule everywhere in this
     // module (`auditctl`'s `setopt()` literally implements `-k` as
     // `asprintf(&cmd, "key=%s", key)` before calling
     // `audit_rule_fieldpair_data`, lib/libaudit.c) -- exactly as
     // `effective_key`/`fields_match_excluding_key` already treat the two
-    // spellings elsewhere in this file. So the ORIGINAL claim ("a same-path/
-    // same-perm/same-key Syscall-shaped rule must NOT satisfy a Watch-shaped
-    // requirement") is WRONG for this shape specifically: the first candidate
+    // spellings elsewhere in this file. The first candidate
     // line below (no `-S`, fields limited to path/perm/key) IS a pure
     // path-watch shape and DOES satisfy RHEL-09-654215, the same way the
-    // RE-DECIDED siblings' dual-arch forms satisfy V-258222/V-258223. Do NOT
-    // "restore" the old assertion -- this comment is why it changed.
+    // siblings' dual-arch forms satisfy V-258222/V-258223.
     //
-    // The genuinely-still-valid HALF of the original scenario -- that
     // Syscall-shaped rules carrying real `-S` syscall lists are NOT pure
-    // path-watch shaped and never reach the cross-variant fold at all -- is
-    // preserved here, not deleted: the other three lines below keep their
-    // `-S`/`-S all` lists and still satisfy their OWN Syscall-shaped required
-    // rows (RHEL-09-654015, RHEL-09-654030) purely via the ordinary,
-    // unmodified same-variant match, exactly as before. With MISS-2b's fix,
-    // ALL FOUR lines are now satisfied, so the whole scenario is asserted
-    // fully compliant (zero findings) rather than "exactly one, naming
-    // RHEL-09-654215". Genuine negative coverage for a truly NON-equivalent
+    // path-watch shaped and never reach the cross-variant fold at all: the
+    // other three lines below keep their `-S`/`-S all` lists and satisfy
+    // their OWN Syscall-shaped required rows (RHEL-09-654015,
+    // RHEL-09-654030) purely via the ordinary same-variant match. ALL FOUR
+    // lines are satisfied, so the whole scenario asserts fully compliant
+    // (zero findings). Genuine negative coverage for a truly NON-equivalent
     // shape (an `-S`-bearing rule that cannot fold into ANY Watch-shaped
-    // requirement) lives separately, unaffected by this change, in
+    // requirement) lives separately in
     // `crond_watch_does_not_satisfy_v279936_execve_requirement` below.
     let rules = parse(
         "-a always,exit -F path=/etc/sudoers -F perm=wa -F key=identity\n\
@@ -562,7 +522,7 @@ fn dash_k_spelling_satisfies_a_dash_f_key_equals_requirement() {
 
 #[test]
 fn syscall_key_unify_is_symmetric_in_both_spelling_directions() {
-    // BLOCKER 3: rhel9_sample_baseline() spells every SYSCALL requirement's
+    // rhel9_sample_baseline() spells every SYSCALL requirement's
     // key with "-F key=" (only the watch uses "-k"), so
     // dash_k_spelling_satisfies_a_dash_f_key_equals_requirement above only
     // ever exercises baseline "-F key=" vs ruleset "-k". But the REAL derived
@@ -671,10 +631,10 @@ fn catalog_lists_au_w06_as_warning() {
 // ---------------------------------------------------------------------------
 // stig_baseline: the pub accessor for the drift tool. `tools/auditd-stig-
 // update`'s `check`/`derive` subcommands import it directly, and (unlike
-// baseline_for, which is only reached indirectly via `w06`) it had no
-// in-crate test proving it forwards to the REAL per-product table rather
-// than an empty slice (mutation gate, session 7c pipeline P2: `stig_baseline
-// -> Vec::leak(Vec::new())` survived).
+// baseline_for, which is only reached indirectly via `w06`) the test below
+// is the only in-crate proof that it forwards to the REAL per-product table
+// rather than an empty slice; nothing else here would catch a
+// `stig_baseline -> Vec::leak(Vec::new())` substitution.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -682,23 +642,19 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     // Length + a known control id per product, mirroring the tool crate's own
     // rhel{8,9,10}_known_answer_counts pins.
     //
-    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): counts bumped from the
-    // prior 61/67/75 to 62/69/77 -- one new Control-shaped deepening entry on
-    // RHEL8 (V-230402/RHEL-08-030121, "-e 2") and two each on RHEL9
-    // (V-258227/RHEL-09-654265 "-f 2", V-258229/RHEL-09-654275 "-e 2") and
-    // RHEL10 (V-281103/RHEL-10-500035 "-f 2", V-281365/RHEL-10-900100 "-e 2"),
-    // all grounded live against the pinned DISA XCCDF (see the "Deepening
-    // (#523)" block below). That bump already landed and is GREEN.
-    //
-    // SECOND, additive bump (also #523, additive round 2, "Deepening cont'd"
-    // block further below): "--loginuid-immutable" adds ONE MORE entry each to
-    // RHEL8 (62 -> 63: V-230403/RHEL-08-030122) and RHEL9 (69 -> 70:
-    // V-258228/RHEL-09-654270). RHEL10's XCCDF has no loginuid-immutable
-    // control at all (verified live 2026-07-15 -- no Group/Rule mentions
-    // "loginuid" anywhere in the pinned U_RHEL_10_V1R1_STIG.zip), so RHEL10
-    // stays at 77 (see `rhel10_loginuid_immutable_control_absent_from_baseline`
-    // below for that discriminating-negative guard). RED today: the RHEL8 and
-    // RHEL9 shipped tables are still 62/69 rows (no loginuid row yet).
+    // The 63/81/77 counts include the Control-shaped deepening rows of issue
+    // #523, all grounded live against the pinned DISA XCCDF (see the
+    // Control-shaped deepening tests below): RHEL8 carries
+    // V-230402/RHEL-08-030121 "-e 2" and V-230403/RHEL-08-030122
+    // "--loginuid-immutable"; RHEL9 carries V-258227/RHEL-09-654265 "-f 2",
+    // V-258229/RHEL-09-654275 "-e 2" and V-258228/RHEL-09-654270
+    // "--loginuid-immutable"; RHEL10 carries V-281103/RHEL-10-500035 "-f 2"
+    // and V-281365/RHEL-10-900100 "-e 2". RHEL10's XCCDF has no
+    // loginuid-immutable control at all (verified live 2026-07-15 -- no
+    // Group/Rule mentions "loginuid" anywhere in the pinned
+    // U_RHEL_10_V1R1_STIG.zip), so RHEL10 carries no such row (see
+    // `rhel10_loginuid_immutable_control_absent_from_baseline` below for that
+    // discriminating-negative guard).
     let rhel8 = stig_baseline(TargetVersion::Rhel8);
     assert_eq!(rhel8.len(), 63, "{rhel8:?}");
     assert!(
@@ -718,17 +674,14 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
     );
 
     let rhel9 = stig_baseline(TargetVersion::Rhel9);
-    // #549 RE-GROUNDED (session 9e-wave2c pipeline P2, 2026-07-17;
-    // strengthened per adversarial review of commit bbcca23): was 70.
-    // DISA RHEL 9 STIG V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip;
-    // lane3-tooling.md T1 DRIFT-CHECK, "33 change(s)") rewrote 9
+    // The 81 is DISA RHEL 9 STIG V2R9 (confirmed via U_RHEL_9_V2R9_STIG.zip,
+    // issue #549), which rewrote 9
     // identity/login audit rules from single-line watch form into dual-arch
-    // (b32/b64) syscall form (net +9: 9 old lines -> 18 new lines) and added a
+    // (b32/b64) syscall form (net +9: 9 lines -> 18 lines) and added a
     // new required rule, V-279936 (RHEL-09-654097), for `execve` auditing
-    // scoped to `subj_type=crond_t` (`cron_exec` key), replacing the two old
-    // cron watch lines with 4 new dual-arch syscall lines (net +2). Net table
-    // growth: 70 + 9 + 2 = 81. RED today: the shipped table is still 70 rows
-    // (V2R7-grounded identity/cron content).
+    // scoped to `subj_type=crond_t` (`cron_exec` key), replacing the two V2R7
+    // cron watch lines with 4 dual-arch syscall lines (net +2), over a
+    // V2R7-era 70 rows: 70 + 9 + 2 = 81.
     assert_eq!(rhel9.len(), 81, "{rhel9:?}");
     assert!(
         rhel9.iter().any(|r| r.stig_id == "RHEL-09-654010"),
@@ -767,23 +720,23 @@ fn stig_baseline_returns_the_real_shipped_table_for_each_target() {
 }
 
 // ---------------------------------------------------------------------------
-// #549 content pins (adversarial-review finding 2a, split into its own test
-// function to keep `stig_baseline_returns_the_real_shipped_table_for_each_
-// target` under clippy's too_many_lines threshold): exact `line ==` pins for
+// #549 content pins (kept in their own test function so
+// `stig_baseline_returns_the_real_shipped_table_for_each_target` stays
+// under clippy's too_many_lines threshold): exact `line ==` pins for
 // ALL 10 V2R9-rewritten RHEL9 V-numbers (9 identity/login + V-279936
 // cron_exec), not just the aggregate count the sibling test above pins --
 // closes the gap where an impl could hit the count of 81 with wrong syscall
-// content, or where a typo'd new form for an already-scenario-tested row
+// content, or where a typo'd V2R9 form for an already-scenario-tested row
 // (V-258222/V-258223/V-279936, see the real-entrypoint tests further below)
-// would still pass because the OLD form also fails to match a typo'd
+// would still pass because the V2R7 form also fails to match a typo'd
 // requirement.
 //
 // Every line below is transcribed VERBATIM from this V-number's Group's
 // <check-content> in the real DISA RHEL 9 STIG V2R9 XCCDF (downloaded
 // 2026-07-17 from https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/
-// U_RHEL_9_V2R9_STIG.zip into /mnt/side-projects/9e-wave2c/scratch/
-// stig-v2r9/U_RHEL_9_V2R9_Manual_STIG/U_RHEL_9_STIG_V2R9_Manual-xccdf.xml,
-// outside the repo) -- check-content, NOT fixtext: this project's own
+// U_RHEL_9_V2R9_STIG.zip, whose
+// U_RHEL_9_V2R9_Manual_STIG/U_RHEL_9_STIG_V2R9_Manual-xccdf.xml is the
+// authority) -- check-content, NOT fixtext: this project's own
 // `tools/auditd-stig-update/src/xccdf.rs` module doc documents a DELIBERATE
 // deviation from the sshd-stig-update precedent specifically because fixtext
 // disagrees with check-content for 41/51 RHEL9 requirements (omits `-S all`,
@@ -844,8 +797,7 @@ fn stig_baseline_rhel9_v2r9_content_pins() {
         // V-258225's b64 check-content line carries a genuine DOUBLE space
         // before `-F perm=wa` in the real DISA V2R9 check-content
         // ("/var/log/lastlog  -F perm=wa", verified against the raw XML; b32
-        // and every other line in this table is single-space). RE-GROUNDED
-        // (round-2 adversarial review of commit c633771): pinned VERBATIM
+        // and every other line in this table is single-space). Pinned VERBATIM
         // here, not normalized to one space. The runtime matcher
         // (`w06_with_baseline`'s `rules_match`) tokenizes on whitespace, so
         // it would treat single- and double-space identically -- but
@@ -858,8 +810,7 @@ fn stig_baseline_rhel9_v2r9_content_pins() {
         // paste-ready output be "pasted verbatim, not hand-edited", and
         // `rhel9_fixture_reproduces_code_table_exactly` (xccdf.rs:339)
         // asserts the fixture-derived table and the shipped code table are
-        // byte-exact via that same `diff_rules`. So once the implementer
-        // bumps the RHEL9 fixture+table to V2R9, the shipped
+        // byte-exact via that same `diff_rules`. So the shipped
         // `RHEL9_REQUIRED` table's V-258225 b64 row MUST carry the verbatim
         // double-space line to keep BOTH `rhel9_fixture_reproduces_code_
         // table_exactly` AND the `auditd-stig-check` CI drift gate green --
@@ -910,11 +861,12 @@ fn stig_baseline_rhel9_v2r9_content_pins() {
 
 // ---------------------------------------------------------------------------
 // normalize_watch_path: the trailing-slash-normalized watch-path compare
-// (grounding Part B.7.2). Mutation gate, session 7c pipeline P2: the two
-// constant-return mutants (-> "" / -> "xyzzy") both survived because every
-// other scenario test above uses paths that are ALREADY normalize-equal
-// (identical spelling), so a constant normalizer never diverged from the
-// real one. RHEL-08-030172 (V-230410) is the real DISA requirement that
+// (grounding Part B.7.2). The two
+// constant-return mutants (-> "" / -> "xyzzy") are not reachable from any
+// other scenario test above: they all use paths that are ALREADY
+// normalize-equal (identical spelling), so a constant normalizer never
+// diverges from the real one. RHEL-08-030172 (V-230410) is the real DISA
+// requirement that
 // grounded B.7.2's trailing-slash disagreement: "-w /etc/sudoers.d/ -p wa -k
 // identity".
 // ---------------------------------------------------------------------------
@@ -940,7 +892,7 @@ fn watch_path_trailing_slash_is_normalized_before_comparison() {
 #[test]
 fn distinct_watch_paths_are_not_normalized_to_the_same_value() {
     // Companion to the test above: proves normalize_watch_path is not a
-    // constant function. A constant normalizer (the two MISSED mutants)
+    // constant function. A constant normalizer (the two mutants named above)
     // would make EVERY watch path compare equal, silently widening the
     // matcher to accept any watch as satisfying any path-differing
     // requirement. A watch requirement on /etc/sudoers.d/ (RHEL-08-030172)
@@ -966,7 +918,7 @@ fn distinct_watch_paths_are_not_normalized_to_the_same_value() {
 }
 
 // ---------------------------------------------------------------------------
-// Control-ID backfill (issue #502, session 8b): au-W06 findings must carry a
+// Control-ID backfill (issue #502): au-W06 findings must carry a
 // typed rulesteward_core::ControlRef alongside the existing free-text message,
 // mirroring the sysctld-W02 precedent
 // (crates/rulesteward-sysctld/src/lints/baseline.rs's
@@ -980,13 +932,13 @@ fn w06_missing_finding_carries_its_stig_control_ref() {
     // SV-258217r1045436_rule (RHEL-09-654215, V-258217): plain watch on
     // /etc/sudoers -- the same requirement `rhel9_sample_baseline()` above
     // encodes, and the same shipped-table row at
-    // crates/rulesteward-auditd/src/lints/stig_required.rs:673-677
+    // crates/rulesteward-auditd/src/lints/stig_required.rs:669-673
     // (`BaselineRule { v_number: "V-258217", stig_id: "RHEL-09-654215", line:
     // "-w /etc/sudoers -p wa -k identity" }`). Removing it from an otherwise-
     // compliant ruleset (same fixture shape as
     // `removing_one_watch_yields_exactly_one_finding_naming_its_stig_id`
     // above) yields exactly one au-W06 MISSING finding; this test pins the
-    // typed `ControlRef` the implementer must additionally attach.
+    // typed `ControlRef` attached to it.
     let rules = parse(
         "-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
          -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -F key=perm_mod\n\
@@ -997,15 +949,15 @@ fn w06_missing_finding_carries_its_stig_control_ref() {
     assert_eq!(diags.len(), 1, "{diags:?}");
     let d = &diags[0];
 
-    // MESSAGE assertion unchanged (the free-text shape the implementer must
-    // not alter): still names the STIG id as plain text.
+    // MESSAGE assertion (the free-text shape that must not be altered):
+    // names the STIG id as plain text.
     assert!(
         d.message.contains("RHEL-09-654215"),
         "message must still name the missing watch's STIG id, got {:?}",
         d.message
     );
 
-    // NEW: the typed control assertion (issue #502). Length-first so a RED
+    // The typed control assertion (issue #502). Length-first so a
     // failure is a clean `0 != 1`, not an index panic on `controls[0]`.
     assert_eq!(
         d.controls.len(),
@@ -1019,7 +971,7 @@ fn w06_missing_finding_carries_its_stig_control_ref() {
 
 #[test]
 fn multiple_missing_findings_carry_distinct_per_finding_controls() {
-    // BLOCKER (barrier adversarial review): the single-finding test above is
+    // The single-finding test above is
     // passed by a WRONG hardcoded-constant impl (attach ONE fixed ControlRef to
     // every au-W06 finding). This test forecloses that: only the watch is
     // present, so `rhel9_sample_baseline()`'s OTHER three required lines are all
@@ -1040,8 +992,8 @@ fn multiple_missing_findings_carry_distinct_per_finding_controls() {
     );
 
     // Per-finding sourcing: each finding carries exactly one control whose id is
-    // the STIG id named in THAT finding's own message. Length-check first so RED
-    // is a clean `0 != 1`, never an index panic on `controls[0]`.
+    // the STIG id named in THAT finding's own message. Length-check first so a
+    // failure is a clean `0 != 1`, never an index panic on `controls[0]`.
     for d in &diags {
         assert_eq!(d.code, "au-W06");
         assert_eq!(
@@ -1078,8 +1030,8 @@ fn multiple_missing_findings_carry_distinct_per_finding_controls() {
 
 #[test]
 fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
-    // Barrier re-review gap: au-W06 emits TWO finding kinds from
-    // `w06_with_baseline` (stig_required.rs:1220-1241) -- "missing" AND
+    // au-W06 emits TWO finding kinds from
+    // `w06_with_baseline` -- "missing" AND
     // "present-but-key-differs". The two control tests above only exercise the
     // MISSING branch, so an impl attaching `.with_controls(...)` on the missing
     // branch ONLY would leave every present-but-key-differs finding
@@ -1091,7 +1043,7 @@ fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
     // finding` above: the umount privileged-command line matches every axis of
     // its requirement EXCEPT the key (WRONG_KEY instead of privileged-mount), so
     // it is present-but-key-differs, not missing. Control grounded in the
-    // shipped RHEL9_REQUIRED table (stig_required.rs:453-457): V-258180 /
+    // shipped RHEL9_REQUIRED table (stig_required.rs:449-453): V-258180 /
     // RHEL-09-654030.
     let rules = parse(
         "-w /etc/sudoers -p wa -k identity\n\
@@ -1104,7 +1056,7 @@ fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
     assert_eq!(diags.len(), 1, "{diags:?}");
     let d = &diags[0];
 
-    // MESSAGE assertion unchanged: still the present-but-key-differs shape (names
+    // MESSAGE assertion: the present-but-key-differs shape (names
     // the stig id + the distinct "different key" wording).
     assert!(
         d.message.contains("RHEL-09-654030") && d.message.contains("different key"),
@@ -1112,8 +1064,8 @@ fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
         d.message
     );
 
-    // NEW (#502): the key-differs branch must ALSO carry the typed control.
-    // Length-first so RED is a clean `0 != 1`, not an index panic.
+    // (#502): the key-differs branch must ALSO carry the typed control.
+    // Length-first so a failure is a clean `0 != 1`, not an index panic.
     assert_eq!(
         d.controls.len(),
         1,
@@ -1125,33 +1077,20 @@ fn w06_present_but_key_differs_finding_carries_its_stig_control_ref() {
 }
 
 // ---------------------------------------------------------------------------
-// Deepening (#523, session 9b-v0_8-wave2 lane 2e): Control-shaped STIG
-// requirements ("-e 2" immutable-audit-config, "-f 2" panic-on-critical-
-// failure). `rules_match`'s `axes_match` match (stig_required.rs) has
-// explicit arms ONLY for (Watch, Watch) and (Syscall, Syscall); every other
-// pairing (including Control, Control) falls through to `_ => false`, so a
-// Control-shaped BaselineRule can NEVER be satisfied today, regardless of the
-// ruleset's real content -- each "compliant" sub-case below is what turns
-// RED: a ruleset carrying the literal required Control line still reports
-// "missing" until the implementer adds a
-// `(AuditRule::Control(a), AuditRule::Control(b)) => a == b` arm (no new type
-// needed: `ControlRule` already derives `PartialEq`, and the parser already
-// recognizes both "-e" and "-f" -- `crates/rulesteward-auditd/src/parser.rs`'s
-// "-e"/"-f" arms, `ControlRule::Enable`/`ControlRule::FailureMode`).
+// Control-shaped STIG requirements (#523): "-e 2" immutable-audit-config,
+// "-f 2" panic-on-critical-failure. `rules_match`'s `axes_match` matches
+// these through its `(AuditRule::Control(a), AuditRule::Control(b)) => a == b`
+// arm: `ControlRule` derives `PartialEq`, and the parser recognizes both
+// "-e" and "-f" (`crates/rulesteward-auditd/src/parser.rs`'s "-e"/"-f" arms,
+// `ControlRule::Enable`/`ControlRule::FailureMode`). The derive side selects
+// them too -- see `tools/auditd-stig-update/src/xccdf.rs`'s
+// `control_rule_check_content_{e,f}_flag_is_selected_as_a_required_line`
+// tests.
 //
 // All five controls below were fetched LIVE (2026-07-15) against the exact
 // pinned DISA zips `tools/auditd-stig-update/stig-refs.toml` names
 // (U_RHEL_{8,9,10}_STIG.zip @ V2R4/V2R7/V1R1) via
-// `dl.dod.cyber.mil/wp-content/uploads/stigs/zip/...`. `auditd-stig-update
-// check --product {rhel8,rhel9,rhel10}` against those same live pinned zips
-// confirms 0 drift for the CURRENT 45/51/50-requirement (61/67/75-line)
-// baseline, so these five are genuinely beyond it, not a mis-grounded
-// rediscovery of something already shipped. A companion selector-widening
-// gap lives in `tools/auditd-stig-update/src/xccdf.rs` (its `RULE_LINE_RE`
-// does not recognize "-e"/"-f" leading tokens either, so it never even
-// DERIVES these lines from the XCCDF today) -- see that file's new
-// `control_rule_check_content_{e,f}_flag_is_selected_as_a_required_line`
-// tests.
+// `dl.dod.cyber.mil/wp-content/uploads/stigs/zip/...`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1324,28 +1263,20 @@ fn rhel10_f2_panic_control_deepening_v281103() {
 }
 
 // ---------------------------------------------------------------------------
-// Deepening cont'd (#523, session 9b-v0_8-wave2 lane 2e, additive round 2):
-// `--loginuid-immutable` (auditctl(8): "make loginuids unchangeable once set,
-// requires CAP_AUDIT_CONTROL"). Unlike "-e 2"/"-f 2" above, this is a BRAND
-// NEW `ControlRule::LoginuidImmutable` variant (crates/rulesteward-auditd/
-// src/ast.rs) -- the parser does not recognize the flag at all yet (still
-// hits the "unknown flag" error path, see
+// `--loginuid-immutable` (#523; auditctl(8): "make loginuids unchangeable
+// once set, requires CAP_AUDIT_CONTROL"). Unlike "-e 2"/"-f 2" above, this
+// is its own valueless `ControlRule::LoginuidImmutable` variant
+// (crates/rulesteward-auditd/src/ast.rs), recognized by the parser's
+// "--loginuid-immutable" arm (see
 // crates/rulesteward-auditd/tests/test_ast_parser.rs's
-// `control_loginuid_immutable_parses`), so `w06_with_baseline`'s
-// `parse_single_rule` call on a "--loginuid-immutable" BaselineRule line
-// PANICS today (not merely "reports missing" like the -e2/-f2 cases) --
-// still a genuine RED failure (a panic IS a test failure), it just fails at
-// an earlier step than the -e2/-f2 deepening above.
+// `control_loginuid_immutable_parses`).
 //
-// USER-APPROVED IDs (2026-07-15, via the orchestrator): RHEL8 V-230403
-// (RHEL-08-030122), RHEL9 V-258228 (RHEL-09-654270). RHEL10's XCCDF was
-// checked and contains no "loginuid" occurrence anywhere -- RHEL10 must NOT
-// carry this requirement; see `rhel10_loginuid_immutable_control_absent_
-// from_baseline` below (a discriminating-negative GUARD, not a RED test: it
-// already passes today because nothing has been added for RHEL10 yet, and
-// it is designed to keep passing after the implementer lands RHEL8/RHEL9 --
-// it exists to catch a future copy-paste mistake that also adds a RHEL10
-// entry, not to record a currently-broken behavior).
+// IDs: RHEL8 V-230403 (RHEL-08-030122), RHEL9 V-258228 (RHEL-09-654270).
+// RHEL10's XCCDF was checked and contains no "loginuid" occurrence anywhere
+// -- RHEL10 must NOT carry this requirement; see
+// `rhel10_loginuid_immutable_control_absent_from_baseline` below (a
+// discriminating-negative GUARD: it exists to catch a future copy-paste
+// mistake that also adds a RHEL10 entry).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1432,7 +1363,7 @@ fn rhel10_loginuid_immutable_control_absent_from_baseline() {
     // no Group/Rule's check-content mentions "loginuid" anywhere -- unlike
     // RHEL8 (V-230403/RHEL-08-030122) and RHEL9 (V-258228/RHEL-09-654270),
     // RHEL10 genuinely drops this control. This is a discriminating-negative
-    // GUARD (not a RED test -- see the section doc comment above): it
+    // GUARD: it
     // catches a future implementer mistakenly copy-pasting the RHEL8/RHEL9
     // loginuid-immutable entry into the shipped `RHEL10_REQUIRED` table too.
     let rhel10 = stig_baseline(TargetVersion::Rhel10);
@@ -1454,26 +1385,22 @@ fn rhel10_loginuid_immutable_control_absent_from_baseline() {
 }
 
 // ---------------------------------------------------------------------------
-// Barrier-style real-entrypoint proof, loginuid variant (#523, session
-// 9b-v0_8-wave2 lane 2e): mirrors
+// Real-entrypoint proof, loginuid variant (#523): mirrors
 // `w06_real_entrypoint_fires_on_a_bare_ruleset_against_the_shipped_rhel9_table`
-// above -- every loginuid-immutable scenario test so far
+// above -- every other loginuid-immutable scenario test
 // (`rhel{8,9}_loginuid_immutable_control_deepening_v2*`) injects a small
 // test-local baseline straight into `w06_with_baseline`, so NONE of them fail
 // if the SHIPPED `RHEL8_REQUIRED`/`RHEL9_REQUIRED` tables never actually gain
 // a loginuid row at all -- only these two tests go through the REAL dispatch
 // chain (`w06` -> `baseline_for` -> `w06_with_baseline`) against the shipped
-// tables. RED today: `RHEL8_REQUIRED`/`RHEL9_REQUIRED` have no
-// "--loginuid-immutable" row yet, so the real `--target rhel8`/`--target
-// rhel9` path never reports RHEL-08-030122/RHEL-09-654270 missing, no matter
-// how non-compliant the ruleset is.
+// tables.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn w06_real_entrypoint_names_rhel8_loginuid_immutable_control() {
     // RHEL-08-030122 (V-230403): the real RHEL8 dispatch, against a ruleset
-    // that never sets "--loginuid-immutable" at all, must report it missing
-    // once the shipped table carries the row.
+    // that never sets "--loginuid-immutable" at all, must report it missing;
+    // the shipped table carries the row.
     let rules = parse("-w /etc/passwd -p wa -k identity\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
     assert!(
@@ -1496,12 +1423,12 @@ fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
 }
 
 // ---------------------------------------------------------------------------
-// #549 (session 9e-wave2c pipeline P2, 2026-07-17): RHEL9 V2R7 -> V2R9 content
+// #549: RHEL9 V2R7 -> V2R9 content
 // drift, real-entrypoint proof (mirrors the loginuid-immutable pattern above:
 // against the SHIPPED RHEL9_REQUIRED table, not an injected local baseline).
 //
 // Grounding: DISA RHEL 9 STIG V2R9, confirmed 2026-07-17 via
-// U_RHEL_9_V2R9_STIG.zip (lane3-tooling.md T1 DRIFT-CHECK transcript).
+// U_RHEL_9_V2R9_STIG.zip.
 // DISA rewrote 9 identity/login audit rules from a single-line watch form
 // (`-w PATH -p wa -k identity`) into dual-arch (b32/b64) syscall form
 // (`-a always,exit -F arch=bXX -F path=PATH -F perm=wa -k identity`), and
@@ -1509,12 +1436,14 @@ fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
 // auditing scoped to `subj_type=crond_t` (`cron_exec` key), replacing the
 // two old `-w /etc/cron.d`/`-w /var/spool/cron` watch lines.
 //
-// RE-DECIDED (USER RULING via AskUserQuestion, 2026-07-17, "watch<->syscall
-// EQUIVALENCE"): au-W06's matcher must treat a path-watch requirement as
+// RULING: au-W06's matcher must treat a path-watch requirement as
 // satisfied by EITHER kernel-equivalent form (a classic single-line
 // `-w PATH -p PERMS -k KEY` watch, or the dual-arch
 // `-a always,exit -F arch=bXX -F path=PATH -F perm=PERMS -k KEY` syscall
-// pair), both directions, all targets. Grounding for the ruling: DISA V2R9's
+// pair), both directions, all targets.
+// Rationale + evidence: #549
+//
+// Grounding for the ruling: DISA V2R9's
 // own pass/fail check-content (`auditctl -l | egrep <path>`) PASSES on the
 // watch form (verified against the downloaded V2R9 XCCDF, e.g. V-258222's
 // check-content literally runs `auditctl -l | egrep '(/etc/passwd)'` and
@@ -1537,20 +1466,17 @@ fn w06_real_entrypoint_names_rhel9_loginuid_immutable_control() {
 // `-w` line can ever express, so they have NO watch-equivalent form and stay
 // syscall-only (see the negative control below).
 //
-// Each test below feeds a ruleset containing ONLY the OLD (V2R7-grounded)
-// watch form of one rewritten requirement, through the REAL `w06` dispatch
-// against the shipped RHEL9_REQUIRED table (now V2R9-grounded, dual-arch
-// syscall rows -- commit 0bcbcf0).
+// Each test below feeds a ruleset containing ONLY the V2R7 watch form of one
+// rewritten requirement, through the REAL `w06` dispatch
+// against the shipped RHEL9_REQUIRED table (V2R9-grounded, dual-arch
+// syscall rows).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn w06_real_entrypoint_names_rhel9_cron_exec_v279936_new_syscall_form() {
-    // V-279936 (RHEL-09-654097): the OLD form (`-w /etc/cron.d -p wa -k
+    // V-279936 (RHEL-09-654097): the V2R7 form (`-w /etc/cron.d -p wa -k
     // cronjobs` + `-w /var/spool/cron -p wa -k cronjobs`) was replaced by 4
-    // dual-arch execve syscall rules scoped to subj_type=crond_t
-    // (lane3-tooling.md T1 DRIFT-CHECK: "+ V-279936 (RHEL-09-654097):
-    // -a always,exit -F arch=b32 -S execve -F subj_type=crond_t -F auid>=1000
-    // -F auid!=unset -k cron_exec" and its b64/euid=0 siblings). UNLIKE
+    // dual-arch execve syscall rules scoped to subj_type=crond_t. UNLIKE
     // V-258222/V-258223 below, this STAYS firing under the watch<->syscall
     // equivalence ruling: `-S execve -F subj_type=crond_t` is not a plain
     // path-watch shape at all (no `-F path=`, a non-empty `-S` list, and
@@ -1570,15 +1496,12 @@ fn w06_real_entrypoint_names_rhel9_cron_exec_v279936_new_syscall_form() {
 
 #[test]
 fn crond_watch_does_not_satisfy_v279936_execve_requirement() {
-    // Negative control (equivalence-ruling boundary, item 1): a plausible but
+    // Negative control (equivalence-ruling boundary): a plausible but
     // WRONG admin mental model -- "watch the crond binary" -- must still be
     // reported missing. V-279936 requires an `-S execve -F subj_type=
     // crond_t` syscall rule, not a path watch on the crond executable; no
     // `-w` line can express a subj_type predicate, so there is no watch
-    // form that could ever satisfy this requirement. Passes BOTH before and
-    // after the equivalence fold lands (today via the unconditional
-    // `_ => false` variant mismatch; after the fix because the fold must
-    // recognize V-279936's rows are not path-watch-shaped at all) -- a
+    // form that could ever satisfy this requirement -- a
     // regression guard against an over-broad equivalence implementation that
     // folds ANY Watch-vs-Syscall pair instead of only pure path-watch shapes.
     let rules = parse("-w /usr/sbin/crond -p x -k cron_exec\n");
@@ -1595,11 +1518,8 @@ fn crond_watch_does_not_satisfy_v279936_execve_requirement() {
 
 #[test]
 fn w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd() {
-    // RE-DECIDED (was `w06_real_entrypoint_names_rhel9_identity_syscall_form_
-    // v258222_passwd`, which asserted the classic watch form no longer
-    // satisfies V-258222 post-V2R9-rewrite). USER RULING (AskUserQuestion,
-    // 2026-07-17, "watch<->syscall EQUIVALENCE", see the section doc comment
-    // above for the full grounding): V-258222's two dual-arch syscall rows
+    // Per the equivalence ruling in the section doc comment above (see it
+    // for the full grounding): V-258222's two dual-arch syscall rows
     // ("-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k
     // identity" + the b64 twin) are a pure path-watch shape (empty `-S`
     // list, only path/perm/arch/key fields) -- the classic
@@ -1621,15 +1541,13 @@ fn w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd() {
 #[test]
 fn w06_real_entrypoint_v258222_new_syscall_form_satisfies_once_shipped() {
     // Positive complement to
-    // `w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` above
-    // (adversarial-review finding 2b): feed the ruleset the EXACT V2R9
+    // `w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` above:
+    // feed the ruleset the EXACT V2R9
     // dual-arch syscall form for V-258222 (transcribed verbatim from its
     // check-content, same source as the content pins above) and confirm it
-    // does NOT get reported missing. Same-variant (Syscall-vs-Syscall) match:
-    // GREEN as of commit 0bcbcf0, which populated the shipped table with the
-    // V2R9 syscall form (the equivalence ruling that follows in this file
-    // does not change this test's outcome -- it only adds the CROSS-variant
-    // watch-form case as an ADDITIONAL way to satisfy V-258222).
+    // does NOT get reported missing. This is a same-variant
+    // (Syscall-vs-Syscall) match; the equivalence fold only ADDS the
+    // CROSS-variant watch-form case as another way to satisfy V-258222.
     let rules = parse(
         "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity\n",
@@ -1644,11 +1562,9 @@ fn w06_real_entrypoint_v258222_new_syscall_form_satisfies_once_shipped() {
 
 #[test]
 fn w06_real_entrypoint_watch_equivalent_satisfies_v258223_shadow() {
-    // RE-DECIDED (was `w06_real_entrypoint_names_rhel9_identity_syscall_form_
-    // v258223_shadow`, which asserted the classic watch form no longer
-    // satisfies V-258223 post-V2R9-rewrite). Sibling of
+    // Sibling of
     // `w06_real_entrypoint_watch_equivalent_satisfies_v258222_passwd` above
-    // (same USER RULING, 2026-07-17, same grounding -- see the section doc
+    // (same ruling, same grounding -- see the section doc
     // comment). V-258223's two dual-arch syscall rows ("-a always,exit
     // -F arch=b32 -F path=/etc/shadow -F perm=wa -k identity" + the b64
     // twin) are the same pure path-watch shape as V-258222's; the classic
@@ -1665,17 +1581,13 @@ fn w06_real_entrypoint_watch_equivalent_satisfies_v258223_shadow() {
 }
 
 // ---------------------------------------------------------------------------
-// Equivalence-ruling boundary pins (item 3): ground each against
-// auditctl(8)'s documented -w/-a equivalence and the EXISTING matcher's
+// Equivalence-ruling boundary pins: ground each against
+// auditctl(8)'s documented -w/-a equivalence and the matcher's
 // perm/key semantics (`rules_match`, `fields_match_excluding_key`,
 // `effective_key`) -- not invented. The perms/path pins below are
-// discriminating-negative CONTROLS: they pass BOTH before and after the
-// equivalence fold (today via the unconditional Watch-vs-Syscall `_ =>
-// false`; after the fix because a correct fold still compares path/perm),
-// guarding against an over-broad implementation that folds ANY watch into
-// ANY syscall row regardless of content. The key-semantics pin is RED today
-// (the current matcher never reaches the key axis for a cross-variant pair
-// at all).
+// discriminating-negative CONTROLS, guarding against an over-broad
+// implementation that folds ANY watch into ANY syscall row regardless of
+// content.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1717,7 +1629,7 @@ fn watch_equivalent_wrong_perms_does_not_satisfy_v258222_passwd() {
 
 #[test]
 fn watch_equivalent_with_different_key_reports_key_differs_not_missing() {
-    // Key-semantics boundary: `rules_match`'s EXISTING two-pass design
+    // Key-semantics boundary: `rules_match`'s two-pass design
     // (`w06_with_baseline` calls it once with `include_key=true` for
     // "Satisfied", then falls back to `include_key=false` for "Present-but-
     // key-differs" vs "Missing" -- see the module doc's `w06_with_baseline`
@@ -1725,18 +1637,12 @@ fn watch_equivalent_with_different_key_reports_key_differs_not_missing() {
     // wrong-key match from a genuinely absent rule for EVERY existing axis
     // (pinned for Syscall-vs-Syscall by
     // `w06_present_but_key_differs_finding_carries_its_stig_control_ref`
-    // elsewhere in this file). Per the USER RULING (do not invent new key
-    // semantics for the new axis), the SAME two-pass distinction must apply
+    // elsewhere in this file). Per the ruling (no new key semantics for this
+    // axis), the SAME two-pass distinction applies
     // once path+perm match ACROSS variants too: a watch with V-258222's
     // correct path (/etc/passwd) and perms (wa) but a DIFFERENT key must
     // produce the SAME "present but with a different key" message, not
     // "is missing".
-    //
-    // RED today: the current matcher's Watch-vs-Syscall `_ => false` arm
-    // short-circuits `axes_match` before path/perm/key are ever compared, so
-    // BOTH the `include_key=true` and `include_key=false` passes return
-    // `false` today, and `w06_with_baseline` falls all the way to "is
-    // missing" rather than "present but with a different key".
     let rules = parse("-w /etc/passwd -p wa -k wrongkey\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel9));
     let v258222: Vec<_> = diags
@@ -1756,13 +1662,13 @@ fn watch_equivalent_with_different_key_reports_key_differs_not_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// Equivalence-ruling reverse direction (item 2): RHEL8's V2R8 required table
-// still carries plain single-line watch-form rows (DISA never rewrote
+// Equivalence-ruling reverse direction: RHEL8's V2R8 required table
+// carries plain single-line watch-form rows (DISA never rewrote
 // RHEL8's identity/login set the way V2R9 rewrote RHEL9's -- the RHEL8 pin
-// bump V2R4->V2R8, commit 0bcbcf0, confirmed ZERO content drift). A user
+// bump V2R4->V2R8 confirmed ZERO content drift). A user
 // config expressing the SAME kernel-level watch as a dual-arch syscall pair
 // must satisfy a watch-shaped required row too -- the equivalence is
-// bidirectional (USER RULING: "both directions, all targets").
+// bidirectional: both directions, all targets.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1773,9 +1679,6 @@ fn rhel8_watch_required_row_satisfied_by_dual_arch_syscall_equivalent() {
     // (auditctl(8): "-w path -p perms" compiles to one path-watch syscall
     // rule PER SUPPORTED ARCHITECTURE; `auditctl -l` folds them back into a
     // single -w line) must satisfy this watch-shaped requirement.
-    //
-    // RED today: `rules_match`'s Watch-vs-Syscall `_ => false` arm rejects
-    // this regardless of content.
     let rules = parse(
         "-a always,exit -F arch=b32 -F path=/etc/passwd -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity\n",
@@ -1841,13 +1744,13 @@ fn path_syscall_form_wrong_path_does_not_satisfy_v230406_passwd_watch() {
 }
 
 // ---------------------------------------------------------------------------
-// Equivalence-ruling perm-bit completeness (mutation-gate report, session
-// 9e-wave2c pipeline P2 round 3): `perm_bits_from_field_value` parses a `-F
-// perm=` field value into `PermBits` for the equivalence fold, mirroring
-// `permtab.h:28-31` / `auditctl(8) -p`'s FOUR letters (r/w/x/a). Every
-// existing equivalence test above uses `wa` only (the STIG identity/login
-// rows' actual perm), so `cargo mutants` found the `r`- and `x`-arm deletions
-// (:1661, :1663) survive -- no test ever feeds a perm string containing `r`
+// Equivalence-ruling perm-bit completeness: `perm_bits_from_field_value`
+// parses a `-F perm=` field value into `PermBits` for the equivalence fold,
+// mirroring `permtab.h:28-31` / `auditctl(8) -p`'s FOUR letters (r/w/x/a).
+// Every OTHER equivalence test above uses `wa` only (the STIG identity/login
+// rows' actual perm), so without these two the `r`- and `x`-arm deletion
+// mutants have nothing to catch them -- no other test feeds a perm string
+// containing `r`
 // or `x` through the fold. No shipped RHEL8/9/10 row happens to use `r` or
 // `x` via this fold (every real path-watch row is `wa`), so these use a
 // SYNTHETIC baseline injected via `w06_with_baseline` (the established
@@ -1856,17 +1759,16 @@ fn path_syscall_form_wrong_path_does_not_satisfy_v230406_passwd_watch() {
 // scope`) -- pinning the PARSING GRAMMAR's completeness, not a specific STIG
 // requirement.
 //
-// Grounding for exact-vs-superset semantics: the EXISTING same-variant
+// Grounding for exact-vs-superset semantics: the same-variant
 // Watch-vs-Watch axis in `rules_match` is `rpe == cpe` -- exact `PermBits`
 // equality, not a subset/superset check. `watch_equivalent_axes_match`
-// mirrors that exact rigor (`perm_bits_from_field_value(sperm).as_ref() ==
-// Some(watch_perms)`, also `==`). So the fold requires an EXACT perm match;
+// mirrors that exact rigor. So the fold requires an EXACT perm match;
 // a watch with MORE bits than required (or fewer) does not satisfy it.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn watch_equivalent_recognizes_read_perm_bit() {
-    // Kills the `:1661 - delete 'r' arm` mutant: required perm "ra"
+    // Kills the `delete 'r' arm` mutant: required perm "ra"
     // (read+attr) with a candidate watch of the SAME "ra" perms (parsed by
     // the real, unmutated rules.d parser). Under the correct impl,
     // `perm_bits_from_field_value("ra")` recognizes both letters and the two
@@ -1891,7 +1793,7 @@ fn watch_equivalent_recognizes_read_perm_bit() {
 
 #[test]
 fn watch_equivalent_recognizes_exec_perm_bit() {
-    // Kills the `:1663 - delete 'x' arm` mutant: sibling of the read-bit
+    // Kills the `delete 'x' arm` mutant: sibling of the read-bit
     // test above, for 'x' (exec; PermBits's own doc comment: "exec ->
     // execve, execveat", grounded in auditctl(8) -p / permtab.h:28-31).
     let baseline = vec![bl(
@@ -1910,22 +1812,21 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall-vs-Syscall `-F perm=` identity WAS a RAW STRING COMPARE prior to
-// round 3's fix (session 9m lane 1, round 2-3 ATL) -- unlike the
+// Syscall-vs-Syscall `-F perm=` identity: unlike the
 // Watch-vs-Syscall fold pinned by the two tests just above (which
 // case/order-folds via `perm_axis_bits`/`perm_bits_from_field_value` because
 // the CANDIDATE is a `Watch`), a required row that is ITSELF `Syscall`-shaped
 // (not pure-path-watch-shaped, e.g. because it also restricts `-F auid=`) is
 // compared via `fields_match_excluding_key`, whose per-field value equality
 // is `super::value::canonical_value(ft, ..)` (called from that function's
-// `field_eq` closure). PRIOR to round 3, `classify.rs` bucketed
-// `FieldType::Perm` into `FieldValue::Opaque`, and `canonical_value`'s
-// `Opaque` arm is `Cow::Borrowed(raw.trim())` -- a raw string compare, so
-// `-F perm=X` vs `-F perm=x` (case) and `-F perm=xa` vs `-F perm=ax` (order)
-// wrongly compared as DIFFERENT. Round 3 added a `FieldValue::Perm(PermMask)`
-// variant (`classify.rs`/`canonical.rs`) that folds `-F perm=` into an
-// order-free bitmask instead, so `fields_match_excluding_key` now folds both
-// spellings together and the four tests below are all GREEN.
+// `field_eq` closure). `classify.rs` buckets `FieldType::Perm` into a
+// `FieldValue::Perm(PermMask)` variant (`classify.rs`/`canonical.rs`) that
+// folds `-F perm=` into an order-free bitmask, so
+// `fields_match_excluding_key` treats `-F perm=X` vs `-F perm=x` (case) and
+// `-F perm=xa` vs `-F perm=ax` (order) as the SAME value. Bucketing it into
+// `FieldValue::Opaque` instead would make this a raw string compare
+// (`canonical_value`'s `Opaque` arm is `Cow::Borrowed(raw.trim())`) and the
+// four tests below would fail.
 //
 // Grounding: `lib/libaudit.c`'s `audit_rule_fieldpair_data` case-folds every
 // `-F perm=` character before OR-ing it into a bitmask (`case AUDIT_PERM:
@@ -1938,11 +1839,11 @@ fn watch_equivalent_recognizes_exec_perm_bit() {
 // spelling.
 //
 // V-230412/RHEL-08-030190 is a REAL shipped RHEL8 baseline row
-// (`stig_required.rs:186-189`), deliberately `Syscall`-only (the `-F auid=`
+// (`stig_required.rs:182-185`), deliberately `Syscall`-only (the `-F auid=`
 // restriction takes it outside `is_pure_path_watch_shaped`, per this file's
-// existing `dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_
-// watch_shaped` doc comment) -- so it exercises the (pre-round-3, now fixed)
-// Syscall-vs-Syscall arm, not the already-fixed Watch-vs-Syscall fold two
+// `dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_watch_shaped`
+// doc comment) -- so it exercises the
+// Syscall-vs-Syscall arm, not the Watch-vs-Syscall fold two
 // tests above.
 // ---------------------------------------------------------------------------
 
@@ -1997,9 +1898,9 @@ fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
     // via `perm_axis_bits`/`perm_bits_from_field_value` because the
     // CANDIDATE is a `Watch`. Here BOTH sides are `Syscall`-shaped (required
     // carries the same `-F auid=` restriction as V-230412 above), which
-    // routes through the UNFOLDED `fields_match_excluding_key` arm instead --
-    // the internal inconsistency IS the point: a fix that folds perm
-    // identity in one arm and not the other leaves this pair disagreeing
+    // routes through the `fields_match_excluding_key` arm instead --
+    // keeping the two arms CONSISTENT is the point: folding perm
+    // identity in one arm and not the other would leave this pair disagreeing
     // with the Watch-vs-Syscall pair above despite both asserting the exact
     // same kernel-level claim (perm='xa' with the letters swapped).
     let baseline = vec![bl(
@@ -2022,8 +1923,8 @@ fn syscall_vs_syscall_perm_letter_order_flip_wrongly_reports_v230412_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 3 (issues #600/#601 follow-up): PermMask fold DISTINCTNESS on the
-// Syscall-vs-Syscall arm. The two tests immediately above pin only that
+// PermMask fold DISTINCTNESS on the Syscall-vs-Syscall arm (issues
+// #600/#601). The two tests immediately above pin only that
 // EQUIVALENT perm spellings (case/order variants of the SAME kernel bitmask)
 // satisfy a required row. Nothing above pins the opposite direction: that a
 // candidate whose perm value is a GENUINELY DIFFERENT AUDIT_PERM bitmask
@@ -2086,48 +1987,48 @@ fn syscall_vs_syscall_different_exec_vs_write_perm_reports_v230412_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 7 (round-6 adversarial MISS-1, USER RULING): the Syscall-vs-
-// Syscall arm (`fields_match_excluding_key`'s `multiset_eq` fallback) never
-// folds `-F perm=` PREDICATE MULTIPLICITY at all --
-// rounds 4-5 taught `perm_axis_bits` to fold a chain of `-F perm=` predicates
-// to their minimum (subset partial order, `audit_match_perm`'s monotonicity),
-// but wired it into the Watch-vs-Syscall/Dir-vs-Syscall arms ONLY. So a
-// candidate that is kernel-identical to a required row except for a
-// REDUNDANT `-F perm=` predicate (e.g. `-F perm=x -F perm=x`, or `-F perm=x
-// -F perm=rx` where `x` subset-of `rx`) fails on `multiset_eq`'s `a.len() !=
-// b.len()` guard and is wrongly reported MISSING, even though
+// `-F perm=` PREDICATE MULTIPLICITY on the Syscall-vs-Syscall arm
+// (`fields_match_excluding_key`). A candidate that is kernel-identical to a
+// required row except for a REDUNDANT `-F perm=` predicate (e.g.
+// `-F perm=x -F perm=x`, or `-F perm=x -F perm=rx` where `x` subset-of `rx`)
+// must NOT be reported MISSING:
 // `kernel/auditsc.c`'s `audit_filter_rules` calls `audit_match_perm` once PER
 // `AUDIT_PERM` field and ANDs the results (`if (!result) return 0;`) -- the
-// SAME idempotent-conjunction argument `perm_axis_bits`'s doc comment already
-// makes for the other two arms.
+// SAME idempotent-conjunction argument `perm_axis_bits`'s doc comment
+// makes for the Watch-vs-Syscall and Dir-vs-Syscall arms. Without the fold,
+// `multiset_eq`'s `a.len() != b.len()` guard rejects such a candidate.
 //
-// USER RULING (this round, in direct response to the finding above): extend
-// the fold to the Syscall-vs-Syscall arm. The locked matcher spec (the
+// RULING: the perm-multiplicity fold extends to the Syscall-vs-Syscall arm.
+// Rationale + evidence: #601
+//
+// The locked matcher spec (the
 // `w06_with_baseline` "Grounded matcher spec" doc comment, which points to
 // `rules_match`'s doc comment for the full grounding) says to compare `-F`
 // fields "as a SET - same size", but its grounding cite (Part C.1/C.5) is
-// about ORDER, not multiplicity -- duplicate-predicate semantics were never
-// actually decided by that line. The arm already folds perm VALUE identity
-// (rounds 2-3, the `syscall_vs_syscall_perm_*` tests above).
+// about ORDER, not multiplicity -- duplicate-predicate semantics are not
+// decided by that line. The arm also folds perm VALUE identity (the
+// `syscall_vs_syscall_perm_*` tests above).
 //
-// The reviewer separately warned that a GENERIC "dedupe `-F` predicates
-// before `multiset_eq`" repair would be WRONG: duplicate `-F path=` (and
+// RULING: scope the fold to `AuditField::Perm`; never a generic "dedupe `-F`
+// predicates before `multiset_eq`".
+// Rationale + evidence: #601
+//
+// Duplicate `-F path=` (and
 // other fields) have their OWN kernel semantics -- `kernel/audit_watch.c`'s
 // `audit_to_watch` returns `-EINVAL` when `krule->watch` is already set, so a
 // second `-F path=` predicate never LOADS at all, and crediting it as if it
-// were redundant would be a fail-open, not a fold. The fold must therefore be
-// scoped to `AuditField::Perm` specifically, never a generic multiset
-// dedupe -- pinned by the path-duplicate fence test below.
+// were redundant would be a fail-open, not a fold. Pinned by the
+// path-duplicate fence test below.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn syscall_vs_syscall_exact_duplicate_perm_predicate_satisfies_v230412() {
     // Item 1: exact duplicate `-F perm=x -F perm=x` -- idempotent
-    // conjunction, `match(x) AND match(x) == match(x)`. RED today
-    // (`multiset_eq` sees 5 candidate fields vs the required row's 4 and
-    // fails on length alone); must go GREEN once the Syscall-vs-Syscall arm
-    // folds `-F perm=` predicate multiplicity the same way the Watch-vs-
-    // Syscall/Dir-vs-Syscall arms already do via `perm_axis_bits`.
+    // conjunction, `match(x) AND match(x) == match(x)`. Without the fold,
+    // `multiset_eq` sees 5 candidate fields vs the required row's 4 and
+    // fails on length alone; the Syscall-vs-Syscall arm folds `-F perm=`
+    // predicate multiplicity the same way the Watch-vs-Syscall and
+    // Dir-vs-Syscall arms do, via `perm_axis_bits`.
     let baseline = vec![bl(
         "V-230412",
         "RHEL-08-030190",
@@ -2151,9 +2052,10 @@ fn syscall_vs_syscall_exact_duplicate_perm_predicate_satisfies_v230412() {
 #[test]
 fn syscall_vs_syscall_perm_predicate_chain_folds_to_its_minimum_v230412() {
     // Item 2: `-F perm=x -F perm=rx` -- `x` is a SUBSET of `rx`, so the
-    // chain's minimum is exactly `x`, the required mask (same monotonicity
-    // licence round 5 used for the Watch-vs-Syscall arm). RED today for the
-    // same length-mismatch reason as the exact-duplicate case above.
+    // chain's minimum is exactly `x`, the required mask (the same
+    // monotonicity licence the Watch-vs-Syscall arm uses). Without the fold
+    // this fails for the same length-mismatch reason as the exact-duplicate
+    // case above.
     let baseline = vec![bl(
         "V-230412",
         "RHEL-08-030190",
@@ -2178,8 +2080,7 @@ fn syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_stay_miss
     // Item 3 (fence): `-F perm=x -F perm=wa` -- {x} and {w,a} are
     // INCOMPARABLE (neither is a subset of the other), so the predicate set
     // has no minimum and nothing licenses a fold (`perm_axis_bits` declines
-    // with `None` for exactly this shape). GREEN today (unfolded multiset_eq
-    // already rejects on length) and must STAY green: a correct fold must
+    // with `None` for exactly this shape). A correct fold must
     // decline here, not fold to an intersection or "first wins".
     let baseline = vec![bl(
         "V-230412",
@@ -2209,8 +2110,7 @@ fn syscall_vs_syscall_duplicate_perm_predicate_of_a_different_mask_stays_missing
     // predicates are equal), which is NOT the required {x}. Blocks a lazy
     // "drop any extra perm predicate regardless of value" repair: the fold
     // must actually compute the minimum and compare it against the required
-    // value, not just collapse duplicates and skip the comparison. GREEN
-    // today (unfolded length mismatch) and must STAY green.
+    // value, not just collapse duplicates and skip the comparison.
     let baseline = vec![bl(
         "V-230412",
         "RHEL-08-030190",
@@ -2239,8 +2139,7 @@ fn syscall_vs_syscall_duplicate_path_predicate_is_not_folded_stays_missing_v2304
     // dedupe applied to every field type -- a second `-F path=` predicate
     // never even LOADS at the kernel level (`kernel/audit_watch.c`'s
     // `audit_to_watch` returns `-EINVAL` once `krule->watch` is already set),
-    // so crediting it would be a fail-open, not a fold. GREEN today (length
-    // mismatch) and must STAY green.
+    // so crediting it would be a fail-open, not a fold.
     let baseline = vec![bl(
         "V-230412",
         "RHEL-08-030190",
@@ -2266,9 +2165,8 @@ fn syscall_vs_syscall_duplicate_path_predicate_is_not_folded_stays_missing_v2304
 #[test]
 fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601_regression_fence()
 {
-    // Item 6 (regression fence, round 7 follow-up): pins the half of
-    // `fields_match_excluding_key`'s doc comment (`stig_required.rs:
-    // 2049-2058`) that Item 3 above
+    // Item 6 (regression fence): pins the half of
+    // `fields_match_excluding_key`'s doc comment that Item 3 above
     // (`syscall_vs_syscall_incomparable_perm_predicates_have_no_minimum_and_
     // stay_missing_v230412`) does NOT cover. Item 3 keeps the REQUIRED side
     // single-valued (`perm=x`) while only the CANDIDATE carries an
@@ -2281,7 +2179,7 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
     // perm=wxa`: `rwa` = {r,w,a} and `wxa` = {w,x,a}. `r` appears only in the
     // first and `x` only in the second, so neither is a subset of the other
     // -- the set has NO MINIMUM (`perm_axis_bits`'s own doc comment's
-    // example verbatim, `stig_required.rs:1935-1938`). So BOTH
+    // example verbatim). So BOTH
     // `perm_axis_bits(required)` and `perm_axis_bits(candidate)` return
     // `None`, the `if let (Some(r_perm), Some(c_perm))` guard is not entered
     // on EITHER side, and the compare falls through to the ORIGINAL,
@@ -2293,7 +2191,6 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
     // opinion, defer to the raw field compare"), two byte-identical rules
     // each spelling `-F perm=rwa -F perm=wxa` would flip from satisfied to
     // MISSING -- a fail-closed regression on literally identical input.
-    // GREEN today; must STAY green.
     //
     // Level chosen: `w06_with_baseline` with a SYNTHETIC baseline row
     // (labeled accordingly, same pattern as `watch_equivalent_requires_
@@ -2332,27 +2229,24 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 8 (issue #601, a regression introduced by round 7's own fix): a
-// FAIL-OPEN on the OPERATOR axis, distinct from the VALUE axis the round-7
-// fold section above pins. `perm_axis_bits` (`stig_required.rs`, before its
-// operator-gate paragraph was added) selected `-F perm=` predicates with
-// `.filter(|f| f.field == AuditField::Perm)` and never inspected `f.op` at
-// all -- the round-7 fix wired that op-blind selection straight into the
-// Syscall-vs-Syscall arm of `fields_match_excluding_key`. So an ILLEGAL
-// OPERATOR on a `-F perm=` predicate (one the kernel/libaudit would refuse
-// to load at all) becomes
-// INVISIBLE to the matcher: the fold strips it by field NAME only, the same
-// way it strips a legal `-F perm=` predicate, and the candidate is wrongly
-// credited as satisfying the requirement. Direction: FAIL-OPEN --
-// RuleSteward reports a STIG control MET on a host where the audit rule
+// The OPERATOR axis of `-F perm=` (issue #601), distinct from the VALUE axis
+// the multiplicity-fold section above pins. Selecting `-F perm=` predicates
+// with `.filter(|f| f.field == AuditField::Perm)` and never inspecting `f.op`
+// at all would make an ILLEGAL
+// OPERATOR on a `-F perm=` predicate (one the kernel/libaudit refuses
+// to load at all)
+// INVISIBLE to the matcher: the fold would strip it by field NAME only, the
+// same way it strips a legal `-F perm=` predicate, and the candidate would be
+// wrongly credited as satisfying the requirement. Direction: FAIL-OPEN --
+// RuleSteward would report a STIG control MET on a host where the audit rule
 // never loaded.
 //
-// Grounding, re-derived THIS round via a fresh userspace-only probe (no
+// Grounding, a userspace-only probe (no
 // netlink -- `audit_rule_fieldpair_data()` per its own doc comment in
 // `libaudit.h` only builds an in-memory `struct audit_rule_data`; the
 // netlink-sending function is the separate, never-called-here
 // `audit_add_rule_data()`), calling `audit_rule_fieldpair_data()` directly
-// against this host's freshly-installed `audit-libs-devel-4.1.4-1.fc44.
+// against this host's installed `audit-libs-devel-4.1.4-1.fc44.
 // x86_64` (Fedora Linux 44, Cloud Edition):
 //
 //   perm=x, perm=wa                       -> rc  0   (loads)
@@ -2369,14 +2263,14 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
 //                                             never gets added)
 //
 // -14/-11 are DIFFERENT codes from -29, which is what makes -29 specifically
-// the operator gate rather than a generic "bad perm value" rejection. This
-// extends -- same host, same installed library, same refusal code -- the
-// identical claim already grounding the two MERGED sibling tests
+// the operator gate rather than a generic "bad perm value" rejection. It is
+// the same claim -- same host, same installed library, same refusal code --
+// that grounds the two sibling tests
 // `dir_wrong_operator_perm_not_equal_does_not_satisfy_v230410_sudoers_d`
 // (this file, above) and `path_wrong_operator_perm_not_equal_does_not_
 // satisfy_v230409_sudoers` (this file, below), which cite the same rc=-29
-// fact for `!=` alone; this round adds `>=`/`&`/`&=` and the same-rule chain
-// case.
+// fact for `!=` alone; the probe above adds `>=`/`&`/`&=` and the same-rule
+// chain case.
 //
 // No committed EL differential-corpus row covers this axis: none of
 // `tests/corpus/auditd-oracle/el8.tsv`, `el9.tsv`, `el10.tsv`,
@@ -2387,13 +2281,13 @@ fn syscall_vs_syscall_incomparable_perm_predicate_pair_still_matches_itself_v601
 // different code path from operator legality. So this section's grounding
 // is the libaudit measurement above, not a corpus citation.
 //
-// V-281128/RHEL-10-500420 (`stig_required.rs:997-1000`, real shipped row:
+// V-281128/RHEL-10-500420 (`stig_required.rs:993-996`, real shipped row:
 // "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
 // -F auid!=-1 -F key=privileged-chage") is used for items 1-4 via the real
 // `w06`/`TargetVersion::Rhel10` entry point, not a synthetic baseline: its
 // `-S all` list takes it outside `is_pure_path_watch_shaped` (which
-// requires an EMPTY `-S` list), so it always routes through the buggy
-// Syscall-vs-Syscall arm, never the already operator-gated Watch-vs-Syscall
+// requires an EMPTY `-S` list), so it always routes through the
+// Syscall-vs-Syscall arm, never the operator-gated Watch-vs-Syscall
 // fold (`is_pure_path_watch_shaped`'s own `AuditField::Path | AuditField::
 // Perm => f.op == CompareOp::Eq` guard, added for #600).
 // ---------------------------------------------------------------------------
@@ -2485,17 +2379,16 @@ fn syscall_vs_syscall_perm_not_equal_reported_missing_on_both_rhel8_and_rhel10_v
     // row. The SAME candidate text must be reported MISSING for BOTH
     // targets:
     //
-    // - RHEL8's V-230409/RHEL-08-030171 (`stig_required.rs:175-179`,
+    // - RHEL8's V-230409/RHEL-08-030171 (`stig_required.rs:171-175`,
     //   "-w /etc/sudoers -p wa -k identity") is Watch-shaped, so this
     //   Syscall candidate routes through the (Watch, Syscall) arm via
-    //   `is_pure_path_watch_shaped`, which ALREADY guards the perm operator
-    //   (`AuditField::Perm => f.op == CompareOp::Eq`, the #600 fix) --
-    //   this half is a GREEN fence, confirming the round-8 fix must not
-    //   regress the already-correct arm.
-    // - RHEL10's V-281154/RHEL-10-500680 (`stig_required.rs:1138-1146`,
+    //   `is_pure_path_watch_shaped`, which guards the perm operator
+    //   (`AuditField::Perm => f.op == CompareOp::Eq`, #600) --
+    //   this half is a fence on that already-correct arm.
+    // - RHEL10's V-281154/RHEL-10-500680 (`stig_required.rs:1134-1142`,
     //   "-a always,exit -F arch=bXX -F path=/etc/sudoers -F perm=wa -F
     //   key=logins") is ITSELF Syscall-shaped, so this candidate routes
-    //   through the buggy Syscall-vs-Syscall arm -- this half is RED today.
+    //   through the Syscall-vs-Syscall arm instead.
     let rules = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm!=wa -F key=logins\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm!=wa -F key=logins\n",
@@ -2527,9 +2420,9 @@ fn syscall_vs_syscall_perm_not_equal_reported_missing_on_both_rhel8_and_rhel10_v
 
 #[test]
 fn syscall_vs_syscall_perm_equal_operator_still_satisfies_v281128() {
-    // Positive control: the legal `=` operator must keep satisfying
-    // V-281128 once the operator gate lands -- an exact copy of the
-    // required row's own perm predicate. GREEN today and must STAY green.
+    // Positive control: the legal `=` operator must satisfy
+    // V-281128 -- an exact copy of the
+    // required row's own perm predicate.
     let rules = parse(
         "-a always,exit -S all -F path=/usr/bin/chage -F perm=x -F auid>=1000 \
          -F auid!=-1 -F key=privileged-chage\n",
@@ -2592,9 +2485,11 @@ fn watch_equivalent_missing_required_read_perm_does_not_satisfy() {
 }
 
 // ---------------------------------------------------------------------------
-// Presence-only decision pin (#523, session 9b-v0_8-wave2 lane 2e; USER
-// DECISION 2026-07-16, via the orchestrator): au-W06 Control matching stays
-// PRESENCE-based this wave -- it asks "does ANY parsed rule match the
+// RULING: au-W06 Control matching is PRESENCE-based; do not convert it to
+// last-wins effective-state modeling.
+// Rationale + evidence: #523
+//
+// It asks "does ANY parsed rule match the
 // required Control variant+value", never "what is the LAST
 // (auditctl-effective) value for this control flag". Real `auditctl`/the
 // audit daemon applies `-e`/`-f` (and other control) directives in FILE ORDER
@@ -2603,9 +2498,8 @@ fn watch_equivalent_missing_required_read_perm_does_not_satisfy() {
 // lint's static, parse-only matcher does NOT model that: two directives with
 // CONFLICTING values both remain "present" candidates in the ruleset, and a
 // required value satisfied by EITHER one alone passes, regardless of file
-// order. This is a DELIBERATE, tracked scope decision for this wave -- not an
-// oversight discovered later -- so it is pinned here as a passing test (not a
-// RED one) precisely so a future implementer cannot "fix" this into
+// order. It is pinned here as a passing test precisely so a future
+// implementer cannot "fix" this into
 // last-wins modeling by accident without first breaking a named, documented
 // contract. Last-wins effective-state modeling is tracked as a follow-up
 // issue. The complementary "does a rule change after an `-e 2` lock line look
@@ -2658,7 +2552,7 @@ fn non_w06_finding_has_empty_controls() {
 }
 
 // ---------------------------------------------------------------------------
-// dir-shape equivalence fold (issue #571, USER RULING 2026-07-24): extends
+// dir-shape equivalence fold (issue #571): extends
 // the existing path-watch equivalence fold (grounded above, "watch<->syscall
 // EQUIVALENCE") with a SEPARATE, PARALLEL arm for `-F dir=` <-> `-w DIR`.
 //
@@ -2686,12 +2580,10 @@ fn non_w06_finding_has_empty_controls() {
 fn rhel8_sudoers_d_dir_watch_still_satisfied_by_plain_directory_watch() {
     // Regression guard (#571): the classic `-w DIR/` form for V-230410
     // (RHEL-08-030172: "-w /etc/sudoers.d/ -p wa -k identity",
-    // RHEL8_REQUIRED) is a SAME-VARIANT Watch-vs-Watch match -- this
-    // predates and is entirely independent of the dir-shape fold added for
-    // #571 (the bug report's own words: "The common -w /etc/sudoers.d/ form
-    // IS already credited"). Pins that adding the new fold arm must not
-    // regress this already-working path. GREEN today by design (a
-    // regression guard for pre-existing behavior, not the new fold).
+    // RHEL8_REQUIRED) is a SAME-VARIANT Watch-vs-Watch match, entirely
+    // independent of the dir-shape fold (the bug report's own words: "The
+    // common -w /etc/sudoers.d/ form IS already credited"). Pins that the
+    // dir-shape fold arm must not regress this path.
     let rules = parse("-w /etc/sudoers.d/ -p wa -k identity\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel8));
     assert!(
@@ -2708,11 +2600,9 @@ fn dir_syscall_form_satisfies_v230410_sudoers_d_directory_watch() {
     // SYSCALL form using the kernel-correct -F dir= field (NOT -F path=,
     // which would be the wrong single-inode construct for a directory)
     // against V-230410 (RHEL-08-030172, RHEL8_REQUIRED: "-w
-    // /etc/sudoers.d/ -p wa -k identity") currently gets a false "missing".
-    //
-    // RED today: `is_pure_path_watch_shaped` only recognises path/perm/arch
-    // fields, so a Dir field falls outside its shape set and the
-    // Watch-vs-Syscall fold never even attempts to compare this candidate.
+    // /etc/sudoers.d/ -p wa -k identity") must be credited, not reported
+    // missing. A Dir field falls outside `is_pure_path_watch_shaped`'s shape
+    // set, so this candidate is reached only by the dir-shape fold arm.
     let rules = parse(
         "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -k identity\n",
@@ -2740,11 +2630,8 @@ fn dir_syscall_requirement_satisfied_by_plain_directory_watch() {
     // for why that is NOT re-litigated here), so this uses a synthetic
     // test-local requirement (the established pattern for matcher-grammar
     // scenarios with no real shipped analog, e.g. the perm-bit completeness
-    // tests above).
-    //
-    // RED today: same root cause as the test above, from the OTHER
-    // cross-variant arm (`is_pure_path_watch_shaped` called on the
-    // REQUIRED side this time).
+    // tests above). Same cross-variant machinery as the test above, from the
+    // OTHER arm (the shape test applied to the REQUIRED side this time).
     let baseline = vec![bl(
         "SYNTHETIC-DIR-REVERSE",
         "TEST-DIR-REVERSE",
@@ -2762,16 +2649,13 @@ fn dir_syscall_requirement_satisfied_by_plain_directory_watch() {
 
 #[test]
 fn dir_syscall_form_does_not_satisfy_an_explicit_path_shaped_requirement() {
-    // ANTI-COLLAPSE GUARD #1 -- REWRITTEN per USER RULING 2026-07-24,
-    // ROUND 3 (adversarial review found the ORIGINAL version internally
-    // unsatisfiable against the accepted "over-credit is harmless"
-    // decision below -- the same contradiction guard #2 hit in round 2,
-    // now closed the SAME way). The ORIGINAL test paired REQUIRED
-    // `-w /etc/passwd -p wa -k identity` (a real file, `is_dir == false`)
-    // with a CANDIDATE `-F dir=/etc/passwd` and demanded reject. That
-    // pairing's only available discriminator between "must accept" (the
-    // structurally identical `-w /etc/sudoers.d/` <-> `-F dir=` positive
-    // test above) and "must reject" was the required Watch's trailing
+    // ANTI-COLLAPSE GUARD #1. Note what this guard deliberately does NOT
+    // assert: pairing a REQUIRED `-w /etc/passwd -p wa -k identity` (a real
+    // file, `is_dir == false`) with a CANDIDATE `-F dir=/etc/passwd` and
+    // demanding reject is UNSATISFIABLE here. That pairing's only available
+    // discriminator between "must accept" (the structurally identical
+    // `-w /etc/sudoers.d/` <-> `-F dir=` positive test above) and "must
+    // reject" is the required Watch's trailing
     // slash -- which would make `is_dir` load-bearing, contradicting the
     // ruling that `is_dir` stays fully ignored (see
     // `dir_syscall_form_over_credits_a_file_shaped_watch_requirement_and_
@@ -2787,7 +2671,7 @@ fn dir_syscall_form_does_not_satisfy_an_explicit_path_shaped_requirement() {
     // candidate UNAMBIGUOUSLY declaring a recursive subtree watch
     // (`-F dir=X`), regardless of what X actually is on any real host.
     // Like guard #2, this is Syscall-vs-Syscall (SAME variant): it
-    // exercises `fields_match_excluding_key`'s EXISTING, unmodified
+    // exercises `fields_match_excluding_key`'s
     // per-field-type discrimination (`AuditField::Path` and
     // `AuditField::Dir` are different enum variants, so the field-set
     // compare never unifies them), NOT the cross-variant
@@ -2814,7 +2698,7 @@ fn dir_syscall_form_does_not_satisfy_an_explicit_path_shaped_requirement() {
 
 #[test]
 fn dir_syscall_form_over_credits_a_file_shaped_watch_requirement_and_that_is_accepted() {
-    // ACCEPTED, DELIBERATE over-credit (USER RULING 2026-07-24, ROUND 3):
+    // ACCEPTED, DELIBERATE over-credit (issue #571):
     // V-230406 (RHEL-08-030150, RHEL8_REQUIRED) is a real FILE watch --
     // "-w /etc/passwd -p wa -k identity". Per the ruling above, `is_dir`
     // stays fully ignored for the dir-shape fold (mirroring the pre-
@@ -2846,7 +2730,7 @@ fn dir_syscall_form_over_credits_a_file_shaped_watch_requirement_and_that_is_acc
     // every reachable Linux host, including whichever host happens to run
     // this test -- so this assertion also stands as the "must not resolve
     // dir-ness by `stat()`-ing the analyzing host's filesystem" guarantee
-    // (ALSO RULED, 2026-07-24): a linter analyzes configs FOR a target
+    // (ALSO RULED): a linter analyzes configs FOR a target
     // host, not the machine it runs on, so a `stat()`-based implementation
     // that consulted the LOCAL filesystem to reject this pairing (because
     // /etc/passwd is locally a file) would fail this test wherever it
@@ -2868,8 +2752,7 @@ fn dir_syscall_form_over_credits_a_file_shaped_watch_requirement_and_that_is_acc
 #[test]
 fn dir_syscall_form_satisfies_v274877_cron_d_watch_spelled_without_a_trailing_slash() {
     // Regression guard for the EXACT class of bug issue #571 exists to
-    // eliminate, reproduced on a REAL shipped row (adversarial review,
-    // session 9j lane 8, round 3): V-274877 (RHEL-08-030655,
+    // eliminate, reproduced on a REAL shipped row: V-274877 (RHEL-08-030655,
     // RHEL8_REQUIRED) requires "-w /etc/cron.d -p wa -k cronjobs" --
     // spelled WITHOUT a trailing slash, even though /etc/cron.d is a real
     // directory (confirmed on this host: `test -d /etc/cron.d`
@@ -2906,12 +2789,10 @@ fn dir_syscall_form_satisfies_v274877_cron_d_watch_spelled_without_a_trailing_sl
 
 #[test]
 fn dir_shaped_requirement_not_satisfied_by_an_explicit_path_syscall() {
-    // ANTI-COLLAPSE GUARD #2 -- REWRITTEN per USER RULING 2026-07-24 after
-    // adversarial review found the ORIGINAL version of this test
-    // internally unsatisfiable against the also-ruled-on `is_dir` decision
-    // below. The ORIGINAL test used a plain `-w X` (no trailing slash) as
-    // the candidate and asserted it must NOT satisfy a -F dir= requirement.
-    // That assertion was WRONG: real auditctl derives file-vs-directory by
+    // ANTI-COLLAPSE GUARD #2. Note what this guard deliberately does NOT
+    // assert: that a plain `-w X` (no trailing slash) candidate must NOT
+    // satisfy a -F dir= requirement.
+    // That would be WRONG: real auditctl derives file-vs-directory by
     // trimming any trailing slash and `stat()`-ing the actual filesystem
     // object (`audit_setup_watch_name()`), NOT from the trailing-slash
     // spelling -- `man auditctl`'s `-w path` section describes the
@@ -2921,7 +2802,7 @@ fn dir_shaped_requirement_not_satisfied_by_an_explicit_path_syscall() {
     // legitimately DOES credit a `-F dir=X` requirement on any real host
     // where X is a directory -- see
     // `dir_syscall_requirement_satisfied_by_plain_directory_watch` above,
-    // which pins exactly that and is UNCHANGED by this rewrite. `is_dir`
+    // which pins exactly that. `is_dir`
     // (`ast.rs`'s `Watch::is_dir`) stays a RuleSteward bookkeeping
     // convention, never a discriminator this fold gates on (locked, same
     // spirit as grounding Part B.7.2).
@@ -2933,8 +2814,8 @@ fn dir_shaped_requirement_not_satisfied_by_an_explicit_path_syscall() {
     // regardless of what X actually is on any real host -- and that must
     // NOT satisfy a requirement UNAMBIGUOUSLY declaring a recursive
     // subtree watch (`-F dir=X`). This is Syscall-vs-Syscall (SAME
-    // variant): it exercises `fields_match_excluding_key`'s EXISTING,
-    // unmodified per-field-type discrimination (`AuditField::Dir` and
+    // variant): it exercises `fields_match_excluding_key`'s
+    // per-field-type discrimination (`AuditField::Dir` and
     // `AuditField::Path` are different enum variants, so the field-set
     // compare never unifies them) -- NOT the cross-variant
     // `is_pure_path_watch_shaped`/`watch_equivalent_axes_match` machinery
@@ -2943,7 +2824,7 @@ fn dir_shaped_requirement_not_satisfied_by_an_explicit_path_syscall() {
     // DIFFERENT class of mistake: an implementation that tries to fold
     // dir<->path by normalizing both into a shared "location" field
     // *before* the generic field comparison, rather than keeping the
-    // equivalence scoped to new, separate cross-variant arms only.
+    // equivalence scoped to separate cross-variant arms only.
     let baseline = vec![bl(
         "SYNTHETIC-DIR-VS-EXPLICIT-PATH",
         "TEST-DIR-VS-EXPLICIT-PATH",
@@ -2985,9 +2866,9 @@ fn dir_equivalent_wrong_perms_does_not_satisfy_v230410_sudoers_d() {
 
 #[test]
 fn dir_equivalent_perm_superset_does_not_satisfy_v230410_sudoers_d() {
-    // [BLOCKER 4] Perm-superset guard (adversarial review, session 9j lane
-    // 8): the NARROWER-perm test above only pins the "candidate has FEWER
-    // bits than required" direction -- a wrong implementation comparing
+    // Perm-superset guard: the NARROWER-perm test above only pins the
+    // "candidate has FEWER bits than required" direction -- a wrong
+    // implementation comparing
     // "candidate perms are a SUPERSET of required perms" (instead of exact
     // `PermBits` equality) passes that test too, since a superset check
     // and an exact-match check agree whenever the candidate is narrower.
@@ -3036,8 +2917,7 @@ fn dir_equivalent_wrong_dir_value_does_not_satisfy_v230410_sudoers_d() {
 
 #[test]
 fn dir_equivalent_ancestor_directory_does_not_satisfy_v230410_sudoers_d() {
-    // [BLOCKER 3] Subtree over-credit guard, ANCESTOR direction
-    // (adversarial review, session 9j lane 8): `man auditctl`'s own
+    // Subtree over-credit guard, ANCESTOR direction: `man auditctl`'s own
     // wording for `-F dir=` ("place a recursive watch on the directory
     // and its whole subtree") could be over-read as "any ANCESTOR
     // directory's watch also covers this one" -- a candidate `-F dir=/etc`
@@ -3071,10 +2951,9 @@ fn dir_equivalent_ancestor_directory_does_not_satisfy_v230410_sudoers_d() {
 
 #[test]
 fn dir_equivalent_descendant_directory_does_not_satisfy_v230410_sudoers_d() {
-    // [BLOCKER 3] Subtree over-credit guard, DESCENDANT direction (the
-    // mirror of the ancestor guard above, decided and pinned here rather
-    // than bubbled up: NOT ambiguous once the ancestor direction is
-    // settled, since both follow from the SAME exact-match philosophy). A
+    // Subtree over-credit guard, DESCENDANT direction (the
+    // mirror of the ancestor guard above; both follow from the SAME
+    // exact-match philosophy). A
     // candidate `-F dir=` rule on a SUBDIRECTORY of the required directory
     // (/etc/sudoers.d/subdir, a descendant of /etc/sudoers.d) must NOT
     // satisfy V-230410 either: it only covers a SUBSET of what the
@@ -3139,11 +3018,11 @@ fn dir_syscall_wrong_arch_value_does_not_satisfy_requirement() {
     // normal per-field comparison (e.g. matching on dir/perm/key only and
     // silently ignoring arch whenever a Dir field is present).
     //
-    // SCOPE NOTE (adversarial review, session 9j lane 8): this test NEVER
-    // reaches the NEW cross-variant dir-shape fold code at all (both sides
+    // SCOPE NOTE: this test NEVER
+    // reaches the cross-variant dir-shape fold code at all (both sides
     // are Syscall) and stays green under every candidate implementation of
     // that fold, correct or not -- it is a Syscall-vs-Syscall grounding
-    // control, not an arch-axis guard on the new fold itself. Do not count
+    // control, not an arch-axis guard on the fold itself. Do not count
     // it toward "the arch axis is covered for the dir fold" in a future
     // report; it covers a different, pre-existing invariant only.
     let baseline = vec![bl(
@@ -3202,8 +3081,8 @@ fn dir_syscall_form_with_extra_auid_restriction_is_not_pure_dir_watch_shaped() {
 #[test]
 fn dir_value_trailing_slash_is_normalized_before_comparison() {
     // Trailing-slash normalisation for the dir-fold's directory-value
-    // compare, mirroring the EXISTING watch-path precedent
-    // (`normalize_watch_path`, grounding Part B.7.2) applied to the NEW
+    // compare, mirroring the watch-path precedent
+    // (`normalize_watch_path`, grounding Part B.7.2) applied to the
     // -F dir= field's value too. Real-world grounding: RHEL10_REQUIRED's
     // own sudoers.d row (stig_required.rs, RHEL10_REQUIRED table) carries a
     // trailing slash directly on a -F path= field value ("-a always,exit
@@ -3227,8 +3106,7 @@ fn dir_value_trailing_slash_is_normalized_before_comparison() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial Testing Loop follow-up (issue #571, session 9j lane 8): an
-// impl-aware review of the dir-shape fold above found five miss-cases, each
+// Five miss-cases of the dir-shape fold above (issue #571), each
 // grounded in primary source (kernel/audit_tree.c, audit-userspace
 // lib/libaudit.c + src/auditctl.c, man auditctl) and several verified
 // empirically against the host's installed audit-4.1.4 libaudit. See
@@ -3286,10 +3164,10 @@ fn dir_syscall_form_with_dash_f_key_spelling_satisfies_v230410_sudoers_d() {
     // literally builds `-F key=%s` from `-k`'s argument before calling
     // `audit_rule_fieldpair_data` -- lib/libaudit.c). `effective_key` and
     // `fields_match_excluding_key` already unify the two spellings
-    // elsewhere in this module; the dir-shape test's own allowed-field-set
-    // check forgot to exclude Key, so a `-F key=` spelling of an otherwise
-    // perfectly-equivalent candidate was wrongly falling OUTSIDE the
-    // dir-watch shape and reporting a false "missing".
+    // elsewhere in this module, so the dir-shape test's allowed-field-set
+    // check must admit Key: excluding it puts a `-F key=` spelling of an
+    // otherwise perfectly-equivalent candidate OUTSIDE the
+    // dir-watch shape and reports a false "missing".
     let rules = parse(
         "-a always,exit -F arch=b32 -F dir=/etc/sudoers.d -F perm=wa -F key=identity\n\
          -a always,exit -F arch=b64 -F dir=/etc/sudoers.d -F perm=wa -F key=identity\n",
@@ -3305,17 +3183,15 @@ fn dir_syscall_form_with_dash_f_key_spelling_satisfies_v230410_sudoers_d() {
 
 #[test]
 fn watch_form_satisfies_v281155_sudoers_d_on_rhel10_whose_table_spells_the_key_as_dash_f() {
-    // MISS-2b: the IDENTICAL omission, in `is_pure_path_watch_shaped` (the
-    // pre-existing twin `is_pure_dir_watch_shaped` copied the bug from).
+    // MISS-2b: the IDENTICAL point, in `is_pure_path_watch_shaped`.
     // RHEL10's shipped table (`RHEL10_REQUIRED`, V-281155/RHEL-10-500690)
     // spells its `/etc/sudoers.d` row with `-F key=identity`
-    // (stig_required.rs:1150/1155), while RHEL8's analogous V-230410 row
-    // spells the SAME requirement with `-k identity` (stig_required.rs:183).
+    // (stig_required.rs:1146/1155), while RHEL8's analogous V-230410 row
+    // spells the SAME requirement with `-k identity` (stig_required.rs:179).
     // A classic `-w /etc/sudoers.d/ -p wa -k identity` watch -- a real,
-    // reasonable admin config -- satisfies V-230410 on RHEL8 today but was
-    // wrongly reported "RHEL-10-500690 is missing" on RHEL10, purely
-    // because of DISA's own spelling choice for the key field, not any
-    // real difference in the ruleset.
+    // reasonable admin config -- satisfies V-230410 on RHEL8, and must
+    // equally satisfy RHEL-10-500690 on RHEL10: DISA's own spelling choice
+    // for the key field is not a real difference in the ruleset.
     let rules = parse("-w /etc/sudoers.d/ -p wa -k identity\n");
     let diags = w06(&rules, LintOptions::default(), Some(TargetVersion::Rhel10));
     assert!(
@@ -3418,7 +3294,7 @@ fn dir_equivalent_uppercase_perm_letters_satisfy_v230410_sudoers_d() {
 // row exists for this issue; these are fresh integration tests, mirroring
 // the dir twin's MISS-1/MISS-3/MISS-4 tests above but on V-230409/
 // RHEL-08-030171 (`-w /etc/sudoers -p wa -k identity`,
-// `src/lints/stig_required.rs:175-179`) -- the PLAIN-FILE twin of the row
+// `src/lints/stig_required.rs:171-175`) -- the PLAIN-FILE twin of the row
 // the dir tests use (V-230410/RHEL-08-030172, `/etc/sudoers.d/`).
 // ---------------------------------------------------------------------------
 
@@ -3507,12 +3383,11 @@ fn path_syscall_form_with_two_path_predicates_does_not_satisfy_v230409_regardles
     // once a rule's watch pointer is already set -- one location watch per
     // rule is a hard kernel limit -- so a rule naming `-F path=` TWICE never
     // loads no matter which value comes first. Pinned in BOTH field orders:
-    // the correct-path-FIRST order is the one that is RED today (
-    // `watch_equivalent_axes_match`'s `.find()` picks the first Path
-    // predicate, so today it matches and wrongly credits the requirement);
-    // the reversed order already passes. Keeping both in one test is what
-    // makes a `.find()`-order-dependent implementation impossible to sneak
-    // through.
+    // `watch_equivalent_axes_match`'s `.find()` picks the FIRST Path
+    // predicate, so a shape test without the multiplicity guard credits the
+    // correct-path-first order while rejecting the reversed one. Keeping both
+    // in one test is what makes a `.find()`-order-dependent implementation
+    // impossible to sneak through.
     let rules_path_first = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F path=/tmp/nope -F perm=wa -k identity\n",
@@ -3567,10 +3442,10 @@ fn path_well_formed_syscall_pair_still_satisfies_v230409_sudoers() {
 }
 
 // ---------------------------------------------------------------------------
-// ATL round (issue #601 follow-up, MISS-3): duplicate `-F perm=` predicates.
-// Distinct from the two-Path/two-Dir tests above, which `count() == 1`
-// guards on Path/Dir already close -- there is NO analogous multiplicity
-// guard on Perm in EITHER `is_pure_path_watch_shaped` or
+// Duplicate `-F perm=` predicates (issue #601, MISS-3).
+// Distinct from the two-Path/two-Dir tests above, which the `count() == 1`
+// guards on Path/Dir close -- there is deliberately NO analogous
+// multiplicity guard on Perm in EITHER `is_pure_path_watch_shaped` or
 // `is_pure_dir_watch_shaped`, so a field set with two DIFFERENT-valued
 // `-F perm=` predicates still passes the shape test, and
 // `watch_equivalent_axes_match`/`dir_watch_equivalent_axes_match`'s
@@ -3588,11 +3463,10 @@ fn path_well_formed_syscall_pair_still_satisfies_v230409_sudoers() {
 
 #[test]
 fn path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_regardless_of_field_order() {
-    // The correct-value-FIRST order is the one that is RED today:
-    // `watch_equivalent_axes_match`'s `.find()` picks the first Perm
-    // predicate ("wa", matching the required row), so today it wrongly
-    // credits the requirement. The reversed order ("r" first) already
-    // reports missing. Keeping both in one test is what makes a
+    // `watch_equivalent_axes_match`'s `.find()` picks the FIRST Perm
+    // predicate, so a value-blind fold credits the correct-value-first order
+    // ("wa", matching the required row) while rejecting the reversed one
+    // ("r" first). Keeping both in one test is what makes a
     // `.find()`-order-dependent implementation impossible to sneak through.
     let rules_wa_first = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=r -k identity\n\
@@ -3713,11 +3587,10 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 4 (issue #601/#600 follow-up): `perm_axis_bits` demands EQUALITY
-// where the kernel is MONOTONE -- a REGRESSION introduced by the round-2 fix
-// (commit d21c7aa) above. Round 2 correctly closed the "different predicates
-// get first-wins-credited" bug by requiring every `-F perm=` predicate to be
-// byte-identical (see `perm_axis_bits`'s doc comment in
+// `perm_axis_bits` must NOT demand EQUALITY where the kernel is MONOTONE
+// (issues #600/#601). Requiring every `-F perm=` predicate to be
+// byte-identical does close the "different predicates get
+// first-wins-credited" bug (see `perm_axis_bits`'s doc comment in
 // `stig_required.rs`), but "different" is not the same as "incomparable":
 // `kernel/auditsc.c`'s `audit_match_perm` is monotone non-decreasing in its
 // mask argument (every branch reduces to `mask & <event-determined
@@ -3725,14 +3598,11 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
 // A conjunction of two SUBSET-COMPARABLE perm predicates is therefore
 // exactly equivalent to the smaller (stricter) one alone -- `perm=wa AND
 // perm=rwxa` collapses to `perm=wa`, not to "no representable value at
-// all". Before round 2, first-wins happened to get this SPECIFIC case right
-// by accident (it never checked the second predicate); round 2's
-// equality-fold regressed it to "missing" in both field orders, which is
-// why this is fixed as a regression here rather than filed as a follow-up.
+// all", and an equality fold reports it "missing" in both field orders.
 //
 // The correct rule: if the perm masks are TOTALLY ORDERED by subset, the
 // axis value is the MINIMUM of the chain; otherwise -- genuinely
-// incomparable masks, as in the pre-existing
+// incomparable masks, as in the
 // `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
 // regardless_of_field_order` test above ({w,a} vs {r}, neither subset of
 // the other) -- the fold correctly declines (`None`) and the row stays
@@ -3743,9 +3613,9 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
 // pairs. In each, the reversed-field-order half kills first-wins on its own
 // (`.find()` would pick the superset predicate on that order and compare it
 // to the required value via exact `==`, wrongly reporting missing); BOTH
-// orders of each kill the round-2 equality-fold regression under test here
-// (it declines whenever the two predicates differ at all, regardless of
-// order, which is why both are RED today). Test 2 additionally uses an
+// orders of each kill an equality fold (it declines whenever the two
+// predicates differ at all, regardless of
+// order). Test 2 additionally uses an
 // INDEPENDENT chain against a DIFFERENT required row and the dir-form call
 // site, so the fix cannot be a special case of test 1's specific superset.
 // Neither test 1 nor test 2 can discriminate a correct "subset chain ->
@@ -3756,7 +3626,7 @@ fn dir_syscall_form_with_identical_duplicate_perm_predicates_still_satisfies_v23
 // test can ever tell them apart. Test 3 below is the one that can: it uses
 // an INCOMPARABLE pair whose intersection happens to be non-empty and to
 // equal the required value, which is exactly the shape needed to separate
-// the two folds (the pre-existing incomparable-pair test referenced above
+// the two folds (the incomparable-pair test referenced above
 // cannot do this either, since its {w,a}-vs-{r} pair intersects to EMPTY,
 // which also disagrees with the required value, so "decline" and "naive
 // intersection" coincidentally land on the same missing verdict there too).
@@ -3770,8 +3640,8 @@ fn path_syscall_form_with_subset_comparable_perm_predicates_satisfies_v230409_re
     // the required row, in BOTH field orders. Discriminates: the reversed
     // order below (rwxa-first) on its own kills first-wins (it would pick
     // rwxa, compare it to the required wa via exact equality, and wrongly
-    // report missing); both orders kill the round-2 equality-fold
-    // regression (it declines on any two differing predicates, regardless
+    // report missing); both orders kill an equality fold
+    // (it declines on any two differing predicates, regardless
     // of which comes first). Does NOT discriminate a naive intersection
     // fold from the correct minimum fold -- see the section doc comment
     // above and test 3 below for why no SATISFIED-subset test can.
@@ -3824,8 +3694,8 @@ fn dir_syscall_form_with_a_different_subset_comparable_perm_chain_satisfies_v230
     // required value) subset-of {r,w,a} (a superset that adds ONLY 'r',
     // never 'x' -- a genuinely different chain from V-230409's above).
     // Discriminates exactly as test 1 above: the reversed order
-    // (superset-first) on its own kills first-wins; both orders kill the
-    // round-2 equality-fold regression. Also does NOT discriminate a naive
+    // (superset-first) on its own kills first-wins; both orders kill an
+    // equality fold. Also does NOT discriminate a naive
     // intersection fold from the correct minimum fold, for the same
     // structural reason (subset-comparable inputs make the two folds agree
     // by definition) -- see test 3 below for the test that does.
@@ -3881,7 +3751,7 @@ fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_requi
     // Neither test 1 nor test 2 above can catch that bug: intersection
     // provably equals the minimum on any SUBSET-COMPARABLE input, so those
     // two tests can never tell the two folds apart (see the section doc
-    // comment above). Nor can the pre-existing
+    // comment above). Nor can the
     // `path_syscall_form_with_two_perm_predicates_does_not_satisfy_v230409_
     // regardless_of_field_order` test: its {w,a}-vs-{r} pair intersects to
     // EMPTY, which also disagrees with the required {w,a}, so "decline" and
@@ -3890,13 +3760,12 @@ fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_requi
     // intersection that happens to equal a real required value -- is the
     // only shape that actually separates the two folds.
     //
-    // Consequently this test currently PASSES (is GREEN) under BOTH the
-    // pre-fix round-2 equality-fold (declines because {r,w,a} != {w,x,a})
-    // and the corrected monotone-min-or-decline fold (declines because the
+    // Consequently this test passes under BOTH an
+    // equality fold (which declines because {r,w,a} != {w,x,a})
+    // and the monotone-min-or-decline fold (which declines because the
     // masks are incomparable) -- it is not a regression pin like tests 1
-    // and 2, but a forward guard: it exists so that whichever fix lands for
-    // the round-4 regression above, it cannot silently be (or become) an
-    // intersection fold without this test catching it.
+    // and 2, but a forward guard: the perm fold cannot silently be (or
+    // become) an intersection fold without this test catching it.
     let rules_rwa_first = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=rwa -F perm=wxa -k identity\n",
@@ -3938,18 +3807,19 @@ fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_requi
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 5 (issue #601 follow-up, adversarial MISS-1): `perm_axis_bits`
-// demands a TOTAL ORDER (every pair pairwise subset-comparable) where the
+// `perm_axis_bits` must NOT demand a TOTAL ORDER (every pair pairwise
+// subset-comparable) where the
 // kernel conjunction only requires the predicate set to have a MINIMUM (one
-// element that is a subset of every other element). The two conditions
-// coincide at |S| == 2 -- exactly why every round-4 test above, all
-// two-predicate, missed this -- but diverge at |S| >= 3: a set can have a
+// element that is a subset of every other element) (issue #601). The two
+// conditions
+// coincide at |S| == 2 -- which is why every two-predicate test above cannot
+// see the difference -- but diverge at |S| >= 3: a set can have a
 // minimum while also containing an incomparable PAIR that never touches the
 // minimum. `{w,a}, {r,w,a}, {w,x,a}` has minimum `{w,a}` (a subset of both
 // other elements), yet `{r,w,a}` and `{w,x,a}` are themselves incomparable
-// ('r' only in the first, 'x' only in the second). The current pairwise loop
-// finds that one incomparable pair and declines the WHOLE conjunction --
-// a bogus "missing" finding on a genuinely compliant ruleset, reproduced
+// ('r' only in the first, 'x' only in the second). A pairwise total-order
+// loop finds that one incomparable pair and declines the WHOLE conjunction --
+// a bogus "missing" finding on a genuinely compliant ruleset, reproducible
 // end-to-end against the real shipped RHEL8_REQUIRED V-230409/V-230410 rows,
 // through both `watch_equivalent_axes_match` and
 // `dir_watch_equivalent_axes_match`, and both field orders.
@@ -3966,7 +3836,7 @@ fn path_syscall_form_with_incomparable_perm_predicates_intersecting_to_the_requi
 // case that catches it.
 //
 // Framing note: every `does_not_satisfy` assertion below documents the
-// CURRENT posture (decline when no minimum exists), not a claim that
+// posture (decline when no minimum exists), not a claim that
 // declining is provably correct -- `audit_match_perm`'s monotonicity is
 // silent on an incomparable set; declining is the conservative choice.
 // ---------------------------------------------------------------------------
@@ -3978,11 +3848,11 @@ fn path_syscall_form_with_a_perm_chain_that_has_a_minimum_but_is_not_a_total_ord
     // subset of BOTH other elements, so the conjunction has a MINIMUM and
     // collapses to it -- even though {r,w,a} and {w,x,a} are themselves
     // INCOMPARABLE ('r' only in the first, 'x' only in the second), so this
-    // three-element set is NOT totally ordered. RED today for BOTH orders
-    // (the pairwise loop scans every pair regardless of which element the
+    // three-element set is NOT totally ordered. A pairwise total-order loop
+    // fails BOTH orders (it scans every pair regardless of which element the
     // source text lists first, so it finds the incomparable {r,w,a}/{w,x,a}
-    // pair and declines either way); must go GREEN once the fold checks for
-    // a minimum rather than a total order.
+    // pair and declines either way); only a fold that checks for
+    // a minimum rather than a total order credits this.
     let rules_min_first = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -F perm=rwa -F perm=wxa -k identity\n",
@@ -4161,12 +4031,12 @@ fn path_syscall_form_with_wa_and_wx_does_not_satisfy_v230409() {
 fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exec_conjunct_order_dependently()
  {
     // {w,a} subset-of {w,x,a} (adds only 'x'): the conjunction collapses to
-    // {w,a}, which IS V-230409's required value -- already SATISFIED under
-    // the current (pre-round-5) code, since a two-element chain is trivially
-    // a total order. This test exists to pin FINDING 3: deleting the WHOLE
-    // `&& (!a.exec || b.exec)` conjunct from `perm_bits_is_subset` survives
-    // the entire frozen suite as of round 4 ("remove a conjunct" is not a
-    // `cargo mutants` operator, so no gate run will ever report it).
+    // {w,a}, which IS V-230409's required value -- a two-element chain is
+    // trivially a total order, so every fold shape credits it. This test
+    // exists to pin the exec conjunct: deleting the WHOLE
+    // `&& (!a.exec || b.exec)` conjunct from `perm_bits_is_subset` is
+    // invisible to every other test here, and "remove a conjunct" is not a
+    // `cargo mutants` operator, so no gate run reports it either.
     //
     // The `wa`-FIRST order is the one that actually catches it: the running
     // min-fold starts at `wa` (min), then considers `wxa` as a candidate --
@@ -4220,15 +4090,14 @@ fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exe
 }
 
 // ---------------------------------------------------------------------------
-// Session 9m lane 1 (fixed in passing alongside this lane's #601 work, at
-// the user's ruling): the SAME field-name-only fail-open as #600's Path/Perm
+// The SAME field-name-only fail-open as #600's Path/Perm
 // axes, but on the Arch axis of `is_pure_path_watch_shaped`/
-// `is_pure_dir_watch_shaped`'s allowed-field-set conjunct
-// (`AuditField::Arch | AuditField::Key => true`, "(with any op)"). Measured
-// at the CLI (`--target rhel8`) before this fix: `-a always,exit -F
-// path=/etc/sudoers -F perm=wa -F arch>=b64 -k identity` gets BOTH an au-E02
-// "invalid operator" error (arch's own operator legality is a SEPARATE
-// lint's job, unaffected by this fix) AND a wrongly-SATISFIED verdict on
+// `is_pure_dir_watch_shaped`'s allowed-field-set conjunct. An
+// `AuditField::Arch | AuditField::Key => true` arm accepts any operator, and
+// measured at the CLI (`--target rhel8`) `-a always,exit -F
+// path=/etc/sudoers -F perm=wa -F arch>=b64 -k identity` then gets BOTH an
+// au-E02 "invalid operator" error (arch's own operator legality is a
+// SEPARATE lint's job) AND a wrongly-SATISFIED verdict on
 // V-230409/RHEL-08-030171 -- the rule never loads at the kernel level.
 //
 // Grounding: a userspace-only `audit_rule_fieldpair_data()` probe (no
@@ -4251,11 +4120,10 @@ fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exe
 // for the same grounding restated next to the direct unit-test pin.
 //
 // `Ne` is the one non-`Eq` operator that MUST stay accepted (rc 0) -- the
-// fences below pin that a correct fix gates on `Eq || Ne`, not `Eq` alone.
+// fences below pin that the guard is `Eq || Ne`, not `Eq` alone.
 // Key stays fully operator-blind (no grounded reason to gate it -- libaudit
 // accepts `key!=`/`key>=`/`key&`, all rc 0, measured separately): the
-// fences below also pin that the arch fix does not accidentally start
-// gating Key too.
+// fences below also pin that the arch guard does not gate Key too.
 // ---------------------------------------------------------------------------
 
 #[test]

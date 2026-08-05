@@ -1,6 +1,6 @@
 //! auditd cost band classifier.
 //!
-//! Issue #89 -- pipeline P2.
+//! Issue #89.
 //!
 //! # Grounding
 //! - Volume tiers (HIGH/MEDIUM/LOW/NEGATIVE): f3 section 3.5.

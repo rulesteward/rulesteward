@@ -1,5 +1,5 @@
-//! Per-product CIS Benchmark control table for the auditd backend (issue #528),
-//! milestone 9f-v0_8-wave3-cis. Mirrors the `stig_required.rs`
+//! Per-product CIS Benchmark control table for the auditd backend (issue #528).
+//! Mirrors the `stig_required.rs`
 //! [`BaselineRule`](super::stig_required::BaselineRule) /
 //! [`stig_baseline`](super::stig_required::stig_baseline) shape: one row per
 //! `ComplianceAsCode` audit rule, carrying the CIS control id and the one-line

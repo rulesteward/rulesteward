@@ -1,6 +1,6 @@
 //! auditd rule AST types.
 //!
-//! Filled by pipeline P2 (issue #86).
+//! Issue #86.
 //!
 //! # Grounding
 //! - Rule varieties (control/watch/syscall): `man 7 audit.rules` \[VM\].
@@ -93,8 +93,7 @@ pub enum ControlRule {
     /// `audit_set_loginuid_immutable(fd)` and either `return`s directly on
     /// success or leaves `retval == -1` on failure, so the generic leftover-
     /// argument check never runs and a trailing token is never read,
-    /// validated, or rejected (confirmed CORRECT, lane-8 #541 report,
-    /// 2026-07-24). This is NOT the same shape as `-D`, which rejects a
+    /// validated, or rejected. This is NOT the same shape as `-D`, which rejects a
     /// trailing token via its own unconditional field-count check. STIG-
     /// required per RHEL8 V-230403 / RHEL-08-030122 and RHEL9 V-258228 /
     /// RHEL-09-654270.
@@ -226,7 +225,7 @@ pub enum AuditField {
 /// An [`AuditRule`] plus its provenance: source file, 1-based line, and the
 /// byte range of the raw line within that file.
 ///
-/// Added in Phase 0 of session 6a (#193): `parse_target` concatenates all
+/// `parse_target` concatenates all
 /// `rules.d/` files into one stream, and the semantic lint passes (duplicate,
 /// shadowing, ordering) need to know which file and line each rule came from
 /// to anchor diagnostics and reason about lexical load order. Plain data only

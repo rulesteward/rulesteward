@@ -1,6 +1,6 @@
 //! Ordering and reachability lints over the concatenated `rules.d/` stream.
 //!
-//! Pipeline P2 (#193):
+//! Issue #193:
 //! * au-W02 - shadowed rule: an earlier rule (in EFFECTIVE load order,
 //!   including `-A` prepend head-insertion) subsumes a later rule on the same
 //!   filter list: syscall superset, and every earlier field predicate IMPLIED

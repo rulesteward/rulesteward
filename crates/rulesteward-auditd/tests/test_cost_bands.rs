@@ -1,7 +1,7 @@
-//! RED barrier tests for the cost model + band classifier (#88, #89).
+//! Tests for the cost model + band classifier (#88, #89).
 //!
 //! # Grounding
-//! - Byte constant 1200 B/event ENRICHED LOCKED 2026-06-03 (issue #88 body).
+//! - Byte constant 1200 B/event ENRICHED is LOCKED (issue #88 body).
 //! - RAW factor 0.75x (f3 section 3.4).
 //! - Decimal GB = bytes / 1e9 (f3 section 4.1). NOT GiB (factor 1.073... difference ~7%).
 //! - cost/month = gb/day * 30.4 * price/GB (f3 section 4.1).

@@ -1,11 +1,11 @@
-//! RED barrier tests for au-W01 (duplicate rule, Warning) and au-E03
-//! (load-aborting duplicate, Error) -- issue #193, pipeline P1.
+//! Tests for au-W01 (duplicate rule, Warning) and au-E03
+//! (load-aborting duplicate, Error) -- issue #193.
 //!
-//! Both codes are emitted by `lints::duplicate::w01(&[LocatedRule])`.
-//! The entrypoint signature is Phase-0 frozen; it returns `Vec<Diagnostic>`
-//! whose `severity` and `code` fields distinguish the two cases.
+//! Both codes are emitted by `lints::duplicate::w01(&[LocatedRule])`,
+//! which returns `Vec<Diagnostic>` whose `severity` and `code` fields
+//! distinguish the two cases.
 //!
-//! # Severity boundary (owner decision, session 6a PRIOR ANSWERS)
+//! # Severity boundary (owner decision, issue #193)
 //!
 //! * **au-E03 (Error)** -- the kernel treats the later rule as THE SAME RULE as
 //!   the earlier one: `AuditRule::PartialEq` is true (same field order, same
@@ -129,7 +129,7 @@ fn cross_file_field_order_swap_fires_one_w01_at_later_file() {
 // name into rule->mask, lib/libaudit.c:1021-1025), so "-S open -S close" and
 // "-S close -S open" are the SAME kernel rule. The second therefore EEXISTs and
 // auditctl -R aborts (auditctl.c:1680-1686): a LOAD-ABORTING duplicate -> au-E03
-// (Error), not a mere redundancy. (Owner decision, session 6a: the E03/W01
+// (Error), not a mere redundancy. (Owner decision: the E03/W01
 // boundary is kernel-load-aborting, not literal AST byte-identity; verified
 // against libaudit + auditctl source.)
 //
@@ -204,26 +204,21 @@ fn repeated_syscall_duplicate_fires_e03() {
 // ---------------------------------------------------------------------------
 // Test 2c / 2d: `-F perm=` letter ORDER and CASE flip -- au-E03 (load-aborting)
 //
-// Session 9m lane 1, round 2-3 ATL. `canonical_key` (`normalize.rs:70`) folds
-// a `Syscall` rule's field VALUES through `super::value::canonical_value`.
-// PRIOR to round 3's fix, `classify.rs` bucketed `FieldType::Perm` into
-// `FieldValue::Opaque`, whose `canonical_value` arm is a raw string compare
-// (`Cow::Borrowed(raw.trim())`) -- so `-F perm=wa` and `-F perm=aw`
-// (order-swapped), or `-F perm=wa` and `-F perm=WA` (case-flipped), got
-// DIFFERENT canonical keys even though `lib/libaudit.c`'s
-// `audit_rule_fieldpair_data` case-folds every `-F perm=` character
+// `canonical_key` (`normalize.rs:70`) folds a `Syscall` rule's field VALUES
+// through `super::value::canonical_value`. A `FieldValue::Perm(PermMask)`
+// variant (`classify.rs`/`canonical.rs`) folds `-F perm=` into an
+// order-free bitmask (falling back to a raw string compare only when the
+// value does not parse as perm letters), so `-F perm=wa` and `-F perm=aw`
+// (order-swapped), or `-F perm=wa` and `-F perm=WA` (case-flipped), fold to
+// the SAME canonical key, matching `lib/libaudit.c`'s
+// `audit_rule_fieldpair_data`, which case-folds every `-F perm=` character
 // (`tolower((unsigned char)v[i])`) and ORs the letters into one bitmask
 // (`wa`/`aw`/`WA` all produce `AUDIT_PERM_WRITE|AUDIT_PERM_ATTR`), so the
 // kernel's `audit_compare_rule` (`kernel/auditfilter.c`) sees byte-identical
 // fields, `audit_add_rule` returns `-EEXIST`, and `auditctl -R` aborts the
 // file exactly as this module's own au-E03 message already describes
-// ("every later rule silently fails to load"). Round 3 (`classify.rs`/
-// `canonical.rs`) added a `FieldValue::Perm(PermMask)` variant that folds
-// `-F perm=` into an order-free bitmask (falling back to the old `Opaque`
-// path only when the value does not parse as perm letters), so
-// `canonical_key` now folds both spellings together and the two tests below
-// are GREEN: each fires exactly one au-E03, not the zero findings the
-// pre-round-3 code produced.
+// ("every later rule silently fails to load"). The two tests below are
+// GREEN: each fires exactly one au-E03.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -282,18 +277,19 @@ fn perm_letter_case_flip_duplicate_fires_e03() {
 }
 
 // ---------------------------------------------------------------------------
-// ATL round 3 (issues #600/#601 follow-up, mutation-gate strengthening).
+// Distinctness pin: genuinely different perm values must stay DISTINCT
+// (issues #600/#601, mutation-gate strengthening).
 //
-// Round 2 above (Test 2c/2d) pins only ONE direction of the perm fold: that
+// The Test 2c/2d pins above pin only ONE direction of the perm fold: that
 // EQUIVALENT spellings (case/order variants of the SAME kernel bitmask) get
 // grouped together. Nothing above pins the opposite direction: that GENUINELY
 // DIFFERENT perm values stay DISTINCT. A `PermMask::to_letters`
 // (`value/classify.rs:107`) that folds every bitmask to a constant string
 // (e.g. `String::new()`), or whose `&`/`!=` bit tests are flipped to
 // `|`/`^`/`==`, would make EVERY `-F perm=` value canonicalize identically --
-// still passing every round-2 test above, while silently making au-E03/au-W01
+// still passing every Test 2c/2d pin above, while silently making au-E03/au-W01
 // fire on rule pairs that are NOT duplicates at all: a fail-open in the
-// OPPOSITE direction from the bug round 2 fixed (it would fire au-E03 on
+// OPPOSITE direction from the bug those tests fixed (it would fire au-E03 on
 // `-F perm=r` vs `-F perm=w`, and credit a STIG control with a candidate
 // whose perms are simply wrong -- see the Syscall-vs-Syscall au-W06 tests in
 // `test_lints_stig_required.rs` for that surface).
@@ -316,7 +312,7 @@ fn perm_letter_case_flip_duplicate_fires_e03() {
 
 #[test]
 fn perm_single_letter_case_fold_fires_e03_for_every_letter() {
-    // PER-LETTER coverage: round 2's order/case-flip tests above only
+    // PER-LETTER coverage: the Test 2c/2d order/case-flip tests above only
     // exercise the 'w' and 'a' arms of both `PermMask::parse` (classify.rs)
     // and `duplicate.rs`'s local `perm_field_bits` -- 'r' and 'x' are
     // entirely unpinned there, so deleting either match arm survives
@@ -891,7 +887,7 @@ fn duplicate_diagnostic_span_covers_raw_rule_line() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 14: prepend-then-append pair fires au-E03 (Miss #1 from adversarial review)
+// Test 14: prepend-then-append pair fires au-E03
 //
 // prepend-then-append/10-prepend.rules  line 5: -A always,exit -S execve -F auid>=1000 -k exec
 // prepend-then-append/50-append.rules   line 5: -a always,exit -S execve -F auid>=1000 -k exec
@@ -953,7 +949,7 @@ fn prepend_then_append_fires_e03_not_w01() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 15: double-prepend pair fires au-W01 (Miss #2 from adversarial review)
+// Test 15: double-prepend pair fires au-W01
 //
 // double-prepend/10-first-prepend.rules  line 4: -A always,exit -S execve -k exec
 // double-prepend/50-second-prepend.rules line 6: -A always,exit -S execve -k exec

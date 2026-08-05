@@ -1,5 +1,5 @@
-//! RED barrier tests for au-E02 operator-validity lint + per-field type table
-//! (pipeline P3, issue #193).
+//! Tests for au-E02 operator-validity lint + per-field type table
+//! (issue #193).
 //!
 //! # Grounding
 //! The per-field operator-validity matrix is built entirely from primary sources
@@ -1228,7 +1228,7 @@ fn op_str_ne_exact_token_in_message() {
 // # EL9/EL10-ONLY additions (reject on el9/el10, NOT on el8): subj_sen,
 //   subj_clr, obj_lev_low, obj_lev_high, saddr_fam.
 //
-// # SaddrFam / el8 (DELIBERATE, DOCUMENTED gap -- orchestrator-locked):
+// # SaddrFam / el8 (DELIBERATE, DOCUMENTED gap):
 // vanilla v4.18 has NO `AUDIT_SADDR_FAM` case at all (upstream added the
 // constant/case ~v5.4); whether RHEL 8's backported/vendor kernel carries a
 // backport of this specific case is UNVERIFIED against a real RHEL8 kernel
@@ -1252,7 +1252,7 @@ fn op_str_ne_exact_token_in_message() {
 // That is OUT OF SCOPE for au-E05 (issue #490's title and grounding request
 // are bitmask-operator-specific) and is NOT modeled by any test below.
 //
-// # ORCHESTRATOR-LOCKED DECISION (NARROW, option (a)): au-E05 stays SILENT
+// # LOCKED DECISION (NARROW, option (a)): au-E05 stays SILENT
 // for a bitmask op on every field in that `=`/`!=`-only arm, at EVERY
 // target, including `None`. Rationale, spelled out because it is
 // non-obvious: that arm is a DIFFERENT kernel restriction (an operator
@@ -1270,25 +1270,23 @@ fn op_str_ne_exact_token_in_message() {
 //     (`FieldType::Filetype`) map to `false` in au-E02 -- these TEN fields
 //     are the genuine residual gap: today NEITHER au-E02 nor au-E05 catches
 //     a relational/non-bitmask op rejected by this kernel arm on el9/el10.
-//     A follow-up issue (filed by the orchestrator, out of scope here) will
-//     model the WHOLE arm -- every kernel-disallowed op, not just bitmask --
-//     as its own lint pass rather than bolting a half-measure onto au-E05.
-// CORRECTION (round 3): an earlier draft of this comment claimed `filetype`
-// "is NOT a member of this particular `=`/`!=`-only arm at all". That claim
-// is TRUE only at the el8 (v4.18) kernel baseline -- v4.18 auditfilter.c:420
-// handles `AUDIT_FILETYPE` with a VALUE check only
+//     A follow-up issue (out of scope here) will model the WHOLE arm --
+//     every kernel-disallowed op, not just bitmask -- as its own lint pass
+//     rather than bolting a half-measure onto au-E05.
+// `filetype` membership in this `=`/`!=`-only arm is version-dependent: it
+// is NOT a member at the el8 (v4.18) kernel baseline -- v4.18
+// auditfilter.c:420 handles `AUDIT_FILETYPE` with a VALUE check only
 // (`if (f->val & ~S_IFMT) return -EINVAL;`), no operator guard of any kind.
-// It is FALSE at el9/el10: v5.14 auditfilter.c places `case AUDIT_FILETYPE:`
+// It IS a member at el9/el10: v5.14 auditfilter.c places `case AUDIT_FILETYPE:`
 // INSIDE the `/* only equal and not equal valid ops */` arm, alongside
 // subj_user/subj_role/subj_type/obj_user/obj_role/obj_type/watch/dir/
 // filterkey (byte-identical placement at v6.6/v6.12/v6.16). `filetype`
 // therefore belongs in the TEN-field residual-gap list above, not as a
-// separately-described "additional unrestricted field". No test assertion
-// here was ever wrong -- au-E02 already maps `FieldType::Filetype => false`
-// (`operator_validity.rs:76`), so `-F filetype>5` is kernel-rejected at
-// el9/el10 and caught by NEITHER code today, exactly like the other nine --
-// only this comment's prose was wrong, and the follow-up issue's scope must
-// be drawn from the corrected TEN-field list, not the original nine.
+// separately-described "additional unrestricted field" -- au-E02 already
+// maps `FieldType::Filetype => false` (`operator_validity.rs:74`), so
+// `-F filetype>5` is kernel-rejected at el9/el10 and caught by NEITHER code
+// today, exactly like the other nine. The follow-up issue's scope must be
+// drawn from this TEN-field list.
 // The negative-control set below (all clean for BITMASK ops -- au-E05's only
 // in-scope operator class -- at every target) is the union of the 4
 // au-E02-double-report fields (arch/fstype/perm/exe), the TEN residual-gap
@@ -1333,7 +1331,7 @@ fn assert_e05(input: &str, target: Option<TargetVersion>, field: &str, op: &str)
     let d = &diags[0];
     assert_eq!(d.severity, Severity::Error, "severity must be Error");
     assert_eq!(d.code, "au-E05", "code must be au-E05");
-    // Backtick-delimited (round 3 fix): a plain `contains(field)` is a
+    // Backtick-delimited: a plain `contains(field)` is a
     // substring check, so `uid` is satisfied by `euid`/`suid`/`fsuid`/
     // `auid`/`obj_uid`, and `gid` by `egid`/`sgid`/`fsgid`/`obj_gid`, and
     // `pid` by `ppid`. A wrong impl with a local field-name map that returns
@@ -1447,7 +1445,7 @@ fn e05_stable_fields_still_reject_under_every_specific_target_too() {
 /// Grounding: v4.18 auditfilter.c:376 lists `case AUDIT_PERS:` and
 /// auditfilter.c:380 lists `case AUDIT_DEVMINOR:`, both inside the SAME
 /// bitmask-reject arm as pid/msgtype/etc (lines 361-388; line 375 is
-/// `case AUDIT_PID:`, not PERS -- corrected citation, round 3). v5.14
+/// `case AUDIT_PID:`, not PERS). v5.14
 /// auditfilter.c:350-357 moves BOTH into a NEW arm explicitly commented
 /// `/* all ops are valid */`.
 #[test]
@@ -1496,7 +1494,7 @@ fn e05_el9_el10_only_fields_reject_bitand_only_under_rhel9_and_rhel10() {
 /// NO `AUDIT_SADDR_FAM` case at all (the constant/case was added upstream
 /// around v5.4); whether RHEL 8's backported kernel carries a backport of
 /// this specific case is UNVERIFIED against a real RHEL8 kernel tree. Per
-/// the orchestrator's locked decision, the el8 table OMITS `saddr_fam`
+/// the locked decision, the el8 table OMITS `saddr_fam`
 /// (conservative: a false NEGATIVE here is acceptable, a false POSITIVE in a
 /// security linter is not). A follow-up issue tracks the empirical el8
 /// check -- this test pins the current, deliberately-conservative contract;
@@ -1549,7 +1547,7 @@ fn e05_arg_registers_never_reject_bitand_under_any_target() {
 /// else in this suite: `path`, `dir`, `key`, `subj_user`, `subj_role`,
 /// `subj_type`, `obj_user`, `obj_role`, `obj_type`, `exe`, `arch`, `perm`,
 /// `filetype`, `fstype`, `field_compare`. See the Section 9 grounding doc
-/// comment's "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph for the exact
+/// comment's "LOCKED DECISION (NARROW)" paragraph for the exact
 /// citation and the au-E02-double-report-avoidance rationale for the first
 /// 14; `field_compare` is documented separately just below the `cases` array
 /// since it fell through the cracks of that original 14-field survey (it was
@@ -1586,7 +1584,7 @@ fn e05_fields_outside_the_kernel_reject_table_stay_clean_at_every_target() {
         "-a always,filesystem -F fstype&0x1",
         // field_compare: pinned separately from the 14 fields above because
         // its story is genuinely distinct, not just an omission. Reachable
-        // via -F (parser.rs:641 `"field_compare" => Some(AuditField::FieldCompare)`)
+        // via -F (parser.rs:639 `"field_compare" => Some(AuditField::FieldCompare)`)
         // despite the unrelated `-C`-only doc claim elsewhere; libaudit's
         // userspace parser accepts any operator for it (AUDIT_FIELD_COMPARE
         // is absent from audit_rule_fieldpair_data's named cases, so it
@@ -1602,7 +1600,7 @@ fn e05_fields_outside_the_kernel_reject_table_stay_clean_at_every_target() {
         //     alongside subj_user/subj_role/.../filetype -- the kernel DOES
         //     reject a bitmask op on it there. au-E05 stays silent anyway
         //     because that whole arm is the documented out-of-scope residual
-        //     gap (see the "ORCHESTRATOR-LOCKED DECISION (NARROW)" paragraph
+        //     gap (see the "LOCKED DECISION (NARROW)" paragraph
         //     above) -- a real false negative, tracked by the same follow-up
         //     issue, not a bug in this test.
         // Measured (2026-07-15): `-F field_compare&1` -> au-E02 silent,
@@ -1775,7 +1773,7 @@ fn e05_diagnostic_shape() {
 }
 
 /// Anchoring must point at the rule that actually FIRED, not always at rule
-/// 1 / line 1 (round-3 fix).
+/// 1 / line 1.
 ///
 /// Every other au-E05 fixture in this suite is a single rule on line 1, so
 /// `d.line` / `d.span` / `d.file` are indistinguishable from constants there

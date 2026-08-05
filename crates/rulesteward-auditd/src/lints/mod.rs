@@ -1,25 +1,23 @@
 //! Semantic lint passes over the concatenated `rules.d/` rule stream (#193).
 //!
 //! Code split (one file per semantic family, mirroring the fapolicyd crate):
-//! * `duplicate` - au-W01 normalized-equal duplicate rules (pipeline P1).
+//! * `duplicate` - au-W01 normalized-equal duplicate rules.
 //! * `ordering` - au-W02 shadow/subsumption, au-E01 post-`-e 2` unreachable,
-//!   au-W03 exclude/never suppression conflict (pipeline P2).
-//! * `operator_validity` - au-E02 operator invalid for field type (pipeline P3);
+//!   au-W03 exclude/never suppression conflict.
+//! * `operator_validity` - au-E02 operator invalid for field type;
 //!   au-E05 KERNEL-side bitmask-operator (`&`/`&=`) rejection, a sibling
 //!   check beyond au-E02's libaudit-userspace model (#490).
 //! * `arch_coverage` - au-W04 a syscall rule pins one ABI (`arch=b32`/`b64`)
 //!   with no companion on the opposite ABI, so its syscalls go unaudited on the
 //!   other ABI (#261).
-//! * `normalize` - the shared rule canonicalization both P1 and P2 consume
-//!   (Phase-0 frozen; see [`normalize::canonical_key`]).
-//! * `field_type` - the per-field type table au-E02 consumes (taxonomy frozen
-//!   in Phase 0; the 45-arm match body is pipeline P3's, with per-arm
-//!   citations to audit-userspace commit 3bfa048).
+//! * `normalize` - the shared rule canonicalization both `duplicate` and
+//!   `ordering` consume (see [`normalize::canonical_key`]).
+//! * `field_type` - the per-field type table au-E02 consumes (the 45-arm
+//!   match body cites audit-userspace commit 3bfa048 per arm).
 //! * `field_name` - the single shared [`field_name::field_name`] map of `-F`
-//!   field-name strings, consumed by both au-E02 and au-E04 (#458; was two
-//!   byte-identical private copies).
+//!   field-name strings, consumed by both au-E02 and au-E04 (#458).
 //! * `stig_required` - au-W06 ruleset missing rules the applicable RHEL STIG
-//!   requires, version-aware under `--target` (issue #474; Phase-0 stub; owns
+//!   requires, version-aware under `--target` (issue #474; owns
 //!   the clap-free [`TargetVersion`]).
 //! * `cis` - per-product CIS Benchmark control table (issue #528; mirrors
 //!   `stig_required`'s `BaselineRule`/`stig_baseline` shape).
@@ -29,10 +27,9 @@
 //! concatenated stream (`&[LocatedRule]`): duplicate, shadowing, and ordering
 //! are inherently cross-file properties under `augenrules(8)` lexical concat.
 //!
-//! Pass modules are `pub` so each pipeline's barrier tests call their OWN
-//! entrypoint directly without tripping sibling `todo!()` stubs through the
-//! dispatcher (the stubs are filled by the fan-out pipelines; the dispatcher
-//! path is exercised by the integration-gate e2e tests).
+//! Pass modules are `pub` so each pass's tests can call their OWN entrypoint
+//! directly; the dispatcher path is exercised separately by integration-gate
+//! e2e tests.
 
 pub mod arch_coverage;
 pub mod catalog;

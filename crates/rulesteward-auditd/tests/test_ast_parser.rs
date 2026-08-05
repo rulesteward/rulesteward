@@ -1,4 +1,4 @@
-//! RED barrier tests for auditd rule AST + line parser (#86, #87).
+//! Tests for auditd rule AST + line parser (#86, #87).
 //!
 //! # Grounding
 //! - Rule varieties, flag grammar: `man 7 audit.rules`, `auditctl(8)` \[VM\].
@@ -93,7 +93,7 @@ fn control_enable_lock_parses() {
 /// set. Changing loginuids requires `CAP_AUDIT_CONTROL`." (verified against
 /// the installed `auditctl(8)` man page, 2026-07-15).
 ///
-/// (#523, session 9b-v0_8-wave2 lane 2e): `parser.rs`'s `parse_line` match
+/// (#523): `parser.rs`'s `parse_line` match
 /// has a dedicated `"--loginuid-immutable"` arm that returns `Ok` directly.
 #[test]
 fn control_loginuid_immutable_parses() {
@@ -1017,7 +1017,7 @@ fn parse_line_unquoted_token_passes_through_unchanged() {
     }
 }
 
-/// parser.rs:414,416 -- `parse_filter_list` arms for "user" and "filesystem".
+/// parser.rs:413,415 -- `parse_filter_list` arms for "user" and "filesystem".
 ///
 /// Two mutation survivors: delete "user" arm; delete "filesystem" arm.
 /// Both are valid `auditctl(8)` filter lists from `flagtab.h`.
@@ -1054,7 +1054,7 @@ fn parse_filter_list_filesystem_recognized() {
     }
 }
 
-/// parser.rs:424 -- `parse_action` arm for "possible".
+/// parser.rs:423 -- `parse_action` arm for "possible".
 ///
 /// Mutation survivor: delete "possible" arm.
 ///
@@ -1173,9 +1173,9 @@ fn watch_perms_invalid_letter_still_rejects_either_case() {
     );
 }
 
-/// ATL round (issue #601 follow-up, MISS-1): a `-p` argument longer than 4
-/// characters must be rejected even when every individual character is a
-/// valid perm letter. Grounded: audit-userspace `src/auditctl.c`'s
+/// A `-p` argument longer than 4 characters must be rejected even when
+/// every individual character is a valid perm letter (issue #601).
+/// Grounded: audit-userspace `src/auditctl.c`'s
 /// `audit_setup_perms` checks LENGTH before it examines any letter --
 /// `len = strlen(opt); if (len > 4) { audit_msg(LOG_ERR, "permission %s is
 /// too long", opt); return -1; }` -- the SAME `return -1` the invalid-letter
@@ -1223,7 +1223,7 @@ fn watch_perms_five_letters_rejected_even_all_valid_letters() {
 // see the RULING below) via the same `rwxa` check, closing what was an open
 // parser gap (#601's other half); the tests below pin that fix.
 //
-// RULING (orchestrator, 2026-07-30): the letter-set check is gated on the
+// RULING: the letter-set check is gated on the
 // comparison OPERATOR -- only `-F perm=VALUE` (op `=`) is letter-checked.
 // `-F perm!=VALUE` (and every other operator) keeps parsing unvalidated so
 // `au-E02` can report the illegal operator, matching real auditctl's own
@@ -1278,7 +1278,7 @@ fn field_filter_perm_valid_letters_still_parse() {
     parse_ok("-a always,exit -F perm=WA -S execve");
 }
 
-/// Pins DECISION 1/the orchestrator RULING: `-F perm` predicates using ANY
+/// Pins DECISION 1/the RULING: `-F perm` predicates using ANY
 /// operator other than `=` must PARSE -- the letter check does not apply.
 /// `au-E02` (not this parser check) is what reports the illegal operator on
 /// these lines; see `e02_perm_ne_is_error` / `e02_perm_greater_is_error` /
@@ -1328,9 +1328,9 @@ fn field_filter_non_perm_values_are_still_unvalidated() {
     parse_ok("-a always,exit -F devminor=-1 -S openat");
 }
 
-/// ATL round (issue #601 follow-up, MISS-2): a `-F perm=` value longer than 4
-/// characters must be rejected even when every individual character is a
-/// valid perm letter. Grounded: libaudit's `audit_rule_fieldpair_data`
+/// A `-F perm=` value longer than 4 characters must be rejected even when
+/// every individual character is a valid perm letter (issue #601). Grounded:
+/// libaudit's `audit_rule_fieldpair_data`
 /// (`lib/libaudit.c`, v3.0.7:1689, v3.1.5:1812, v4.0.3:1832) checks LENGTH
 /// before the letter loop `field_filter_perm_invalid_letter_rejects` (above)
 /// already pins: `case AUDIT_PERM: ... else if (op != AUDIT_EQUAL) return
@@ -1367,8 +1367,8 @@ fn field_filter_perm_too_long_rejects_even_all_valid_letters() {
 
 /// CRITICAL companion to the length check above: it must be gated on the
 /// operator the SAME way the letter-set check already is
-/// (`field_filter_perm_operator_gating_pin` above, pinning the orchestrator
-/// RULING under DECISION 1). libaudit's `AUDIT_PERM` case returns
+/// (`field_filter_perm_operator_gating_pin` above, pinning the RULING
+/// under DECISION 1). libaudit's `AUDIT_PERM` case returns
 /// `-EAU_OPEQ` for any op but `=` BEFORE it ever reaches the length check
 /// (see the case arm quoted above: the `op != AUDIT_EQUAL` branch returns
 /// first), so the length check is UNREACHABLE for a non-`=` operator in the

@@ -1,12 +1,12 @@
-//! Per-field type table for the 45 `-F` field names (pipeline P3, #193).
+//! Per-field type table for the 45 `-F` field names (#193).
 //!
-//! The taxonomy below was drafted in Phase 0 from a survey of audit-userspace
+//! The taxonomy below is drawn from a survey of audit-userspace
 //! `lib/fieldtab.h` + `lib/libaudit.c` (`audit_rule_fieldpair_data`) at commit
-//! 3bfa048 (the crate's pinned citation commit). Pipeline P3 OWNS the match
-//! body of [`field_type`] and must cite, per arm, the exact source line in
-//! that commit that grounds the assignment. If the survey shows a variant is
-//! missing or wrong, P3 raises `[QUESTION FOR USER]` proposing the taxonomy
-//! change rather than silently editing this enum (it is Phase-0 frozen).
+//! 3bfa048 (the crate's pinned citation commit), and the match body of
+//! [`field_type`] cites, per arm, the exact source line in that commit that
+//! grounds the assignment. If a survey shows a variant is missing or wrong,
+//! raise `[QUESTION FOR USER]` proposing the taxonomy change rather than
+//! silently editing this enum.
 
 use crate::ast::AuditField;
 
@@ -25,9 +25,9 @@ pub enum FieldType {
     /// Numeric value the daemon restricts to the equality operators `=` and
     /// `!=` only (audit `EAU_OPEQNOTEQ`). `inode` is the numeric field libaudit
     /// operator-validates this way (`libaudit.c:1997-2000` @ 3bfa048): a
-    /// relational or bitmask operator on it is rejected at load time. Added
-    /// session 6a (#193) alongside [`FieldType::StringEqNe`] so the operator
-    /// restriction is expressed purely in the type table.
+    /// relational or bitmask operator on it is rejected at load time. Grouped
+    /// with [`FieldType::StringEqNe`] so the operator restriction is
+    /// expressed purely in the type table.
     NumericEqNe,
     /// User id: numeric or resolved from a user name (e.g. `auid`, `uid`).
     Uid,
@@ -48,9 +48,8 @@ pub enum FieldType {
     /// String value that the daemon restricts to the equality operators `=`
     /// and `!=` only (audit `EAU_OPEQNOTEQ`). `exe` is the one string-typed
     /// field libaudit operator-validates: a relational or bitmask operator on
-    /// it is rejected at load time. Added session 6a (#193) so the operator
-    /// restriction is expressed purely in the type table rather than a
-    /// per-field special case.
+    /// it is rejected at load time. The operator restriction is expressed
+    /// purely in the type table rather than a per-field special case.
     StringEqNe,
     /// CPU architecture (`arch`): `b32`/`b64` or an ELF machine name/number.
     Arch,
@@ -70,8 +69,8 @@ pub enum FieldType {
 
 /// The type of each of the 45 `-F` fields.
 ///
-/// Body is pipeline P3's (45 arms, each citing `fieldtab.h`/`libaudit.c` at
-/// audit commit 3bfa048); the signature and taxonomy are Phase-0 frozen.
+/// Each of the 45 arms cites `fieldtab.h`/`libaudit.c` at audit commit
+/// 3bfa048.
 ///
 /// Citations per arm:
 /// - `Pid`: fieldtab.h:24 `AUDIT_PID=0`; libaudit.c:2006 strtol default
@@ -83,7 +82,7 @@ pub enum FieldType {
 /// - `Success`: fieldtab.h:55 `AUDIT_SUCCESS=104`; libaudit.c:1992 range fallthrough
 /// - `A0..A3`: fieldtab.h:65-68 `AUDIT_ARG0..AUDIT_ARG3`; libaudit.c:1954 ARG range
 /// - `FieldCompare`: fieldtab.h:63 `AUDIT_FIELD_COMPARE`; the `-C` field, but ALSO
-///   reachable via `-F field_compare=...` (parser.rs:641 maps the name). libaudit does
+///   reachable via `-F field_compare=...` (parser.rs:639 maps the name). libaudit does
 ///   not name it in `audit_rule_fieldpair_data`, so it falls to that fn's `default:`
 ///   arm (isdigit then strtol) with NO operator guard -- hence `Numeric` is correct
 ///   here. The KERNEL is stricter: v5.14+ auditfilter.c places `AUDIT_FIELD_COMPARE`
@@ -130,7 +129,7 @@ pub fn field_type(field: &AuditField) -> FieldType {
         // Numeric (full relational + bitmask): no op restriction in libaudit.c
         // fieldtab.h lines: Pid:24, Ppid:43, Pers:35, DevMajor:51,
         //   DevMinor:52, Success:55, A0-A3:65-68, FieldCompare:63 (the `-C` field,
-        //   but ALSO reachable via `-F field_compare=...` per parser.rs:641; libaudit
+        //   but ALSO reachable via `-F field_compare=...` per parser.rs:639; libaudit
         //   applies no op guard to it, so `Numeric` is right -- see the per-arm note
         //   above for the stricter KERNEL rule that neither au-E02 nor au-E05 models)
         AuditField::Pid

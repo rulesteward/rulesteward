@@ -32,7 +32,7 @@
 #     anything further. Only a FAILING canary permits testing the next rule in
 #     that container.
 #
-# RAW FACTS, NOT A VERDICT (session 9k-1 Lane A remediation)
+# RAW FACTS, NOT A VERDICT
 #
 # This script used to grep ONE string in the captured stderr and write a
 # precomputed "accept"/"reject" verdict straight into the corpus. That string
@@ -70,7 +70,7 @@ fi
 
 # LC_ALL=C before any directory glob (the existing-scenario enumeration below)
 # so scenario ordering is not locale-dependent (CONTRIBUTING.md determinism
-# note; session 9k-1 amendment).
+# note).
 export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
@@ -110,7 +110,7 @@ read -r -d '' CONTAINER_SCRIPT_HEAD <<'HEAD_EOF'
 set -u
 export LC_ALL=C
 
-# Byte-safe field escaper (session 9k-1 Lane A remediation): '\' -> '\\',
+# Byte-safe field escaper: '\' -> '\\',
 # TAB -> '\t', LF -> '\n', CR -> '\r', printable ASCII 0x21-0x7e and the plain
 # 0x20 space pass through unescaped, everything else -> '\xHH'. A wholly empty
 # field is encoded as the two-character sentinel '\0' (never a raw empty
@@ -285,11 +285,10 @@ add_584_601_489_491_scenarios() {
         '-a always,exit -F arch=b64 -S execve -F devminor=-1'
     add_scenario "control-accept" "control" \
         '-a always,exit -F arch=b64 -S execve -k exec_control'
-    # CHANGED (session 9k-1 Lane A remediation): the old control-reject rule
-    # was '-F perm=zz', which RuleSteward's own parser ALSO accepts (no
-    # letter-set validation on -F perm= values) - a positive control must not
-    # double as a product-divergence row, or a broken control and a real XFAIL
-    # would be indistinguishable. '-F nosuchfield=1' is loud on the real
+    # A positive control must not double as a product-divergence row:
+    # '-F perm=zz' would, since RuleSteward's own parser ALSO accepts it (no
+    # letter-set validation on -F perm= values) - a broken control and a real
+    # XFAIL would be indistinguishable. '-F nosuchfield=1' is loud on the real
     # oracle ("-F unknown field: nosuchfield", tools/oracle-images/README.md)
     # AND rejected by RuleSteward's own field-name table (parse_audit_field
     # has no "nosuchfield" entry) - product and oracle AGREE on reject, so
@@ -298,11 +297,10 @@ add_584_601_489_491_scenarios() {
         '-a always,exit -F nosuchfield=1 -S execve'
 }
 
-# New grounding scenarios across three review rounds: 19 from the original
-# remediation (fallback set - see PROVENANCE.md "Fallback scope" for why 19,
-# not the nominal 42), 3 from the round-2 adversarial-review rework, and 2
-# from the post-implementation (round-3) adversarial review - 24 total
-# `add_scenario` calls in this function.
+# New grounding scenarios (24 total `add_scenario` calls in this function):
+# 19 from the original remediation (fallback set - see PROVENANCE.md
+# "Fallback scope" for why 19, not the nominal 42), plus 5 more added from
+# later adversarial-review grounding.
 add_new_grounding_scenarios() {
     # Group 1: -p perm letters, including the invalid-letter reject that
     # closes #601's fail-open (an invalid letter, upper or lower, must be
@@ -311,22 +309,22 @@ add_new_grounding_scenarios() {
     add_scenario "p-invalid-lower" "601" '-w /etc/passwd -p z -k pinvlow'
     add_scenario "p-invalid-upper" "601" '-w /etc/passwd -p Z -k pinvup'
     # -F perm= (field-based, not the -p watch flag above) with an invalid
-    # letter: this is the row the OLD control-reject scenario used to carry
-    # ('-F perm=zz'), which is why that rule had to move off the positive
-    # control (a control must never double as a product-divergence row). Kept
-    # here as its own grounding id: RuleSteward's parser now validates -F
-    # perm= values against the rwxa letter set (issue #601's other half,
-    # closed in a later round), so this row is expected to REJECT on BOTH
-    # sides -- no longer a product/oracle divergence, but still worth
-    # capturing under its own id for the corpus's own regression coverage.
+    # letter ('-F perm=zz'): a control must never double as a
+    # product-divergence row, which is why this rule is not the
+    # control-reject scenario. Kept here as its own grounding id:
+    # RuleSteward's parser now validates -F perm= values against the rwxa
+    # letter set (issue #601's other half), so this row is expected to
+    # REJECT on BOTH sides -- not a product/oracle divergence, but still
+    # worth capturing under its own id for the corpus's own regression
+    # coverage.
     add_scenario "f-perm-invalid-letter" "601" \
         '-a always,exit -F perm=zz -S execve -k fpermbad'
 
-    # Group 2: unquoted comparison operators. Before this session the corpus
-    # had ZERO unquoted non-'=' operators (every '>=' example was inside
-    # quotes, which is issue #584's OWN territory, not the operator table's),
-    # so an impl that rejected every operator except '=' would have passed
-    # the whole suite undetected.
+    # Group 2: unquoted comparison operators, closing a gap where every '>='
+    # example elsewhere in the corpus is inside quotes (issue #584's OWN
+    # territory, not the operator table's) - without them, an impl that
+    # rejected every operator except '=' would pass the whole suite
+    # undetected.
     add_scenario "op-ne" "op" '-a always,exit -F uid!=0 -S execve -k opne'
     add_scenario "op-lt" "op" '-a always,exit -F uid<1000 -S execve -k oplt'
     add_scenario "op-gt" "op" '-a always,exit -F uid>1000 -S execve -k opgt'
@@ -378,7 +376,7 @@ add_new_grounding_scenarios() {
     add_scenario "s-unknown-syscall" "syscall" \
         '-a always,exit -F arch=b64 -S totallynotasyscall -k sunknown'
 
-    # --- Adversarial-review rework (round 2) additions ---
+    # --- Additional grounding scenarios ---
 
     # Closes a surviving mutation: parser.rs's parse_list_action tries BOTH
     # `list,action` and `action,list` orderings (auditctl(8) documents them as
@@ -398,8 +396,7 @@ add_new_grounding_scenarios() {
     add_scenario "lead-e-enable" "lead" '-e 1'
 
     # Resolves the --reset-lost denylist question EMPIRICALLY rather than by
-    # source argument alone (session 9k-1 round-2 adversarial review,
-    # blocker 5): audit_reset_lost() in libaudit.c checks
+    # source argument alone: audit_reset_lost() in libaudit.c checks
     # audit_get_features() & AUDIT_FEATURE_BITMAP_LOST_RESET BEFORE any
     # netlink send, and returns -EAU_FIELDNOSUPPORT if that bit is unset -
     # which this sandbox's feature-bitmap load (itself gated on the same
@@ -411,7 +408,7 @@ add_new_grounding_scenarios() {
     # ambiguity the other denylist entries share.
     add_scenario "reset-lost-probe" "541" '--reset-lost'
 
-    # --- Adversarial-impl review (post-implementation, MISS 1) additions ---
+    # --- Delete-form (-W/-d) grounding scenarios ---
     #
     # Grounds a product-too-STRICT divergence the impl-aware review found:
     # `-W`/`-d` (delete-form watch/syscall rules) reach the IDENTICAL
@@ -471,12 +468,12 @@ capture_image() {
     fi
 
     # Both the header and every row are written via the rs-capture-guard
-    # pipe-in wrappers rather than a bare `>`/`>>` redirect (session 9k-1
-    # integration remediation: a bare `{ ...; } >>"${out}"` header block and a
-    # bare `printf ... >>"${out}"` per row both bypassed rs_checked, so a
+    # pipe-in wrappers rather than a bare `>`/`>>` redirect: a bare
+    # `{ ...; } >>"${out}"` header block and a
+    # bare `printf ... >>"${out}"` per row both bypass rs_checked, so a
     # failed write here - the exact "cp: Disk quota exceeded, keep going,
-    # exit 0" shape rs-capture-guard.sh was built to catch - would have
-    # continued past a truncated corpus rather than aborting).
+    # exit 0" shape rs-capture-guard.sh was built to catch - would
+    # continue past a truncated corpus rather than aborting.
     #
     # Each pipe is followed by an explicit exit-status check (matching
     # capture_sudoers.sh's own `write_rc=$?` pattern and its comment): a bare

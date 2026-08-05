@@ -1,4 +1,4 @@
-//! RED barrier tests for au-W04 (missing-ABI coverage, Warning) -- issue #261.
+//! Tests for au-W04 (missing-ABI coverage, Warning) -- issue #261.
 //!
 //! Emitted by `lints::arch_coverage::w04(&[LocatedRule])`. A syscall audit rule
 //! is PER-ABI: `-a always,exit -F arch=b64 -S execve` audits only 64-bit
@@ -9,7 +9,7 @@
 //! every syscall rule as a matched b32+b64 pair; a lone-ABI rule is a silent gap.
 //!
 //! # Locked decisions (owner-ratified, issue #261)
-//! * Code = `au-W04` (revived; the old `-D`-after-load au-W04 was cut, D6).
+//! * Code = `au-W04`.
 //! * SYMMETRIC: a lone `arch=b64` warns "32-bit unaudited"; a lone `arch=b32`
 //!   warns "64-bit unaudited".
 //! * Companion must share the EXACT same action (an `always` rule needs an
