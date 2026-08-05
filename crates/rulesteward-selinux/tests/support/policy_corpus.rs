@@ -14,21 +14,45 @@
 //! scenario that needs the el9 policy shares the same loaded handle.
 
 #![cfg(feature = "authoritative-categorizer")]
-// This file is compiled into MULTIPLE integration-test binaries via `mod support;`.
-// Any given binary uses only a subset of the helpers, so the unused ones would
-// trip `dead_code`. The module is shared test scaffolding, not product code.
+// Shared test scaffolding, not product code, so the helpers any one binary does
+// not use would trip `dead_code`. (As of 2026-08-03 `mod support;` appears in
+// exactly one test target, `selinux_corpus_oracle.rs`; this file is written to be
+// included by more, which is why the allow stays.)
 #![allow(dead_code)]
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use rulesteward_core::oracle_corpus::resolve_and_announce_corpus_root;
 use rulesteward_selinux::Policy;
 use tempfile::TempDir;
 
 /// Path to the vendored solid zstd policy archive.
+///
+/// Resolved through the SAME `RS_ORACLE_CORPUS_SELINUX` override as the scenario
+/// directories, because `_policies/` lives INSIDE the corpus tree and is corpus
+/// DATA, not source. Reading it from the compiled-in manifest directory while the
+/// scenarios came from an override would make `just diff-selinux-branch` vary two
+/// things at once - the product AND the policy fixtures - which is not a
+/// differential. Unset (the `just test` path) still resolves to the committed
+/// corpus. (This module is included by exactly one test binary,
+/// `selinux_corpus_oracle.rs`; the invariant is stated so it survives a second.)
 fn archive_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux/_policies/policies.tar.zst")
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
+    // The sentinel is spelled out rather than referenced as `crate::SENTINEL`,
+    // which IS reachable (this is a `mod support;` module of the same test crate,
+    // not an `include!`). It is spelled out because this module is written to be
+    // usable by more than one test binary and only `selinux_corpus_oracle.rs`
+    // defines that const.
+    //
+    // NOTHING MECHANICALLY ENFORCES THE MATCH. A mismatched sentinel produces a
+    // line matching NEITHER of the driver's guards - not the positive fixed-string
+    // match, not the `mode=committed` refusal - so the run passes clean. Change
+    // one, change both.
+    let (root, _mode) =
+        resolve_and_announce_corpus_root("RS-DIFF-SELINUX", "RS_ORACLE_CORPUS_SELINUX", &default);
+    root.join("_policies/policies.tar.zst")
 }
 
 /// Unpack the policy archive once into a process-lifetime temp dir.

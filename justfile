@@ -111,7 +111,7 @@ instrument-test:
     # gate here, not the transcript.
     fail=0
     ran=0
-    for t in rs-oracle-required rs-oracle-diff rs-capture-guard \
+    for t in rs-oracle-required rs-oracle-diff rs-branch-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
              check-no-mnt-paths rs-mutation-gate check-doc-citations \
              check-corpus-growth; do
@@ -155,7 +155,8 @@ instrument-test:
     # Counted with a shell glob rather than `ls | grep -v`: a count derived through
     # a filter is not evidence, and this project's own command wrapper rewrites a
     # mid-pipeline grep and changes the number (measured while writing this recipe,
-    # which reported 16 guards where there are 8).
+    # which reported 16 guards where there were 8 at the time). The count is
+    # asserted below rather than quoted here, so it cannot drift while green.
     #
     # The same walk carries the MODE invariant (#658). Nothing in this tree
     # invokes a script in a way that consults the executable bit - the justfile
@@ -173,10 +174,10 @@ instrument-test:
         [ -x "${f}" ] || notexec="${notexec} ${f}"
     done
     [ -z "${notexec}" ] || { echo "instrument-test: not executable:${notexec} - every scripts/*.sh is mode 0755 (#658)" >&2; fail=1; }
-    [ "${guards}" -eq 10 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 10 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    [ "${guards}" -eq 11 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 11 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
     # (2) The loop itself must have run. A typo'd list that iterates zero times
     # would otherwise report clean, which is the very defect being gated.
-    [ "${ran}" -eq 10 ] || { echo "instrument-test: ran ${ran} suites, expected 10" >&2; fail=1; }
+    [ "${ran}" -eq 11 ] || { echo "instrument-test: ran ${ran} suites, expected 11" >&2; fail=1; }
     echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
     [ "${fail}" -eq 0 ]
 
@@ -833,11 +834,13 @@ sudoers-stig-derive product="all":
 # All three delegate to ONE driver, scripts/rs-oracle-diff.sh. The exit-code mapping
 # is the part of this harness whose every wrong branch fails toward "clean"; written
 # out three times it would be wrong in three different ways, which is how
-# `just diff-fapolicyd` came to report success while checking nothing for six weeks
-# (#572). The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
-# re-seeds that bug into a copy of it and requires named cases to catch it.
+# `just diff-fapolicyd` came to report success while checking nothing for 12 days,
+# from the 2026-07-13 NFS rebuild until the recipe was retired 2026-07-25 (#572).
+# (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30
+# days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh,
+# which re-seeds that bug into a copy of it and requires named cases to catch it.
 #
-# Exit codes: 0 clean (the success line carries a non-zero scenario count), 1 drift,
+# Exit codes: 0 clean (the success line carries a non-zero count), 1 drift,
 # 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane
 # RS_REQUIRE_AUDITCTL / RS_REQUIRE_SYSTEMD_SYSCTL / RS_REQUIRE_VISUDO - promotes every
 # rc-3 skip to a hard rc-2 failure, which is what the weekly drift workflows set.
@@ -853,6 +856,67 @@ diff-sysctld:
 # LIVE: drift-check sudoers parse + AST against visudo / cvtsudoers. (#538)
 diff-sudoers:
     bash scripts/rs-oracle-diff.sh sudoers
+
+# ---------------------------------------------------------------------------
+# OFFLINE: branch-vs-fork-point differential replay. (#661, epic #654)
+#
+# The recipes above hold the BINARY fixed and vary the CORPUS ("has the real
+# subsystem drifted?"). These hold the CORPUS fixed and vary the BINARY, which
+# answers the question #658's corpus-growth gate leaves open: "would the corpus
+# this branch added have caught the bug this branch fixed?". A branch can satisfy
+# the growth gate with a scenario the old code already passed - evidence that
+# accumulates without discriminating - and nothing else in the chain notices.
+#
+# Run these EVERY Adversarial Testing Loop round, not once. A divergence table is
+# the only instrument in the loop whose evidence accumulates across rounds; the
+# adversary's is re-rolled each time, which is how session 9o declared a round DRY
+# over a live fail-open.
+#
+# No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3.
+# The three codes, listed without interruption because the previous version put
+# ten lines of qualification between rc 1 and rc 2 and the rc-2 item then read as
+# the tail of a sentence about something else:
+#
+#   0  clean; the success line carries a non-zero announcement count
+#   1  a REGRESSION, OR a test with no baseline left FAILING at HEAD (added, or
+#      un-parked), OR a test the base ran AND PASSED that HEAD silences with
+#      #[ignore]
+#   2  tool error, including "these two builds cannot be compared"
+#
+# Two qualifications on rc 1, kept because this recipe is the operator's entry
+# point and an unqualified "silencing fails the gate" would promise a safety
+# property the instrument does not have:
+#
+#   - the MIDDLE item is NOT a regression, so the separators matter.
+#   - "and PASSED" is not decoration. The SILENCED arm sits behind the
+#     R1 == FAILED check, so a base row that ran and FAILED is UNATTRIBUTABLE at
+#     rc 0 no matter what HEAD does with it. Measured on the real driver, one such
+#     row alongside a comparable row: rc 0, with the row printed UNATTRIBUTABLE. A
+#     lane in which EVERY row is that shape is rc 2 instead, "no row could be
+#     compared"; the row-level claim is the one this sentence makes.
+#
+# Positive-controlled by scripts/rs-branch-diff-test.sh, which re-seeds SOME of
+# the driver's guards into a copy of it and requires named cases to catch each.
+# Not every guard is controlled; that file's header says why, and gives the two
+# commands that count both numbers rather than quoting either.
+#
+# The base build is cached per sha under TMPDIR, so repeated rounds against the
+# same fork point pay for it once. Deliberately NOT in `just ci`: it takes a base
+# ref and builds two trees.
+#
+# Usage: just diff-sudoers-branch 96038c9
+
+diff-auditd-branch base:
+    bash scripts/rs-branch-diff.sh auditd "{{base}}"
+
+diff-selinux-branch base:
+    bash scripts/rs-branch-diff.sh selinux "{{base}}"
+
+diff-sudoers-branch base:
+    bash scripts/rs-branch-diff.sh sudoers "{{base}}"
+
+diff-sysctld-branch base:
+    bash scripts/rs-branch-diff.sh sysctld "{{base}}"
 
 # Self-test of the differential/capture INSTRUMENTS. In `just ci` because an
 # unverified instrument is the exact failure this contract exists to prevent: a

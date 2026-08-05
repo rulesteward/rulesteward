@@ -118,6 +118,106 @@ Every differential is built in **two tiers, and only the live tier may skip**:
 This split is why a missing docker daemon degrades the guarantee from "nothing
 was checked" to "the oracle was not re-derived."
 
+### The branch differential: a third axis (`just diff-<lane>-branch`)
+
+The two tiers above both hold the BINARY fixed and vary the CORPUS. A third
+instrument, `scripts/rs-branch-diff.sh` (#661), does the opposite: it holds the
+corpus fixed and varies the binary, replaying this WORKING TREE's corpus against
+a build at a base ref and a build from this working tree.
+
+It exists because of `scripts/check-corpus-growth.sh` (#658). That gate forces a
+branch touching `crates/X/src/**` to add a file under `crates/X/tests/corpus/**`,
+but nothing checks the added file DISCRIMINATES anything: a branch can satisfy it
+with a scenario the old code already passed. Three runs separate those cases,
+because then the only delta between R1 and R2 is the corpus the branch added:
+
+| run | binary | corpus |
+|---|---|---|
+| R1 | base worktree | the base worktree's committed corpus (baseline) |
+| R2 | base worktree | **this working tree's** corpus |
+| R3 | this working tree | this working tree's corpus |
+
+"Working tree", not "committed": R3's binary is built from the repo root and both
+R2 and R3 read the corpus from it, so uncommitted work is included. That is what
+makes "diff my uncommitted work against the commit I am sitting on" a supported
+mode, and it is why the driver's nothing-to-vary guard asks git a ONE-ref
+question (`git diff <base> -- <paths>`, commit against working tree) rather than
+comparing two commits.
+
+R1 `ok` + R2 `FAILED` + R3 `ok` is proof the growth catches the old code. R1 `ok`
++ R3 `FAILED` is a regression, and takes precedence: `ok / FAILED / FAILED` is a
+REGRESSION, not a discrimination. R1 `FAILED` with the test still PRESENT at HEAD
+is unattributable and excluded: that failure predates the branch. A test the
+branch REMOVED is reported base-only regardless of its base verdict, because the
+absent-at-HEAD check runs first.
+
+The four `#[ignore]` cases are deliberately asymmetric, because `cargo test`
+skips ignored tests by default and this is the last gate able to see a replay
+test that is not being checked:
+
+| at base | at HEAD | verdict |
+|---|---|---|
+| ran and PASSED | `#[ignore]`d | SILENCED, **rc 1**: a loss of coverage |
+| `#[ignore]`d | failing | no baseline and FAILING, **rc 1**: un-parked and left red |
+| `#[ignore]`d | ran, or still `#[ignore]`d | ignored at base, rc 0; rc **2** if EVERY shared row is in this state AND nothing else failed (a row FAILING with no baseline, or a SILENCED row, stands that gate down and the run is rc 1) |
+| absent | `#[ignore]`d | HEAD-only and PARKED, rc 0 |
+
+The third row is what a branch produces against a base that parks a replay test in
+the lane's own `*_corpus_oracle.rs` target. No lane's replay target carries an
+`#[ignore]` today, so that row is currently unreachable for all four lanes.
+`boundary_substrate.rs`'s parked #669/#677 pins are cited above as the repo's
+CONVENTION, not as rows in this table: they live in a different cargo test target,
+and this driver builds only `--test <lane>_corpus_oracle`.
+
+The last row is rc 0 because adding a parked pin for a known-open bug is this
+repo's convention (`boundary_substrate.rs`: "`#[ignore]`d rather than deleted,
+per this repo's convention: removing the `#[ignore]` is how the fix gets
+demonstrated"; #669 and #677 are live examples). There is no override switch.
+
+Note that `#[ignore = "reason"]` renders as `test <name> ... ignored, <reason>`,
+which is the form every ignore attribute in this repo uses; a lane parser that
+anchors on the bare word will not see it.
+
+**Run it every Adversarial Testing Loop round, not once.** A divergence table is
+the only instrument in the loop whose evidence accumulates across rounds; the
+adversary's is re-rolled every time, which is how session 9o declared a round DRY
+over a live fail-open.
+
+Rows are libtest TEST NAMES, not corpus scenario ids, because libtest already
+reports per-test pass/fail and continues past a panic. Stated plainly so nobody
+over-reads the table: this granularity **cannot** separate a regression from
+residual defects inside a single test. Scenario granularity needs the replay
+tests to accumulate rather than panic at the first divergence and is tracked
+separately.
+
+Adding a lane takes two things. First, the lane's replay test must resolve its
+corpus through `rulesteward_core::oracle_corpus::resolve_corpus_root` and announce
+`sentinel_count`.
+
+The BANNER needs no work from the lane: `resolve_corpus_root` emits it, on every
+resolution, before returning. That placement is deliberate and is not a
+convenience. The driver's sentinel check is EXISTENTIAL, so it can only prove
+that something read the tree it handed over, never that nothing read a different
+one; a binary that resolves the corpus correctly in one place and from a
+compiled-in `CARGO_MANIFEST_DIR` in another used to satisfy it completely.
+`rulesteward-selinux`'s `policy_corpus::archive_path` was exactly that shape.
+Announcing from the single resolver makes a MISDIRECTED resolution visible: a call
+that reaches the resolver under a variable the driver did not set announces
+`mode=committed`, and the driver refuses the run. It does NOT close the bypass
+class: a read that never calls the resolver announces nothing, matches neither
+half of the guard, and passes. Nothing mechanically forces a read through it, so
+route a new corpus read through the resolver deliberately.
+
+The COUNT is the lane's job and is not always knowable early: sudoers' L1/L2/L3
+announce after their comparison loop with the real accumulated tally, because how
+much they compare is data-dependent. That is why the driver requires a count only
+on a GREEN run, where "nothing fired" and "nothing ran" are the same transcript.
+
+Second, a row in the frozen lane table in
+`scripts/rs-branch-diff.sh` plus a recipe. Note `selinux` appears in that lane
+table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
+offline-only.
+
 ### Exit codes
 
 Applies to NEW dev-tooling harnesses (`tools/*-update`, `just diff-*`). This is
@@ -128,7 +228,7 @@ them when reading a CI log.
 
 | rc | meaning |
 |---|---|
-| 0 | verified clean. The success line MUST carry a non-zero count, e.g. `OK (0 drift, 214 scenarios)` |
+| 0 | verified clean. The success line MUST carry a non-zero count, e.g. `OK (0 drift, 214 scenarios)`. `rs-branch-diff.sh` enforces this as a final gate before printing OK, because its per-run count requirement is green-run-only |
 | 1 | drift: the product and the oracle disagree |
 | 2 | tool/environment error: unparseable transcript, zero data rows, or the oracle was required but missing |
 | 3 | precondition unmet, a legitimate skip (no docker, image absent) |
@@ -136,6 +236,33 @@ them when reading a CI log.
 `3` exists so a developer without docker gets an honest skip while CI turns the
 same condition into a hard failure. Collapsing it into `0` is exactly the bug
 that made `just diff-fapolicyd` report success while checking nothing (#572).
+
+**`just diff-<lane>-branch` has NO rc 3, and that is not an oversight.** It is
+OFFLINE tier throughout - no docker, no root, no live oracle - so it has no
+legitimate precondition to skip on. Everything a live recipe would skip for
+(a base that predates the corpus, a base whose harness will not build, a run
+that announced the wrong corpus, a cached base worktree whose corpus holds a path
+git is ignoring, a cached base worktree whose index marks entries
+assume-unchanged or skip-worktree so `git status` cannot see a contaminated
+tracked file, a cached base worktree whose tracked CONTENT differs from its index,
+a cached base worktree containing a submodule or a tracked symlink) is `2`,
+"these two builds cannot be compared".
+Giving it a skip path would recreate #572 in a new file. `scripts/rs-branch-diff-test.sh`
+asserts that no case in its FIRST pass, against the real driver, ever yields `3`.
+Exit codes from its positive-control phases, where the driver is deliberately
+sabotaged, are not covered and should not be.
+
+**Why the cached base is checked by CONTENT rather than by `git status`.** Two
+review rounds found unversioned git settings that hide a MODIFIED TRACKED FILE
+from `git status` at rc 0 (`core.ignoreStat`, `core.fsmonitor`), and a third found
+one that hides untracked and ignored paths the same way
+(`status.showUntrackedFiles`). Each was fixed by pinning that one knob, and the
+set is open-ended, so the driver now compares the worktree against the index by
+hashing file contents - which no cache setting can affect. It does NOT replace the
+`status` checks: those cover staged content, untracked files and ignored files,
+none of which a worktree-vs-index comparison can see. It is also not an absolute
+answer, because `git hash-object` applies gitattributes and `core.autocrlf`
+conversion, so it reports what git would STORE rather than the bytes on disk.
 
 **Status, stated plainly: `just diff-auditd`, `just diff-sysctld` and
 `just diff-sudoers` (session 9k-1) are the first recipes to implement `3`. For a

@@ -310,6 +310,19 @@ plugin reviewers dispatched in PARALLEL with (1) - `comment-analyzer` for doc-tr
 `model: opus` because their frontmatter says `inherit` - and (2) the mutation
 gate. Step 1b adds a lens and cannot end the loop; only (1) and (2) decide dryness.
 
+**(3) THE BRANCH DIFFERENTIAL, `just diff-<lane>-branch <fork-point>` (#661), EVERY
+round and not once.** It is the only instrument in the loop whose evidence ACCUMULATES
+across rounds: (1) and (1b) draw a fresh adversary each time, so a DRY verdict measures
+that draw and not the code, which is exactly how session 9o certified a live fail-open.
+It answers what #658's corpus-growth gate leaves open - "would the corpus this branch
+ADDED have caught the bug this branch FIXED?" - by holding the corpus fixed and varying
+the binary. rc 0 clean, 1 regression, 2 cannot-compare; there is deliberately no rc 3.
+Like (1b) it cannot end the loop, and a zero discrimination count is rc 0 with a loud
+line rather than a failure, because a round that did not touch the lane legitimately has
+none. This line exists because #661's own ancestor died of not being written down: the
+sweep lived inside a subagent's turn, nothing in the repo or the rules named it, and so
+it could not be re-run.
+
 **Step 1b's kill-switch verdict, recorded 2026-08-02 (#656): KEEP BOTH LENSES.** This
 was a trial with a documented re-check; the re-check has now happened and the trial is
 closed, so nothing here should still read as provisional. Criterion (a) was not met:

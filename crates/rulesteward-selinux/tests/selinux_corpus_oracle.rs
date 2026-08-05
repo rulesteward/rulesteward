@@ -54,6 +54,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
+use rulesteward_core::oracle_corpus::{
+    CorpusMode, resolve_and_announce_corpus_root, sentinel_count,
+};
 use rulesteward_selinux::{
     CategorizeError, DenialKind, ReplayOutcome, categorize, categorize_with_outcome, group_denials,
     parse_avc,
@@ -219,16 +222,61 @@ impl Manifest {
 // Enumeration + small helpers
 // ---------------------------------------------------------------------------
 
-fn corpus_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux")
+/// Sentinel token for this lane's corpus announcements.
+///
+/// `scripts/rs-branch-diff.sh` refuses to classify a run's exit code until it has
+/// grepped for the banner below carrying the exact corpus path it handed in,
+/// unless libtest's summary reports that no test body executed at all (every
+/// replay test `#[ignore]`d), in which case there is no banner to demand and the
+/// run is classified from its per-test table. That grep is what catches a binary
+/// reading its OWN tree's corpus instead: it would agree with itself, exit 0, and
+/// report a full table having compared nothing.
+const SENTINEL: &str = "RS-DIFF-SELINUX";
+
+/// Minimum enumerated scenarios (45 grammar + 21 xver + 3 vm-live).
+const SCENARIO_FLOOR: usize = 69;
+
+/// Resolve the corpus root, honouring the `RS_ORACLE_CORPUS_SELINUX` override.
+///
+/// The override is what lets `just diff-selinux-branch` point a binary built at
+/// another commit at THIS tree's committed corpus. Without it a base-built binary
+/// reads the base tree's corpus and the comparison varies two things at once,
+/// which is not a differential at all.
+fn corpus_root() -> (PathBuf, CorpusMode) {
+    let default = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/selinux");
+    resolve_and_announce_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SELINUX", &default)
 }
 
 /// Enumerate every scenario directory: `tests/corpus/selinux/*/manifest.json`
 /// whose directory name does NOT start with `_` (skips `_policies`). Returns
 /// `(scenario_dir, Manifest)` sorted by id for deterministic output.
 fn scenarios() -> Vec<(PathBuf, Manifest)> {
-    let root = corpus_root();
-    let mut out = Vec::new();
+    let (root, _mode) = corpus_root();
+
+    // Enumeration is split from LOADING so the announcement precedes the
+    // PER-SCENARIO parse.
+    //
+    // Not "every fallible step": `read_dir` below still panics ahead of the COUNT
+    // announcement. The BANNER is safe, because `resolve_and_announce_corpus_root` emits it
+    // before returning from `corpus_root()` above, so an unreadable corpus ROOT
+    // does still announce the path it could not read. The only case emitting no
+    // sentinel at all is a `CorpusRootError` - a root that is not a directory, or
+    // a blank override value - both of which that function
+    // rejects before announcing. That case is a corpus the
+    // driver cannot use under any binary, and it is caught as such; the case this
+    // split addresses is a corpus this binary cannot fully parse, which is the
+    // one the driver must be able to attribute.
+    //
+    // It is not a style point. `Manifest::load` panics on a manifest this binary
+    // cannot parse, and the case that produces is precisely the one
+    // `just diff-selinux-branch` exists to report: a base-built binary reading
+    // HEAD's GROWN corpus and choking on a scenario added after it was compiled.
+    // With the announcement after the load loop, that run emitted NO sentinel at
+    // all, and the driver then refused it with "did not read the corpus it was
+    // handed" - a statement that is false, since it had read exactly that path.
+    // Measured by running this binary against an override tree carrying one
+    // scenario in a schema it does not know.
+    let mut dirs: Vec<PathBuf> = Vec::new();
     let entries = std::fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("read corpus dir {}: {e}", root.display()));
     for entry in entries.flatten() {
@@ -247,8 +295,42 @@ fn scenarios() -> Vec<(PathBuf, Manifest)> {
         if !dir.join("manifest.json").is_file() {
             continue;
         }
-        out.push((dir.clone(), Manifest::load(&dir)));
+        dirs.push(dir);
     }
+
+    // The COUNT only. The BANNER now comes from `resolve_and_announce_corpus_root`, which every
+    // corpus resolution in this binary goes through, so it covers entry points
+    // this function never sees - `support::policy_corpus`, which reads `_policies/`
+    // out of the same overridden root, is exactly such a caller and announced
+    // nothing while the banner lived here.
+    //
+    // Announce BEFORE asserting, but the assertion is what carries the guarantee
+    // (CONTRIBUTING: "assert the count, do not merely print it").
+    //
+    // THIS IS THE RAW DIRECTORY COUNT, which `sudoers_corpus_oracle.rs` warns a
+    // count must never be: "a corpus of entirely unusable or entirely skipped rows
+    // would still satisfy the driver's `scenarios=0` anti-vacuity guard while
+    // comparing nothing". It is acceptable HERE only because all three tests in
+    // this target carry their own internal comparison floors downstream of it
+    // (`parsed_count >= 68`, `checked >= 18`, and the full `SYNTHETIC_SCOPE_OUT`
+    // set), so a collapsed comparison fails a test rather than passing quietly.
+    // A lane WITHOUT those floors must announce comparisons performed, not
+    // directories found. Senior integration review, session 9p.
+    eprintln!("{}", sentinel_count(SENTINEL, dirs.len()));
+    assert!(
+        dirs.len() >= SCENARIO_FLOOR,
+        "expected >= {SCENARIO_FLOOR} enumerated scenarios under {}, found {}",
+        root.display(),
+        dirs.len()
+    );
+
+    let mut out: Vec<(PathBuf, Manifest)> = dirs
+        .into_iter()
+        .map(|dir| {
+            let m = Manifest::load(&dir);
+            (dir, m)
+        })
+        .collect();
     out.sort_by(|a, b| a.1.id.cmp(&b.1.id));
     out
 }
@@ -463,14 +545,16 @@ fn floor_layer_matches_manifest_label() {
         }
     }
 
-    // Count guard: 69 manifests enumerated (the parse-excluded scenario is
-    // counted via its manifest; the dual-format scenario is parsed twice, once
-    // per variant, so the PARSE count exceeds the scenario count).
-    assert!(
-        scenarios.len() >= 69,
-        "expected >= 69 enumerated scenarios, found {}",
-        scenarios.len()
-    );
+    // Count guard: the PARSE count, which is the one this test can lose without
+    // any other guard noticing (the parse-excluded scenario is counted via its
+    // manifest; the dual-format scenario is parsed twice, once per variant, so
+    // the parse count exceeds the scenario count).
+    //
+    // The scenario-count assertion that used to sit here was unreachable:
+    // `scenarios()` above already asserts `dirs.len() >= SCENARIO_FLOOR` over the
+    // same quantity and panics first, so this one could never fire. Two asserts
+    // reading as independent checks when one is dead is worse than one.
+    // Senior integration review, session 9p.
     assert!(
         parsed_count >= 68,
         "expected >= 68 parsed scenario-variants (69 minus the 1 parse-excluded), got {parsed_count}"

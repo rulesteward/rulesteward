@@ -366,7 +366,7 @@
 use std::path::{Path, PathBuf};
 
 use rulesteward_core::oracle_corpus::{
-    CorpusMode, resolve_corpus_root, sentinel_banner, sentinel_count,
+    CorpusMode, resolve_and_announce_corpus_root, sentinel_count,
 };
 use rulesteward_sudoers::oracle::{
     UnclassifiedVisudo, VisudoVerdict, classify_visudo, project_ast, project_cvtsudoers_json,
@@ -664,14 +664,18 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/corpus/sudoers-oracle"
     ));
-    resolve_corpus_root("RS_ORACLE_CORPUS_SUDOERS", &default)
+    resolve_and_announce_corpus_root(SENTINEL, "RS_ORACLE_CORPUS_SUDOERS", &default)
 }
 
-/// Print the two mandatory sentinel lines. Called in every corpus-driven test
-/// (not just one), so the banner survives regardless of which test the
-/// default parallel runner happens to execute or schedule first -
-/// `scripts/rs-oracle-diff.sh` only requires the line to appear somewhere in
-/// the combined `--nocapture` output.
+/// Print the mandatory sentinel COUNT line.
+///
+/// The BANNER is not printed here and this helper could not print one: it is
+/// emitted once per resolution by
+/// `rulesteward_core::oracle_corpus::resolve_and_announce_corpus_root`, which covers callers
+/// that never reach this function. Called in every corpus-driven test (not just
+/// one), so the COUNT survives regardless of which test the default parallel
+/// runner happens to execute or schedule first - `scripts/rs-oracle-diff.sh` only
+/// requires the line to appear somewhere in the combined `--nocapture` output.
 ///
 /// `scenario_count` MUST be the number of comparisons this test actually
 /// performed, never the raw corpus directory count: a corpus of entirely
@@ -684,8 +688,10 @@ fn corpus_root() -> (PathBuf, CorpusMode) {
 /// this AFTER their comparison loop, with the real accumulated `compared`
 /// tally, since how much they compare is data-dependent (L3 legitimately
 /// skips reject-verdict and scope-out rows) and cannot be known in advance.
-fn announce(root: &Path, mode: CorpusMode, scenario_count: usize) {
-    eprintln!("{}", sentinel_banner(SENTINEL, mode, root));
+fn announce(scenario_count: usize) {
+    // The COUNT only. The BANNER now comes from `resolve_and_announce_corpus_root`, so it is
+    // emitted once per resolution for every caller in the binary rather than only
+    // the ones that remember to call this helper.
     eprintln!("{}", sentinel_count(SENTINEL, scenario_count));
 }
 
@@ -1702,6 +1708,63 @@ fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
 // Positive control: the oracle itself must not be broken.
 // ---------------------------------------------------------------------------
 
+/// Assert the corpus cardinality: EXACTLY for the committed corpus, a floor for an
+/// override.
+///
+/// d0c2975 made this `==` deliberately, and that reasoning is preserved unchanged
+/// for the corpus this binary was built alongside: a one-sided floor fails only
+/// downward, #651 added four scenarios without bumping the constant, and four
+/// directories could then be deleted with every layer still reporting success.
+/// `just test` and `just ci` never set the override, so they still get equality in
+/// both directions.
+///
+/// TWO different scripts set the override, and an earlier version of this
+/// function keyed only on `CorpusMode`, which cannot tell them apart:
+///
+/// - `scripts/rs-branch-diff.sh` replays ANOTHER TREE's corpus against a binary
+///   compiled before it grew. `SCENARIO_FLOOR` is compiled in, so equality there
+///   asserts "the other tree holds exactly as many scenarios as this binary was
+///   built with" - a claim about a tree this binary knows nothing about, and one
+///   that #658 guarantees will be false, since it MANDATES corpus growth for any
+///   branch touching this crate's `src/`. The failure would land in the driver's
+///   R2 run and be reported as DISCRIMINATED: a discrimination signal whose only
+///   content is "the constant moved".
+/// - `scripts/rs-oracle-diff.sh` (`just diff-sudoers`, weekly cron via
+///   `.github/workflows/sudoers-oracle-drift.yml`) replays a FRESH CAPTURE, which
+///   `capture_sudoers.sh` derives one-for-one from the committed scenarios. It
+///   holds EXACTLY `SCENARIO_FLOOR` and always has.
+///
+/// Relaxing on `Fresh` alone therefore dropped the addition-direction check from
+/// a scheduled gate that had it since `d0c2975`, for no benefit to that gate.
+/// `RS_BRANCH_DIFF` is set only by the branch driver, so the relaxation now
+/// follows the CALLER rather than the mere presence of an override.
+/// Senior integration review, session 9p; original split, session 9p round 2.
+fn assert_scenario_cardinality(ids: &[String], mode: CorpusMode) {
+    // Not `CorpusMode`, because both scripts produce `Fresh`.
+    let replaying_another_tree = std::env::var_os("RS_BRANCH_DIFF").is_some();
+    match mode {
+        CorpusMode::Fresh if replaying_another_tree => assert!(
+            ids.len() >= SCENARIO_FLOOR,
+            "expected >= {SCENARIO_FLOOR} scenarios in the overridden corpus, found {}. \
+             A branch differential replays ANOTHER TREE's corpus, which may hold MORE \
+             than this binary was built with; fewer means it shrank below what this \
+             binary requires.",
+            ids.len()
+        ),
+        // `Committed` (just test / just ci) AND a `Fresh` capture from
+        // rs-oracle-diff.sh, both of which hold exactly SCENARIO_FLOOR.
+        _ => assert_eq!(
+            ids.len(),
+            SCENARIO_FLOOR,
+            "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
+             and an ADDED one are both defects here (d0c2975). This applies to the \
+             committed corpus and to a fresh capture derived from it; only a branch \
+             differential, which sets RS_BRANCH_DIFF, is allowed to hold more.",
+            ids.len()
+        ),
+    }
+}
+
 #[test]
 fn positive_control_oracle_accepts_and_rejects_distinctly() {
     let (root, mode) = corpus_root();
@@ -1710,19 +1773,8 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
     // accept-vs-reject distinctness comparison per target), regardless of
     // corpus size, so the true count is known upfront - not `ids.len()`,
     // which is the unrelated corpus-directory count.
-    announce(&root, mode, TARGETS.len());
-    assert_eq!(
-        ids.len(),
-        SCENARIO_FLOOR,
-        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
-         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
-         a one-sided floor fails only downward: #651 added 4 scenarios without \
-         bumping the constant, and four directories could then be deleted with \
-         every layer still reporting success. Equality makes the next addition \
-         fail until the constant is updated, which is a one-line fix, instead of \
-         silently widening the slack again.",
-        ids.len()
-    );
+    announce(TARGETS.len());
+    assert_scenario_cardinality(&ids, mode);
 
     for target in TARGETS {
         let accept_doc = read_target(&root, POSITIVE_CONTROL_ACCEPT, target);
@@ -1775,12 +1827,12 @@ fn positive_control_oracle_accepts_and_rejects_distinctly() {
 /// observably identical for sudoers parsing.
 #[test]
 fn per_version_identity_control() {
-    let (root, mode) = corpus_root();
+    let (root, _mode) = corpus_root();
     // Three fixed pairwise sudo_rpm identity checks (el8-el9, el9-el10,
     // el8-el10), always attempted regardless of corpus size - the true count
     // is known upfront, so this test never needs `scenarios(&root)` at all.
     let identity_pairs = TARGETS.len() * (TARGETS.len() - 1) / 2;
-    announce(&root, mode, identity_pairs);
+    announce(identity_pairs);
 
     let el8 = read_target(&root, POSITIVE_CONTROL_ACCEPT, "el8").sudo_rpm;
     let el9 = read_target(&root, POSITIVE_CONTROL_ACCEPT, "el9").sudo_rpm;
@@ -1807,18 +1859,7 @@ fn per_version_identity_control() {
 fn l1_f01_matches_visudo_verdict_per_target() {
     let (root, mode) = corpus_root();
     let ids = scenarios(&root);
-    assert_eq!(
-        ids.len(),
-        SCENARIO_FLOOR,
-        "expected exactly {SCENARIO_FLOOR} scenarios, found {}. A DELETED scenario \
-         and an ADDED one are both defects here. This was `>=` until 2026-08-03 and \
-         a one-sided floor fails only downward: #651 added 4 scenarios without \
-         bumping the constant, and four directories could then be deleted with \
-         every layer still reporting success. Equality makes the next addition \
-         fail until the constant is updated, which is a one-line fix, instead of \
-         silently widening the slack again.",
-        ids.len()
-    );
+    assert_scenario_cardinality(&ids, mode);
 
     let mut compared = 0usize;
     let mut xfail_hit: Vec<String> = Vec::new();
@@ -1867,7 +1908,7 @@ fn l1_f01_matches_visudo_verdict_per_target() {
     // Print AFTER the loop, using the real tally: L1's xfail table is no
     // longer empty, and reporting the raw scenario-directory count would
     // overstate what was actually compared now that it is not.
-    announce(&root, mode, compared);
+    announce(compared);
     // Every L1_XFAIL entry is a REAL, confirmed divergence (see L1_XFAIL's
     // doc comment), so those pairs are deliberately excluded from
     // `compared`; the floor must subtract them rather than assume every pair
@@ -1893,7 +1934,7 @@ fn l1_f01_matches_visudo_verdict_per_target() {
 
 #[test]
 fn l2_strict_gate_matches_default_gate() {
-    let (root, mode) = corpus_root();
+    let (root, _mode) = corpus_root();
     let ids = scenarios(&root);
 
     let mut compared = 0usize;
@@ -1934,7 +1975,7 @@ fn l2_strict_gate_matches_default_gate() {
     // Print AFTER the loop, using the real tally, for the same reason as L1:
     // the raw scenario-directory count is not the same claim as "this many
     // comparisons actually happened".
-    announce(&root, mode, compared);
+    announce(compared);
     // Every L2_XFAIL entry is a REAL, confirmed divergence (see the module
     // doc's L2 section), so those pairs are deliberately excluded from
     // `compared`; the floor must subtract them rather than assume every pair
@@ -1961,7 +2002,7 @@ fn l2_strict_gate_matches_default_gate() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn l3_structure_projection_matches_cvtsudoers() {
-    let (root, mode) = corpus_root();
+    let (root, _mode) = corpus_root();
     let ids = scenarios(&root);
 
     let mut compared = 0usize;
@@ -2217,7 +2258,7 @@ fn l3_structure_projection_matches_cvtsudoers() {
     // scope-out, and xfail hits are all LEGITIMATE skips that reduce
     // `compared` well below the raw scenario-directory count, so reporting
     // `ids.len()` here would overstate what L3 actually compared.
-    announce(&root, mode, compared);
+    announce(compared);
 
     assert!(
         compared >= L3_CLEAN_FLOOR,
