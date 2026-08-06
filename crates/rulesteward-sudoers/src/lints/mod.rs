@@ -293,8 +293,7 @@ mod tests {
             f02.len(),
             1,
             "the dispatcher must route exactly one sudo-F02 (Fatal) for a relative-path \
-             command via lint(); got {diags:?} -- this is RED until f02 is both filled \
-             AND wired into lint() with diags.extend(tokens::f02(files, ctx))"
+             command via lint(); got {diags:?}"
         );
         assert_eq!(
             f02[0].severity,
@@ -327,8 +326,7 @@ mod tests {
             w05.len(),
             1,
             "the dispatcher must route exactly one sudo-W05 (Warning) via lint(); got \
-             {diags:?} -- RED until w05 is both filled AND wired into lint() with \
-             diags.extend(tags::w05(files, ctx))"
+             {diags:?}"
         );
         assert_eq!(
             w05[0].severity,
@@ -377,8 +375,7 @@ mod tests {
             w06.len(),
             1,
             "the dispatcher must route exactly one sudo-W06 (Warning) via lint(); got \
-             {diags:?} -- RED until w06 is both filled AND wired into lint() with \
-             diags.extend(tags::w06(files, ctx))"
+             {diags:?}"
         );
         assert_eq!(
             w06[0].severity,

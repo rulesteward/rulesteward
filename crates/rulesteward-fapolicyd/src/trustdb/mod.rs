@@ -1885,7 +1885,7 @@ mod tests {
         assert_eq!(
             verify_entry(&entry),
             DiskVerdict::Match,
-            "SHA-512 digest must verify as Match; current impl only does SHA-256 so this is RED"
+            "SHA-512 digest (128-hex) must verify as Match"
         );
     }
 
@@ -1932,7 +1932,7 @@ mod tests {
         assert_eq!(
             verify_entry(&entry),
             DiskVerdict::Match,
-            "MD5 digest (32-hex) must verify as Match; current impl only does SHA-256 so this is RED"
+            "MD5 digest (32-hex) must verify as Match"
         );
     }
 
@@ -1979,7 +1979,7 @@ mod tests {
         assert_eq!(
             verify_entry(&entry),
             DiskVerdict::Match,
-            "SHA-1 digest (40-hex) must verify as Match; current impl only does SHA-256 so this is RED"
+            "SHA-1 digest (40-hex) must verify as Match"
         );
     }
 

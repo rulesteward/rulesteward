@@ -529,8 +529,8 @@ mod tests {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 panic!(
-                    "worker thread ended without a result (the todo!() stub \
-                     panics today -- expected RED until #560 is implemented)"
+                    "worker thread ended without a result: `read_to_string` \
+                     panicked instead of returning an error"
                 );
             }
         }
@@ -580,8 +580,8 @@ mod tests {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 panic!(
-                    "worker thread ended without a result (the todo!() stub \
-                     panics today -- expected RED until #560 is implemented)"
+                    "worker thread ended without a result: `read_to_string` \
+                     panicked instead of returning an error"
                 );
             }
         }
@@ -590,10 +590,9 @@ mod tests {
     /// #560's actual bug: a FIFO with no writer must fail FAST, never block.
     /// Driven off a background thread with a bounded `recv_timeout` so a
     /// hanging (wrong) implementation fails this ONE test instead of wedging
-    /// the whole suite. Today (test-author phase, no implementation yet) the
-    /// `todo!()` stub panics immediately -- the sender is dropped without
-    /// sending, so `recv_timeout` sees `Disconnected` right away, a clean and
-    /// fast RED rather than a hang.
+    /// the whole suite. A panicking implementation drops the sender without
+    /// sending, so `recv_timeout` sees `Disconnected` right away: also a
+    /// failure, and still not a hang.
     #[test]
     fn fifo_is_rejected_fast_no_hang() {
         let dir = TempDir::new("fifo");
@@ -629,8 +628,8 @@ mod tests {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 panic!(
-                    "worker thread ended without a result (the todo!() stub \
-                     panics today -- expected RED until #560 is implemented)"
+                    "worker thread ended without a result: `read_to_string` \
+                     panicked instead of returning an error"
                 );
             }
         }
