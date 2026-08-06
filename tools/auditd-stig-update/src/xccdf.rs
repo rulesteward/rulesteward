@@ -649,12 +649,11 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
 
     #[test]
     fn rhel9_identity_key_shared_across_distinct_v_numbers() {
-        // DISA RHEL 9 STIG V2R9 states V-258217
-        // (RHEL-09-654215) in dual-arch (b32/b64)
-        // syscall form rather than single-line watch form, so
-        // `parse_requirements` emits TWO rows for it, not
+        // DISA RHEL 9 STIG V2R9 rewrote V-258217
+        // (RHEL-09-654215) from single-line watch form into dual-arch (b32/b64)
+        // syscall form, so `parse_requirements` now emits TWO rows for it, not
         // one; the FIRST in document order is the b32 line. The `identity` key
-        // is shared by SEVEN separate V-numbers in rhel9 (grounding Part
+        // is still shared by SEVEN separate V-numbers in rhel9 (grounding Part
         // B.5.8, unaffected by the V2R9 rewrite -- only the LINE FORM changed,
         // not which V-numbers carry the `identity` key) - the table must NOT
         // dedupe/merge them by key.

@@ -1,8 +1,8 @@
 //! Crate-level tests for `sysctl lint --system` cross-directory precedence
 //! (issue #420). These call
-//! the frozen public entry `system::lint_system(root, target)` directly and are
-//! RED against the Phase-0 stub (which always returns `(vec![], BTreeMap::new())`):
-//! only a correct enumerate/mask/merge + `sysctld-W03` pass turns them green.
+//! the frozen public entry `system::lint_system(root, target)` directly. Only a
+//! correct enumerate/mask/merge + `sysctld-W03` pass satisfies them: a stub
+//! returning `(vec![], BTreeMap::new())` fails every one.
 //!
 //! # Ground truth (design doc, re-verified 2026-07-04)
 //! `rulesteward-docs/2026-07-04-sysctld-cross-directory-precedence-420-design.md`,

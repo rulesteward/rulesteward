@@ -395,8 +395,8 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Regression harness for the per-`source_id` `ariadne::Source` cache
-    // (#559). Every other `render(...)` test in this file passes
-    // exactly ONE diagnostic, so none of them exercise a cache at all - a
+    // (#559). Every `render(...)` test that predates this harness passes at
+    // most ONE diagnostic, so none of them exercise a cache at all - a
     // cache keyed wrongly (or not keyed by `source_id` at all, e.g. a
     // naive "hoist `Source::from` out of the loop entirely" refactor that
     // builds a single `Source` once and reuses it for every diagnostic
@@ -895,8 +895,9 @@ mod tests {
         // unoptimized at this crate's own opt-level.
         //
         // Measured on the development host in the debug profile (what
-        // `just test` and CI run): the decode-heavy body runs 7.70x-26.34x
-        // tail/head over 30 iterations - a clean FAIL of the 4x gate below.
+        // `just test` and CI run), 2026-07-31: the decode-heavy body runs
+        // 7.70x-26.34x tail/head over 30 iterations - a clean FAIL of the
+        // 4x gate below.
         // The current body runs 0.62x-1.95x over 75 iterations across three
         // load regimes: idle (max 1.89x), 48-way CPU oversubscription (max
         // 1.95x), and pinned to 2 CPUs against 8 competing spinners (max
@@ -913,8 +914,10 @@ mod tests {
         // The 4x gate is intentionally STRICTER than the two sibling
         // scaling tests above, which both use 6x (see
         // `human_render_diagnostic_count_on_one_source_scales_sublinearly`'s
-        // RATIO-check rationale): the 4x gate sits with wide margin on both
-        // sides of the measured fast/slow ranges above.
+        // RATIO-check rationale). No documented reason was found for 4x
+        // specifically over 6x; what is established is that the 4x gate sits
+        // with wide margin on both sides of the measured fast/slow ranges
+        // above.
         let (source, spans) = synthetic_source_with_spans(50_000, 24);
         let mut sources = BTreeMap::new();
         sources.insert("scaling.rules".to_string(), source);

@@ -511,7 +511,8 @@ fn triage_heterogeneous_group_constrained_first_must_not_say_already_allows() {
 // Test 5: permissive denial under --policy (f4-inv-6 reversal)
 // ---------------------------------------------------------------------------
 //
-// RULING: f4 §2.5 invariant 6 (`f4-selinux-triage-grounding.md` line 294-296)
+// RULING (operator-sanctioned spec change, not drift): f4 §2.5 invariant 6
+// (`f4-selinux-triage-grounding.md` line 294-296)
 // is reversed. A `permissive=1` denial MUST get a suggested allow PLUS a
 // PERMISSIVE-MODE caveat banner - on BOTH the always-on floor path (covered by
 // the selinux crate's `h4_*` h-test) AND this `--policy` authoritative path.

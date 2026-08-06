@@ -114,6 +114,8 @@ mod tests {
         // V2R7 -> V2R9 rewrote 9 identity/login rules from single-line watch
         // form into dual-arch syscall form (net +9) and added V-279936
         // (cron_exec, 4 dual-arch lines replacing 2 old watch lines, net +2).
+        // RHEL9: 70 -> 81. RHEL8/RHEL10 are zero-content-drift bumps (V2R8/
+        // V1R2), unchanged at 63/77.
         let rhel8 = code_table(TargetVersion::Rhel8);
         let rhel9 = code_table(TargetVersion::Rhel9);
         let rhel10 = code_table(TargetVersion::Rhel10);

@@ -17,8 +17,9 @@
 //!    legitimate value this tool must gracefully degrade over the network;
 //!    see [`scan_revision`]'s own doc for the rationale and its documented
 //!    scope).
-//! 2. Probe the PINNED zip's own URL FIRST, before enumerating any candidate.
-//!    This is direct, convention-independent evidence: a live
+//! 2. Probe the PINNED zip's own URL FIRST, before enumerating any candidate
+//!    (RULING; rationale + evidence: #550). This is direct,
+//!    convention-independent evidence: a live
 //!    check (2026-07-24) found DISA's CDN retains only a WINDOW of revisions
 //!    per product (`U_RHEL_8_V2R3..V2R8` returned 200; `V2R1`/`V2R2` already
 //!    404). A pin that has aged past the low end of that window 404s on
@@ -587,9 +588,11 @@ mod tests {
 
     #[test]
     fn find_latest_probes_the_pin_itself_first_then_reports_current() {
-        // The pin's OWN zip is probed FIRST, before any
-        // candidate enumeration - a direct, convention-independent staleness
-        // signal (see module doc, point 2). V2R9 (pin) found -> V2R10 404 ->
+        // RULING: probe the pin's OWN zip FIRST, before any candidate
+        // enumeration - a direct, convention-independent staleness signal.
+        // Rationale + evidence: #550 (see module doc, point 2).
+        //
+        // V2R9 (pin) found -> V2R10 404 ->
         // V3R1 (rollover) 404 -> stop, 3 probes total.
         let pin_rev = Revision { major: 2, minor: 9 };
         let (minor1, rollover1) = next_candidates(pin_rev);
@@ -614,7 +617,11 @@ mod tests {
 
     #[test]
     fn find_latest_reports_pin_not_found_when_the_pinned_zip_itself_404s() {
-        // A 404 on the PIN ITSELF is direct, convention-independent
+        // RULING: treat a 404 on the PIN ITSELF as staleness, never as
+        // `Current`, and stop immediately rather than guessing forward.
+        // Rationale + evidence: #550.
+        //
+        // It is direct, convention-independent
         // evidence of staleness (DISA purges from the low end of
         // its retention window, so a pin that has aged past the window 404s
         // on itself even though newer revisions are live) - it must NOT be
@@ -1045,9 +1052,9 @@ mod tests {
 
     #[test]
     fn report_exits_0_and_explains_pin_not_found_is_not_current() {
-        // The report()-level contract for the PinNotFound status: exit 0
-        // (news, not a build failure), but the message must not be
-        // mistakable for the Current-status message.
+        // RULING: PinNotFound exits 0 (news, not a build failure), and its
+        // message must not be mistakable for the Current-status message.
+        // Rationale + evidence: #550.
         let status = PinStatus::PinNotFound {
             pinned_zip: "U_RHEL_9_V2R9_STIG.zip".to_string(),
         };

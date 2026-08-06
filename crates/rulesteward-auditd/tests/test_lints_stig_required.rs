@@ -632,9 +632,10 @@ fn catalog_lists_au_w06_as_warning() {
 // stig_baseline: the pub accessor for the drift tool. `tools/auditd-stig-
 // update`'s `check`/`derive` subcommands import it directly, and (unlike
 // baseline_for, which is only reached indirectly via `w06`) the test below
-// is the only in-crate proof that it forwards to the REAL per-product table
-// rather than an empty slice; nothing else here would catch a
-// `stig_baseline -> Vec::leak(Vec::new())` substitution.
+// proves it forwards to the REAL per-product table rather than an empty
+// slice, so a `stig_baseline -> Vec::leak(Vec::new())` substitution cannot
+// survive. `stig_baseline_rhel9_v2r9_content_pins` below pins exact line
+// content and is a second, narrower witness for RHEL 9.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -805,10 +806,12 @@ fn stig_baseline_rhel9_v2r9_content_pins() {
         // `diff_rules` compares `DerivedRule.line` byte-exactly (a
         // `BTreeSet` difference, not a normalized compare), `xccdf.rs`'s
         // `extract_rule_lines` only trims LINE ENDS
-        // (`raw_line.trim()`, xccdf.rs:299) and preserves internal
+        // (`raw_line.trim()`, tools/auditd-stig-update/src/xccdf.rs:296)
+        // and preserves internal
         // whitespace verbatim, the module doc mandates the `derive`
         // paste-ready output be "pasted verbatim, not hand-edited", and
-        // `rhel9_fixture_reproduces_code_table_exactly` (xccdf.rs:339)
+        // `rhel9_fixture_reproduces_code_table_exactly`
+        // (tools/auditd-stig-update/src/xccdf.rs:332)
         // asserts the fixture-derived table and the shipped code table are
         // byte-exact via that same `diff_rules`. So the shipped
         // `RHEL9_REQUIRED` table's V-258225 b64 row MUST carry the verbatim
@@ -4069,8 +4072,8 @@ fn path_syscall_form_with_wa_then_wxa_satisfies_v230409_and_pins_the_dropped_exe
     // with and without the exec conjunct (`wa`'s exec bit is already false,
     // so that term is vacuously true either way), so `min` becomes `wa`
     // regardless of the mutant. This assertion exists only to confirm
-    // order-independence of the CORRECT verdict, not to pin FINDING 3 a
-    // second time.
+    // order-independence of the CORRECT verdict, not to re-pin the dropped
+    // `&& (!a.exec || b.exec)` conjunct a second time.
     let rules_reversed = parse(
         "-a always,exit -F arch=b32 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n\
          -a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wxa -F perm=wa -k identity\n",
