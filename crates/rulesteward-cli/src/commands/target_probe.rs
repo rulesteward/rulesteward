@@ -262,7 +262,7 @@ mod tests {
             os.version_id.as_deref(),
             Some("9.4"),
             "a trailing ASCII space after the closing quote must not \
-             prevent quote-stripping (#582 adversarial round 2, BLOCKER 4)"
+             prevent quote-stripping (#582)"
         );
     }
 

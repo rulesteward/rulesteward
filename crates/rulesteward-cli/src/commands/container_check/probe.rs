@@ -400,8 +400,7 @@ mod tests {
         assert!(
             c.allow_filesystem_mark,
             "a trailing ASCII space after the value must not flip \
-             allow_filesystem_mark to false (#582 adversarial round 2, \
-             BLOCKER 4)"
+             allow_filesystem_mark to false (#582)"
         );
     }
 
@@ -421,7 +420,7 @@ mod tests {
             c.allow_filesystem_mark,
             "a CRLF conf's raw value \"1 \\r\" must resolve via its first \
              daemon-recognised token \"1\" -> allow_filesystem_mark must be \
-             true (#582 MISS 3)"
+             true (#582)"
         );
     }
 

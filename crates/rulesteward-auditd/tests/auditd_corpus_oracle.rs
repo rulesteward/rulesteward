@@ -322,7 +322,7 @@ const UNOBSERVABLE: &[(&str, Unusable, &str)] = &[
     (
         "lead-e-enable",
         Unusable::SilentNonAddLine,
-        "-e 1 (round-2 addition): empirical confirmation of a second denylisted \
+        "-e 1: empirical confirmation of a second denylisted \
          flag beyond -D/-b, same silent-success-path shape \
          (audit_set_enabled's failure path in setopt() prints nothing).",
     ),
@@ -367,7 +367,7 @@ const UNOBSERVABLE: &[(&str, Unusable, &str)] = &[
     (
         "reset-lost-probe",
         Unusable::SandboxLimited,
-        "--reset-lost (round-2 addition, resolves blocker 5 empirically): \
+        "--reset-lost: \
          real auditctl prints 'Field option not supported by kernel: \
          reset-lost' (EAU_FIELDNOSUPPORT, libaudit.c's audit_reset_lost() \
          gating on audit_get_features() & AUDIT_FEATURE_BITMAP_LOST_RESET \

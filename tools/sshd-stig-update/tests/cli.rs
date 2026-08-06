@@ -492,7 +492,7 @@ fn workflow_grep_literals_stay_coupled_to_report_actionable_messages() {
             "the workflow's \"Detect a staleness hit\" grep must contain the \
              actionable literal {lit:?} that report() emits - otherwise a \
              report() reword silently breaks the workflow's detection \
-             forever without any test noticing (#550 MISS-1); \
+             forever without any test noticing (#550); \
              workflow=.github/workflows/sshd-pin-staleness.yml"
         );
     }

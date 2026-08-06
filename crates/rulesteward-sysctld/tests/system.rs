@@ -2433,7 +2433,7 @@ fn w03b_reason_does_not_call_a_regular_file_at_the_99_path_a_misdirected_symlink
     assert!(
         hit.message.contains("no 99-sysctl.conf symlink"),
         "there is genuinely NO symlink at all here (a regular file replaced \
-         it) - the reason must still correctly say so; the round-4 fix must \
+         it) - the reason must still correctly say so; the fix must \
          condition this phrase on `slot_is_symlink`, not delete it outright: \
          {}",
         hit.message

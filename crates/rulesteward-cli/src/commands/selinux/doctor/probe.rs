@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn faillock_conf_missing_file_is_none() {
-        let missing = std::path::Path::new("/nonexistent/9d-lane-2b/faillock.conf");
+        let missing = std::path::Path::new("/nonexistent/rulesteward-absent/faillock.conf");
         assert_eq!(
             read_faillock_conf_dir_from(missing),
             None,
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn password_auth_missing_file_is_none() {
-        let missing = std::path::Path::new("/nonexistent/9d-lane-2b/password-auth");
+        let missing = std::path::Path::new("/nonexistent/rulesteward-absent/password-auth");
         assert_eq!(
             read_password_auth_dir_from(missing),
             None,
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn pam_faillock_missing_file_is_not_configured() {
-        let missing = std::path::Path::new("/nonexistent/9d-lane-2b/password-auth-pfc");
+        let missing = std::path::Path::new("/nonexistent/rulesteward-absent/password-auth-pfc");
         assert!(
             !pam_faillock_is_configured(missing),
             "an absent/unreadable pam file must not panic and must report \

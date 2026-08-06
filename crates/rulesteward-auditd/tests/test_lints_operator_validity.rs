@@ -286,7 +286,7 @@ fn field_type_covers_all_46_fields() {
         (
             AuditField::Inode,
             FieldType::NumericEqNe,
-            "fieldtab.h:53 AUDIT_INODE=102; libaudit.c:1997-2000 =|!= only (EAU_OPEQNOTEQ); NumericEqNe per session-6a taxonomy",
+            "fieldtab.h:53 AUDIT_INODE=102; libaudit.c:1997-2000 =|!= only (EAU_OPEQNOTEQ)",
         ),
         // -- Exit: fieldtab.h:54 AUDIT_EXIT; libaudit.c:1765-1781
         //    Signed (accepts negative errno). No operator restriction.
@@ -372,7 +372,7 @@ fn field_type_covers_all_46_fields() {
         (
             AuditField::Exe,
             FieldType::StringEqNe,
-            "fieldtab.h:71 AUDIT_EXE; libaudit.c:1821-1826 op=only =|!= (EAU_OPEQNOTEQ); StringEqNe per session-6a taxonomy",
+            "fieldtab.h:71 AUDIT_EXE; libaudit.c:1821-1826 op=only =|!= (EAU_OPEQNOTEQ)",
         ),
         // -- SaddrFam: fieldtab.h:72 AUDIT_SADDR_FAM; libaudit.c:1986-1990
         //    strtoul AF_* value; no operator restriction in switch

@@ -319,7 +319,7 @@ fn r5b_permissive_denial_report_has_suggested_allow_and_permissive_flag() {
     // triple - identical to the human path's render (shared format_narrow_allow).
     assert!(
         json.contains("allow logrotate_t shadow_t:file read;"),
-        "TC-R5b (round-3 contract change): Permissive denial report MUST contain the \
+        "TC-R5b: Permissive denial report MUST contain the \
          suggested allow rule 'allow logrotate_t shadow_t:file read;' (reversal of \
          f4 §2.5 inv.6 extended to the JSON path); got:\n{json}"
     );

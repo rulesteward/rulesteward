@@ -693,7 +693,7 @@ mod tests {
             Some("permissive".to_string()),
             "permissive=10 clamps to permissive-mode in the real daemon \
              (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
-             misses it (#567, adversarial-review Finding 3)"
+             misses it (#567)"
         );
     }
 
@@ -713,7 +713,7 @@ mod tests {
             Some("permissive".to_string()),
             "permissive=007 clamps to permissive-mode in the real daemon \
              (strtoul then clamp>1->1); the probe's exact `==\"1\"` compare \
-             misses it (#567, adversarial-review Finding 3)"
+             misses it (#567)"
         );
     }
 
@@ -767,8 +767,7 @@ mod tests {
             "permissive=1 with a trailing inline comment still resolves to \
              the first token \"1\" in the real daemon (nv_split/_strsplit) \
              and runs permissive; the probe must not be fooled by the \
-             trailing comment text into reporting enforcing (#567 ATL \
-             round 2, MISS 1)"
+             trailing comment text into reporting enforcing (#567)"
         );
     }
 
@@ -786,8 +785,7 @@ mod tests {
             "permissive=5 with a trailing inline comment resolves to the \
              first token \"5\", clamped to permissive-mode by the real \
              daemon (live: WARNING \"permissive value reset to 1\"); the \
-             probe must not be fooled by the trailing comment text (#567 \
-             ATL round 2, MISS 1)"
+             probe must not be fooled by the trailing comment text (#567)"
         );
     }
 
@@ -971,8 +969,7 @@ mod tests {
             !permissive_value_is_effectively_permissive("0 1"),
             "the daemon binds nv.value to the FIRST token (\"0\", \
              enforcing) and never inspects the trailing \"1\"; an any-token \
-             impl would wrongly report permissive here (#582 adversarial \
-             round 2, BLOCKER 1)"
+             impl would wrongly report permissive here (#582)"
         );
     }
 
@@ -986,8 +983,7 @@ mod tests {
             !permissive_value_is_effectively_permissive("foo 1"),
             "the daemon binds nv.value to the FIRST token (\"foo\", a \
              parse error), never the trailing \"1\"; an any-token impl \
-             would wrongly report permissive here (#582 adversarial round \
-             2, BLOCKER 1)"
+             would wrongly report permissive here (#582)"
         );
     }
 
@@ -1004,8 +1000,7 @@ mod tests {
             Some("enforcing".to_string()),
             "the real daemon's first-token-only binding stays enforcing \
              (\"0\"); an any-token impl would wrongly report permissive \
-             having found \"1\" as the second token (#582 adversarial round \
-             2, BLOCKER 1)"
+             having found \"1\" as the second token (#582)"
         );
     }
 
@@ -1031,7 +1026,7 @@ mod tests {
             !permissive_value_is_effectively_permissive("\t1"),
             "a leading TAB is not a real daemon separator or a digit; the \
              whole value \"\\t1\" must not be reported as effectively \
-             permissive (#582 adversarial round 2, BLOCKER 2)"
+             permissive (#582)"
         );
     }
 
@@ -1052,8 +1047,7 @@ mod tests {
             "a leading TAB immediately after '=' is not a real daemon \
              leading-space skip; the value \"\\t1\" is byte-exact rejected \
              and the daemon stays enforcing, but a Unicode trim_start() \
-             would eat the tab and wrongly rescue \"1\" (#582 adversarial \
-             round 2, BLOCKER 2)"
+             would eat the tab and wrongly rescue \"1\" (#582)"
         );
     }
 
@@ -1089,8 +1083,7 @@ mod tests {
             "the real first SPACE-delimited token is \"1\\t2\" (tab \
              INSIDE it), byte-exact rejected; a pattern-match hack that \
              only checks for a bare tab-without-any-space is fooled by the \
-             later real space and wrongly reports permissive (#582 \
-             adversarial round 2, BLOCKER 3)"
+             later real space and wrongly reports permissive (#582)"
         );
     }
 
@@ -1112,8 +1105,7 @@ mod tests {
             "the real first SPACE-delimited token is \"1\\r\" (CR INSIDE \
              it), byte-exact rejected; a pattern-match hack that only \
              checks whether the whole raw value ENDS WITH '\\r' is fooled \
-             by the later real space and wrongly reports permissive (#582 \
-             adversarial round 2, BLOCKER 3)"
+             by the later real space and wrongly reports permissive (#582)"
         );
     }
 
@@ -1136,7 +1128,7 @@ mod tests {
             "the real value token is \"1\" (clean); the trailing CRLF \
              comment is a discarded later token, not the value -- must \
              stay permissive despite the raw remainder ending in '\\r' \
-             (#582 adversarial round 2, BLOCKER 3)"
+             (#582)"
         );
     }
 
@@ -1156,7 +1148,7 @@ mod tests {
             Some("permissive".to_string()),
             "the real value token is \"1\" (clean); the tab lives in the \
              discarded second token \"2\\t3\" -- must stay permissive \
-             (#582 adversarial round 2, BLOCKER 3)"
+             (#582)"
         );
     }
 
@@ -1209,8 +1201,7 @@ mod tests {
             assert_eq!(
                 probe_says_permissive, lint_fires,
                 "doctor probe and fapd-W14 lint must agree on {text:?}: \
-                 probe={probe_says_permissive} lint={lint_fires} (#582 \
-                 adversarial round 2, cross-seam agreement)"
+                 probe={probe_says_permissive} lint={lint_fires} (#582)"
             );
         }
     }
@@ -1269,7 +1260,7 @@ mod tests {
                      with no writer -- this IS the #560 hang bug; this read \
                      site must route through rulesteward_core::fsread::\
                      read_to_string like every lint entry point already \
-                     does (#582 adversarial round 2, real gap)"
+                     does (#582)"
                 );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -1309,8 +1300,7 @@ mod tests {
                      FIFO with no writer -- this IS the #560 hang bug; this \
                      read site must route through \
                      rulesteward_core::fsread::read_to_string like every \
-                     lint entry point already does (#582 adversarial round \
-                     2, real gap)"
+                     lint entry point already does (#582)"
                 );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -1350,8 +1340,7 @@ mod tests {
                      FIFO .rules entry -- this IS the #560 hang bug; this \
                      read site must route through \
                      rulesteward_core::fsread::read_to_string like every \
-                     lint entry point already does (#582 adversarial round \
-                     2, real gap)"
+                     lint entry point already does (#582)"
                 );
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
