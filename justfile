@@ -42,28 +42,28 @@ dac-guard:
 # (#586) Guard against doc-truth decay in the per-backend "N codes" prose: every
 # "N `<prefix>-` codes" mention in README.md and in the clap doc-comments must equal
 # the corresponding catalog length (FAPD_CODES, AU_CODES, SSHD_CODES, SUDO_CODES,
-# SYSCTLD_CODES, SE_CODES). The counts have drifted four times (#556, its two
-# predecessors, and the three-line au-/sudo-/sysctld- drift this same lane fixed);
-# each fix before this one was manual. Same shape as dac-guard: standalone bash
-# (grep-based, no cargo build), so it belongs in the lint tier.
+# SYSCTLD_CODES, SE_CODES). These counts drift whenever a code is added to a
+# catalog and the prose that quotes the total is not updated with it (#556).
+# Same shape as dac-guard: standalone bash (grep-based, no cargo build), so it
+# belongs in the lint tier.
 #
 # Assert every "N codes" doc mention matches its lint catalog's length. (#586)
 codes-guard:
     bash scripts/check-codes-count.sh
 
 # (#572) No-mnt guard: no repo-invoked command may reference a path outside the
-# repo. The wave3 fapolicyd corpus lived at an absolute /mnt path, was destroyed
-# in the 2026-07-13 NFS rebuild, and `just diff-fapolicyd` then exited 0 with a
-# skip message on every run - reporting success while checking nothing. A
-# violation is `/mnt/` in EXECUTABLE position; comment lines and data files are
-# provenance, not dependencies. Same shape as dac-guard and codes-guard:
-# standalone bash (grep-based, no cargo build), so it belongs in the lint tier.
+# repo. A fapolicyd corpus that lived at an absolute /mnt path vanished from
+# under `just diff-fapolicyd`, which then exited 0 with a skip message on every
+# run - reporting success while checking nothing. A violation is `/mnt/` in
+# EXECUTABLE position; comment lines and data files are provenance, not
+# dependencies. Same shape as dac-guard and codes-guard: standalone bash
+# (grep-based, no cargo build), so it belongs in the lint tier.
 #
 # Assert no repo-invoked command depends on a path outside the repo. (#572)
 no-mnt-guard:
     bash scripts/check-no-mnt-paths.sh
 
-# (session 9k-1) Capture-write guard: every Tier-2 capture script
+# Capture-write guard: every Tier-2 capture script
 # (crates/*/tests/corpus/*/capture_*.sh) must route every write through
 # rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) rather than
 # performing a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd or an
@@ -73,11 +73,11 @@ no-mnt-guard:
 # corpus. Same shape as dac-guard/codes-guard/no-mnt-guard: standalone bash
 # + awk (no cargo build), so it belongs in the lint tier alongside them.
 #
-# Assert every Tier-2 capture script routes its writes through the guard. (session 9k-1)
+# Assert every Tier-2 capture script routes its writes through the guard.
 capture-guard:
     bash scripts/check-capture-writes.sh
 
-# (session 9o, #658) Corpus-growth guard: a branch that changes crates/X/src/**
+# (#658) Corpus-growth guard: a branch that changes crates/X/src/**
 # must ADD a file under crates/X/tests/corpus/**, per crate.
 #
 # The other lint-tier guards walk a TREE; this one walks a COMMIT RANGE, because
@@ -97,11 +97,7 @@ corpus-growth-guard base="":
 # scanned nothing is indistinguishable downstream from a real pass.
 #
 # This SUPERSEDES `oracle-harness-test` in `just ci` and runs a superset of it
-# (that recipe stays callable on its own for the four differential suites). Three
-# suites - check-dac-guard-test, check-codes-count-test, check-no-mnt-paths-test,
-# 99 KB carrying this project's explicitly named anti-vacuity positive controls -
-# were reachable from no recipe or workflow at all, so the anti-vacuity behaviour
-# of two of the three `just ci` lint guards was unverified on every commit.
+# (that recipe stays callable on its own for the four differential suites).
 #
 # Pure bash: no cargo, no docker, no network.
 instrument-test:
@@ -125,12 +121,12 @@ instrument-test:
         printf '%s\n' "${out}"
         echo "instrument-test: ${t}-test rc=${rc}"
         [ "${rc}" -eq 0 ] || fail=1
-        # A GREEN suite must not print the token FAIL (#641). Three suites used to
-        # run their positive-control phase through the ordinary per-case reporter,
-        # so a fully passing `just ci` emitted 14 lines beginning with FAIL - the
-        # SUCCESS condition, announced with the word for failure. That cost real
-        # debugging time on 2026-08-01, and it silently arms any log-scraping check
-        # keyed on FAIL to fire on every healthy run.
+        # A GREEN suite must not print the token FAIL (#641). A positive-control
+        # phase routed through the ordinary per-case reporter makes a fully passing
+        # `just ci` emit lines beginning with FAIL - the SUCCESS condition,
+        # announced with the word for failure. That costs real debugging time, and
+        # it silently arms any log-scraping check keyed on FAIL to fire on every
+        # healthy run.
         #
         # Only asserted when rc is 0: a genuinely failing suite is SUPPOSED to say
         # FAIL, and gating that would be the opposite defect.
@@ -154,9 +150,9 @@ instrument-test:
     # without a self-test fails HERE rather than going unverified for weeks.
     # Counted with a shell glob rather than `ls | grep -v`: a count derived through
     # a filter is not evidence, and this project's own command wrapper rewrites a
-    # mid-pipeline grep and changes the number (measured while writing this recipe,
-    # which reported 16 guards where there were 8 at the time). The count is
-    # asserted below rather than quoted here, so it cannot drift while green.
+    # mid-pipeline grep and changes the number (measured: a filtered count reported
+    # 16 guards where there were 8). The count is asserted below rather than quoted
+    # here, so it cannot drift while green.
     #
     # The same walk carries the MODE invariant (#658). Nothing in this tree
     # invokes a script in a way that consults the executable bit - the justfile
@@ -164,8 +160,7 @@ instrument-test:
     # SOURCED - so a `test -x` PREFLIGHT on the recipes would gate a property no
     # caller consumes and could only ever produce a false failure. This is the
     # other shape: a tree invariant, asserted where the tree is already being
-    # walked. It catches a script silently losing +x, which really happened (every
-    # script in scripts/ was non-executable until #644) and which breaks ad-hoc
+    # walked. It catches a script silently losing +x (#644), which breaks ad-hoc
     # `./scripts/x.sh` use and reads as broken in any file listing.
     guards=0
     notexec=""
@@ -182,9 +177,9 @@ instrument-test:
     [ "${fail}" -eq 0 ]
 
 # Per-manifest gate for the workspace-EXCLUDED tools/* crates. `cargo --workspace`
-# cannot see them, but six CI workflows build them with --locked. In 9j a branch
-# was pushed with `# acked-verify` on a green `just ci` while three tools/* --locked
-# builds that CI gates were broken; it was caught 27 minutes later by an ad-hoc
+# cannot see them, but six CI workflows build them with --locked. A green
+# `just ci` has coexisted with three broken tools/* --locked builds that CI
+# gates; they were caught only by an after-the-fact ad-hoc
 # per-manifest run, not by a gate. (#603)
 tools-gate:
     #!/usr/bin/env bash
@@ -228,13 +223,12 @@ trustdb-contention:
 
 # (#335, #512) Drift-check / refresh the sysctld-W02 STIG baselines against the
 # OFFICIAL DISA XCCDF. Same nested-tool pattern as sshd-stig-*/auditd-stig-* below
-# (tools/stig-update, OUT of `just ci`). #512 (session 9h-v0_8-wave4 Lane B) ported
-# this tool off ComplianceAsCode/content onto DISA XCCDF; DISA versions each RHEL
-# STIG by FILENAME (no releases API), so there is NO `--latest` mode (the prior
-# `stig-check-latest` recipe is retired - see stig-drift.yml for the replacement
-# weekly live-pinned-zip posture). `check` derives at the pinned zips in the tool's
-# stig-refs.toml. The LIVE recipe skips gracefully (exit 0) when curl/unzip are
-# absent.
+# (tools/stig-update, OUT of `just ci`). This tool derives from the official DISA
+# XCCDF, not ComplianceAsCode/content; DISA versions each RHEL
+# STIG by FILENAME (no releases API), so there is NO `--latest` mode (see
+# stig-drift.yml for the weekly live-pinned-zip posture). `check` derives at the
+# pinned zips in the tool's stig-refs.toml. The LIVE recipe skips gracefully
+# (exit 0) when curl/unzip are absent.
 #
 # stig-check         : LIVE - fetch the pinned DISA zips; exit 1 on any drift vs
 #                      baseline.rs (the weekly stig-drift workflow uses this).
@@ -570,17 +564,17 @@ diff-sshd:
     #!/usr/bin/env bash
     set -uo pipefail
     # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
-    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
-    # weeks while checking nothing (#572), so a box that is supposed to have the
-    # oracle must not be able to skip silently.
+    # `just diff-fapolicyd` exited 0 with this exact shape of message while
+    # checking nothing (#572), so a box that is supposed to have the oracle must
+    # not be able to skip silently.
     #
     # The 3->2 promotion is DELEGATED, never rewritten inline. An inline
-    # `[ "${RS_ORACLE_REQUIRED:-0}" != "0" ]` was written here first and was
-    # wrong in both directions, measured: it cannot see the per-lane
-    # RS_REQUIRE_SSHD (so a CI job that requires only this lane got rc 3, a
-    # silent skip - #572's own shape), and it treats `false`/`no`/`off`/blank as
-    # truthy. scripts/rs-oracle-required.sh is the single fail-closed parse, and
-    # its own header says why there must not be a second copy of it.
+    # `[ "${RS_ORACLE_REQUIRED:-0}" != "0" ]` is wrong in both directions,
+    # measured: it cannot see the per-lane RS_REQUIRE_SSHD (so a CI job that
+    # requires only this lane gets rc 3, a silent skip - #572's own shape), and
+    # it treats `false`/`no`/`off`/blank as truthy.
+    # scripts/rs-oracle-required.sh is the single fail-closed parse, and its own
+    # header says why there must not be a second copy of it.
     skip_or_fail() {
         bash scripts/rs-oracle-required.sh SSHD
         case "$?" in
@@ -645,10 +639,10 @@ fapolicyd-probe-check:
     #!/usr/bin/env bash
     set -uo pipefail
     # rc 3 = precondition unmet, per CLAUDE.md's differential contract. NOT 0:
-    # `just diff-fapolicyd` exited 0 with this exact shape of message for six
-    # weeks while checking nothing (#572). The 3->2 promotion is delegated to the
-    # single fail-closed parse rather than re-tested inline; see diff-sshd's
-    # skip_or_fail for the two measured ways the inline form was wrong.
+    # `just diff-fapolicyd` exited 0 with this exact shape of message while
+    # checking nothing (#572). The 3->2 promotion is delegated to the single
+    # fail-closed parse rather than re-tested inline; see diff-sshd's
+    # skip_or_fail for the two measured ways the inline form is wrong.
     skip_or_fail() {
         bash scripts/rs-oracle-required.sh FAPOLICYD
         case "$?" in
@@ -733,17 +727,7 @@ auditd-msgtype-derive:
     fi
     cargo run --quiet --manifest-path tools/auditd-msgtype-update/Cargo.toml -- derive
 
-# ---------------------------------------------------------------------------
-# 9j Phase 0: recipes declared ahead of the tooling they invoke.
-#
-# These are landed on the session branch BEFORE the fan-out so that no parallel
-# lane has to edit this file (justfile was the only surface three lanes would
-# otherwise have contended for). Each recipe below fails until its lane lands the
-# tool it calls; none is part of `just ci`, matching every other *-stig-* recipe,
-# so the gate is unaffected in the interim.
-# ---------------------------------------------------------------------------
-
-# (#550, 9j lane 5) Upstream-pin staleness detection for the two DISA-derived STIG
+# (#550) Upstream-pin staleness detection for the two DISA-derived STIG
 # tools that lack it. Unlike ComplianceAsCode, DISA publishes no releases API: each
 # RHEL STIG is versioned by FILENAME (V<major>R<minor>), so staleness is detected by
 # probing the next candidate revision (increment minor, then major, until 404)
@@ -752,7 +736,7 @@ auditd-msgtype-derive:
 #
 # Non-blocking by design: a newer upstream revision is news, not a build failure.
 # Both recipes skip gracefully (exit 0) when curl is absent. A monthly scheduled
-# workflow (also lane 5) mirrors mutants.yml's shape and opens an issue on a hit.
+# workflow mirrors mutants.yml's shape and opens an issue on a hit.
 #
 # LIVE: report whether a newer DISA sshd STIG revision than the pin exists. (#550)
 sshd-stig-check-pin:
@@ -774,7 +758,7 @@ auditd-stig-check-pin:
     fi
     cargo run --quiet --manifest-path tools/auditd-stig-update/Cargo.toml -- check-pin
 
-# (#551, 9j lane 6) Drift-check / refresh the sudo-W04 DISA control families against
+# (#551) Drift-check / refresh the sudo-W04 DISA control families against
 # the OFFICIAL DISA XCCDF. Mirrors the sshd-stig-* triad above.
 #
 # SCOPE: DISA ONLY. The CIS half of sudo-W04 is already drift-checked by
@@ -821,7 +805,7 @@ sudoers-stig-derive product="all":
         cargo run --quiet --manifest-path tools/sudoers-stig-update/Cargo.toml -- derive --product "{{product}}"
     fi
 
-# (session 9k-1) LIVE differential drift checks for the auditd / sysctld / sudoers
+# LIVE differential drift checks for the auditd / sysctld / sudoers
 # backends: capture a fresh oracle corpus from the rs-oracle{8,9,10} containers and
 # replay the SAME Tier-1 test binary against it.
 #
@@ -834,11 +818,9 @@ sudoers-stig-derive product="all":
 # All three delegate to ONE driver, scripts/rs-oracle-diff.sh. The exit-code mapping
 # is the part of this harness whose every wrong branch fails toward "clean"; written
 # out three times it would be wrong in three different ways, which is how
-# `just diff-fapolicyd` came to report success while checking nothing for 12 days,
-# from the 2026-07-13 NFS rebuild until the recipe was retired 2026-07-25 (#572).
-# (This line read "six weeks" until 2026-08-03; the recipe's entire life was 30
-# days.) The driver is positive-controlled by scripts/rs-oracle-diff-test.sh,
-# which re-seeds that bug into a copy of it and requires named cases to catch it.
+# `just diff-fapolicyd` came to report success while checking nothing (#572).
+# The driver is positive-controlled by scripts/rs-oracle-diff-test.sh, which
+# re-seeds that bug into a copy of it and requires named cases to catch it.
 #
 # Exit codes: 0 clean (the success line carries a non-zero count), 1 drift,
 # 2 tool/environment error, 3 legitimate skip. RS_ORACLE_REQUIRED=1 - or the per-lane
@@ -869,13 +851,11 @@ diff-sudoers:
 #
 # Run these EVERY Adversarial Testing Loop round, not once. A divergence table is
 # the only instrument in the loop whose evidence accumulates across rounds; the
-# adversary's is re-rolled each time, which is how session 9o declared a round DRY
-# over a live fail-open.
+# adversary's is re-rolled each time, so a DRY round can certify a live fail-open.
 #
 # No docker, no root, no live oracle, so unlike diff-* above there is NO rc 3.
-# The three codes, listed without interruption because the previous version put
-# ten lines of qualification between rc 1 and rc 2 and the rc-2 item then read as
-# the tail of a sentence about something else:
+# The three codes, listed without interruption so that no item reads as the tail
+# of a sentence about something else:
 #
 #   0  clean; the success line carries a non-zero announcement count
 #   1  a REGRESSION, OR a test with no baseline left FAILING at HEAD (added, or
@@ -924,10 +904,10 @@ diff-sysctld-branch base:
 # indistinguishable downstream from a real pass. Pure bash - cargo and docker
 # are stubbed, no containers, no network - so it needs no toolchain and runs in
 # every CI container. Covers both the two rs-oracle-diff.sh instruments and the
-# two rs-capture-guard.sh instruments (session 9k-1's write-discipline layer),
+# two rs-capture-guard.sh instruments (the write-discipline layer),
 # since all four share this same "prove you saw something" shape.
 #
-# Self-test the differential + capture-guard instruments (session 9k-1).
+# Self-test the differential + capture-guard instruments.
 oracle-harness-test:
     #!/usr/bin/env bash
     set -uo pipefail

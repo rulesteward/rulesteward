@@ -32,7 +32,7 @@ fn run_lint(path: &std::path::Path, extra: &[&str]) -> std::process::Output {
 /// A fully STIG-compliant config: all RHEL9-required directives present with
 /// baseline-correct values, no weak crypto, no deprecated keywords, no structural
 /// issues. Lint-clean under both target=None (the RHEL8 floor) and --target rhel9.
-/// Wave B made the W01/W02 passes real, so a minimal config is no longer "clean".
+/// The W01/W02 passes are real, so a minimal config is not "clean".
 const CLEAN_CONFIG: &str = "\
 Banner /etc/issue.net
 LogLevel VERBOSE
@@ -169,8 +169,7 @@ fn fires_f02_for_dropin_override_with_exit_two_and_code_in_stdout() {
     // Scenario A (verified rocky9 / OpenSSH 9.9p1): the main file Includes the
     // drop-in dir FIRST, then sets `PermitRootLogin no`; a drop-in sets
     // `PermitRootLogin yes`, which WINS by first-value-wins and FAILS baseline.
-    // F02 is Fatal -> exit 2. The directory target is accepted (no longer a tool
-    // failure).
+    // F02 is Fatal -> exit 2. A directory target is accepted, not a tool failure.
     let dir = etc_ssh_layout(
         "Include {DIR}\nPermitRootLogin no\n",
         &[("50-x.conf", "PermitRootLogin yes\n")],
@@ -333,17 +332,15 @@ fn fires_f02_when_include_sits_inside_a_match_all_block() {
 // #324: directory mode runs the single-file lint suite (sshd-E01/W01..W06)
 // over the MERGED EFFECTIVE config, not just F02.
 //
-// Today the `path.is_dir()` branch in commands/sshd.rs runs ONLY
-// `lints::drop_in::lint_drop_in` (F02) and returns, so a weak algorithm or a
-// missing/weak STIG directive that only manifests in the MERGED view (base
-// sshd_config + sshd_config.d/*.conf drop-ins) is never reported in dir mode.
-// The fix: also run the relevant single-file passes (E01, W01, W02, W03, W04,
-// W06) over a synthetic merged Block, REMAPPING each diagnostic's (file, line)
-// back to the real winning source file (a drop-in, not the base). E02/E03/W05
-// and F02 are NOT part of the merged run (F02 stays the separate cross-file
-// pass; Include is already resolved away in the merged view).
-//
-// All tests below are RED against the current F02-only dir behavior.
+// A `path.is_dir()` branch that ran ONLY `lints::drop_in::lint_drop_in` (F02)
+// and returned would never report a weak algorithm or a missing/weak STIG
+// directive that only manifests in the MERGED view (base sshd_config +
+// sshd_config.d/*.conf drop-ins). So dir mode also runs the relevant
+// single-file passes (E01, W01, W02, W03, W04, W06) over a synthetic merged
+// Block, REMAPPING each diagnostic's (file, line) back to the real winning
+// source file (a drop-in, not the base). E02/E03/W05 and F02 are NOT part of
+// the merged run (F02 stays the separate cross-file pass; Include is already
+// resolved away in the merged view).
 // ===========================================================================
 
 /// Parse the `--format json` envelope and return its `diagnostics` array.
@@ -367,8 +364,8 @@ fn dir_mode_w03_weak_algo_in_dropin_anchors_to_the_dropin() {
     // DROP-IN file (`50-weak.conf`) -- the file the operator must edit -- NOT to the
     // base `sshd_config`, because the weak directive physically lives in the drop-in.
     //
-    // (Today dir mode never runs W03 -> diagnostics array is empty -> RED on both
-    // the code-presence and the anchoring assertion.)
+    // (A dir mode that never ran W03 would leave the diagnostics array empty,
+    // failing both the code-presence and the anchoring assertion.)
     let dir = etc_ssh_layout(
         &format!("{CLEAN_CONFIG}Include {{DIR}}\n"),
         &[("50-weak.conf", "Ciphers aes256-cbc\n")],
@@ -426,9 +423,8 @@ fn dir_mode_no_false_w01_when_required_directive_supplied_by_dropin() {
     // (CLEAN_CONFIG minus Banner, with Banner restored by the drop-in), so a correct
     // merged W01 run yields ZERO W01 findings and exit 0.
     //
-    // (Today dir mode emits no W01 at all, so this currently passes VACUOUSLY; it
-    // becomes a real guard only alongside the firing test below and is RED-meaningful
-    // once W01 runs over the merged view.)
+    // (On its own this would pass VACUOUSLY against a dir mode that emits no W01
+    // at all; it is a real guard only alongside the firing test below.)
     let base_without_banner = CLEAN_CONFIG.replace("Banner /etc/issue.net\n", "");
     let dir = etc_ssh_layout(
         &format!("{base_without_banner}Include {{DIR}}\n"),
@@ -457,8 +453,6 @@ fn dir_mode_w01_fires_when_required_directive_missing_from_merged_view() {
     // effective config. The base is CLEAN_CONFIG MINUS Banner, and NO drop-in supplies
     // Banner, so the merged view lacks a required directive entirely -> sshd-W01 must
     // fire naming `banner`, and the exit code reflects a warning (1).
-    //
-    // (Today dir mode emits no W01 -> RED.)
     let base_without_banner = CLEAN_CONFIG.replace("Banner /etc/issue.net\n", "");
     let dir = etc_ssh_layout(
         &format!("{base_without_banner}Include {{DIR}}\n"),
@@ -492,7 +486,7 @@ fn dir_mode_w02_no_finding_when_dropin_overrides_weak_base_to_strong() {
     // value is the drop-in's `no`, which is COMPLIANT -> W02 must NOT fire for
     // PermitRootLogin. A per-file impl would false-positive on the base `yes`.
     //
-    // (Today dir mode emits no W02 -> this currently passes vacuously; it is the
+    // (Against a dir mode that emitted no W02 this would pass vacuously; it is the
     // compliant half of the converse pair below, which fires.)
     let base_weak = CLEAN_CONFIG.replace("PermitRootLogin no\n", "PermitRootLogin yes\n");
     // Include FIRST so the drop-in wins (first-value-wins), then the weak base value.
@@ -526,10 +520,10 @@ fn dir_mode_w02_fires_anchored_to_dropin_when_dropin_weakens_strong_base() {
     // FAILS the STIG baseline.
     //
     // NOTE: the same scenario also fires F02 (a drop-in beating a main-file directive
-    // with a baseline-failing value IS the canonical F02). The #324 fix is that the
+    // with a baseline-failing value IS the canonical F02). Per #324 the
     // value-vs-baseline finding ALSO surfaces via the merged-W02 run, anchored to the
     // drop-in (line 1). We assert a W02 finding for PermitRootLogin anchored to the
-    // drop-in. (Today dir mode runs neither W02 nor reports a W02 code -> RED.)
+    // drop-in.
     let dir = etc_ssh_layout(
         &format!("Include {{DIR}}\n{CLEAN_CONFIG}"),
         &[("10-weaken.conf", "PermitRootLogin yes\n")],
@@ -595,23 +589,24 @@ fn dir_mode_f02_still_fires_alongside_merged_suite() {
 }
 
 // ===========================================================================
-// #324 follow-up (impl-aware adversarial miss): dir-mode must run the
+// #324 follow-up: dir-mode must run the
 // "as-written" single-file passes over the bodies of CONDITIONAL `Match`
 // blocks too, not just over the global / `Match all` effective config.
 //
-// THE MISS (empirically confirmed against the current impl, 2026-06-27):
-// `lint_merged` builds the merged view from `build_stream` ->
-// `effective_directives_of`, which keeps ONLY `Block::Global` and the
+// THE DEFECT THIS PINS (empirically confirmed 2026-06-27): a `lint_merged`
+// that builds the merged view from `build_stream` ->
+// `effective_directives_of` alone keeps ONLY `Block::Global` and the
 // unconditional `Match all` body and DROPS every CONDITIONAL `Match`
-// (`User`/`Group`/`Address`/...) block. So an "as-written" finding inside a
+// (`User`/`Group`/`Address`/...) block. An "as-written" finding inside a
 // conditional `Match` block -- a weak cipher, an operator-form weak algo, an
 // unknown directive, a deprecated directive -- that single-file mode reports
-// is SILENTLY LOST in dir mode. Reproduced: a base `sshd_config` with
+// is then SILENTLY LOST in dir mode. Reproduced against that shape: a base
+// `sshd_config` with
 //   Match Address 192.168.1.0/24
 //       Ciphers aes256-cbc
 // fires sshd-W03 in single-file mode but emits NOTHING in dir mode.
 //
-// THE CORRECT DISTINCTION (the fix implements; these tests pin the behavior):
+// THE CORRECT DISTINCTION (what these tests pin):
 //   * "AS-WRITTEN" passes -- sshd-E01 (unknown), sshd-W03 (weak algo),
 //     sshd-W04 (deprecated), sshd-W06 (algo-list operator), and the
 //     Match-oriented sshd-E04 / sshd-W05 -- MUST fire on content inside a
@@ -623,8 +618,8 @@ fn dir_mode_f02_still_fires_alongside_merged_suite() {
 //     value set ONLY inside a conditional `Match` block is per-connection, not
 //     the global daemon baseline, so it must NOT satisfy a W01 global
 //     requirement nor by itself trigger/clear W02 for the global baseline.
-//     (W01/W02 read the global block only; the fix must re-expose conditional
-//     `Match` bodies AS a `Match` block -- not fold them into the synthetic
+//     (W01/W02 read the global block only; conditional `Match` bodies are
+//     re-exposed AS a `Match` block -- not folded into the synthetic
 //     GLOBAL -- so the effective-value passes are unaffected.)
 //
 // SINGLE-FILE PARITY GROUNDING (verified 2026-06-27 with
@@ -639,10 +634,8 @@ fn dir_mode_f02_still_fires_alongside_merged_suite() {
 // (`Ciphers`/`UseLogin` co-fire sshd-E04 because they are not Match-permitted;
 // the parity assertions filter on the target code, so the extra E04 is inert.)
 //
-// The POSITIVE parity tests are RED against the current impl (the finding is
-// ABSENT in dir mode = an assertion failure, not a compile error). The
-// NEGATIVE guards pass today and pin the effective-value exclusion so the fix
-// cannot "satisfy" the parity tests by wrongly folding `Match` values into the
+// The NEGATIVE guards pin the effective-value exclusion, so an impl cannot
+// "satisfy" the parity tests by wrongly folding `Match` values into the
 // global W01/W02 view.
 // ===========================================================================
 
@@ -667,8 +660,8 @@ fn dir_mode_w03_fires_inside_conditional_match_block() {
     // lines, the `Include {DIR}` line is 21, the `Match Address ...` header is 22,
     // and the `    Ciphers aes256-cbc` body is line 23 -- the W03 anchor.
     //
-    // (Today dir mode drops the conditional Match body -> diagnostics array carries
-    // no W03 -> RED on the code-presence assertion.)
+    // (A dir mode that drops the conditional Match body leaves the diagnostics
+    // array without a W03, failing the code-presence assertion.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch Address 192.168.1.0/24",
         "    Ciphers aes256-cbc\n",
@@ -713,7 +706,7 @@ fn dir_mode_w06_fires_inside_conditional_match_block() {
     // on the `+aes128-cbc` token). dir mode must run W06 over the conditional Match
     // body, anchored to the real file + line.
     //
-    // (Today dir mode drops the conditional Match body -> no W06 -> RED.)
+    // (A dir mode that drops the conditional Match body emits no W06 here.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch Address 192.168.1.0/24",
         "    Ciphers +aes128-cbc\n",
@@ -757,7 +750,7 @@ fn dir_mode_e01_fires_inside_conditional_match_block() {
     // fires, and -- because E04 skips unknown keywords -- it is the only finding on
     // that line). dir mode must run E01 over the conditional Match body.
     //
-    // (Today dir mode drops the conditional Match body -> no E01 -> RED.)
+    // (A dir mode that drops the conditional Match body emits no E01 here.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch Address 192.168.1.0/24",
         "    TotallyBogusDirective foo\n",
@@ -800,7 +793,7 @@ fn dir_mode_w04_fires_inside_conditional_match_block() {
     // version-uniform deprecated, verified single-file W04). dir mode must run W04
     // over the conditional Match body.
     //
-    // (Today dir mode drops the conditional Match body -> no W04 -> RED.)
+    // (A dir mode that drops the conditional Match body emits no W04 here.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch Address 192.168.1.0/24",
         "    UseLogin no\n",
@@ -845,7 +838,7 @@ fn dir_mode_e04_fires_inside_conditional_match_block() {
     // single-file mode (verified). dir mode must run E04 over the conditional Match
     // body and anchor to the real file + line.
     //
-    // (Today dir mode drops the conditional Match body -> no E04 -> RED.)
+    // (A dir mode that drops the conditional Match body emits no E04 here.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch User someuser",
         "    Ciphers aes256-ctr\n",
@@ -888,7 +881,7 @@ fn dir_mode_w05_fires_inside_conditional_match_block() {
     // (verified -- it is Match-permitted, so E04 does NOT co-fire). dir mode must run
     // W05 over the conditional Match body and anchor to the real file + line.
     //
-    // (Today dir mode drops the conditional Match body -> no W05 -> RED.)
+    // (A dir mode that drops the conditional Match body emits no W05 here.)
     let body = clean_plus_conditional_match(
         "Include {DIR}\nMatch User someuser",
         "    PermitRootLogin yes\n",
@@ -934,8 +927,8 @@ fn dir_mode_match_block_finding_in_dropin_anchors_to_dropin() {
     //   1: Match Address 192.168.1.0/24
     //   2:     Ciphers aes256-cbc       <- the W03 anchor (verified single-file: line 2)
     //
-    // (Today dir mode drops the conditional Match body entirely -> no W03 at all ->
-    // RED on both the code-presence and the drop-in-anchoring assertions.)
+    // (A dir mode that drops the conditional Match body entirely emits no W03 at
+    // all, failing both the code-presence and the drop-in-anchoring assertions.)
     let dir = etc_ssh_layout(
         &format!("{CLEAN_CONFIG}Include {{DIR}}\n"),
         &[(
@@ -1120,17 +1113,17 @@ fn etc_ssh_layout_double_include(base_prefix: &str, dropin_body: &str) -> tempfi
 
 #[test]
 fn dir_mode_diamond_include_match_finding_reported_once() {
-    // FINDING 1 (RED today, count == 2): a single drop-in `50-m.conf` reachable
+    // A single drop-in `50-m.conf` reachable
     // via TWO overlapping Include globs (`*.conf` and `5*.conf`, both matching it)
     // holds a conditional `Match User alice` block with a weak cipher
     // (`Ciphers aes256-cbc`). The merged single-file W03 pass must report that one
     // physical Match-body finding EXACTLY ONCE -- single-file mode reports it once,
     // so dir mode must match (no per-edge duplication).
     //
-    // Today `collect_conditional_matches` visits `50-m.conf` once per Include edge
-    // (no across-walk file dedup), so the conditional `Match` block is collected
-    // TWICE and TWO identical sshd-W03 diagnostics are emitted at `50-m.conf:2`.
-    // This test asserts count == 1, so it is RED (count == 2) until the dedup lands.
+    // A `collect_conditional_matches` that visited `50-m.conf` once per Include
+    // edge (no across-walk file dedup) would collect the conditional `Match`
+    // block TWICE and emit TWO identical sshd-W03 diagnostics at `50-m.conf:2`,
+    // which is the count == 2 this assertion excludes.
     let dir =
         etc_ssh_layout_double_include(CLEAN_CONFIG, "Match User alice\n    Ciphers aes256-cbc\n");
     let out = run_lint(dir.path(), &["--target", "rhel9", "--format", "json"]);
@@ -1282,14 +1275,10 @@ fn dir_mode_conditional_match_one_past_max_depth_does_not_fire_w03() {
 }
 
 // ---------------------------------------------------------------------------
-// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
-// (findings-only; `--sarif-include-pass` stays fapolicyd-ONLY). RED today:
-// `SshdLintArgs.format` is `HumanJsonFormat` (human|json only), so clap
-// rejects `--format sarif` at parse time (observed live: exit 3, stderr
-// "invalid value 'sarif' for '--format <FORMAT>' [possible values: human,
-// json]"), so none of the assertions below are reached. The planned impl
-// switches `SshdLintArgs.format` to `OutputFormat` and routes the new Sarif
-// arm through `output::emit_lint` (crates/rulesteward-cli/src/output/mod.rs).
+// #511: SARIF output for the lint verbs (findings-only;
+// `--sarif-include-pass` stays fapolicyd-ONLY). `SshdLintArgs.format` is
+// `OutputFormat` (human|json|sarif) and the Sarif arm routes through
+// `output::emit_lint` (crates/rulesteward-cli/src/output/mod.rs).
 // ---------------------------------------------------------------------------
 
 /// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema
@@ -1382,11 +1371,9 @@ fn sarif_format_clean_config_is_schema_valid_with_zero_results() {
 }
 
 /// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
-/// still reject it as an unrecognized flag on `sshd lint`. GREEN today (clap
-/// already rejects the unknown flag regardless of `--format`) and must stay
-/// green after the impl -- pins the findings-only scope decision. A wrong
-/// impl that also added the flag to `SshdLintArgs` would flip this from a
-/// clap parse error to a successful run.
+/// reject it as an unrecognized flag on `sshd lint`, regardless of `--format`.
+/// Pins the findings-only scope decision: an impl that also added the flag to
+/// `SshdLintArgs` would flip this from a clap parse error to a successful run.
 #[test]
 fn sarif_include_pass_is_rejected_for_sshd_lint() {
     let cfg = config_file(CLEAN_CONFIG);

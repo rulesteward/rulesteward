@@ -1,11 +1,11 @@
 //! Shared `fapolicyd.conf` key reader.
 //!
-//! `fapolicyd.conf` is a flat `key = value` file (full-line `#` comments). Before
-//! this helper existed, three hand-rolled scanners parsed it with three different
-//! acceptance sets, and two of them (in `doctor/probe.rs`) DISAGREED on whitespace
-//! variants like `permissive =1` -- so doctor's mode probe and its misconfiguration
-//! check could report different modes for the same line (issue #192, D2). This is
-//! the single, comment-aware, whitespace-tolerant reader they all use.
+//! `fapolicyd.conf` is a flat `key = value` file (full-line `#` comments). This is
+//! the single, comment-aware, whitespace-tolerant reader every caller uses.
+//! Hand-rolled scanners with divergent acceptance sets disagree on whitespace
+//! variants like `permissive =1`, which would let doctor's mode probe and its
+//! misconfiguration check report different modes for the same line
+//! (issue #192, D2).
 
 /// Look up `key` in `fapolicyd.conf`-style text and return the trimmed value of
 /// the LAST matching `key = value` line, mirroring how the fapolicyd daemon itself
@@ -30,9 +30,9 @@
 /// `str::lines`, which would silently conflate a `\r\n` terminator and drop
 /// the `\r` before this function ever saw it).
 ///
-/// IMPORTANT (doc-truth-decay correction, ATL round 2 MISS 1): this raw
-/// remainder is NOT the same string the fapolicyd daemon itself uses as the
-/// key's value. `daemon-config.c`'s `nv_split`/`_strsplit` whitespace-
+/// IMPORTANT: this raw remainder is NOT the same string the fapolicyd
+/// daemon itself uses as the key's value.
+/// `daemon-config.c`'s `nv_split`/`_strsplit` whitespace-
 /// tokenizes each line and binds `nv.value` to ONLY the FIRST token after
 /// `=` - a trailing `# comment` (or any further token) is separately logged
 /// as "Wrong number of arguments" but does NOT change which token the
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn conf_value_tolerates_all_whitespace_variants_around_equals() {
-        // The D2 fix: every spacing variant of `permissive=1` yields the same
+        // D2: every spacing variant of `permissive=1` yields the same
         // value, so the mode probe and the misconfig check cannot disagree.
         for line in [
             "permissive=1",
@@ -109,7 +109,7 @@ mod tests {
         // occurrence determines the effective value (daemon-config.c per-keyword
         // parsers `free(); strdup()` with no early-exit). The reader must resolve
         // duplicates the same way or doctor/container-check would misreport the
-        // effective config (issue #192 adversarial finding).
+        // effective config (issue #192).
         assert_eq!(
             conf_value("permissive=0\npermissive=1\n", "permissive"),
             Some("1")
@@ -130,12 +130,11 @@ mod tests {
         // ONLY when the line's first token starts with `#` (a whole-line
         // comment); it does not strip a trailing inline comment, so the
         // whole post-`=` remainder - including any `# ...` tail - comes
-        // back verbatim (issue #192 adversarial finding, still true of this
-        // function).
+        // back verbatim (issue #192, still true of this function).
         //
-        // RE-GROUNDED (ATL round 2, MISS 1, 2026-07-18): this test does NOT
-        // pin what the fapolicyd DAEMON does with that raw text next. The
-        // daemon's own `nv_split`/`_strsplit` (daemon-config.c) further
+        // This test does NOT pin what the fapolicyd DAEMON does with that
+        // raw text next.
+        // The daemon's own `nv_split`/`_strsplit` (daemon-config.c) further
         // whitespace-tokenizes the remainder and uses ONLY the first token
         // as the interpreted value ("1", not "1 # default off") -
         // live-verified on fapolicyd 1.3.2 and 1.4.5. `conf_value` and the
@@ -181,32 +180,29 @@ mod tests {
     // leaves the '\r' byte bound to the value, and `unsigned_int_parser`'s
     // byte-exact `isdigit` walk later rejects it.
     //
-    // These pins exist because an earlier `conf_value` scanned with
-    // `text.lines()`, which conflates a `\r\n` terminator into a single line
-    // ending and silently drops the '\r' -- breaking this function's own
-    // documented "RAW remainder verbatim" contract (see the doc comment
-    // above) and producing a fail-open miss for every one of its callers
-    // (`doctor/probe.rs`, `fapolicyd/trustdb.rs`, `container_check/probe.rs`,
-    // and `target_probe.rs`). `conf_value` now splits on a bare `'\n'`; these
-    // pins hold that fix in place.
+    // `conf_value` splits on a bare `'\n'`, never `text.lines()`, which
+    // conflates a `\r\n` terminator into a single line ending and silently
+    // drops the '\r' -- breaking this function's own documented "RAW
+    // remainder verbatim" contract (see the doc comment above) and producing
+    // a fail-open miss for every one of its callers (`doctor/probe.rs`,
+    // `fapolicyd/trustdb.rs`, `container_check/probe.rs`, and
+    // `target_probe.rs`). These pins hold that behavior in place.
     //
-    // SCOPE NOTE (adversarial review round 2, doc-truth-decay correction):
-    // the pins below cover VALUE tokenization only -- leading/trailing
+    // SCOPE NOTE: the pins below cover VALUE tokenization only -- leading/trailing
     // ASCII-space trimming and CR retention at the `conf_value` layer, plus
     // the downstream space-splitting and byte-exact digit walk in
     // `doctor/probe.rs::permissive_value_is_effectively_permissive`. They do
     // NOT pin fapolicyd's `nv_split` requirement that `=` itself be its own
     // whitespace-delimited token (a config line like `permissive=1`, with no
     // space around `=`, is a fatal config-load abort in the real daemon).
-    // That divergence is real but is being tracked as its own follow-up
-    // issue, separate from #582, and is deliberately NOT pinned here -- do
+    // That divergence is real and is deliberately NOT pinned here -- do
     // not read these tests as certifying full byte-exact parity with
     // daemon-config.c's `=` handling.
     // -------------------------------------------------------------------------
 
     #[test]
     fn conf_value_crlf_retains_trailing_cr_in_the_value() {
-        // RED: `get_line` strips only the trailing 0x0a; the '\r' stays
+        // `get_line` strips only the trailing 0x0a; the '\r' stays
         // bound to the value. `text.lines()` wrongly conflates the CRLF
         // terminator and drops it.
         assert_eq!(
@@ -219,7 +215,7 @@ mod tests {
 
     #[test]
     fn conf_value_crlf_last_wins_still_retains_cr_on_the_winning_line() {
-        // RED: combines the already-correct last-wins contract (this
+        // Combines the already-correct last-wins contract (this
         // function's own doc comment, and
         // `conf_value_last_occurrence_wins` above) with CR retention -- the
         // WINNING (second) line's trailing '\r' must survive, not just a
@@ -234,7 +230,7 @@ mod tests {
 
     #[test]
     fn conf_value_crlf_with_inline_comment_retains_trailing_cr() {
-        // RED: combines the already-correct "does not strip inline comment"
+        // Combines the already-correct "does not strip inline comment"
         // contract (`conf_value_does_not_strip_inline_comment` above) with
         // CR retention -- both the comment text AND the trailing '\r' must
         // be preserved together, verbatim.
@@ -248,7 +244,7 @@ mod tests {
 
     #[test]
     fn conf_value_crlf_whole_line_comment_still_skipped() {
-        // RED: combines the already-correct whole-line-comment skip
+        // Combines the already-correct whole-line-comment skip
         // (`conf_value_skips_whole_line_comments` above) with CR retention
         // -- the commented-out line is still skipped regardless of CRLF,
         // and the real answer line's trailing '\r' is preserved.
@@ -262,16 +258,15 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Adversarial review round 2, BLOCKER 4: the CR-retention pins above
-    // force `v.trim()` to go, but `conf_value` has collateral callers doing
-    // exact string compares / byte-position assumptions with NO tokenization
-    // of their own (`container_check/probe.rs`'s `parse_effective_conf`
-    // compares `== Some("1")` exactly; `target_probe.rs`'s `parse_os_release`
-    // assumes the closing quote is the value's LAST byte). A fix shaped as
-    // "just stop trimming the end" (e.g. `v.trim_start_matches(' ')` alone)
-    // would leave a trailing ASCII space in the value and silently regress
-    // both of those callers -- neither owned by this lane, so nothing would
-    // catch it. The correct shape is `v.trim_matches(' ')`: ASCII space only,
+    // The CR-retention pins above rule out `v.trim()`, and `conf_value` has
+    // collateral callers doing exact string compares / byte-position
+    // assumptions with NO tokenization of their own
+    // (`container_check/probe.rs`'s `parse_effective_conf` compares
+    // `== Some("1")` exactly; `target_probe.rs`'s `parse_os_release` assumes
+    // the closing quote is the value's LAST byte). A fix shaped as "just stop
+    // trimming the end" (e.g. `v.trim_start_matches(' ')` alone) would leave
+    // a trailing ASCII space in the value and silently regress both of those
+    // callers. The correct shape is `v.trim_matches(' ')`: ASCII space only,
     // BOTH ends, never `\r` or `\t`. It is daemon-correct too: for
     // `permissive = 1 ` the real `_strsplit` treats the trailing space as a
     // separator and binds `nv.value` to `"1"`, not `"1 "`.
@@ -284,8 +279,7 @@ mod tests {
         // guard for `container_check/probe.rs::parse_effective_conf`'s
         // exact `== Some("1")` compare and `target_probe.rs`'s
         // `parse_os_release`/`strip_quotes`, both of which assume no
-        // trailing space in the raw value (#582 adversarial round 2,
-        // BLOCKER 4).
+        // trailing space in the raw value (#582).
         assert_eq!(
             conf_value("permissive = 1 \n", "permissive"),
             Some("1"),
@@ -296,7 +290,7 @@ mod tests {
 
     #[test]
     fn conf_value_multiple_leading_spaces_all_collapsed_control() {
-        // GREEN control (CONCERN): the daemon's `_strsplit` has a
+        // GREEN control: the daemon's `_strsplit` has a
         // `goto retry` (daemon-config.c:292-294) that skips a whole RUN of
         // consecutive spaces, not just one. A fix shaped as
         // `v.strip_prefix(' ')` (removes only ONE leading space) instead of

@@ -1,7 +1,7 @@
 name: sudoers-oracle-drift
 
-# Weekly nudge for the sudoers(5) parser/AST vs a REAL visudo/cvtsudoers (#538,
-# session 9k-1 Lane C): rebuild the rs-oracle{8,9,10} images (tools/oracle-images/)
+# Weekly nudge for the sudoers(5) parser/AST vs a REAL visudo/cvtsudoers
+# (#538): rebuild the rs-oracle{8,9,10} images (tools/oracle-images/)
 # and re-derive the four oracle results (visudo -c -f -, visudo -c -s -f -,
 # cvtsudoers -f json[-e]) for every committed corpus scenario, then replay the SAME
 # Tier-1 test (crates/rulesteward-sudoers/tests/sudoers_corpus_oracle.rs) against

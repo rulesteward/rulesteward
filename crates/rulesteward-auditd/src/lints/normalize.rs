@@ -1,5 +1,5 @@
-//! Shared rule canonicalization (Phase-0 frozen; consumed by P1 au-W01 and
-//! P2 au-W02 per owner decision D2).
+//! Shared rule canonicalization, consumed by au-W01 and au-W02 (owner
+//! decision D2).
 //!
 //! Two rules are "the same rule" when their canonical keys are equal:
 //! * `-F` predicate ORDER does not distinguish (libaudit ANDs all pairs).

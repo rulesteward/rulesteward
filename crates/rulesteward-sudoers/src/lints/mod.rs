@@ -1,7 +1,6 @@
 //! Semantic lint passes over parsed `sudoers(5)` files.
 //!
-//! Code split (one file per semantic family; the parallel pipelines each fill ONE
-//! file's bodies, mirroring the sshd / auditd crates' Phase-0 freeze):
+//! Code split (one file per semantic family):
 //! * `aliases` - sudo-E01 (undefined-alias reference), sudo-W03 (dead alias)
 //!   (#331).
 //! * `tags` - sudo-W01 (NOPASSWD on ALL; #330), sudo-W02 (`Cmnd_Alias`
@@ -11,7 +10,7 @@
 //! * `stig` - sudo-W04 (Defaults setting weaker than the sudo STIG baseline)
 //!   (#333).
 //! * `cis` - the per-product (rhel8/rhel9/rhel10) CIS Benchmark control table
-//!   (#526, v0.8 Wave 3) the `stig` module's two `Framework::Cis` `ControlRef`s
+//!   (#526) the `stig` module's two `Framework::Cis` `ControlRef`s
 //!   (`use_pty` / I/O-logging) draw their renumbered ids + titles from.
 //! * `catalog` - the machine-readable `sudo-` code catalog (frozen Phase 0).
 //!
@@ -56,12 +55,11 @@ pub use rulesteward_core::anchored;
 /// module's `use super::{..., f01, ...}` import.
 pub use f01::f01;
 
-/// Re-exported from the `cis` module (#526, v0.8 Wave 3 lane 3b): the
-/// sudoers crate's FIRST `TargetVersion`. Surfaced at `lints::TargetVersion`
-/// (not buried under `lints::cis::TargetVersion` only), matching the auditd
+/// Re-exported from the `cis` module (#526): the sudoers crate's FIRST
+/// `TargetVersion`. Surfaced at `lints::TargetVersion` (not buried under
+/// `lints::cis::TargetVersion` only), matching the auditd
 /// (`lints::mod::TargetVersion`, re-exported from `stig_required`) / sysctld
-/// (`lints::mod::TargetVersion`, re-exported from `baseline`) convention --
-/// per the barrier dedup reconciliation (#524 arbiter ruling, round 3).
+/// (`lints::mod::TargetVersion`, re-exported from `baseline`) convention.
 pub use cis::TargetVersion;
 
 /// Run every semantic lint pass over the parsed `files` and return the merged
@@ -274,10 +272,6 @@ mod tests {
     /// Dispatcher-level integration test: the public `lint()` function must emit
     /// exactly one `sudo-F02` (Fatal) for a file containing a relative-path command.
     ///
-    /// This test is RED now because `tokens::f02` is a stub AND it is NOT wired
-    /// into the `lint()` dispatcher. It goes GREEN ONLY when the implementer BOTH
-    /// fills `f02()` AND adds `diags.extend(tokens::f02(files, ctx))` to `lint()`.
-    ///
     /// Fixture: `root ALL=(ALL:ALL) ALL\nalice ALL = bin/ls\n`
     /// - `root ALL=(ALL:ALL) ALL` is a clean anchor line (satisfies W04 absence
     ///   check is still present, but this test only asserts on sudo-F02).
@@ -299,8 +293,7 @@ mod tests {
             f02.len(),
             1,
             "the dispatcher must route exactly one sudo-F02 (Fatal) for a relative-path \
-             command via lint(); got {diags:?} -- this is RED until f02 is both filled \
-             AND wired into lint() with diags.extend(tokens::f02(files, ctx))"
+             command via lint(); got {diags:?}"
         );
         assert_eq!(
             f02[0].severity,
@@ -314,10 +307,9 @@ mod tests {
     /// check): the public `lint()` must emit exactly one `sudo-W05` (Warning) for a
     /// NOPASSWD-on-a-specific-command user-spec.
     ///
-    /// RED until the implementer BOTH fills the `tags::w05` body AND wires
-    /// `diags.extend(tags::w05(files, ctx))` into `lint()`. A correct `w05` body that
-    /// is never called via `lint()` would make the per-module `tags::w05_tests` GREEN
-    /// but leave this test RED (the "wiring" guard, mirroring the F02 case).
+    /// A correct `w05` body that is never called via `lint()` would make the
+    /// per-module `tags::w05_tests` GREEN but leave this test RED (the "wiring"
+    /// guard, mirroring the F02 case).
     ///
     /// Fixture: `root ALL=(ALL:ALL) ALL` is a clean anchor line; `alice ALL=(root)
     /// NOPASSWD: /usr/bin/systemctl` is the specific-command NOPASSWD hazard. Both
@@ -334,8 +326,7 @@ mod tests {
             w05.len(),
             1,
             "the dispatcher must route exactly one sudo-W05 (Warning) via lint(); got \
-             {diags:?} -- RED until w05 is both filled AND wired into lint() with \
-             diags.extend(tags::w05(files, ctx))"
+             {diags:?}"
         );
         assert_eq!(
             w05[0].severity,
@@ -365,18 +356,11 @@ mod tests {
         );
     }
 
-    /// Dispatcher wiring guard for sudo-W06 (#522, v0.8 Wave 2 lane 2d, the
-    /// literal-`ALL`-user unrestricted-privilege-elevation check): the public
-    /// `lint()` must emit exactly one `sudo-W06` (Warning) for the DISA literal
-    /// fixture `ALL ALL=(ALL) ALL` (verified `visudo -c -f` rc 0, sudo
-    /// 1.9.17p2; DISA STIG RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520).
-    ///
-    /// This is RED for the SAME two-part reason as the sibling F02/W05 wiring
-    /// guards above: `tags::w06` is currently a `Vec::new()` stub AND it is NOT
-    /// wired into the `lint()` dispatcher (see `lints::mod`'s module doc and
-    /// `tags::w06`'s doc comment). It goes GREEN ONLY when the implementer BOTH
-    /// fills `w06()` per the `tags::w06_tests` fire/no-fire contract AND adds
-    /// `diags.extend(tags::w06(files, ctx))` to `lint()`.
+    /// Dispatcher wiring guard for sudo-W06 (#522, the literal-`ALL`-user
+    /// unrestricted-privilege-elevation check): the public `lint()` must emit
+    /// exactly one `sudo-W06` (Warning) for the DISA literal fixture `ALL
+    /// ALL=(ALL) ALL` (verified `visudo -c -f` rc 0, sudo 1.9.17p2; DISA STIG
+    /// RHEL-08-010382 / RHEL-09-432030 / RHEL-10-600520).
     ///
     /// Fixture: `root ALL=(ALL:ALL) ALL` is a clean anchor line (also
     /// satisfies W04's merged absence checks, so this test filters to
@@ -391,8 +375,7 @@ mod tests {
             w06.len(),
             1,
             "the dispatcher must route exactly one sudo-W06 (Warning) via lint(); got \
-             {diags:?} -- RED until w06 is both filled AND wired into lint() with \
-             diags.extend(tags::w06(files, ctx))"
+             {diags:?}"
         );
         assert_eq!(
             w06[0].severity,

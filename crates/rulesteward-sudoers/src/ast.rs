@@ -110,7 +110,7 @@ pub struct AliasSpec {
 /// the common single-alias form is a one-element `specs`). Every spec shares `kind`.
 /// Member tokens are RAW comma-split (each trimmed); the #331 alias-reference walk
 /// reads them as-is to resolve alias-to-alias references and detect undefined / dead
-/// aliases. Splitting the specs (vs the old single-name flattening) is the #345 fix.
+/// aliases. Splitting the specs (vs a single-name flattening) is the #345 fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasDef {
     /// Which alias namespace (shared by every spec on the line).
@@ -401,7 +401,7 @@ pub struct HostGroup {
 /// `users` is the shared RAW comma-split subject list (trimmed). `host_groups` holds
 /// one [`HostGroup`] per top-level `:`-separated segment, in source order (always at
 /// least one; the common single-segment form is a one-element `host_groups`).
-/// Splitting the segments (vs the old flattening) is what makes the #330/#332 tag
+/// Splitting the segments (vs flattening) is what makes the #330/#332 tag
 /// machine and the #331 alias walk faithful to real per-host-group sudo semantics
 /// (#345).
 #[derive(Debug, Clone, PartialEq, Eq)]

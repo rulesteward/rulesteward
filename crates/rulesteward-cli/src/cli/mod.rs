@@ -1,7 +1,7 @@
 //! clap derive definitions for the `rulesteward` CLI.
 //!
-//! Wired into the binary via `lib.rs` (added in Task 4) and `main.rs`
-//! (rewritten in Task 11). Subcommand tree matches spec §6.1.
+//! Wired into the binary via `lib.rs` and `main.rs`. Subcommand tree
+//! matches spec §6.1.
 
 use clap::{Parser, Subcommand, ValueEnum};
 // Only used by the inline test module below (via its glob `use super::*;`);
@@ -596,7 +596,7 @@ mod tests {
         }
     }
 
-    // --- session 6a Phase 0: auditd lint (#193) + migrate --report (#212) ---
+    // --- auditd lint (#193) + migrate --report (#212) ---
 
     /// `auditd lint` with no args: path defaults to None (the command substitutes
     /// /etc/audit/rules.d/), format defaults to human.
@@ -779,11 +779,7 @@ mod tests {
         }
     }
 
-    /// --report-orphans must parse (field does not exist yet -> clap rejects the
-    /// unknown flag -> `try_parse_from` returns Err -> `is_ok()` is FALSE -> RED at runtime).
-    ///
-    /// After the implementer adds `report_orphans: bool` to `LintArgs`, the
-    /// `try_parse_from` call will succeed and `is_ok()` will be TRUE -> GREEN.
+    /// `--report-orphans` must parse and set `LintArgs::report_orphans` to true.
     #[test]
     fn lint_args_report_orphans_parses_and_defaults_false() {
         let cli = Cli::try_parse_from([
@@ -793,15 +789,12 @@ mod tests {
             "somedir",
             "--report-orphans",
         ]);
-        // RED: --report-orphans is an unknown flag until the field is added.
         assert!(
             cli.is_ok(),
             "--report-orphans must parse successfully once the field is added to LintArgs; \
              got: {cli:?}"
         );
-        // GREEN (compile-coupled): verify the field value after parse succeeds.
-        // NOTE: this arm does NOT compile until `report_orphans` is added to LintArgs.
-        // The compile error is an acceptable RED signal.
+        // Verify the field value after the parse succeeds.
         if let Ok(Cli {
             command: TopCommand::Fapolicyd(FapolicydCommand::Lint(args)),
             ..
@@ -865,10 +858,9 @@ mod tests {
     }
 
     /// Regression (#197): the top-level long help must NOT describe
-    /// `--sarif-include-pass` as "reserved". The flag became functional in
-    /// #137/#172 (it adds per-check pass results for clean rules); the stale
-    /// "reserved" wording lingered only in this `long_about` prose. The man page
-    /// is generated from this help, so this also guards the man page.
+    /// `--sarif-include-pass` as "reserved". The flag is functional (#137/#172):
+    /// it adds per-check pass results for clean rules. The man page is
+    /// generated from this help, so this also guards the man page.
     #[test]
     fn long_help_does_not_call_sarif_include_pass_reserved() {
         use clap::CommandFactory;
@@ -920,7 +912,7 @@ mod tests {
         }
     }
 
-    // -- Section 3d: trustdb clap-contract tests (GREEN; the tree is frozen) --
+    // -- trustdb clap-contract tests (the tree is frozen) --
     // These pin the frozen subcommand surface: a future edit that drops a verb,
     // renames a flag, or relaxes a required-arg constraint breaks them.
 
@@ -1164,7 +1156,7 @@ mod tests {
         assert!(cli.is_err(), "unknown trustdb subcommand must be rejected");
     }
 
-    // -- Phase 0 (version-target): --target value-enum + --check-identities flag --
+    // -- version-target: --target value-enum + --check-identities flag --
 
     /// Helper: parse `lint somedir <extra args>` and return the `LintArgs`.
     fn parse_lint(extra: &[&str]) -> LintArgs {
@@ -1269,7 +1261,7 @@ mod tests {
         );
     }
 
-    // -- Phase 0 (v0.2): ExplainArgs, CostArgs, TriageArgs parse-contract tests --
+    // -- ExplainArgs, CostArgs, TriageArgs parse-contract tests --
 
     /// Helper: extract `ExplainArgs` from a parsed CLI.
     fn parse_explain(extra: &[&str]) -> ExplainArgs {
@@ -1518,7 +1510,7 @@ mod tests {
         assert_eq!(args.since.as_deref(), Some("1h"));
     }
 
-    // -- Phase 0 (v0.2 round 2): SimulateArgs / ReportArgs parse-contract tests --
+    // -- SimulateArgs / ReportArgs parse-contract tests --
 
     /// Helper: extract `SimulateArgs` from a parsed CLI.
     fn parse_simulate(extra: &[&str]) -> SimulateArgs {
@@ -1536,8 +1528,7 @@ mod tests {
     }
 
     /// `fapolicyd simulate --rules D --workload F` parses; required fields
-    /// round-trip and the optionals default. RED until `Simulate` becomes a
-    /// tuple variant carrying `SimulateArgs`.
+    /// round-trip and the optionals default.
     #[test]
     fn simulate_args_rules_and_workload_required_parse() {
         let args = parse_simulate(&["--rules", "/etc/fapolicyd/rules.d", "--workload", "/tmp/wl"]);
@@ -1682,7 +1673,7 @@ mod tests {
         assert!(args.enumerate_trust);
     }
 
-    // -- session 8c L5: the global `--profile <framework>` filter (#506) --
+    // -- the global `--profile <framework>` filter (#506) --
 
     /// `--profile {stig,cis,pci,nist}` parses to the matching `FrameworkArg`.
     /// The flag is `global = true`, so it is accepted AFTER the subcommand.

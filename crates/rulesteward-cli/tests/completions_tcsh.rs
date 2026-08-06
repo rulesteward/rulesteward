@@ -2,9 +2,7 @@
 //!
 //! These tests assert the shape of a correct tcsh completion script without
 //! pinning every byte of output, so they remain stable across minor generator
-//! changes. They are authored RED: the stub generator in completions.rs emits
-//! an empty string, so all assertions about non-empty output and required
-//! keywords will fail until a real tcsh generator is implemented.
+//! changes.
 //!
 //! Ground truth for tcsh(1) completion syntax (man tcsh, "complete" builtin):
 //!
@@ -38,11 +36,7 @@ fn tcsh_output() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// [KEEP GREEN] Pipe to `head -1` must not panic (EpipeSwallowingWriter path).
-//
-// With the stub the output is empty so head exits immediately; the real
-// generator will produce enough bytes to trigger a genuine pipe-close.
-// This test must stay green through both phases (stub and real impl).
+// Pipe to `head -1` must not panic (EpipeSwallowingWriter path).
 // ---------------------------------------------------------------------------
 #[test]
 fn tcsh_completions_pipe_to_head_does_not_panic() {
@@ -74,11 +68,10 @@ fn tcsh_completions_pipe_to_head_does_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED] Non-empty output.
+// Non-empty output.
 // ---------------------------------------------------------------------------
 
 /// `rulesteward completions tcsh` must exit 0 and produce non-empty output.
-/// RED with the stub (empty output).
 #[test]
 fn tcsh_completions_exit_zero_and_non_empty() {
     let s = tcsh_output();
@@ -89,17 +82,16 @@ fn tcsh_completions_exit_zero_and_non_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED - BLOCKER 4] `complete rulesteward` directive (anchored form).
+// `complete rulesteward` directive (anchored form).
 //
-// The previous assertion was `s.contains("complete")`, which matches the
-// substring inside "completions" (the subcommand name). The anchored form
+// A bare `s.contains("complete")` would match the substring inside
+// "completions" (the subcommand name). The anchored form
 // `complete rulesteward` requires the tcsh directive to name the binary,
 // so a script that merely lists the subcommand name cannot satisfy it.
 // ---------------------------------------------------------------------------
 
 /// The output must contain the tcsh `complete rulesteward` directive (the
 /// directive form), not merely the word "complete" as a substring.
-/// RED with the stub (no output at all).
 #[test]
 fn tcsh_completions_contains_complete_rulesteward_directive() {
     let s = tcsh_output();
@@ -110,7 +102,7 @@ fn tcsh_completions_contains_complete_rulesteward_directive() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED - BLOCKER 1] At least one tcsh slash-pattern SELECTOR must appear.
+// At least one tcsh slash-pattern SELECTOR must appear.
 //
 // A selector token has the form `p/N/...`, `c/prefix/...`, `n/word/...`, or
 // `N/word/...` (see tcsh(1)). A bare `complete rulesteward` with no selector
@@ -131,7 +123,6 @@ fn tcsh_completions_contains_complete_rulesteward_directive() {
 ///
 /// Grounded in tcsh(1): "complete word/pattern/list[:select]/" where `/(` is
 /// the opening of a word-list in any of the four selector types.
-/// RED with the stub (empty output).
 #[test]
 fn tcsh_completions_contains_slash_pattern_selector() {
     let s = tcsh_output();
@@ -152,7 +143,7 @@ fn tcsh_completions_contains_slash_pattern_selector() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED - BLOCKER 2] At least one representative flag must appear.
+// At least one representative flag must appear.
 //
 // Grounded in cli.rs LintArgs: `--file`, `--format`, `--against-trustdb`,
 // `--report-orphans`. Any one of these appearing in the script proves the
@@ -162,11 +153,10 @@ fn tcsh_completions_contains_slash_pattern_selector() {
 // generator latitude in which flags it surfaces.
 // ---------------------------------------------------------------------------
 
-/// Task 5: the `completions <shell>` positional must offer its `ValueEnum` set
+/// The `completions <shell>` positional must offer its `ValueEnum` set
 /// (the shell names), at parity with the bash/zsh backends (which complete it
 /// automatically). The flat tcsh model surfaces it as an `n/completions/(...)/`
-/// next-word rule. RED today: the generator lists only a command's child
-/// subcommands + long flags, so `completions` shows just its `--help` flag.
+/// next-word rule.
 #[test]
 fn tcsh_completes_completions_shell_value_set() {
     let s = tcsh_output();
@@ -190,7 +180,6 @@ fn tcsh_completes_completions_shell_value_set() {
 /// generator is proven to have walked the clap arg tree.
 /// Verified against cli.rs: `--format`, `--file`, `--against-trustdb`,
 /// `--report-orphans`.
-/// RED with the stub (empty output).
 #[test]
 fn tcsh_completions_contains_lint_flag() {
     let s = tcsh_output();
@@ -207,7 +196,7 @@ fn tcsh_completions_contains_lint_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED - BLOCKER 3] Second-level subcommand depth: `lint` must appear.
+// Second-level subcommand depth: `lint` must appear.
 //
 // Grounded in cli.rs FapolicydCommand: `lint` is a child of `fapolicyd`.
 // A depth-1-only generator (one that only emits top-level subcommand names)
@@ -218,7 +207,6 @@ fn tcsh_completions_contains_lint_flag() {
 /// proving the generator descends at least two levels into the command tree.
 /// Verified against cli.rs: `FapolicydCommand::Lint` is a direct child of
 /// `TopCommand::Fapolicyd`, and `lint` is not a top-level subcommand name.
-/// RED with the stub (empty output).
 #[test]
 fn tcsh_completions_contains_second_level_subcommand_lint() {
     let s = tcsh_output();
@@ -230,14 +218,13 @@ fn tcsh_completions_contains_second_level_subcommand_lint() {
 }
 
 // ---------------------------------------------------------------------------
-// [RED] Top-level subcommand coverage: `fapolicyd`, `selinux`, `auditd`.
+// Top-level subcommand coverage: `fapolicyd`, `selinux`, `auditd`.
 //
 // Grounded in cli.rs TopCommand: Fapolicyd, Selinux, Auditd, Completions.
 // All three non-completions top-level subcommands must appear.
 // ---------------------------------------------------------------------------
 
 /// The output must reference `fapolicyd` (top-level subcommand).
-/// RED with the stub.
 #[test]
 fn tcsh_completions_references_fapolicyd_subcommand() {
     let s = tcsh_output();
@@ -248,7 +235,6 @@ fn tcsh_completions_references_fapolicyd_subcommand() {
 }
 
 /// The output must reference `selinux` (top-level subcommand).
-/// RED with the stub.
 #[test]
 fn tcsh_completions_references_selinux_subcommand() {
     let s = tcsh_output();
@@ -259,7 +245,6 @@ fn tcsh_completions_references_selinux_subcommand() {
 }
 
 /// The output must reference `auditd` (top-level subcommand).
-/// RED with the stub.
 #[test]
 fn tcsh_completions_references_auditd_subcommand() {
     let s = tcsh_output();
@@ -271,7 +256,6 @@ fn tcsh_completions_references_auditd_subcommand() {
 
 /// The output must reference `completions` (the completions subcommand itself,
 /// so tab-completing `rulesteward comp<TAB>` works).
-/// RED with the stub.
 #[test]
 fn tcsh_completions_references_completions_subcommand() {
     let s = tcsh_output();

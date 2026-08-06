@@ -65,7 +65,7 @@ pub(super) fn check_defaults(
     // (`Defaults:"#1000abc"`, rc=0 valid) starts with `"`, so it never trips the
     // `#`-prefix gate.
     //
-    // #426: capturing the full list (rather than the old first-whitespace
+    // #426: capturing the full list (rather than a first-whitespace
     // truncation) both (a) exposes an EMPTY member -- a leading/interior empty or an
     // exact `""` -- which visudo rejects and which now fires F02 (see below), and
     // (b) stops a later `#<digits>` member of a space-separated list (the valid
@@ -304,8 +304,7 @@ fn check_defaults_scope(
 /// accepts it as an alias-shaped reference. No dedicated uppercase handling
 /// is needed here; `is_alias_ref` already covers it.
 ///
-/// #451 round-3 (impl-aware adversarial review, 2026-07-08) grounded two
-/// further quirks against the same oracle:
+/// #451 grounded two further quirks against the same oracle:
 ///
 /// - A DOUBLE-QUOTED `"list"` member is accepted (`Defaults!"list"`, rc=0
 ///   "parsed OK") even though `split_default_settings` retains the quotes

@@ -45,7 +45,7 @@ use crate::lints::{SshdLintContext, TargetVersion, anchored};
 /// minus Compression, dropped in V2R9).
 ///
 /// Grounded in DISA XCCDF `U_RHEL_9_V2R9_STIG.zip`, confirmed 2026-07-17
-/// (#549, session 9e-wave2c pipeline P2). Compression (V-258002 /
+/// (#549). Compression (V-258002 /
 /// RHEL-09-255130) was REMOVED from the STIG in V2R9 (was present in V2R7).
 /// STIG-IDs: RHEL-09-255025..255175 (minus 255130).
 const RHEL9_REQUIRED: &[&str] = &[
@@ -635,13 +635,13 @@ fn effective_global_directives(blocks: &[Block]) -> Vec<&crate::ast::Directive> 
 /// 14-directive RHEL 8 V2R4 intersection).
 ///
 /// # Per-target required sets (grounded in official DISA XCCDF, 2026-06-14;
-/// RHEL9 count REFRESHED 2026-07-17 for issue #549, session 9e-wave2c
-/// pipeline P2 -- `RHEL9_REQUIRED` below dropped Compression)
+/// RHEL9 count REFRESHED 2026-07-17 for issue #549
+/// -- `RHEL9_REQUIRED` below dropped Compression)
 ///
 /// - RHEL 8 V2R4 (`U_RHEL_8_V2R4_STIG.zip`, 02 Jul 2025): 14 directives.
 /// - RHEL 9 V2R9 (`U_RHEL_9_V2R9_STIG.zip`, confirmed 2026-07-17): 19
 ///   directives (was 20 under V2R7; DISA dropped Compression,
-///   V-258002/RHEL-09-255130 removed -- lane3-tooling.md T1).
+///   V-258002/RHEL-09-255130 removed).
 /// - RHEL 10 V1R1 (`U_RHEL_10_V1R1_STIG.zip`, 26 Feb 2026): 19 directives
 ///   (same set as RHEL9 V2R9; RHEL10 also never had Compression).
 ///
@@ -770,9 +770,8 @@ mod tests {
             "RHEL8 must have 14 required directives"
         );
         // #549 RE-GROUNDED: was 20 (DISA RHEL 9 STIG V2R7). DISA RHEL 9 STIG
-        // V2R9 (confirmed 2026-07-17 via U_RHEL_9_V2R9_STIG.zip;
-        // lane3-tooling.md T1) dropped the Compression control (V-258002 /
-        // RHEL-09-255130), leaving 19.
+        // V2R9 (confirmed 2026-07-17 via U_RHEL_9_V2R9_STIG.zip) dropped the
+        // Compression control (V-258002 / RHEL-09-255130), leaving 19.
         assert_eq!(
             RHEL9_REQUIRED.len(),
             19,
@@ -861,14 +860,12 @@ mod tests {
 
     #[test]
     fn compression_dropped_from_all_rhel_targets_v2r9() {
-        // #549 RE-GROUNDED (was `compression_in_rhel9_only_among_floors`,
-        // which asserted Compression WAS RHEL9-required). DISA RHEL 9 STIG
+        // #549 RE-GROUNDED. DISA RHEL 9 STIG
         // V2R9 (confirmed 2026-07-17 via U_RHEL_9_V2R9_STIG.zip) drops the
         // Compression control (V-258002 / RHEL-09-255130): the V2R9 XCCDF has
         // zero matches for "V-258002", and the sole case-insensitive
         // "compression" hit is an unrelated gzip fix-text example in a
-        // different control (lane3-tooling.md T1 + its "Sanity check on the
-        // 'compression removed' read" section). Cross-checked against the OLD
+        // different control. Cross-checked against the OLD
         // V2R7 pinned zip, which DOES show `compression // V-258002`,
         // confirming the control existed in V2R7 and is genuinely gone in
         // V2R9. Compression is no longer STIG-required on ANY target.
@@ -1098,35 +1095,30 @@ mod tests {
             get("rekeylimit").value_rule,
             StigValueRule::TwoTokenExact("1g", "1h")
         );
-        // #549 RE-GROUNDED: the AnyOf(delayed/no) spot-check previously lived
-        // here as `get("compression").value_rule`. DISA RHEL 9 STIG V2R9
+        // No AnyOf spot-check here: DISA RHEL 9 STIG V2R9
         // drops Compression (V-258002/RHEL-09-255130 removed; see
         // `compression_dropped_from_all_rhel_targets_v2r9`), so `compression`
-        // is no longer a key in `by_kw` at all -- `get("compression")` would
-        // now panic (its `unwrap_or_else` fires "missing compression").
+        // is not a key in `by_kw` at all -- `get("compression")` panics (its
+        // `unwrap_or_else` fires "missing compression").
         // `AnyOf` was Compression's only consumer in `w02_rule`; no other
-        // required directive uses it, so there is currently no other AnyOf
+        // required directive uses it, so there is no AnyOf
         // representative to substitute here.
         //
-        // #549 (adversarial-review finding 5, no-speculative-abstraction
-        // project rule): `W02Rule::AnyOf` and `StigValueRule::AnyOf` (plus
-        // its `value_rule_of` mapping arm) were DELETED, not kept "for
-        // future use", once the `"compression"` arm was removed from
-        // `w02_rule` -- compression was their only constructor, and no
-        // other STIG control in any current target uses a
-        // multi-value-accepted rule. If one is added later, re-add the
-        // variant then, grounded in that control's real check-content.
+        // RULING: keep `W02Rule::AnyOf` and `StigValueRule::AnyOf` (and the
+        // `value_rule_of` mapping arm) out of the code while no STIG control on
+        // any target needs a multi-value-accepted rule; re-add the variant when
+        // one does, grounded in that control's real check-content.
+        // Rationale + evidence: #549
     }
 
     /// Compression is dropped from RHEL10, so its projection must NOT include it,
     /// and RHEL8 (floor) also excludes it (matches the required-set tables).
     #[test]
     fn stig_baseline_compression_absent_from_all_targets_v2r9() {
-        // #549 RE-GROUNDED (was `stig_baseline_compression_only_rhel9`, which
-        // asserted RHEL9's projection DID include Compression). DISA RHEL 9
+        // #549 RE-GROUNDED. DISA RHEL 9
         // STIG V2R9 drops the control (see
         // `compression_dropped_from_all_rhel_targets_v2r9`), so the
-        // projection must now omit Compression from ALL three targets.
+        // projection omits Compression from ALL three targets.
         assert!(
             !stig_baseline(TargetVersion::Rhel9)
                 .iter()
@@ -1182,7 +1174,7 @@ mod tests {
             "STIG-required directive 'banner' is missing from the configuration"
         );
 
-        // RED anchor: length first, so RED is a clean `0 != 2`, not an index panic.
+        // Length first, so a failure is a clean `0 != 2`, not an index panic.
         // #525: banner is a STIG/CIS overlap keyword on every target, so the
         // finding must carry BOTH -- the existing Stig ref is never dropped, and
         // exactly one new Cis ref is added (no duplicate).
@@ -1242,7 +1234,7 @@ mod tests {
             "directive 'PermitRootLogin' has value 'yes'; STIG baseline requires 'no'"
         );
 
-        // RED anchor: length first. #525: permitrootlogin is a STIG/CIS overlap
+        // Length first. #525: permitrootlogin is a STIG/CIS overlap
         // keyword on every target -- both refs must be present, never a dropped
         // Stig ref or a duplicated Cis ref.
         assert_eq!(
@@ -1559,9 +1551,8 @@ mod tests {
     fn w01_completeness_all_required_carry_stig_control_rhel9() {
         // #549 REFRESHED: RHEL9 V2R9: 19 required directives (was 20 under
         // V2R7; Compression dropped), every id under the `RHEL-09-` prefix.
-        // This assertion itself is unaffected either way (it reads
-        // `required_set(Some(target)).len()` dynamically, not a hardcoded
-        // count) -- only the comment was stale.
+        // The assertion reads `required_set(Some(target)).len()` dynamically,
+        // not a hardcoded count.
         // #525: 10 overlap a CIS control (the RHEL8 7 plus ignorerhosts, loglevel,
         // usepam, which STIG requires starting at RHEL9).
         assert_w01_completeness(TargetVersion::Rhel9, "RHEL-09-", 10);

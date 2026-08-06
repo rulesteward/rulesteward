@@ -234,7 +234,7 @@ fn check_pattern(rule: &Rule, file: &Path, target: TargetVersion, diags: &mut Ve
 
 #[cfg(test)]
 mod tests {
-    //! Version-target RED barrier tests.
+    //! Version-target tests.
     //!
     //! Every divergent check is driven through the public `lint_with_context`
     //! seam (NOT the private `walk`), because the activation decision ("fire
@@ -254,11 +254,6 @@ mod tests {
     //!     `pattern=ld_preload` LOADS on 1.3.2 (re-confirmed in this session
     //!     via `docker run fapolicyd8 ... fagenrules --load`: "Loaded 15 rules",
     //!     the rule appears in the loaded set), so it stays in the rhel8 set.
-    //!
-    //! RED expectation: the current `walk` returns `Vec::new()` unconditionally
-    //! and `deprecation::w07` is version-agnostic, so every "E06 fires" test and
-    //! the "Rhel8 suppresses W07" test FAIL; the None-context and clean-value
-    //! tests pass (current behavior).
 
     use std::path::Path;
 
@@ -332,8 +327,7 @@ mod tests {
     fn check1_rhel8_suppresses_w07_on_sha256hash() {
         // On fapolicyd 1.3.2 (rhel8) `sha256hash=` is the correct,
         // NON-deprecated spelling (filehash= does not exist there), so fapd-W07
-        // must NOT fire. RED: deprecation::w07 is version-agnostic and still
-        // fires under any target.
+        // must NOT fire.
         let diags = run(
             3,
             vec![],
@@ -451,8 +445,8 @@ mod tests {
         // Task-2 (senior-review nit): the fapd-E06 message for a rejected
         // `filehash=` must name WHICH side carried it so the operator can locate
         // it in a multi-attribute rule. subject-side and object-side messages
-        // must each say their side and must differ from each other. RED: today's
-        // message is the side-agnostic "attribute `filehash=` ..." for both.
+        // must each say their side and must differ from each other. A
+        // side-agnostic "attribute `filehash=` ..." message for both is rejected.
         let subj = run(
             1,
             vec![kv("filehash", HEX64)],
@@ -756,24 +750,24 @@ mod tests {
     }
 
     // ===================================================================
-    // CHECK 1B - subject-side filehash= wrong-side gap (issue #568, lane-6)
+    // CHECK 1B - subject-side filehash= wrong-side gap (issue #568)
     //
-    // USER RULING (barrier rework round, 2026-07-23): option (a) NONE-CLOSED.
-    // Subject-side filehash= gets EXACTLY the same shape as `device=` (CHECK
-    // 2): fires fapd-E06 under an explicit --target rhel9/rhel10 (closing
-    // the "uncaught on rhel9/rhel10" half of #568's gap), but stays CLEAN
-    // under `None` - matching the established E06 None-convention (see
-    // `check2_none_accepts_subject_side_device_clean` above: with no
-    // --target, a version-conditional subject-side check does not fire,
-    // because there is no version to evaluate the condition against). This
-    // supersedes an earlier draft of this section that argued (via the
-    // fapd-E07 `type_compat.rs`/`ALL_TARGETS` outcome-invariance precedent)
-    // that filehash should fire under `None` too since it is invalid on
-    // EVERY version; the user overruled that reading in favor of the
-    // simpler, established device-shaped convention. The "uncaught under
-    // None" half of #568 is therefore an ACCEPTED, documented residual gap
-    // (consistent with how `device=`'s own None case already behaves), not
-    // something this fix closes.
+    // NONE-CLOSED: subject-side filehash= gets EXACTLY the same shape as
+    // `device=` (CHECK 2): fires fapd-E06 under an explicit --target
+    // rhel9/rhel10 (closing the "uncaught on rhel9/rhel10" half of #568's
+    // gap), but stays CLEAN under `None` - matching the established E06
+    // None-convention (see `check2_none_accepts_subject_side_device_clean`
+    // above: with no --target, a version-conditional subject-side check
+    // does not fire, because there is no version to evaluate the condition
+    // against).
+    //
+    // An alternative reading, via the fapd-E07 `type_compat.rs`/
+    // `ALL_TARGETS` outcome-invariance precedent, would fire under `None`
+    // too since filehash is invalid on EVERY version; the simpler,
+    // established device-shaped convention is used instead. The "uncaught
+    // under None" half of #568 is therefore an ACCEPTED, documented
+    // residual gap (consistent with how `device=`'s own None case already
+    // behaves), not something this fix closes.
     //
     // Grounding for filehash's existence/side, re-derived via a fresh
     // `WebFetch` of upstream `src/library/subject-attr.c` at the pinned
@@ -797,14 +791,13 @@ mod tests {
     // version) but, per the ruling above, still gets the None-closed
     // treatment rather than the E07-style None-fires treatment.
     //
-    // RED expectation: today CHECK 1 (`check_filehash`) only fires under
-    // `target == Rhel8`, so a subject-side filehash= under an explicit
-    // --target rhel9/rhel10 is uncaught by ANYTHING (E01 defers it - see
-    // `SIDE_CHECK_EXCLUDED` in `walker.rs` - and CHECK 1 is rhel8-only). The
-    // rhel9/rhel10 "must fire" assertions below FAIL today; the rhel8 green
-    // pin, the None-clean pin (matches TODAY's silent behavior exactly - it
-    // is the ACCEPTED final behavior per the ruling, not a bug), and the
-    // object-side negative controls already pass and must keep passing.
+    // CHECK 1 (`check_filehash`) only fires under `target == Rhel8`, so a
+    // subject-side filehash= under an explicit --target rhel9/rhel10 is
+    // uncaught by ANYTHING else (E01 defers it - see `SIDE_CHECK_EXCLUDED`
+    // in `walker.rs` - and CHECK 1 is rhel8-only). The rhel9/rhel10 "must
+    // fire" assertions below cover that gap; the rhel8 green pin, the
+    // None-clean pin (the ACCEPTED final behavior per the ruling above, not
+    // a bug), and the object-side negative controls round out the coverage.
     // ===================================================================
 
     #[test]
@@ -859,17 +852,13 @@ mod tests {
 
     #[test]
     fn filehash_subject_side_stays_clean_under_none() {
-        // USER RULING (barrier rework round, 2026-07-23): NONE-CLOSED.
-        // Mirrors `check2_none_accepts_subject_side_device_clean` above -
-        // with no `--target`, there is no version to evaluate a
-        // version-conditional subject-side check against, so nothing fires.
-        // This matches TODAY's actual (buggy, per #568) silent behavior
-        // exactly; the ruling accepts it as the final, intended None
-        // behavior rather than closing it via the fapd-E07 outcome-
-        // invariance route an earlier draft of this test used. Non-vacuity:
-        // this is a genuine green/negative-control pin (protect-against-
-        // over-widening), not a not-yet-implemented RED case - it must stay
-        // GREEN before and after the rhel9/rhel10 arms of the #568 fix land.
+        // NONE-CLOSED (issue #568). Mirrors
+        // `check2_none_accepts_subject_side_device_clean` above - with no
+        // `--target`, there is no version to evaluate a version-conditional
+        // subject-side check against, so nothing fires. This is a genuine
+        // green/negative-control pin (protect-against-over-widening): the
+        // "uncaught under None" half of #568 is an accepted residual gap,
+        // not something this check closes.
         let diags = run(13, vec![kv("filehash", HEX64)], vec![Attr::All], None);
         assert!(
             diags.is_empty(),

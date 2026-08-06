@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::controls::CisControl;
 
-/// The four Wave-3 backend families. Declaration order is the report order
+/// The four backend families. Declaration order is the report order
 /// (alphabetical; `BTreeMap` iteration relies on the derived `Ord`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Family {

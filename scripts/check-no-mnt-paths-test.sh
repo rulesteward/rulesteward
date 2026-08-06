@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# RED test suite for scripts/check-no-mnt-paths.sh (session 9k-0, #572).
+# Test suite for scripts/check-no-mnt-paths.sh (#572).
 #
-# FROZEN INVOCATION CONTRACT for the gate script (the implementer inherits this):
+# FROZEN INVOCATION CONTRACT for the gate script:
 #
 #   scripts/check-no-mnt-paths.sh [PATH...]
 #
@@ -32,8 +32,7 @@
 #     (a) the line is a COMMENT IN THAT FILE'S LANGUAGE; or
 #     (b) the line contains the literal marker `mnt-path-exempt:`.
 #
-#   Comment syntax is LANGUAGE-SPECIFIC, and treating `#` as universal leaked
-#   twice before this contract said so:
+#   Comment syntax is LANGUAGE-SPECIFIC:
 #     - `.rs`: ONLY `//`, `///`, `//!` are comments. A leading `#` is an
 #       ATTRIBUTE - `#[path = "/mnt/..."]` is a compile-time file read, so both
 #       it and the inner `#![...]` form are violations. `/* */` blocks are a
@@ -68,10 +67,9 @@
 #   success line carries the file count. This mirrors the repo's
 #   `OK (0 drift, 3 controls)` idiom.
 #
-#   Coverage can shrink silently in several ways. Each round of review found
-#   another sibling of the one before, so they are listed together rather than
-#   counted (an earlier version of this comment led with a number that was wrong
-#   by the next round):
+#   Coverage can shrink silently in several ways. They are listed rather than
+#   counted, since an earlier version of this comment led with a number that
+#   was wrong by the next round:
 #     - zero eligible files matched -> rc 2;
 #     - an enumerated file could not be opened -> rc 2;
 #     - a directory could not be TRAVERSED, so its contents were never
@@ -94,7 +92,7 @@
 #   reached. Dangling links are skipped, not treated as traversal failures.
 #
 # This test script is self-contained: it builds synthetic fixtures in a mktemp
-# dir per case, invokes the (not-yet-implemented) gate against them, and
+# dir per case, invokes the gate against them, and
 # asserts the exit code and message content. Run with no arguments; safe to run
 # locally or in CI.
 #
@@ -311,10 +309,9 @@ assert_output_contains "case11_clean_reports_count" "2 files" \
 # scripts"). A script with this shebang fails to run at all - verified: chmod +x
 # then execute gives "bad interpreter: No such file or directory", rc 126.
 #
-# The first cut of this gate treated it as a comment, because it matched the
-# `^[[:space:]]*#` carve-out. Cases 2/3/5 all sampled the INTERIOR of that
-# carve-out and none sampled its boundary, so the suite was 16/16 green while
-# the single most executable form of the defect walked straight through.
+# A shebang matches the `^[[:space:]]*#` carve-out, so it needs its own
+# explicit exception: cases 2/3/5 all sample the INTERIOR of that carve-out,
+# and this case samples its boundary.
 # ---------------------------------------------------------------------------
 write_fixture "case13/scripts/capture.sh" <<EOF
 #!${BAD}/venv/bin/python3
@@ -344,11 +341,10 @@ run_case "case14_shebang_in_just_recipe" "${TMPROOT}/case14/justfile" 1
 # `cargo build` fails outright ("couldn't read ...: No such file or directory").
 # That is the #572 class exactly, with cargo as the repo-invoked command.
 #
-# In Rust, `#` starts an ATTRIBUTE and `//` starts a comment. Comment syntax is
-# language-specific, and the first two cuts of this gate treated `#` as a
-# comment in every file type. Round 1 carved out `#!`, which produced an
+# In Rust, `#` starts an ATTRIBUTE and `//` starts a comment. Treating `#` as a
+# comment in every file type and carving out only `#!` produces an
 # indefensible asymmetry: the inner form `#![doc = include_str!("/mnt/...")]`
-# was flagged while the outer form `#[doc = ...]`, one byte shorter, was not.
+# is flagged while the outer form `#[doc = ...]`, one byte shorter, is not.
 # ---------------------------------------------------------------------------
 write_fixture "case15/crates/fake/src/lib.rs" <<EOF
 #[path = "${BAD}/harness.rs"]
@@ -463,17 +459,14 @@ run_case "case20b_symlink_explicit" "${TMPROOT}/case20/crates/fake/src/linked.rs
 # ---------------------------------------------------------------------------
 # Case 21: a Rust BLOCK comment is a KNOWN, DOCUMENTED false positive -> exit 1.
 #
-# This expectation was DELIBERATELY REVERSED after being written, and the
-# reasoning matters more than the case.
-#
-# Round 3 added a `/* */` scanner so provenance in a block comment would not be
-# flagged. That fixed a LOUD false positive which has never once occurred in
-# this repo. It also introduced a SILENT false negative that was live on nine
-# real files: the scanner had no string-literal state, so a `/*` inside an
-# ordinary string - `"both legacy and rules.d/*.rules exist"`, an idiom a config
-# linter uses constantly - opened a phantom block comment that exempted every
-# following line to EOF. Roughly 3400 lines of tracked Rust stopped being
-# checked, and the gate still printed OK.
+# A `/* */` scanner was written for this gate so provenance in a block comment
+# would not be flagged, and then removed. It fixed a LOUD false positive which
+# has never once occurred in this repo. It also introduced a SILENT false
+# negative that was live on nine real files: the scanner had no string-literal
+# state, so a `/*` inside an ordinary string - `"both legacy and
+# rules.d/*.rules exist"`, an idiom a config linter uses constantly - opened a
+# phantom block comment that exempted every following line to EOF. Roughly 3400
+# lines of tracked Rust stopped being checked, and the gate still printed OK.
 #
 # Trading a loud false positive for a silent false negative is exactly backwards
 # for a gate whose entire purpose is that silence and success must not look
@@ -481,9 +474,7 @@ run_case "case20b_symlink_explicit" "${TMPROOT}/case20/crates/fake/src/linked.rs
 # recognises. Block-comment provenance is a one-line `mnt-path-exempt:` away,
 # and unlike the alternative it fails in the direction that gets noticed.
 #
-# This is a corrected contract, not a weakened test: the assertion is stronger
-# now (it pins a specific documented behavior) and the case that proves the
-# reversal was necessary is case23 below.
+# The case that pins why the scanner cannot come back is case23 below.
 # ---------------------------------------------------------------------------
 write_fixture "case21/crates/fake/src/block.rs" <<EOF
 /*
@@ -557,9 +548,8 @@ run_case "case22_attribute_after_block_comment" "${TMPROOT}/case22" 1
 # ---------------------------------------------------------------------------
 # Case 12: THE REAL TREE, with no arguments, must be clean.
 #
-# This case is RED until Phase 0b deletes justfile:16. That failing run is the
-# gate's own positive control: it proves the instrument sees the real defect
-# before the defect is removed. Do not "fix" this by weakening the gate.
+# Do not "fix" a failure here by weakening the gate: the tree is what has to
+# change, not the instrument.
 # ---------------------------------------------------------------------------
 case12_out="${TMPROOT}/case12_real_tree.out"
 case12_rc=0

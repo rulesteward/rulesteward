@@ -494,7 +494,7 @@ the divergence tally below).
 ### Product/oracle divergences: 17 XFAIL ids (see `auditd_corpus_oracle.rs`'s
 `XFAIL` for the full per-id reasons)
 
-- **7 quote-stripping** (deliberate parser leniency, `parser.rs:277-287`):
+- **7 quote-stripping** (deliberate parser leniency, `parser.rs:276-286`):
   `rocky9-arch-paired`, `rocky9-execve-auid`, `rocky9-field-compare`,
   `rocky9-never-suppress`, `rocky9-priv-commands`, `rocky9-task-list`,
   `iss584-quoted-field-expr`.

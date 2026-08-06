@@ -652,10 +652,6 @@ fn w10_cross_file_traps() {
 //
 // `drive_file_w09` is the single-file driver: lint_with_context with
 // single_file=true, earlier_macros=None.
-//
-// NO .snap files are generated here. The tests are RED on missing snapshots
-// until the implement phase runs `INSTA_UPDATE=always cargo test`. That is the
-// intended TDD-RED state.
 // ---------------------------------------------------------------------------
 
 /// Drive one cross-file E03 scenario: enumerate `<scenario>/rules.d/*.rules` in
@@ -819,9 +815,7 @@ fn w09_traps() {
 //
 // The stock ruleset has `10-languages.rules` defining `%languages` and
 // `70-trusted-lang.rules` referencing it - a cross-file backward reference that
-// the current per-file resolution incorrectly flags as fapd-E03.
-//
-// This test is RED now and GREEN after the implement phase.
+// per-file-only macro resolution would incorrectly flag as fapd-E03.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1176,12 +1170,6 @@ fn x01_traps() {
 // diagnostics per target (E06 fires under one, clean under another), so a
 // per-target snapshot pins the cross-target divergence a single-context driver
 // could never express.
-//
-// NO .snap files ship here. They are generated on the first impl-green run by
-// `INSTA_UPDATE=always cargo test --test snapshot_test`. Until
-// `version_target::walk` + the target-aware W07 suppression land, every
-// version-target snapshot has no accepted `.snap` and the test is RED. That is
-// the intended TDD-RED state.
 // ===========================================================================
 
 /// All four lint contexts the version-target matrix sweeps, with a stable
@@ -1256,7 +1244,7 @@ fn version_target_traps() {
 // with "ERROR: Field type (perm) is unknown in line 2".
 //
 // This is an EXPLICIT assertion test (not snapshot-only) so that:
-//   - It is RED against the current clean-parse behavior immediately.
+//   - It fails immediately against an impl that parses legacy perm= cleanly.
 //   - A mutant that accidentally permits legacy perm= is killed deterministically.
 //   - The failure does not depend on snapshot-file presence / absence.
 //

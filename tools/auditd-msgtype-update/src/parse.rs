@@ -17,7 +17,7 @@
 //! (`lib/msg_typetab.h`, `lib/audit-records.h`) and `torvalds/linux` @ tag
 //! v6.6 (`include/uapi/linux/audit.h`) - see `../msgtype-refs.toml` for the
 //! pinned refs + sha256 of the sources `tests/fixtures/` were copied and
-//! verified from (2026-07-10 grounding, session 7c pipeline P1, #476).
+//! verified from (2026-07-10 grounding, #476).
 
 use std::collections::BTreeMap;
 
@@ -70,10 +70,7 @@ pub struct DerivedTables {
 ///   run, via [`strip_block_comments`] - matching real C preprocessor
 ///   semantics, which strips block comments before tokenizing. A row (or a
 ///   `#define`, in [`parse_defines`]) hidden inside one must not be
-///   extracted (adversarial finding, impl-aware review round 1, #476,
-///   MISS-1: the three pinned real headers happen to survive today only
-///   because none of their existing `/* */` prose blocks contain a
-///   row/define, not because the scanner understood block comments).
+///   extracted.
 /// * Rows between `#ifdef WITH_APPARMOR` and its `#endif` go to `apparmor`;
 ///   all other rows (including rows AFTER the `#endif`) go to `base`. This
 ///   region tracking is FLAT: it assumes msg_typetab.h's actual shape of a
@@ -81,10 +78,10 @@ pub struct DerivedTables {
 ///   upstream's real convention (deprecated/dead rows there are commented
 ///   out with `//`, never wrapped in a nested `#ifdef` - see
 ///   `../msgtype-refs.toml`). A `#ifdef` nested INSIDE the WITH_APPARMOR
-///   block is deliberately NOT specially handled (adversarial finding,
-///   round 1, #476, MISS-2: characterized, not fixed, since there is no
-///   real-fixture precedent and building for a hypothetical would be
-///   speculative) - its own `#endif` closes the region early, misrouting
+///   block is deliberately NOT specially handled (characterized, not
+///   fixed, since there is no real-fixture precedent and building for a
+///   hypothetical would be speculative) - its own `#endif` closes the
+///   region early, misrouting
 ///   rows between the inner and outer `#endif` into `base` instead of
 ///   `apparmor`. See
 ///   `parse_typetab_characterizes_nested_ifdef_inside_apparmor_block_as_a_known_limitation`
@@ -176,8 +173,7 @@ pub fn parse_typetab(src: &str) -> Result<Typetab, String> {
 /// never puts `/*`/`*/` inside a quoted name in the pinned sources, so this
 /// is not a real-world gap here).
 ///
-/// Handles, per the adversarial finding (impl-aware review round 1, #476,
-/// MISS-1): a whole line already inside a block comment (returns empty), a
+/// Handles: a whole line already inside a block comment (returns empty), a
 /// block that opens and closes entirely on one line, a block that spans
 /// multiple lines, and a block that OPENS mid-line - after real code
 /// earlier on the same line - and closes on a later line.
@@ -245,8 +241,7 @@ fn parse_s_row(trimmed: &str) -> Option<TypetabEntry> {
 ///
 /// Like [`parse_typetab`], a `/* ... */` C block comment is stripped BEFORE
 /// the `#define` check, via [`strip_block_comments`] - a `#define` hidden
-/// inside one must not be extracted (adversarial finding, impl-aware review
-/// round 1, #476, MISS-1). A genuine trailing single-line `/* ... */`
+/// inside one must not be extracted. A genuine trailing single-line `/* ... */`
 /// comment after a live define's value (common in both pinned sources) is
 /// unaffected either way: the value token is already the second
 /// whitespace-delimited token, read before any trailing comment text.
@@ -439,13 +434,12 @@ _S(AUDIT_LOGIN,                      \"LOGIN\"                         )
         assert!(tab.apparmor.is_empty());
     }
 
-    /// Adversarial finding (impl-aware review round 1, #476, MISS-1): the
-    /// real C preprocessor strips `/* ... */` block comments before
+    /// The real C preprocessor strips `/* ... */` block comments before
     /// tokenizing, so a `_S(...)` row hidden inside one must NOT be
     /// extracted into either table. The line-based scanner has no notion of
     /// block comments unless it explicitly tracks them, so a naive
-    /// per-line `starts_with("_S(")` check (which is all the scanner had
-    /// before this fix) wrongly treats a commented-out row as live. Covers
+    /// per-line `starts_with("_S(")` check wrongly treats a commented-out
+    /// row as live. Covers
     /// three shapes: a block comment on its own lines (multi-line span) and
     /// a block that OPENS mid-line - after real code earlier on the same
     /// line - and closes on a LATER line.
@@ -509,7 +503,6 @@ _S(AUDIT_KERNEL,                     \"KERNEL\"                        )
         );
     }
 
-    /// Adversarial finding (impl-aware review round 1, #476, MISS-2) -
     /// CHARACTERIZATION, not a bug fix: this test PINS the scanner's
     /// existing flat single-`#ifdef WITH_APPARMOR` region tracking. The
     /// scanner treats EVERY `#endif` as "leave the AppArmor region" with no
@@ -633,8 +626,7 @@ _S(AUDIT_AA,                         \"USER\"                          )
     /// the SECOND source line) and additionally pins the reported line
     /// number - that test only asserts the error is non-empty, so it cannot
     /// distinguish `idx + 1` from a mutated `idx * 1` (which would report
-    /// line 1, not line 2, for this fixture). Kills `parse.rs:90:26`
-    /// (`idx + 1` -> `idx * 1` in `parse_typetab`).
+    /// line 1, not line 2, for this fixture).
     #[test]
     fn parse_typetab_malformed_row_error_reports_the_correct_one_based_line_number() {
         let src = "\
@@ -651,16 +643,16 @@ _S(AUDIT_LOGIN,                      \"LOGIN\"";
     /// `_S(`) must be rejected as malformed via `parse_s_row` returning
     /// `None`, never silently accepted as a name-only entry and never a
     /// panic. Kills three survivors in one input:
-    /// * `parse.rs:150:36` `comma + 1` -> `comma - 1`: with `comma == 0`
+    /// * `comma + 1` -> `comma - 1`: with `comma == 0`
     ///   (the row starts with the comma), `0usize - 1` underflows and panics
     ///   in a debug build instead of returning `None`.
-    /// * `parse.rs:150:36` `comma + 1` -> `comma * 1` is a separate mutant
+    /// * `comma + 1` -> `comma * 1` is a separate mutant
     ///   NOT killed here (see `.cargo/mutants.toml`: `inner[comma]` is
     ///   provably always the comma character itself, never `"`, so shifting
     ///   the search start by exactly that one non-quote character cannot
     ///   change which `"` is found - a genuine equivalent mutant, proved in
     ///   the exclude_re rationale, not chased with a test here).
-    /// * `parse.rs:156:31` `||` -> `&&` in
+    /// * `||` -> `&&` in
     ///   `audit_const.is_empty() || name.is_empty()`: the mutated guard only
     ///   rejects a row when BOTH halves are empty, so this one-sided-empty
     ///   row would fall through and be accepted as
@@ -738,16 +730,14 @@ _S(AUDIT_LOGIN,                      \"LOGIN\"";
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
-    /// Adversarial finding (impl-aware review round 1, #476, MISS-1): a
-    /// `#define AUDIT_<NAME> <n>` hidden inside a `/* ... */` block comment
+    /// A `#define AUDIT_<NAME> <n>` hidden inside a `/* ... */` block comment
     /// must NOT be extracted - the real C preprocessor strips block
     /// comments before the compiler ever sees a `#define` token. Covers a
     /// block spanning multiple lines and a block that OPENS mid-line -
     /// after a real `#define` earlier on the same line - and closes on a
     /// LATER line, both without disturbing the genuinely-live defines
     /// around them (including a real single-line-trailing `/* ... */`
-    /// comment on a live define, which must keep working exactly as
-    /// before).
+    /// comment on a live define, which must keep working).
     #[test]
     fn parse_defines_ignores_defines_inside_block_comments() {
         let src = "\
@@ -851,13 +841,13 @@ closes on this line */
     /// table, and the 60 kernel-only constants resolve (spot-pinned:
     /// SYSCALL/KERNEL/USER/DAEMON_START from the kernel header;
     /// USER_AUTH/DAEMON_ROTATE from audit-records.h). Source attributions
-    /// verified mechanically against the fixtures (adversarial-test review
-    /// round 1: DAEMON_START was mislabeled records-resolved; it is defined
+    /// verified mechanically against the fixtures: DAEMON_START is NOT
+    /// records-resolved; it is defined
     /// ONLY in linux-v6.6/audit.h:82 - AUDIT_FIRST_DAEMON is the sole 1200
     /// in audit-records.h and is a range marker, not DAEMON_START.
-    /// DAEMON_ROTATE 1205 is the swapped-in second records-only witness:
+    /// DAEMON_ROTATE 1205 is the second records-only witness:
     /// defined in audit-records.h, absent from the kernel header, referenced
-    /// by the typetab).
+    /// by the typetab.
     #[test]
     fn resolve_real_fixtures_yields_189_base_and_8_apparmor_numbers() {
         let t = parse_typetab(MSG_TYPETAB).expect("typetab parses");

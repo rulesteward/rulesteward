@@ -396,7 +396,7 @@ mod tests {
         // #295: fapd-W07 keys off the attribute NAME, never `Rule.syntax` (the
         // rhel8 suppression is by `--target`, not flavor), so a legacy-parsed
         // `sha256hash=` rule must produce the same fapd-W07 output as the modern
-        // form. The W07 output tests previously exercised only `modern_rule`.
+        // form.
         let subj = || {
             vec![Attr::Kv {
                 key: "sha256hash".into(),
@@ -883,10 +883,8 @@ mod tests {
         //     slash, e.g. `/opt/untrusted` (kills
         //     `value.ends_with("untrusted")`) -- `/opt/untrusted/` above is
         //     NOT a suffix example, since it ends in `/`, not `untrusted`;
-        //     an earlier round mislabeled that fixture as covering the
-        //     SUFFIX direction on the `%set` path too, which left the set
-        //     path's suffix direction untested until the "set member, no
-        //     trailing slash" case below was added;
+        //     the set path's suffix direction is separately covered by the
+        //     "set member, no trailing slash" case below;
         //   - PREFIX: a member STARTING WITH "untrusted", e.g. `untrusted/`
         //     (kills `value.starts_with("untrusted")`).
         // All of these are real directory paths that happen to embed, end
@@ -931,9 +929,8 @@ mod tests {
             ),
             (
                 // Set-path mirror of "subject literal, no trailing slash"
-                // above (SUFFIX direction), added round 7. Before this
-                // fixture, the set path's only suffix-ish member was
-                // `/opt/untrusted/` (the CONTAINS case, below), which does
+                // above (SUFFIX direction). The set path's other suffix-ish
+                // member, `/opt/untrusted/` (the CONTAINS case, below), does
                 // NOT exercise `ends_with("untrusted")` since it ends in
                 // `/`. This member's LAST path-segment is exactly
                 // "untrusted" with no trailing slash, so a `SetRef` impl
@@ -1054,16 +1051,15 @@ mod tests {
     #[test]
     fn w12_detect_is_case_sensitive_on_the_value_via_set_membership() {
         // Set-path mirror of `w12_detect_is_case_sensitive_on_the_value`
-        // above, added round 7. Upstream's per-member search
+        // above. Upstream's per-member search
         // (`attr_set_check_str` -> `avl_search` over `strcmp_cb` = plain
         // `strcmp`, attr-sets.c:71-74/412-422) is the SAME case-sensitive
         // comparison regardless of whether the member came from a literal
         // `dir=` value or a `%set` definition, so a set member spelled
         // `UNTRUSTED` / `Untrusted` / `unTrusted` must stay silent exactly
-        // like the literal. Before this fixture, the set path's case
-        // handling was entirely unpinned: a `SetRef` impl comparing
-        // members with `eq_ignore_ascii_case("untrusted")` passed the
-        // whole suite up to this point.
+        // like the literal. Without this fixture, a `SetRef` impl
+        // comparing members with `eq_ignore_ascii_case("untrusted")` would
+        // pass the rest of the suite.
         for value in ["UNTRUSTED", "Untrusted", "unTrusted"] {
             let entries = vec![
                 set_def(1, "dirs", &[value]),

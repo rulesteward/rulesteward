@@ -1,8 +1,8 @@
 //! au-E02: comparison operator invalid for the field's type.
 //!
-//! Pipeline P3 (#193). `auditctl` REJECTS an invalid operator/field pairing at
-//! load time (libaudit `audit_rule_fieldpair_data`), so a ruleset containing
-//! one fails to load under `augenrules`: Error severity. The per-field
+//! `auditctl` REJECTS an invalid operator/field pairing at load time
+//! (libaudit `audit_rule_fieldpair_data`), so a ruleset containing one fails
+//! to load under `augenrules`: Error severity. The per-field
 //! operator-validity matrix is grounded cell-by-cell in audit-userspace
 //! commit 3bfa048 (`lib/fieldtab.h` + `lib/libaudit.c`), via the
 //! [`super::field_type`] table.
@@ -38,8 +38,6 @@ use crate::lints::field_type::{FieldType, field_type};
 ///
 /// All other `FieldType` variants have no operator restriction and accept all 8
 /// operators.
-///
-/// Body is pipeline P3's; the signature is Phase-0 frozen.
 #[must_use]
 pub fn e02(rules: &[LocatedRule]) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -205,7 +203,7 @@ fn kernel_rejects_bitmask(field: &AuditField, target: Option<TargetVersion>) -> 
         // residual gap is the ten String/Key/Filetype-typed fields (`dir`,
         // `filetype`, `key`, `obj_role`, `obj_type`, `obj_user`, `path`,
         // `subj_role`, `subj_type`, `subj_user`) plus `field_compare`, which
-        // e02 leaves unrestricted. See the ORCHESTRATOR-LOCKED DECISION
+        // e02 leaves unrestricted. See the LOCKED DECISION
         // (NARROW) paragraph in tests/test_lints_operator_validity.rs.
         // Explicit, not `_`, so a 46th `AuditField` variant is a compile
         // error here rather than a silent false negative on an Error-tier,

@@ -270,7 +270,7 @@ mod tests {
 
     /// Truncation wording: MORE than `SAMPLE_CAP` (10) orphans -> the summary names
     /// the total ("showing first 10 of 11") and does NOT imply the sample is the
-    /// whole set. Pins the truncation branch (previously had zero coverage).
+    /// whole set.
     #[test]
     fn over_cap_orphans_name_the_total() {
         let tmp = tempdir().expect("tempdir");

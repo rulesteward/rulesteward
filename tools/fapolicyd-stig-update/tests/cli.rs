@@ -4,18 +4,6 @@
 //! `tools/auditd-stig-update/tests/cli.rs`, adapted to the fapolicyd #519
 //! STIG control table (`ControlFamily::{Installed,Enabled,DenyAll}`, 3 rows
 //! per target - see `crates/rulesteward-fapolicyd/src/lints/stig.rs`).
-//!
-//! # RED-state note (session 9d, test-author dispatch)
-//!
-//! `src/main.rs` is a SKELETON: it unconditionally prints a generic
-//! "not yet implemented" message to stderr and exits 2, regardless of
-//! arguments. EVERY test below therefore fails today - the exit-code-only
-//! assertions (`unknown_subcommand...`, the `check *_exits_2` cases) trip on
-//! the SPECIFIC message-content assertion paired with each (a generic
-//! "not yet implemented" string never contains "unknown product", "unknown
-//! subcommand", etc.), and the 0/1-exit-code assertions trip on the exit
-//! code itself (the stub always exits 2). This is the expected, uniform RED
-//! state for a from-scratch skeleton, not several independent failures.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -68,9 +56,9 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 
 #[test]
 fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
-    // Once `stig_controls(Rhel9)` is populated (3 rows: Installed/Enabled/
-    // DenyAll), a file with zero fapolicyd Groups derives an empty set, which
-    // necessarily drifts against it.
+    // `stig_controls(Rhel9)` has 3 rows (Installed/Enabled/DenyAll), so a
+    // file with zero fapolicyd Groups derives an empty set, which necessarily
+    // drifts against it.
     let f = temp_xccdf("empty", EMPTY_SELECTION_XCCDF);
     let (code, stdout, err) = run(&[
         "check",
@@ -91,8 +79,8 @@ fn check_empty_selection_file_drifts_against_the_populated_table_exits_1() {
 #[test]
 fn check_real_rhel9_fixture_is_in_sync_with_the_populated_table() {
     // The real, trimmed rhel9 fixture (3 fapolicyd Groups + 2 decoys)
-    // derives EXACTLY the 3 fapolicyd rows, matching the shipped table once
-    // populated: 0 drift, 3 rows.
+    // derives EXACTLY the 3 fapolicyd rows, matching the shipped table:
+    // 0 drift, 3 rows.
     let f = temp_xccdf("rhel9-full", RHEL9_FIXTURE);
     let (code, stdout, err) = run(&[
         "check",

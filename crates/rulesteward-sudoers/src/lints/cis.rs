@@ -1,16 +1,16 @@
-//! Per-product CIS Benchmark control table for the sudoers family (#526, v0.8
-//! Wave 3 lane 3b). Mirrors the `TargetVersion` / `pub fn X_baseline` shape
+//! Per-product CIS Benchmark control table for the sudoers family (#526).
+//! Mirrors the `TargetVersion` / `pub fn X_baseline` shape
 //! established by `rulesteward_sysctld::lints::baseline` (sysctld-W02) and
 //! `rulesteward_sshd::lints::stig` (`TargetVersion` in `lints::mod`), so each
 //! domain crate stays clap-free (the CLI maps its `--target` value-enum into
 //! this via a `From` impl at the wiring site, orchestrator-owned, not this
 //! lane).
 //!
-//! This is the backend's FIRST `pub cis_baseline`-style accessor: the smallest
-//! of the four Wave-3 CIS lanes (5 controls, uniform across all three
-//! products), and the single source [`crate::lints::stig`]'s two pre-existing
-//! `Framework::Cis` `ControlRef`s (the `use_pty` / I/O-logging citations) draw
-//! their renumbered ids and CaC titles from -- see the RENUMBER note below.
+//! This is the backend's FIRST `pub cis_baseline`-style accessor (5 controls,
+//! uniform across all three products), and the single source
+//! [`crate::lints::stig`]'s two pre-existing `Framework::Cis` `ControlRef`s
+//! (the `use_pty` / I/O-logging citations) draw their renumbered ids and CaC
+//! titles from -- see the RENUMBER note below.
 //!
 //! # Grounding
 //!
@@ -28,7 +28,7 @@
 //! suffix -- matches `tools/cis-update`'s own `CisControl::title` field
 //! convention: "CaC-carried title, verbatim"). NEVER CIS benchmark prose.
 //!
-//! # Anchor renumber (#526, LOCKED post-A0 2026-07-18)
+//! # Anchor renumber (#526, LOCKED)
 //!
 //! `lints::stig`'s two PRE-EXISTING `Framework::Cis` refs cited the stale
 //! `"1.3.2"` / `"1.3.3"` ids -- an older CIS benchmark generation's
@@ -58,7 +58,7 @@
 /// findings are version-agnostic, per `lints::mod`'s module doc, so no prior
 /// `--target` rail existed). Defined here (this module is the sole consumer
 /// today) and re-exported at `lints::TargetVersion` + the crate root
-/// (`lib.rs`), matching the auditd (`stig_required.rs:46` ->
+/// (`lib.rs`), matching the auditd (`stig_required.rs:42` ->
 /// `lints::mod::TargetVersion`) / sysctld (`baseline.rs:35` ->
 /// `lints::mod::TargetVersion`) convention -- never buried under
 /// `lints::cis::TargetVersion` only.
@@ -76,10 +76,10 @@ pub enum TargetVersion {
 /// it, instead of parsing this source file -- mirrors
 /// `rulesteward_sysctld::lints::baseline::StigEntry`.
 ///
-/// Named `CisControl` (not `CisEntry`) per the barrier dedup reconciliation
-/// (#524 arbiter ruling, round 3): the entry-struct name is standardized as
-/// `CisControl` across all four Wave-3 CIS lanes (the struct itself stays
-/// per-crate; only the name unifies).
+/// RULING: name this struct `CisControl`, matching the same struct's name in
+/// the sibling CIS backends (the struct itself stays per-crate; only the name
+/// unifies).
+/// Rationale + evidence: #524
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CisControl {
     /// The CIS control id (e.g. `"5.2.2"`).
@@ -167,10 +167,10 @@ const RHEL9_TABLE: &[CisControl] = &[
 /// controls (5.2.2-5.2.6), in ascending-id order. See the module doc for the
 /// grounding pin and the renumber this table backs.
 ///
-/// Returns a static slice (not `Vec`), per the barrier dedup reconciliation
-/// (#524 arbiter ruling, round 3): accessor symmetry with the sibling
-/// backends' `pub fn X_baseline(target) -> &'static [Y]` shape (e.g.
+/// RULING: return a static slice (not `Vec`), matching the sibling backends'
+/// `pub fn X_baseline(target) -> &'static [Y]` shape (e.g.
 /// `rulesteward_auditd::lints::cis::cis_baseline`).
+/// Rationale + evidence: #524
 #[must_use]
 pub fn cis_baseline(target: TargetVersion) -> &'static [CisControl] {
     match target {
@@ -238,8 +238,8 @@ mod tests {
         }
     }
 
-    /// The two LOCKED anchor pairs the sudo-W04 renumber (#526, LOCKED post-A0
-    /// 2026-07-18) draws from: `sudo_add_use_pty` -> `"5.2.2"`,
+    /// The two LOCKED anchor pairs the sudo-W04 renumber (#526, LOCKED) draws
+    /// from: `sudo_add_use_pty` -> `"5.2.2"`,
     /// `sudo_custom_logfile` -> `"5.2.3"`. This is the pinned-CaC ground truth
     /// that supersedes the STALE `"1.3.2"`/`"1.3.3"` issue-#526 text and the
     /// pre-existing `sudo-W04` hardcoded ids. Order-independent (`.find` by

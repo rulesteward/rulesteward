@@ -29,7 +29,7 @@ use rulesteward_core::Framework;
 /// Bumps only on a breaking change (field removal, rename, retype).
 const AUDITD_COST_SCHEMA_VERSION: u32 = 1;
 
-/// Schema version for the `auditd-lint` payload kind (#193, session 6a).
+/// Schema version for the `auditd-lint` payload kind (#193).
 /// Bumps only on a breaking change (field removal, rename, retype).
 const AUDITD_LINT_SCHEMA_VERSION: u32 = 1;
 
@@ -46,7 +46,7 @@ pub fn run(cmd: AuditdCommand, profile: Option<Framework>) -> anyhow::Result<i32
 }
 
 // ---------------------------------------------------------------------------
-// auditd lint (#193, session 6a): the Phase-0 command shell. The semantic
+// auditd lint (#193): the command shell. The semantic
 // passes live in rulesteward_auditd::lints (the crate owns the au- codes and
 // the mutation gate); this shell does target resolution, source-map staging,
 // rendering, and exit-code mapping only.
@@ -343,7 +343,7 @@ fn build_rule_entries_assumed(rules: &[AuditRule], fmt: LogFormat, price: f64) -
 /// Build rule entries using measured per-key event counts + on-disk bytes from
 /// --from-log (#307). Each additive rule is sized by ITS OWN key's measured
 /// average bytes/event (`key_bytes / key_events`), not the flat 1200 scalar, so
-/// execve-heavy keys are no longer under-counted. `bytes[key]` already includes
+/// execve-heavy keys are not under-counted. `bytes[key]` already includes
 /// the companion PATH/CWD/EOE record bytes of each event (aggregated by serial in
 /// `count_events_by_key`).
 fn build_rule_entries_from_log(
@@ -1062,10 +1062,10 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// auditd lint shell tests (#193, session 6a Phase 0). These exercise ONLY the
-// shell's pure parts (target resolution, parse-error mapping, exit codes);
-// the semantic-pass dispatcher is stubbed until the pipelines land and is
-// covered by the (currently #[ignore]d) e2e contract tests at integration.
+// auditd lint shell tests (#193). These exercise ONLY the shell's pure parts
+// (target resolution, parse-error mapping, exit codes); the semantic passes
+// themselves are owned and tested by `rulesteward_auditd::lints`, and the
+// end-to-end contract is pinned by `tests/e2e_auditd_lint.rs`.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod lint_shell_tests {
@@ -1135,9 +1135,8 @@ mod lint_shell_tests {
     #[test]
     fn lint_parse_error_exits_five_and_skips_semantic_passes() {
         // An unparseable line maps to au-F01 -> exit 5 (D3). Crucially this
-        // must NOT invoke the semantic dispatcher (its passes are todo!()
-        // stubs until the pipelines land; a partial stream would also make
-        // cross-file claims unsound) - if it did, this test would panic.
+        // must NOT invoke the semantic dispatcher: a partial rule stream
+        // would make its cross-file claims unsound.
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("10-bad.rules"), "-Z bogus\n").expect("write");
         let a = args(dir.path(), OutputFormat::Json);
@@ -1147,7 +1146,7 @@ mod lint_shell_tests {
     // -- issue #474: --target wiring (mirrors commands::sysctl / commands::sshd) --
 
     /// `--target` is plumbed into the lint context: the shipped `RHEL9_REQUIRED`
-    /// table is now populated (issue #474), so a ruleset satisfying only one of
+    /// table is populated (issue #474), so a ruleset satisfying only one of
     /// its 67 required lines (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240)
     /// exits `EXIT_WARNINGS` under an explicit --target - this pins that the flag
     /// reaches `lints::lint` and threads through to the real au-W06 dispatch,

@@ -58,7 +58,7 @@ pub fn w13(files: &[(PathBuf, Vec<Entry>)], target: Option<TargetVersion>) -> Ve
     // order) and, within each file, entry by entry: each Entry::Rule found
     // overwrites `last`, so after the scan `last` holds the merged stream's
     // TRUE final rule - a rule-free trailing file cannot mask an earlier
-    // file's final rule (adversarial round 1, Finding 2).
+    // file's final rule.
     let mut last: Option<(&PathBuf, &Rule)> = None;
     for (path, entries) in files {
         for entry in entries {
@@ -207,11 +207,11 @@ mod tests {
 
     #[test]
     fn deny_syslog_perm_any_all_all_last_is_clean() {
-        // Adversarial round 1 (Finding 1): `deny_syslog` is the THIRD member
-        // of the man-page DECISION deny family (G1.3, identical on 1.3.2 and
-        // 1.4.5; "any rule with a deny in the keyword will deny access"). A
-        // wrong impl accepting only {deny, deny_audit} passes every other
-        // test yet wrongly fires on this compliant final rule.
+        // `deny_syslog` is the THIRD member of the man-page DECISION deny
+        // family (G1.3, identical on 1.3.2 and 1.4.5; "any rule with a deny
+        // in the keyword will deny access"). A wrong impl accepting only
+        // {deny, deny_audit} passes every other test yet wrongly fires on
+        // this compliant final rule.
         let files = vec![(
             PathBuf::from("rules.d/95-final.rules"),
             vec![modern_rule(
@@ -231,8 +231,8 @@ mod tests {
 
     #[test]
     fn deny_log_perm_any_all_all_last_is_clean() {
-        // Adversarial round 1 (Finding 1): `deny_log` is the FOURTH family
-        // member (G1.3/G1.4) - same kill as deny_syslog above.
+        // `deny_log` is the FOURTH family member (G1.3/G1.4) - same kill as
+        // deny_syslog above.
         let files = vec![(
             PathBuf::from("rules.d/95-final.rules"),
             vec![modern_rule(
@@ -427,9 +427,9 @@ mod tests {
 
     #[test]
     fn multi_file_earlier_files_clean_deny_all_does_not_mask_a_later_allow() {
-        // Adversarial pin named in the plan: an EARLIER-loading file ends with
-        // a perfectly clean deny-all, but the fagenrules-order LAST file
-        // appends an allow afterward. A wrong impl that checks "does ANY
+        // An EARLIER-loading file ends with a perfectly clean deny-all, but
+        // the fagenrules-order LAST file appends an allow afterward. A wrong
+        // impl that checks "does ANY
         // file's own last rule satisfy the predicate" (or simply inspects the
         // FIRST file) would wrongly call this clean; the correct impl looks
         // only at the true merged-stream last rule (in the LAST file) and
@@ -503,9 +503,9 @@ mod tests {
 
     #[test]
     fn multi_file_rule_free_last_file_does_not_hide_an_earlier_clean_deny_all() {
-        // Adversarial round 1 (Finding 2): the LAST-loading file contains NO
-        // Entry::Rule at all - only Comment/Blank entries, realizable as a
-        // trailing all-comment 99-*.rules - and the merged stream's TRUE last
+        // The LAST-loading file contains NO Entry::Rule at all - only
+        // Comment/Blank entries, realizable as a trailing all-comment
+        // 99-*.rules - and the merged stream's TRUE last
         // rule (the EARLIER file's final rule) is a clean deny-all. A wrong
         // impl inspecting only `files.last()` (that file's own last rule, or
         // its zero-rules file-level branch) wrongly fires here; the correct
@@ -542,9 +542,9 @@ mod tests {
 
     #[test]
     fn multi_file_rule_free_last_file_anchors_at_the_earlier_files_last_rule() {
-        // Mirror of the test above (adversarial round 1, Finding 2): the
-        // last-loading file is rule-free, and the merged stream's true last
-        // rule - the EARLIER file's final rule - is NOT a deny-all. Exactly
+        // Mirror of the test above: the last-loading file is rule-free, and
+        // the merged stream's true last rule - the EARLIER file's final
+        // rule - is NOT a deny-all. Exactly
         // one fapd-W13 must fire, anchored at that EARLIER file's last rule
         // (file + line), never a file-level finding at the empty last file
         // and never at the earlier file's FIRST rule.

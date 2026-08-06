@@ -87,14 +87,12 @@ fn lint_json_kind_and_schema_version_are_pinned() {
     assert_eq!(v["schemaVersion"].as_u64(), Some(1));
 }
 
-// The #583 half B / #561 path-error-envelope RED test for `selinux lint`
+// The #583 half B / #561 path-error-envelope test for `selinux lint`
 // (and its `sarif` counterpart) lives in `path_error_json.rs` /
 // `path_error_sarif.rs`, consolidated alongside the sshd/sysctl/sudoers/
 // auditd/fapolicyd siblings via the SAME shared `run_missing_path_json`/
 // `assert_path_error_envelope` helpers, rather than as a standalone copy
-// here - see those files for the up-to-date accounting of exactly which
-// verbs already had an envelope (FOUR: sshd/sysctl/sudoers/auditd) versus
-// which still needed one (selinux; fapolicyd's positional dir-scan mode).
+// here - see those files for the per-verb accounting.
 
 #[test]
 fn lint_profile_stig_passthrough_is_non_empty_for_a_controls_bearing_finding() {
@@ -168,11 +166,9 @@ fn lint_target_auto_degrade_warns_on_stderr_and_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
-// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
-// (findings-only). RED today: `SelinuxLintArgs.format` is `HumanJsonFormat`
-// (human|json only), so clap rejects `--format sarif` at parse time. The
-// planned impl switches `SelinuxLintArgs.format` to `OutputFormat` and routes
-// the new Sarif arm through `output::emit_lint`.
+// #511: SARIF output for the lint verbs (findings-only).
+// `SelinuxLintArgs.format` is `OutputFormat` (human|json|sarif) and the Sarif
+// arm routes through `output::emit_lint`.
 // ---------------------------------------------------------------------------
 
 /// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
@@ -272,9 +268,7 @@ fn sarif_format_clean_config_is_schema_valid_with_zero_results() {
 }
 
 /// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
-/// still reject it as an unrecognized flag on `selinux lint`. GREEN today
-/// (clap already rejects the unknown flag) and must stay green after the
-/// impl.
+/// reject it as an unrecognized flag on `selinux lint`.
 #[test]
 fn sarif_include_pass_is_rejected_for_selinux_lint() {
     let f = write_config("SELINUX=enforcing\nSELINUXTYPE=targeted\n");

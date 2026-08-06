@@ -169,7 +169,7 @@ fn make_fifo(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
 }
 
 /// `selinux triage --record <fifo>` must fail FAST, never hang: `triage`'s
-/// input read (`commands/selinux/triage.rs:72`, raw
+/// input read (`commands/selinux/triage.rs:71`, raw
 /// `std::fs::read_to_string(input_path)`) has no special-file guard and no
 /// upstream `is_file()`/`is_dir()` gate at all - `input_path` is used exactly
 /// as resolved from `--record`/`--audit-log`. Bounded by a 15s `assert_cmd`
@@ -215,16 +215,16 @@ fn triage_record_fifo_fails_fast_not_hang() {
     );
 }
 
-/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// #583 (blocker 2): a FIFO-only special-file
 /// guard is not enough. `/dev/null` (a character device) never hangs under a
 /// raw `std::fs::read_to_string` - it reads back an instant empty string -
-/// so TODAY `selinux triage --record /dev/null` silently succeeds past the
-/// read and hits the UNRELATED "no type=AVC record found" parse-error arm
+/// so an unguarded `selinux triage --record /dev/null` silently succeeds past
+/// the read and hits the UNRELATED "no type=AVC record found" parse-error arm
 /// (`EXIT_ERRORS`=2, measured live 2026-07-24), not a crash. A
 /// `if is_fifo(path) { reject } else { raw read }` implementation passes
 /// the FIFO test above yet still lets this character-device case through to
-/// the wrong error arm. After the fix (routing through the shared
-/// `rulesteward_core::fsread::read_to_string`), `/dev/null` must be a tool
+/// the wrong error arm. Routing through the shared
+/// `rulesteward_core::fsread::read_to_string` makes `/dev/null` a tool
 /// failure BEFORE parsing is ever attempted.
 #[test]
 fn triage_record_dev_null_is_a_tool_failure_not_a_parse_error() {
@@ -253,7 +253,7 @@ fn triage_record_dev_null_is_a_tool_failure_not_a_parse_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// Stream support.
 // `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
 // `--record`/`--audit-log` are stream-shaped inputs operators legitimately
 // pipe in. `read_stream_to_string` accepts a FIFO with a live writer; this

@@ -193,11 +193,9 @@ fn broken_include_with_no_preceding_real_line_stays_plain() {
 }
 
 // ---------------------------------------------------------------------------
-// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
-// (findings-only). RED today: `SudoersLintArgs.format` is `HumanJsonFormat`
-// (human|json only), so clap rejects `--format sarif` at parse time. The
-// planned impl switches `SudoersLintArgs.format` to `OutputFormat` and routes
-// the new Sarif arm through `output::emit_lint`.
+// #511: SARIF output for the lint verbs (findings-only).
+// `SudoersLintArgs.format` is `OutputFormat` (human|json|sarif) and the Sarif
+// arm routes through `output::emit_lint`.
 // ---------------------------------------------------------------------------
 
 /// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
@@ -314,9 +312,7 @@ fn sarif_format_clean_file_is_schema_valid_with_zero_results() {
 }
 
 /// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
-/// still reject it as an unrecognized flag on `sudoers lint`. GREEN today
-/// (clap already rejects the unknown flag) and must stay green after the
-/// impl.
+/// reject it as an unrecognized flag on `sudoers lint`.
 #[test]
 fn sarif_include_pass_is_rejected_for_sudoers_lint() {
     let cfg = config_file(CLEAN_SUDOERS);

@@ -1,9 +1,9 @@
 //! Shared `#[cfg(test)]` AST builders for the fapolicyd lint test modules.
 //!
-//! Each lint's `mod tests` previously defined byte-identical private copies of
-//! these builders. This is the single source. Compiled only under `#[cfg(test)]`
-//! and `pub(crate)`, so sibling unit-test modules reach it without leaking into
-//! the public API.
+//! This is the single source for these builders, shared across every lint's
+//! `mod tests` rather than duplicated per-module. Compiled only under
+//! `#[cfg(test)]` and `pub(crate)`, so sibling unit-test modules reach it
+//! without leaking into the public API.
 #![cfg(test)]
 
 use std::path::PathBuf;

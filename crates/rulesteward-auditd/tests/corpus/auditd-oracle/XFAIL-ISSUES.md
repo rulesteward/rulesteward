@@ -21,7 +21,7 @@ corpus, beyond the original quote-stripping report:**
 
 1. **`-C` field-comparison quoting** (`rocky9-field-compare`,
    `-a always,exit -S execve -C 'uid!=euid' -k priv_escalation`): the same
-   balanced-single-quote stripping that affects `-F` (parser.rs:277-287) also
+   balanced-single-quote stripping that affects `-F` (parser.rs:276-286) also
    applies to `-C`'s operand tokens. Real `auditctl -R` rejects with
    `-C unknown field: 'uid` (the leading quote glues onto the field name,
    exactly as with `-F`); RuleSteward's parser strips the quotes and accepts.

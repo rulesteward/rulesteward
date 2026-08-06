@@ -21,7 +21,7 @@ allow perm=open uid=0 : path=/etc/hosts
 - Single allow-family grant -> one register row, `loadIndex:1`, `source.line:1`.
 - `perm=open` renders `perm:"open"`.
 - Subject side is `uid=0`; object side is `path=/etc/hosts` (Display-rendered
-  sides, `format.rs:56-74`). `path` is object-only (`attrs.rs:55`).
+  sides, `format.rs:56-74`). `path` is object-only (`attrs.rs:48`).
 - `path=` is a concrete path predicate: `scope:"path"`. Per f2 section 2.2 the
   `path=` value is extracted as a path on the object side, so
   `objectPaths:["/etc/hosts"]`. `uid=0` is not a path, so `subjectPaths:[]`.

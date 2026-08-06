@@ -67,9 +67,9 @@ pub fn fetch_kernel_header(tag: &str, expected_sha256: &str) -> Result<String, S
 /// on the offline `--fixtures` path, which verifies through this SAME
 /// function) a hard error rather than a silently wrong derived table. The
 /// error must carry BOTH hashes verbatim: the expected (pinned) hex and the
-/// actual computed hex (see the frozen tests below). NOTE for the
-/// implementer: in the `digest` 0.11 line the finalize output type does not
-/// implement `std::fmt::LowerHex`; hand-roll the hex encoding (see
+/// actual computed hex (see the frozen tests below). NOTE: in the `digest`
+/// 0.11 line the finalize output type does not
+/// implement `std::fmt::LowerHex`; the hex encoding is hand-rolled (see
 /// `tools/fapolicyd-attr-update/src/source.rs`'s `to_hex`).
 pub fn verify_sha256(content: &str, expected_hex: &str) -> Result<(), String> {
     use sha2::{Digest, Sha256};
@@ -135,8 +135,7 @@ mod tests {
         // impl's own hex encoder). An implementation whose hex encoding is
         // broken (e.g. an empty string from a gutted encoder) cannot produce
         // ABC_SHA256 in its message, and a verify that silently returns Ok(())
-        // never produces an Err at all. (Frozen contract inherited from the
-        // fapolicyd-attr-update ATL round-1 strengthening.)
+        // never produces an Err at all.
         let zeros = "0000000000000000000000000000000000000000000000000000000000000000";
         let err = verify_sha256("abc", zeros)
             .expect_err("a wrong expected hash must be rejected, not silently accepted");

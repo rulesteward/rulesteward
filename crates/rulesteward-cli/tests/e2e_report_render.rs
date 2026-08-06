@@ -697,23 +697,23 @@ fn report_diff_against_fifo_fails_fast_not_hang() {
 }
 
 // ---------------------------------------------------------------------------
-// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+// #583 (blocker 2): a FIFO-only special-file
 // guard is not enough. `/dev/null` (a character device) never hangs under a
 // raw `std::fs::read_to_string` - it reads back an instant empty string - so
 // it defeats any guard that only special-cases FIFOs, and on `report` this is
 // worse than a hang: it produces a CONFIDENT, FABRICATED clean report.
 // ---------------------------------------------------------------------------
 
-/// `report --file /dev/null` today silently succeeds and prints a fabricated
-/// "0 allow-grants" CLEAN report (measured live, 2026-07-24: exit 0, stdout
-/// "0 allow-grants (0 hash-pinned, 0 trust-scoped)") - a wrong, confident
-/// answer, not a crash or a hang. A `if is_fifo(path) { reject } else { raw
-/// read }` implementation passes every FIFO test in this file yet still lets
-/// this exact silent-wrong-answer case through, and per #560's own title
-/// ("`fapolicyd lint --file /dev/zero` hangs") a device node is squarely
-/// in scope, not just FIFOs. After the fix (routing through the SAME
+/// An unguarded `report --file /dev/null` silently succeeds and prints a
+/// fabricated "0 allow-grants" CLEAN report (measured live, 2026-07-24: exit
+/// 0, stdout "0 allow-grants (0 hash-pinned, 0 trust-scoped)") - a wrong,
+/// confident answer, not a crash or a hang. A `if is_fifo(path) { reject }
+/// else { raw read }` implementation passes every FIFO test in this file yet
+/// still lets this exact silent-wrong-answer case through, and per #560's own
+/// title ("`fapolicyd lint --file /dev/zero` hangs") a device node is squarely
+/// in scope, not just FIFOs. Routing through the SAME
 /// `rulesteward_core::fsread::read_to_string` every other special-file guard
-/// uses, which rejects ANY non-regular file), `/dev/null` must be a tool
+/// uses, which rejects ANY non-regular file, makes `/dev/null` a tool
 /// failure instead.
 #[test]
 fn report_file_dev_null_is_a_tool_failure_not_a_fabricated_clean_report() {
@@ -780,7 +780,7 @@ fn report_file_is_a_directory_stays_a_tool_failure_across_the_fsread_conversion(
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// Stream support.
 // `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
 // `--file` and `--diff-against` are stream-shaped inputs operators
 // legitimately pipe in. `read_stream_to_string` accepts a FIFO with a live

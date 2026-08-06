@@ -6,7 +6,7 @@
 exclude_globs = ["src/source.rs"]
 
 # `parse_requirements` (xccdf.rs) two match-guard survivors from the mutation
-# gate (session 7c pipeline P2, #474). Both are genuine equivalent mutants for
+# gate (#474). Both are genuine equivalent mutants for
 # any well-formed XCCDF (real DISA corpus or a synthetic-but-schema-plausible
 # reformat), verified by tracing the state machine, not merely "current tests
 # don't kill it". The sibling `cur_stig_id.is_none() -> true` guard at the

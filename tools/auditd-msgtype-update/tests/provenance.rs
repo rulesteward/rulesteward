@@ -12,7 +12,7 @@
 //! fapolicyd-attr-update/tests/provenance.rs, which routes through the
 //! crate's own `Config::parse` + `verify_sha256`): hashes are computed
 //! directly via the sha2 crate and pins are read directly via the toml crate,
-//! so this gate holds even while the crate's bodies are `todo!()` stubs, and
+//! so this gate holds independently of the crate's own bodies, and
 //! a broken impl-side hex encoder can never make the pins self-consistently
 //! wrong. The impl-routed equivalents live in `src/config.rs`'s and
 //! `src/source.rs`'s frozen unit tests.

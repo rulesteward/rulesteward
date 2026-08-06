@@ -271,17 +271,18 @@ fn h3_two_perm_shadow_file_no_interface_no_etc_t() {
 // ---------------------------------------------------------------------------
 // TC-H4: Permissive denial - emit allow + PERMISSIVE-MODE banner
 //
-// SANCTIONED SPEC CHANGE (round-2, 2026-06-05): the user explicitly REVERSED
-// f4 §2.5 invariant 6 (`f4-selinux-triage-grounding.md` line 294-296: "permissive=1
-// denials are reported but NOT auto-suggested as allows"). The new behaviour:
-// a `permissive=1` denial DOES now get a suggested `allow`, but it MUST be
+// This test reverses f4 §2.5 invariant 6 (`f4-selinux-triage-grounding.md`
+// line 294-296 still states the pre-reversal wording: "permissive=1 denials
+// are reported but NOT auto-suggested as allows"). The current behaviour: a
+// `permissive=1` denial DOES get a suggested `allow`, but it MUST be
 // preceded by a clear PERMISSIVE-MODE caveat banner so the operator knows the
 // access was logged-not-enforced and must be reviewed before allowing.
 //
 // This is NOT weakening: the test still pins concrete, load-bearing behaviour
-// (the banner marker MUST be present AND the allow MUST be emitted). The pre-
-// reversal assertions (no allow / only-informational) are intentionally
-// replaced because the underlying spec decision changed.
+// (the banner marker MUST be present AND the allow MUST be emitted). It does
+// not assert the no-allow / only-informational behaviour
+// `f4-selinux-triage-grounding.md` states, because the underlying spec
+// decision changed for this surface, not because the test was weakened.
 //
 // Banner marker (stable substring the impl MUST emit, shared by the floor path
 // and the --policy authoritative path; see e2e_selinux_authoritative.rs):
@@ -294,7 +295,7 @@ fn h3_two_perm_shadow_file_no_interface_no_etc_t() {
 /// Stable banner marker substring the implementation MUST emit on any
 /// permissive denial block (BOTH the floor path here and the --policy
 /// authoritative path in the CLI e2e). Asserted verbatim so a wording drift is
-/// caught. Chosen by the round-2 test-author per the user's f4-inv-6 reversal.
+/// caught.
 const PERMISSIVE_BANNER_MARKER: &str = "PERMISSIVE MODE:";
 
 #[test]
@@ -928,14 +929,6 @@ fn h16_end_to_end_corpus_single_perm_read() {
 // ---------------------------------------------------------------------------
 // TC-H17 / TC-H18: permissive DECLINE-kind denials must NOT emit a self-
 // contradictory PERMISSIVE-MODE banner.
-//
-// Round-2 impl-aware adversarial finding: `render_group_human` gated the
-// PERMISSIVE-MODE banner ONLY on `any_permissive`, independent of `kind`. For a
-// permissive denial whose authoritative verdict is a DECLINE kind (Constraint,
-// Bounds, MlsSuspected, RoleSuspected, ContextInvalid) NO allow is emitted
-// (TC-H13/H14 pin the no-allow behaviour). But the banner text promises "The
-// suggested allow below ... before applying it" - so on a permissive DECLINE the
-// banner promised an allow that never appears (self-contradictory output).
 //
 // Grounding:
 // - "Constraint / Bounds decline => no allow": f4 §8 + the existing TC-H13/H14

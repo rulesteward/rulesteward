@@ -1,20 +1,11 @@
-//! RED barrier tests for the per-product auditd CIS control table (issue #528),
-//! milestone 9f-v0_8-wave3-cis.
+//! Tests for the per-product auditd CIS control table (issue #528).
 //!
 //! Behavior pinned: `lints::cis::cis_baseline(TargetVersion)` returns the
 //! grounded per-RHEL-major CIS control rows -- one [`CisControl`] per
 //! `ComplianceAsCode` audit rule, carrying the CIS control id, the `CaC` rule
 //! name, and the one-line `CaC` title. Every id/title asserted below is
-//! transcribed VERBATIM from the session grounding
-//! (`derive-rhel{8,9,10}-auditd.txt`, `cis-update derive` at `CaC` pin
-//! `519b5fe8`); none is from recall.
-//!
-//! # RED-state note
-//! The three shipped tables (`RHEL8_CIS`/`RHEL9_CIS`/`RHEL10_CIS`) are seeded
-//! EMPTY at the test-author barrier (see `src/lints/cis.rs`'s module doc),
-//! exactly as the STIG `RHEL*_REQUIRED` tables were. Every table test below
-//! therefore FAILS until the implementer fills the tables verbatim from
-//! `cis-update derive`.
+//! transcribed VERBATIM from `derive-rhel{8,9,10}-auditd.txt`
+//! (`cis-update derive` at `CaC` pin `519b5fe8`); none is from recall.
 //!
 //! Counts (grounding headers): rhel8 = 25 controls / 66 rule mappings,
 //! rhel9 = 24 / 68, rhel10 = 40 / 75; 0 selections for every product.
@@ -29,9 +20,7 @@
 //! VERBATIM from the session's stig-refs grounding
 //! (`stig-refs-rhel{8,9,10}-auditd.txt`, `cis-update` at `CaC` pin `519b5fe8`);
 //! titles from `derive-rhel{8,9,10}-auditd.txt`. Ground-truth join rows cited
-//! inline at each assertion. The accessor is seeded to return an empty `Vec`
-//! and `w06` does not attach yet, so every attach test FAILS (RED) until the
-//! implementer builds the join and wires it into `w06`.
+//! inline at each assertion.
 
 use std::collections::BTreeSet;
 
@@ -89,7 +78,7 @@ fn cis_baseline_rhel8_has_grounded_rows() {
         "Ensure the audit configuration is immutable (Automated)"
     );
 
-    // Two rows whose grounding was regenerated clean (answers round 1). The
+    // Two rows whose grounding was regenerated clean. The
     // sysadmin-actions title carries NO stray "894" suffix (a source-fixed
     // transcription artifact) and phrases rhel8's exact wording ("changes to
     // system administration scope (sudoers)"), which rhel10 renumbers AND
@@ -263,8 +252,8 @@ fn cis_baseline_rule_mapping_and_control_counts() {
 #[test]
 fn cis_baseline_title_is_consistent_within_a_control() {
     // Every rule mapping sharing a control_id shares one title (a CaC-derived
-    // invariant that holds for all three products). Non-empty guard keeps this
-    // RED pre-impl rather than vacuously green over an empty table.
+    // invariant that holds for all three products). The non-empty guard keeps
+    // this from passing vacuously over an empty table.
     for target in [
         TargetVersion::Rhel8,
         TargetVersion::Rhel9,
@@ -288,8 +277,8 @@ fn cis_baseline_title_is_consistent_within_a_control() {
 }
 
 // ===========================================================================
-// Attach layer: the CIS->STIG join on au-W06 findings (issue #528, answers
-// round 1). `cis_controls_for_stig(target, stig_id)` returns the DISTINCT
+// Attach layer: the CIS->STIG join on au-W06 findings (issue #528).
+// `cis_controls_for_stig(target, stig_id)` returns the DISTINCT
 // `Framework::Cis` `ControlRef`s (`.with_name`'d with the CaC title) that join
 // a STIG id under `target`; `w06(.., Some(target))` attaches them to each
 // matching au-W06 finding ALONGSIDE its `Framework::Stig` ref. Every join row
@@ -310,7 +299,7 @@ fn cis_join_rhel10_500810_maps_two_distinct_controls_with_their_titles() {
     // stig-refs-rhel10 rows 60-64: RHEL-10-500810 is joined by FIVE CaC rules
     // spanning TWO distinct CIS controls -- 6.3.3.24 (unlink/unlinkat) and
     // 6.3.3.25 (rename/renameat/renameat2). It is the ONLY multi-distinct-CIS
-    // STIG id across all three products (answers round 1), so its finding
+    // STIG id across all three products, so its finding
     // carries BOTH refs. Titles verbatim from derive-rhel10 rows 61 + 63.
     let refs = cis_controls_for_stig(TargetVersion::Rhel10, "RHEL-10-500810");
     assert_eq!(
@@ -365,7 +354,7 @@ fn cis_join_dedups_multiple_rows_sharing_one_control() {
 
 #[test]
 fn cis_join_one_control_maps_multiple_distinct_stig_ids() {
-    // The complementary many-shape (answers round 1): ONE CIS control is the
+    // The complementary many-shape: ONE CIS control is the
     // join target of SEVERAL distinct STIG ids. rhel8 6.3.3.8 (user/group
     // modification) is joined by five separate STIG rules -- RHEL-08-030130 /
     // 030140 / 030150 / 030160 / 030170 (stig-refs-rhel8 rows 24-28). Each of
@@ -418,10 +407,10 @@ fn cis_join_immutable_control_diverges_per_product() {
 
 #[test]
 fn cis_join_is_product_specific() {
-    // A rhel10-only STIG id joins under rhel10 (this positive anchor keeps the
-    // test RED pre-impl) but is ABSENT from the rhel8/rhel9 joins -- the join
-    // is read from the target's own controls/stig_<p>.yml, never a shared
-    // superset.
+    // A rhel10-only STIG id joins under rhel10 (a positive anchor, so the test
+    // cannot pass on the emptiness checks alone) but is ABSENT from the
+    // rhel8/rhel9 joins -- the join is read from the target's own
+    // controls/stig_<p>.yml, never a shared superset.
     assert_eq!(
         cis_controls_for_stig(TargetVersion::Rhel10, "RHEL-10-500810").len(),
         2,
@@ -439,10 +428,8 @@ fn cis_join_is_product_specific() {
 
 #[test]
 fn cis_join_rhel9_more_distinct_anchors() {
-    // Two MORE distinct rhel9 join anchors beyond the immutable pin (answers
-    // round-1 adversarial ask; rhel9 previously had exactly one pinned distinct
-    // case). Each is a specific STIG id -> single CIS control with its verbatim
-    // CaC title:
+    // Two MORE distinct rhel9 join anchors beyond the immutable pin. Each is
+    // a specific STIG id -> single CIS control with its verbatim CaC title:
     //   RHEL-09-654015 -> 6.3.3.9  (dac chmod/fchmod/fchmodat all collapse to
     //     one control; stig-refs-rhel9 rows 35/37/38; title derive-rhel9 6.3.3.9)
     //   RHEL-09-654250 -> 6.3.3.12 (login/faillock; stig-refs-rhel9 row 52;
@@ -472,11 +459,10 @@ fn cis_join_rhel9_more_distinct_anchors() {
 
 #[test]
 fn cis_join_rhel10_more_distinct_anchors() {
-    // Two MORE distinct rhel10 join anchors beyond RHEL-10-500810 (answers
-    // round-1 adversarial ask; rhel10 previously had exactly one pinned distinct
-    // case). rhel10 renumbers these (dac=6.3.3.18, login=6.3.3.23) AND rewords
-    // the dac title to enumerate the syscalls, so a table copied from rhel8/9
-    // fails here:
+    // Two MORE distinct rhel10 join anchors beyond RHEL-10-500810. rhel10
+    // renumbers these (dac=6.3.3.18, login=6.3.3.23) AND rewords the dac
+    // title to enumerate the syscalls, so a table copied from rhel8/9 fails
+    // here:
     //   RHEL-10-500780 -> 6.3.3.18 (dac chmod/fchmod/fchmodat/fchmodat2 collapse
     //     to one control; stig-refs-rhel10 rows 40-43; title derive-rhel10 6.3.3.18)
     //   RHEL-10-500750 -> 6.3.3.23 (login/faillock; stig-refs-rhel10 row 58;
@@ -506,8 +492,8 @@ fn cis_join_rhel10_more_distinct_anchors() {
 
 #[test]
 fn cis_join_is_grounded_complete_and_well_shaped() {
-    // GROUNDED per-product completeness -- the backstop for the round-1
-    // adversarial survivor. Over every DISTINCT au-W06 stig id shipped in
+    // GROUNDED per-product completeness -- the backstop for the adversarial
+    // survivor. Over every DISTINCT au-W06 stig id shipped in
     // `stig_baseline`, both (a) the number of ids carrying a non-empty CIS join
     // and (b) the total distinct CIS refs across them must equal the numbers
     // derived mechanically by intersecting each product's
@@ -518,7 +504,7 @@ fn cis_join_is_grounded_complete_and_well_shaped() {
     //   rhel10 : 21 joined stig ids, 22 CIS refs  (RHEL-10-500810 -> 2 controls)
     // A wrong impl that hardcodes only the individually-pinned stig ids and
     // returns empty for the rest passes every per-id attach test yet FAILS these
-    // counts -- exactly the survivor the round-1 adversarial review flagged (no
+    // counts -- exactly the survivor an adversarial review flagged (no
     // other backstop exists: cis-check is ids-only and mutation cannot detect a
     // missing join entry). Per-finding well-shapedness (no repeated control id;
     // every ref is a titled CIS ref with no secondary id) is checked alongside.

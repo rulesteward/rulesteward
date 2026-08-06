@@ -1,17 +1,15 @@
 //! Black-box e2e oracle tests for `rulesteward fapolicyd report` (issues #81/#82/#83/#84).
 //!
-//! ## Role (TDD barrier - TEST AUTHOR, IMPL-BLIND)
+//! ## Role
 //!
-//! These tests are authored BLIND to the implementation. They pin the CORRECT
-//! output of `report` via 72 vendored golden scenarios. They FAIL RED because
-//! `commands/report.rs::run()` is a `todo!()` stub (exit 101). When the
-//! `feat-report` implementer fills the stub, all tests must turn GREEN.
+//! These tests pin the CORRECT output of `report` via 72 vendored golden
+//! scenarios.
 //!
-//! ## trustJoin shape - RESOLVED (f2 section 3.2, orchestrator 2026-06-04)
+//! ## trustJoin shape (f2 section 3.2)
 //!
 //! All path-join scenarios use Shape A: `[{ "grantIndex": N, "rows": [...] }]`.
-//! The two former Shape-B goldens have been normalized. The enumerate-cap shape
-//! (grantSource/count/enumerated/entries) is a distinct opt-in form kept as-is.
+//! The enumerate-cap shape (grantSource/count/enumerated/entries) is a distinct
+//! opt-in form.
 //!
 //! ## Corpus provenance
 //!
@@ -22,10 +20,9 @@
 //!
 //! ## Count note
 //!
-//! Issue #84 cites "63 scenarios" but the actual corpus has 73 (the
-//! report-wave1-patch phase added 9 more after the issue was filed; the
-//! adversarial-review fix added `trustdb-enumerate-cap-noflag`). All 73 are
-//! wired here. The floor guard asserts >= 73.
+//! RULING: the corpus is larger than the 63 scenarios issue #84 cites; the
+//! floor guard is authoritative for the current count.
+//! Rationale + evidence: #84
 
 use assert_cmd::Command;
 use rulesteward_fapolicyd::trustdb::write_trustdb_fixture_kv;
@@ -273,8 +270,6 @@ fn corpus_floor_guard_79_scenarios_present() {
 //
 // For each scenario that does NOT require --against-trustdb or --diff-against,
 // run `report <rules.d> --format json` and assert output == golden.
-//
-// All of these are RED because run() is todo!() -> exit 101.
 
 macro_rules! plain_oracle_test {
     ($test_name:ident, $category:expr, $id:expr) => {
@@ -382,8 +377,7 @@ plain_oracle_test!(
 plain_oracle_test!(oracle_scope_trust_object, "scope", "scope-trust-object");
 plain_oracle_test!(oracle_scope_trust_subject, "scope", "scope-trust-subject");
 
-// hash-origin-alg (loadIndex is 1-based per f2 sections 2.4 / 3.2 and the
-// wave-1-patch correction; all six previously 0-based goldens were fixed to start at 1)
+// hash-origin-alg (loadIndex is 1-based per f2 sections 2.4 / 3.2)
 plain_oracle_test!(
     oracle_hash_filehash_md5_32,
     "hash-origin-alg",
@@ -537,18 +531,14 @@ plain_oracle_test!(
 // ---------------------------------------------------------------------------
 // against-trustdb oracle tests
 //
-// trustJoin shape - RESOLVED (f2 section 3.2, orchestrator decision 2026-06-04)
+// trustJoin shape (f2 section 3.2)
 //
 // All path-join scenarios use Shape A (per-grant array):
 //   "trustJoin": [{ "grantIndex": 0, "rows": [{path, source, size, digest}] }]
 //
-// The former Shape B goldens (diff-changed-trustdb-digest and trustdb-source-unknown)
-// have been normalized to Shape A in the trustJoin-fix commit.
-//
 // trustdb-enumerate-cap uses a distinct shape (object with grantSource/count/
 // enumerated/entries) for the --enumerate-trust opt-in cap form (f2 section 2.4).
-// This is intentionally different from the per-grant path-join Shape A and is
-// kept as-is.
+// This is intentionally different from the per-grant path-join Shape A.
 //
 // The three trustJoin forms and which scenarios use them:
 //   Shape A (path-join): all against-trustdb path-join scenarios + diff-drift
@@ -647,8 +637,8 @@ fn oracle_trustdb_source_filedb() {
 }
 
 /// trustdb-source-unknown: source int 0 maps to `TrustSource::Unknown`.
-/// The corpus golden for this scenario now uses Shape A (normalized by the
-/// trustJoin-fix commit). The inline expected below matches the golden file.
+/// The corpus golden for this scenario uses Shape A. The inline expected below
+/// matches the golden file.
 #[test]
 fn oracle_trustdb_source_unknown() {
     let rules_d = scenario_rules_d("against-trustdb", "trustdb-source-unknown");
@@ -786,11 +776,11 @@ fn oracle_trustdb_enumerate_trust1() {
 /// `--enumerate-trust` the implementation MUST emit a suppressed cap block:
 ///   `{ "grantSource": ..., "count": 25, "enumerated": false }`
 /// with NO `entries` list. An implementation that always enumerates all entries
-/// (ignores the gate) passes the old weak assertion but FAILS this test.
+/// (ignores the gate) FAILS this test.
 ///
 /// The `trustdb-enumerate-cap-noflag` golden pins the exact no-flag wire shape.
 /// The WITH-flag twin (`oracle_trustdb_enumerate_cap_with_flag`) pins the full form.
-/// Together they force the implementer to honour BOTH sides of the gate.
+/// Together they pin BOTH sides of the gate.
 ///
 /// The 25 fixture rows are the same `build_cap_trustdb_rows()` used by the WITH-flag test.
 #[test]
@@ -1433,7 +1423,7 @@ fn oracle_diff_changed_origin() {
 
 /// diff-changed-trustdb-digest: the trust-DB digest for a path grant changed between
 /// snapshots (integrity drift). Uses --against-trustdb and --diff-against.
-/// The corpus golden now uses Shape A trustJoin (normalized by the trustJoin-fix commit).
+/// The corpus golden uses Shape A trustJoin.
 #[test]
 fn oracle_diff_changed_trustdb_digest() {
     let rules_d = scenario_rules_d("diff-drift", "diff-changed-trustdb-digest");
@@ -1501,25 +1491,24 @@ fn oracle_diff_changed_trustdb_digest() {
 }
 
 // ---------------------------------------------------------------------------
-// Drift-key collision killing tests (adversarial-impl-review, 2026-06-05)
+// Drift-key collision killing tests
 //
-// The impl's compute_drift keys on `decision|perm|subject|scope`, which collides
-// when two grants share the same scope but have DIFFERENT object values (e.g.
-// dir=/a/ vs dir=/b/ both have scope=dir -> the old key treats them as the SAME
-// grant -> reports zero drift instead of removed+added). These three scenarios
+// A `compute_drift` keyed on `decision|perm|subject|scope` collides when two
+// grants share the same scope but have DIFFERENT object values (e.g. dir=/a/ vs
+// dir=/b/ both have scope=dir -> one key covers both grants -> zero drift
+// reported instead of removed+added). These three scenarios
 // each supply a snapshot with one object value and a current rules.d with a
 // different object of the same scope, asserting exactly 2 drift rows (removed +
-// added). They are RED against the current impl (which collapses them to zero drift).
-// The diff-changed-hash-repin test (above) ensures hash repins STAY "changed"
-// after the implementer's fix.
+// added).
+// The diff-changed-hash-repin test (above) ensures hash repins STAY "changed".
 // ---------------------------------------------------------------------------
 
 /// diff-object-change-dir: snapshot has `allow open all : dir=/a/`; current has
 /// `allow open all : dir=/b/`. Same scope (dir), same subject (all), same
 /// decision/perm. Different object -> must be REMOVED + ADDED (NOT zero drift).
 ///
-/// RED against the current impl (which keys on decision|perm|subject|scope and
-/// collides /a/ and /b/ into a single key -> reports no drift).
+/// A key of decision|perm|subject|scope collides /a/ and /b/ into a single key
+/// and reports no drift.
 #[test]
 fn oracle_diff_object_change_dir() {
     let rules_d = scenario_rules_d("diff-drift", "diff-object-change-dir");
@@ -1541,7 +1530,7 @@ fn oracle_diff_object_change_dir() {
     );
     assert_matches_golden(&actual, &golden, "diff-object-change-dir");
     // The key property: EXACTLY 2 drift rows (added for dir=/b/, removed for dir=/a/).
-    // A drift-key-colliding impl reports 0 rows here -> RED.
+    // A drift-key-colliding impl reports 0 rows here.
     let drift = actual["drift"].as_array().expect("drift must be an array");
     assert_eq!(
         drift.len(),
@@ -1576,7 +1565,7 @@ fn oracle_diff_object_change_dir() {
 /// current has `allow open all : ftype=text/x-shellscript`. Same ftype scope, different
 /// MIME type -> must be REMOVED + ADDED.
 ///
-/// RED against the current impl (ftype-scope collision produces zero drift).
+/// An ftype-scope collision produces zero drift.
 #[test]
 fn oracle_diff_object_change_ftype() {
     let rules_d = scenario_rules_d("diff-drift", "diff-object-change-ftype");
@@ -1624,7 +1613,7 @@ fn oracle_diff_object_change_ftype() {
 /// current has `allow open all : path=/y`. Same path scope, different path ->
 /// must be REMOVED + ADDED.
 ///
-/// RED against the current impl (path-scope collision produces zero drift).
+/// A path-scope collision produces zero drift.
 #[test]
 fn oracle_diff_object_change_path() {
     let rules_d = scenario_rules_d("diff-drift", "diff-object-change-path");
@@ -1669,22 +1658,21 @@ fn oracle_diff_object_change_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical-predicate drift killing tests (adversarial-impl-review, 2026-06-05)
+// Canonical-predicate drift killing tests
 //
-// These two scenarios expose that compute_drift's row_key uses the source-order
-// render of subject/object (not the canonical predicate). The canonical predicate
-// (decision, perm, sorted(subject), sorted(object), set-expanded) is what
-// f2 section 4.1 mandates for the diff key. Two canonical-equal grants that
-// DIFFER in source-order render produce spurious add+remove in the current impl.
+// compute_drift's row_key must use the canonical predicate
+// (decision, perm, sorted(subject), sorted(object), set-expanded), which is what
+// f2 section 4.1 mandates for the diff key. A row_key built from the
+// source-order render of subject/object instead produces spurious add+remove for
+// two canonical-equal grants.
 //
 // (A) diff-reorder-object-attrs-no-drift: current grant has object
 //     "dir=/a/ ftype=text/plain"; snapshot has "ftype=text/plain dir=/a/".
-//     Canonical predicate is identical. Expected drift: EMPTY. RED now.
+//     Canonical predicate is identical. Expected drift: EMPTY.
 //
 // (B) diff-setref-vs-members-no-drift: current grant has subject "exe=%exes"
 //     (with %exes={/bin/a}); snapshot has literal "exe=/bin/a". Canonical
 //     predicate is identical (set-expansion makes them equal). Expected drift: EMPTY.
-//     RED now.
 // ---------------------------------------------------------------------------
 
 /// diff-reorder-object-attrs-no-drift: current has `allow open all : dir=/a/ ftype=text/plain`;
@@ -1693,8 +1681,8 @@ fn oracle_diff_object_change_path() {
 /// conjunction (f2 section 4.1), so the canonical predicate is IDENTICAL.
 /// Expected drift: EMPTY (zero rows). Exit 0.
 ///
-/// RED against the current impl: `row_key` keys on the raw source-order
-/// `object` string. "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/"
+/// A `row_key` keyed on the raw source-order `object` string treats
+/// "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/"
 /// -> two distinct keys -> spurious removed(snapshot) + added(current).
 #[test]
 fn oracle_diff_reorder_object_attrs_no_drift() {
@@ -1737,8 +1725,8 @@ fn oracle_diff_reorder_object_attrs_no_drift() {
         "diff-reorder-object-attrs-no-drift",
     );
     // The key property: drift must be EMPTY.
-    // The current impl reports 2 rows (removed "ftype=text/plain dir=/a/" +
-    // added "dir=/a/ ftype=text/plain") because row_key uses source-order render.
+    // A source-order row_key reports 2 rows (removed "ftype=text/plain dir=/a/" +
+    // added "dir=/a/ ftype=text/plain").
     let drift = actual["drift"].as_array().expect("drift must be an array");
     assert!(
         drift.is_empty(),
@@ -1755,8 +1743,8 @@ fn oracle_diff_reorder_object_attrs_no_drift() {
 /// is identical (a %set ref and its sorted expansion are the same grant per
 /// f2 section 4.1). Expected drift: EMPTY. Exit 0.
 ///
-/// RED against the current impl: `row_key` uses the raw source-order `subject`
-/// string. Current has "exe=%exes"; snapshot has "exe=/bin/a". These differ as
+/// A `row_key` using the raw source-order `subject` string sees current
+/// "exe=%exes" and snapshot "exe=/bin/a". These differ as
 /// strings -> two distinct keys -> spurious removed(snapshot) + added(current).
 ///
 /// Observed current rendered form: `subject="exe=%exes"`, `setExpansions={"%exes":["/bin/a"]}`.
@@ -1802,8 +1790,8 @@ fn oracle_diff_setref_vs_members_no_drift() {
         "diff-setref-vs-members-no-drift",
     );
     // The key property: drift must be EMPTY.
-    // The current impl reports 2 rows (removed "exe=/bin/a" + added "exe=%exes")
-    // because row_key uses source-order render and %exes != /bin/a as strings.
+    // A source-order row_key reports 2 rows (removed "exe=/bin/a" + added
+    // "exe=%exes"), since %exes != /bin/a as strings.
     let drift = actual["drift"].as_array().expect("drift must be an array");
     assert!(
         drift.is_empty(),
@@ -1817,7 +1805,7 @@ fn oracle_diff_setref_vs_members_no_drift() {
 
 // ---------------------------------------------------------------------------
 // C02 parity test: canonical_grant_key agrees with the linter's C02 AST-equality
-// notion (issue #82, spec-reviewer requirement).
+// notion (issue #82).
 //
 // This is a WHITE-BOX unit test calling the frozen register::canonical_grant_key
 // function directly (via rulesteward-fapolicyd's public API). It guards against
@@ -2049,10 +2037,10 @@ mod c02_parity {
     /// predicate (including the object). A drift key of `decision|perm|subject|scope`
     /// (without the object value) would make `allow open all : dir=/a/` and
     /// `allow open all : dir=/b/` collide -> `compute_drift` reports zero drift
-    /// instead of removed+added. `canonical_grant_key` already encodes the object
-    /// (it was always correct); this test asserts that the drift function uses
-    /// the SAME notion (i.e. the implementer must key `compute_drift` on the full
-    /// canonical predicate, not a truncated scope-only key).
+    /// instead of removed+added. `canonical_grant_key` encodes the object; this
+    /// test asserts that the drift function uses the SAME notion (i.e.
+    /// `compute_drift` keys on the full canonical predicate, not a truncated
+    /// scope-only key).
     #[test]
     fn c02_parity_drift_key_includes_object_value_no_collision() {
         let sets = empty_sets();

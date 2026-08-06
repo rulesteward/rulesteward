@@ -6,7 +6,7 @@
 //! STIG is instead versioned by FILENAME in a `V<major>R<minor>` scheme (e.g.
 //! the `V2R9` inside `U_RHEL_9_V2R9_STIG.zip`).
 //!
-//! # Algorithm (adversarial-review rework, 2026-07-24)
+//! # Algorithm
 //!
 //! 1. Parse the pin's own `V<major>R<minor>` token. Unparseable, OR a parsed
 //!    major/minor of exactly `u32::MAX` (so large that [`next_candidates`]
@@ -15,16 +15,17 @@
 //!    a network one - no real DISA STIG revision will ever approach
 //!    `u32::MAX`, so a pin carrying one is unambiguously bad, not a
 //!    legitimate value this tool must gracefully degrade over the network;
-//!    see [`scan_revision`]'s own doc for the ATL finding this closes and
-//!    its documented scope).
+//!    see [`scan_revision`]'s own doc for the rationale and its documented
+//!    scope).
 //! 2. Probe the PINNED zip's own URL FIRST, before enumerating any candidate
-//!    (USER RULING). This is direct, convention-independent evidence: a live
+//!    (RULING; rationale + evidence: #550). This is direct,
+//!    convention-independent evidence: a live
 //!    check (2026-07-24) found DISA's CDN retains only a WINDOW of revisions
 //!    per product (`U_RHEL_8_V2R3..V2R8` returned 200; `V2R1`/`V2R2` already
 //!    404). A pin that has aged past the low end of that window 404s on
-//!    ITSELF - the OLD algorithm (probe next-minor first) could miss this
+//!    ITSELF - probing next-minor first could miss this
 //!    entirely: if the next one or two minors are ALSO purged, "next-minor
-//!    404, rollover 404" falsely reported `Current` while later revisions
+//!    404, rollover 404" would falsely report `Current` while later revisions
 //!    (e.g. V2R8) were live the whole time. A 404 on the pin itself needs no
 //!    such inference, so it is checked first and reported as
 //!    [`PinStatus::PinNotFound`] - explicitly NOT [`PinStatus::Current`].
@@ -83,7 +84,7 @@
 //! offline-testable pure core, exercised below with a fake `Prober` that
 //! never touches the network.
 //!
-//! Non-blocking by design (#550, Phase-0 justfile comment): a newer upstream
+//! Non-blocking by design (#550): a newer upstream
 //! revision, and even a retired pin, are NEWS, not a build failure -
 //! [`report`] exits `0` on every branch, matching the `sshd-stig-check-pin` /
 //! `auditd-stig-check-pin` recipes' existing graceful-skip convention for a
@@ -162,20 +163,20 @@ pub const PROBE_CEILING: usize = 64;
 /// the parsed value) and [`candidate_zip`] (which needs the span to splice a
 /// replacement in). Minor is matched GREEDILY (every following ASCII digit),
 /// not a fixed width, so a rolled-over multi-digit minor (`V2R10`) parses as
-/// `10`, not `1` - see `parse_revision_extracts_major_and_minor`'s BLOCKER 1.
+/// `10`, not `1` - see `parse_revision_extracts_major_and_minor`.
 ///
 /// A candidate whose major OR minor parses to exactly `u32::MAX` is treated
-/// as absent (the scan keeps looking) rather than returned - #550 lane-5 ATL
-/// MISS-4: [`next_candidates`]'s `+ 1` would overflow on such a value (a
+/// as absent (the scan keeps looking) rather than returned:
+/// [`next_candidates`]'s `+ 1` would overflow on such a value (a
 /// debug-build panic; the workflow's `cargo run` has overflow checks ON), and
 /// no real DISA STIG revision will ever approach this magnitude, so it is
 /// unambiguously a bad pin, not a value to probe. Scoped deliberately to the
-/// STARTING pin's own token (the miss case reported): this does not, by
+/// STARTING pin's own token: this does not, by
 /// itself, prove no `u32` addition anywhere in enumeration can ever overflow
 /// for a pin crafted arbitrarily close to (but not at) `u32::MAX` - that
 /// residual is bounded by [`PROBE_CEILING`] (currently 64) and is not
 /// defended against separately, since doing so would guard against a
-/// deliberately contrived input beyond what was found.
+/// deliberately contrived input.
 fn scan_revision(zip: &str) -> Option<(usize, usize, u32, u32)> {
     let bytes = zip.as_bytes();
     for i in 0..bytes.len() {
@@ -349,9 +350,9 @@ pub fn report(product: &str, status: &PinStatus) -> (String, u8) {
              token - check stig-refs.toml for a typo"
         ),
         PinStatus::Unavailable(reason) => {
-            // #550 lane-5 ATL, cosmetic nit: an empty `reason` (a bare `ERR:`
-            // fixture line, see `main.rs::FixtureProber`) must not render a
-            // dangling "... - " with nothing after the separator.
+            // An empty `reason` (a bare `ERR:` fixture line, see
+            // `main.rs::FixtureProber`) must not render a dangling "... - "
+            // with nothing after the separator.
             if reason.is_empty() {
                 format!("{product}: could not determine staleness (no reason given)")
             } else {
@@ -378,24 +379,20 @@ mod tests {
             parse_revision("U_RHEL_10_V1R2_STIG.zip"),
             Some(Revision { major: 1, minor: 2 })
         );
-        // #550 lane-5 round-2 rework, BLOCKER 1: every fixture above happens
+        // Every fixture above happens
         // to have a SINGLE-DIGIT minor, so a fixed-offset parse (e.g. byte
         // `i+1` for the major digit, `i+3` for the minor digit) passes both -
-        // and, worse under the pin-first ruling, silently mis-parses any real
+        // and, worse under the pin-first rule, silently mis-parses any real
         // pin whose minor has rolled past 9 into the WRONG revision, so
         // `find_latest` probes a URL it never intended to and can report an
         // actionable false `PinNotFound` against a pin that is actually
         // current. A genuinely multi-digit minor closes this.
         //
-        // [CORRECTED, #550 lane-5 ATL] An earlier draft of this comment
-        // claimed "the real rhel8 pin already reads V2R10" - false:
-        // `stig-refs.toml` pins `U_RHEL_8_V2R8_STIG.zip` (confirmed via
-        // `git log -p` to have never read anything else), and
-        // `U_RHEL_8_V2R10_STIG.zip` 404s live. The concern is still genuine,
-        // just needed regrounding: rhel9's own pin (`V2R9`) is one bump away
-        // from a two-digit minor (`V2R10`), and `U_RHEL_7_V3R15_STIG.zip` -
-        // an EXISTING DISA filename with a two-digit minor - returns HTTP 200
-        // live (verified 2026-07-24).
+        // `stig-refs.toml` pins `U_RHEL_8_V2R8_STIG.zip`, and
+        // `U_RHEL_8_V2R10_STIG.zip` 404s live. rhel9's own pin (`V2R9`) is
+        // one bump away from a two-digit minor (`V2R10`), and
+        // `U_RHEL_7_V3R15_STIG.zip` - an EXISTING DISA filename with a
+        // two-digit minor - returns HTTP 200 live (verified 2026-07-24).
         assert_eq!(
             parse_revision("U_RHEL_8_V2R10_STIG.zip"),
             Some(Revision {
@@ -434,7 +431,7 @@ mod tests {
 
     #[test]
     fn candidate_zip_works_for_a_different_rhel_product_and_stig_major() {
-        // #550 lane-5 rework, blocker 1: the two tests above only ever
+        // The two tests above only ever
         // exercise the RHEL_9 / STIG-major-2 lineage; an impl hardcoding
         // "U_RHEL_9_" or major==2 could still pass both. rhel10's real pin
         // (V1R2, a DIFFERENT STIG major and RHEL product) proves the
@@ -454,7 +451,7 @@ mod tests {
 
     #[test]
     fn next_candidates_pins_the_assumed_rollover_rule() {
-        // #550 lane-5 rework, concern raised in review: extracted so the
+        // Extracted so the
         // ASSUMED (not observed - see this file's module doc, "The
         // minor-then-major rollover rule is ASSUMED, not observed") rollover
         // rule is pinned in exactly ONE place. If the assumption is later
@@ -518,7 +515,7 @@ mod tests {
     /// A pathological prober that ALWAYS answers Found and never exhausts
     /// (unlike `FakeProber`'s queue, which panics when exhausted, so an
     /// always-Found scenario cannot even be expressed with it). The realistic
-    /// trigger, per the reviewer's live measurement, is a captive portal or
+    /// trigger is a captive portal or
     /// misconfigured proxy answering HTTP 200 for everything - NOT the DISA
     /// CDN itself, which returns clean hard 404s. Used ONLY to prove
     /// `find_latest` enforces its own [`PROBE_CEILING`].
@@ -529,7 +526,7 @@ mod tests {
     impl Prober for AlwaysFoundProber {
         fn probe(&mut self, url: &str) -> Result<Probe, ProbeError> {
             self.probed.push(url.to_string());
-            // #550 lane-5 round-2 rework, CONCERN: a no-ceiling `find_latest`
+            // A no-ceiling `find_latest`
             // would otherwise grow `probed` unboundedly and this test would
             // hang until CI kills it (or OOMs, which this repo's
             // cargo-mutants experience shows can present as a runner-kill
@@ -549,8 +546,8 @@ mod tests {
 
     /// A pathological prober that answers `NotFound` for every MINOR-
     /// increment probe and `Found` for every ROLLOVER probe (alternating,
-    /// starting with `Found` for the pin-itself probe). #550 lane-5 ATL
-    /// MISS-5: `AlwaysFoundProber` (above) answers Found on EVERY probe, so
+    /// starting with `Found` for the pin-itself probe).
+    /// `AlwaysFoundProber` (above) answers Found on EVERY probe, so
     /// the minor probe never 404s and the rollover branch's OWN
     /// [`PROBE_CEILING`] check (immediately before the rollover probe) is
     /// never reached by any test built on it - deleting that second check
@@ -591,9 +588,11 @@ mod tests {
 
     #[test]
     fn find_latest_probes_the_pin_itself_first_then_reports_current() {
-        // USER RULING: the pin's OWN zip is probed FIRST, before any
-        // candidate enumeration - a direct, convention-independent staleness
-        // signal (see module doc, point 2). V2R9 (pin) found -> V2R10 404 ->
+        // RULING: probe the pin's OWN zip FIRST, before any candidate
+        // enumeration - a direct, convention-independent staleness signal.
+        // Rationale + evidence: #550 (see module doc, point 2).
+        //
+        // V2R9 (pin) found -> V2R10 404 ->
         // V3R1 (rollover) 404 -> stop, 3 probes total.
         let pin_rev = Revision { major: 2, minor: 9 };
         let (minor1, rollover1) = next_candidates(pin_rev);
@@ -618,8 +617,12 @@ mod tests {
 
     #[test]
     fn find_latest_reports_pin_not_found_when_the_pinned_zip_itself_404s() {
-        // USER RULING: a 404 on the PIN ITSELF is direct, convention-
-        // independent evidence of staleness (DISA purges from the low end of
+        // RULING: treat a 404 on the PIN ITSELF as staleness, never as
+        // `Current`, and stop immediately rather than guessing forward.
+        // Rationale + evidence: #550.
+        //
+        // It is direct, convention-independent
+        // evidence of staleness (DISA purges from the low end of
         // its retention window, so a pin that has aged past the window 404s
         // on itself even though newer revisions are live) - it must NOT be
         // reported as `Current`, and must stop immediately (1 probe) rather
@@ -728,7 +731,7 @@ mod tests {
 
     #[test]
     fn find_latest_uses_the_actual_base_url_and_pinned_filename_not_a_hardcoded_rhel9_lineage() {
-        // #550 lane-5 rework, blocker 1: every OTHER `find_latest` test in
+        // Every OTHER `find_latest` test in
         // this file uses the SAME `PINNED`/`BASE_URL` constants (RHEL_9, STIG
         // major 2, the real DISA CDN host) - an impl hardcoding "U_RHEL_9_",
         // `major == 2`, or the dl.dod.cyber.mil host could pass all of them.
@@ -767,9 +770,9 @@ mod tests {
 
     #[test]
     fn find_latest_enforces_a_hard_probe_ceiling_against_an_always_found_prober() {
-        // #550 lane-5 rework, blocker 2: a misbehaving prober (captive portal
+        // A misbehaving prober (captive portal
         // / proxy that answers 200 for every URL - the DISA CDN itself
-        // returns clean hard 404s, per the reviewer's live measurement) must
+        // returns clean hard 404s) must
         // not loop forever. `find_latest` must give up after EXACTLY
         // `PROBE_CEILING` probes and report a status the caller can act on,
         // never hang.
@@ -791,7 +794,7 @@ mod tests {
 
     #[test]
     fn find_latest_enforces_the_rollover_probes_own_ceiling_check_too() {
-        // #550 lane-5 ATL MISS-5: the ceiling test above uses
+        // The ceiling test above uses
         // `AlwaysFoundProber`, which answers Found on EVERY probe - the minor
         // probe never 404s, so the rollover branch's own ceiling check
         // (immediately before the rollover probe) is never exercised by it.
@@ -821,7 +824,7 @@ mod tests {
     #[test]
     fn find_latest_stops_after_one_probe_when_the_pin_probe_itself_is_unavailable() {
         // curl-absent case: the prober cannot even attempt the FIRST probe,
-        // which (per the pin-first ruling) is now the pin itself.
+        // which is the pin itself.
         let mut fake = FakeProber::new(vec![Err(ProbeError("curl not found".to_string()))]);
         let status = find_latest(BASE_URL, PINNED, &mut fake);
         assert_eq!(status, PinStatus::Unavailable("curl not found".to_string()));
@@ -835,7 +838,7 @@ mod tests {
 
     #[test]
     fn find_latest_treats_an_error_at_any_later_probe_as_unavailable_not_a_404() {
-        // #550 lane-5 rework, blocker 3: an impl that special-cases ONLY the
+        // An impl that special-cases ONLY the
         // FIRST probe's `Err` (folding every LATER `Err` into "stop, as if
         // 404") would silently misreport staleness on a transient failure
         // (e.g. DNS) several probes in - exactly the false negative this seam
@@ -869,7 +872,7 @@ mod tests {
 
     #[test]
     fn find_latest_treats_an_error_at_the_rollover_probe_as_unavailable_not_a_404() {
-        // #550 lane-5 ATL MISS-3: the test above only ever places the `Err`
+        // The test above only ever places the `Err`
         // at a MINOR-increment probe, never the ROLLOVER probe - so a mutant
         // collapsing the rollover arm's `Err(e) => return
         // Unavailable(e.0)` / `Ok(Probe::NotFound) => {...}` into a catch-all
@@ -904,7 +907,7 @@ mod tests {
 
     #[test]
     fn find_latest_treats_an_error_at_a_post_rollover_probe_as_unavailable_not_a_404() {
-        // #550 lane-5 ATL MISS-3, the sharper case: the `Err` lands on a
+        // The sharper case: the `Err` lands on a
         // rollover probe AFTER an earlier rollover already succeeded,
         // proving the short-circuit holds no matter how far enumeration has
         // already advanced. pin (Found) -> V2R10 minor (NotFound) -> V3R1
@@ -941,11 +944,9 @@ mod tests {
     #[test]
     fn find_latest_reports_unparseable_when_the_pinned_filename_has_no_version_token_and_probes_nothing()
      {
-        // CONCERN raised in review: an unparseable pin (a config/typo error,
-        // e.g. someone hand-edits stig-refs.toml and drops the
-        // V<major>R<minor> token) was previously unspecified - any behavior
-        // an impl happened to pick would have been frozen in by omission.
-        // This is a config problem, not a network one: nothing should be
+        // An unparseable pin (a config/typo error, e.g. someone hand-edits
+        // stig-refs.toml and drops the V<major>R<minor> token) is a config
+        // problem, not a network one: nothing should be
         // probed (an empty answer queue means ANY probe attempt panics the
         // fake, so this also double-checks the "nothing probed" claim).
         let mut fake = FakeProber::new(vec![]);
@@ -965,7 +966,7 @@ mod tests {
 
     #[test]
     fn find_latest_rejects_a_minor_at_u32_max_as_unparseable_without_probing_or_panicking() {
-        // #550 lane-5 ATL MISS-4: a pin whose minor has (however implausibly)
+        // A pin whose minor has (however implausibly)
         // reached `u32::MAX` (e.g. a hand-edit typo like
         // `U_RHEL_9_V1R4294967295_STIG.zip`) DOES parse - `scan_revision`'s
         // digit scan has no upper bound on digit count - but
@@ -1051,9 +1052,9 @@ mod tests {
 
     #[test]
     fn report_exits_0_and_explains_pin_not_found_is_not_current() {
-        // USER RULING: pin the report()-level contract for the new
-        // PinNotFound status too - exit 0 (news, not a build failure), but
-        // the message must not be mistakable for the Current-status message.
+        // RULING: PinNotFound exits 0 (news, not a build failure), and its
+        // message must not be mistakable for the Current-status message.
+        // Rationale + evidence: #550.
         let status = PinStatus::PinNotFound {
             pinned_zip: "U_RHEL_9_V2R9_STIG.zip".to_string(),
         };
@@ -1096,9 +1097,8 @@ mod tests {
 
     #[test]
     fn report_exits_0_and_propagates_the_unavailable_reason_verbatim() {
-        // #550 lane-5 rework, blocker 4: the ORIGINAL fixture payload
-        // ("curl not found") shared a substring ("curl") with the test's own
-        // assertion, so a hardcoded message ("curl is required...") could
+        // A fixture payload sharing a substring ("curl") with the test's own
+        // assertion would let a hardcoded message ("curl is required...")
         // pass without actually propagating `Unavailable`'s payload. Use a
         // payload with no plausible overlap with a hand-written message, and
         // require it verbatim.
@@ -1119,7 +1119,7 @@ mod tests {
 
     #[test]
     fn report_exits_0_and_avoids_a_dangling_separator_when_the_unavailable_reason_is_empty() {
-        // Cosmetic nit (#550 lane-5 ATL): a bare `ERR:` fixture line (see
+        // A bare `ERR:` fixture line (see
         // `main.rs::FixtureProber`) yields an EMPTY `ProbeError` payload,
         // which the naive `"... - {reason}"` format would render as a
         // dangling "could not determine staleness - " with nothing after the
@@ -1136,7 +1136,7 @@ mod tests {
 
     // --- cross-tool drift guard ----------------------------------------------
 
-    // #550 lane-5 rework, CONCERN raised in review: this file and the SISTER
+    // This file and the SISTER
     // tool's `pin.rs` (whichever this crate does NOT belong to - see
     // `OTHER_TOOL_PIN_RS`'s `include_str!` path just below) are near-identical
     // by construction, but nothing enforces that a future edit to one is
@@ -1146,10 +1146,8 @@ mod tests {
     // not violate the "no dependency on the sister crate/tool" intent
     // `config.rs`/`source.rs` already state). This prose is deliberately
     // crate-agnostic (never names "sshd" or "auditd" itself) so it reads
-    // correctly verbatim in EITHER copy - a prior draft hardcoded the sister's
-    // name here and one copy ended up self-referential (named itself as its
-    // own sister) when pasted into the other file; see the round-2 review
-    // note this fixes.
+    // correctly verbatim in EITHER copy: naming the sister tool here would
+    // make one copy self-referential (naming itself as its own sister).
     const THIS_FILE: &str = include_str!("pin.rs");
     const OTHER_TOOL_PIN_RS: &str = include_str!("../../sshd-stig-update/src/pin.rs");
 
@@ -1160,12 +1158,11 @@ mod tests {
     /// so that one line is asymmetric by construction, not drift). That line
     /// is neutralized by replacing either crate's sister-path string with a
     /// common placeholder BEFORE comparing, rather than by truncating the
-    /// compared region - round 2 review flagged that the prior version
-    /// stopped comparing right before this drift-guard section itself, so
-    /// anything appended after it (or a one-sided edit inside it) would have
-    /// gone unguarded. Comparing the doc-comment prefix too catches drift in
+    /// compared region - truncating before this drift-guard section would
+    /// leave anything appended after it (or a one-sided edit inside it)
+    /// unguarded. Comparing the doc-comment prefix too catches drift in
     /// the ASSUMED-rollover labeling and the live-404 grounding evidence,
-    /// which round 2 flagged as otherwise invisible to any guard.
+    /// which is otherwise invisible to any guard.
     fn normalize_and_compare(this: &str, other: &str) -> (String, String) {
         fn normalize(src: &str) -> String {
             src.replace("../../auditd-stig-update/src/pin.rs", "<SISTER_PIN_RS>")
@@ -1176,7 +1173,7 @@ mod tests {
 
     #[test]
     fn pin_rs_matches_the_sister_tool_byte_for_byte_from_the_doc_comment_onward() {
-        // Anti-vacuity guard (#550 lane-5 ATL, L5-a): a self-referential
+        // Anti-vacuity guard: a self-referential
         // `include_str!` (OTHER_TOOL_PIN_RS accidentally pointing at THIS
         // file instead of the sister tool's `pin.rs`) makes THIS_FILE and
         // OTHER_TOOL_PIN_RS literally the same content, so the byte-for-byte

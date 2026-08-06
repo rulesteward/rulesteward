@@ -15,7 +15,7 @@ serde = ["dep:serde"]
 [dependencies]
 serde = { workspace = true, optional = true }
 # Unix `fcntl` (F_GETFL/F_SETFL) for `fsread::read_stream_to_string`'s FIFO
-# live-writer path (#583/#561 lane 3): clearing O_NONBLOCK after the type
+# live-writer path (#583/#561): clearing O_NONBLOCK after the type
 # check is a real syscall, not a hardcodable platform constant. Already a
 # normal (non-dev) transitive dependency of this workspace via
 # heed -> lmdb-master-sys (see the workspace Cargo.toml comment), so this adds

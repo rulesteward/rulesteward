@@ -38,7 +38,7 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 }
 
 // ---------------------------------------------------------------------------
-// Item 3: no-drift passes (the real, current fixture vs the real, current
+// No-drift passes (the real, current fixture vs the real, current
 // shipped table exits 0).
 // ---------------------------------------------------------------------------
 #[test]
@@ -56,8 +56,8 @@ fn check_file_in_sync_exits_0() {
         Some(0),
         "in-sync must exit 0; stdout={stdout} err={err}"
     );
-    // Narrowed (impl-aware adversarial review, round 1) from a loose
-    // `contains("OK (0 drift"` to the EXACT row count: the loose form matches
+    // The EXACT row count, not a loose
+    // `contains("OK (0 drift"`: the loose form matches
     // "OK (0 drift, 4 controls)" just as happily as the correct "... 3
     // controls)", so it cannot see a row-inflation regression (e.g. a
     // duplicate-family guard that fails to fire) even on this happy path.
@@ -68,7 +68,7 @@ fn check_file_in_sync_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
-// Impl-aware adversarial review (round 1, post-#551 GREEN), MISS 1: a future
+// A future
 // DISA revision that ADDS a second Rule to an already-matched family (here,
 // a second Authenticate-family Rule alongside the real one) must fail LOUD
 // (exit 2), never silently resolve the duplicate via first-wins and report a
@@ -111,7 +111,7 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
 }
 
 // ---------------------------------------------------------------------------
-// Item 2: THE POSITIVE CONTROL. A single mutated STIG Rule id must be caught
+// THE POSITIVE CONTROL. A single mutated STIG Rule id must be caught
 // as drift and exit non-zero, naming the specific mismatched control -- a
 // drift checker that only ever passes is worthless.
 // ---------------------------------------------------------------------------
@@ -149,9 +149,9 @@ fn check_file_drift_on_mutated_id_exits_1() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 5: THE #355 REGRESSION CLASS. #355/#359's historical incident was the
-// RHEL-08 `!authenticate` and pw-family ids being SWAPPED with each other.
-// Simulate the identical swap against the real rhel8 fixture and confirm
+// THE #355 REGRESSION CLASS: the RHEL-08 `!authenticate` and pw-family ids
+// SWAPPED with each other (#355 / #359).
+// Simulate that swap against the real rhel8 fixture and confirm
 // `check` reports drift (the id SET is unchanged, only which family owns
 // which id -- a naive "is the id set the same" check would wrongly pass this).
 // ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ fn check_file_regression_355_swapped_ids_exits_1() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 4: anti-vacuity at the CLI/exit-code level. A document with none of
+// Anti-vacuity at the CLI/exit-code level. A document with none of
 // the 3 sudo-W04 families must fail LOUD (exit 2, the tool's fail-closed
 // code), never silently report "OK, 0 controls" as if it were a clean pass.
 // The injected document is a small, clearly-synthetic edge-case fixture (not
@@ -262,16 +262,16 @@ fn unknown_subcommand_exits_2() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 6: THE SCOPE GUARD, BEHAVIORAL form (adversarial round, BLOCKER 4). A
+// THE SCOPE GUARD, BEHAVIORAL form. A
 // bare "--help must not contain the substring CIS" guard cannot detect a
 // maintainer adding actual CIS derivation logic (it only catches a text
-// mention) and is brittle against words that merely CONTAIN "cis". Replaced
-// with a POSITIVE assertion: help text must explicitly POINT AT the real
+// mention) and is brittle against words that merely CONTAIN "cis". Instead,
+// a POSITIVE assertion: help text must explicitly POINT AT the real
 // tool that covers CIS (tools/cis-update) and the real location sudo-W06 is
 // pinned (tags.rs), rather than either a vague disclaimer or an absent one.
 // The complementary BEHAVIORAL half (this tool's own sources never reference
 // `cis_baseline` / `Framework::Cis`) lives in `src/lib.rs`'s `scope_tests`
-// module. Never reaches a stub -- passes today.
+// module.
 // ---------------------------------------------------------------------------
 #[test]
 fn help_points_at_the_real_cis_tool_and_the_real_w06_location() {

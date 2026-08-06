@@ -788,8 +788,8 @@ mod tests {
     // SKIP negative integers rather than coerce `-1` to the string "-1" and shell
     // out to getent (which would fire a spurious, redundant W05 alongside the E02).
     //
-    // RED against the current impl: it coerces Int(-1) -> "-1" -> resolver NotFound
-    // -> 1 spurious W05. The fix skips negative Int values entirely.
+    // RED against an impl that coerces Int(-1) -> "-1" -> resolver NotFound
+    // -> 1 spurious W05; W05 skips negative Int values entirely.
     // ---------------------------------------------------------------------------
     #[test]
     fn negative_int_uid_is_skipped_no_w05() {

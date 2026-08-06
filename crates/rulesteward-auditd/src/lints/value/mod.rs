@@ -534,8 +534,7 @@ mod tests {
     /// mutation run has no test that would notice an accessor silently
     /// returning a canned/wrong slice - these two identity pins close that
     /// gap directly: they kill all 10 `Vec::leak(...)`-constant-return
-    /// mutants cargo-mutants reported for the two accessors (session 7c ATL
-    /// round 1, #476).
+    /// mutants cargo-mutants reported for the two accessors.
     #[test]
     fn base_msgtype_names_accessor_returns_the_real_table() {
         assert_eq!(base_msgtype_names(), super::MSGTYPE_NAMES);
@@ -1262,8 +1261,8 @@ mod tests {
     // numbers differ (or match, for the Eq/Ne contradiction direction).
     // Ground truth: kernel auditfilter.c:1205-1227 `audit_comparator` (a plain
     // u32 `==`/`!=` compare) and libaudit.c:1783-1797 `AUDIT_MSGTYPE` value
-    // resolution, both @ audit-userspace/kernel 3bfa048/v6.6 (session 7c #475
-    // P3 grounding doc). An unresolved side (an unknown name, or an AppArmor
+    // resolution, both @ audit-userspace/kernel 3bfa048/v6.6 (#475). An
+    // unresolved side (an unknown name, or an AppArmor
     // name with `include_apparmor` off) MUST stay conservative.
     //
     // PRESERVED, NOT FLIPPED: `disjoint_alias_bearing_eq_pairs_are_not_disjoint`'s
@@ -1495,7 +1494,7 @@ mod tests {
         // (0x7FFF_FFFF_FFFF_FFFF) BEFORE the __u32 truncation (uapi audit.h:516
         // `__u32 values[]`), so 2^63 loads as 0xFFFF_FFFF == 4294967295, NOT 0.
         // An unsigned `& 0xFFFF_FFFF` mask would fold 2^63 -> 0 and reintroduce
-        // the round-1 false positive at a higher magnitude. The prover instead
+        // the false positive at a higher magnitude. The prover instead
         // DECLINES any spelling above u32::MAX (the classify.rs uid/gid/sessionid
         // precedent: `u32::try_from`, decline above), so it never proves a
         // >u32 spelling disjoint -> never drops an au-W03 suppression warning.
@@ -1566,8 +1565,7 @@ mod tests {
     // audit_comparator (auditsc.c:542-545, SessionId) do RAW numeric
     // comparison with NO special-casing for the unset/-1/4294967295
     // sentinel -- it sits at position u32::MAX (4294967295) on the number
-    // line exactly like any other value (session 7c #475 P3 class-3
-    // grounding doc, sections 2 and 4). So a sentinel Eq predicate and a
+    // line exactly like any other value. So a sentinel Eq predicate and a
     // same-field relational predicate ARE provably disjoint whenever
     // 4294967295 falls outside the relational predicate's matched
     // interval, and provably NOT disjoint (the existing conservative

@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn code_table_projects_shipped_projection_faithfully() {
         // The code table must equal the crate projection, row-for-row.
-        // #549: was 20 (RHEL9 V2R7); V2R9 dropped Compression, leaving 19.
+        // RHEL9 V2R9 dropped Compression, leaving 19.
         let code = code_table(TargetVersion::Rhel9);
         assert_eq!(code.len(), 19);
         let prl = code
@@ -202,14 +202,12 @@ mod tests {
         assert!(diff_controls(&code, &code).is_empty());
     }
 
-    // #549 (session 9e-wave2c pipeline P2): `of_projection_sorts_anyof`, which
-    // pinned that `of_projection` sorts a `StigValueRule::AnyOf` from the
-    // crate side, is REMOVED here (not weakened) -- the crate's
-    // `StigValueRule::AnyOf` variant was deleted (Compression was its only
-    // constructor; #549 dropped Compression entirely, no-speculative-
-    // abstraction). `of_projection` can no longer receive an AnyOf value at
-    // all, so the sort-on-conversion behavior this test pinned has no input
-    // that can exercise it. `OwnedValueRule::AnyOf` itself is unaffected and
+    // The crate's `StigValueRule` has no `AnyOf` variant: Compression was its
+    // only constructor and DISA RHEL 9 STIG V2R9 dropped Compression, so per
+    // no-speculative-abstraction the variant is gone. `of_projection` can
+    // therefore never receive an AnyOf value, and there is no crate-side
+    // sort-on-conversion behavior left to pin here.
+    // `OwnedValueRule::AnyOf` itself
     // stays live via the xccdf fixtext parser's OWN "set the value to X, Y,
     // or Z" grammar (see `three_alternative_anyof_captures_all` in
     // `xccdf.rs`, which is independent of this crate-side mapping).

@@ -10,7 +10,7 @@
 //! Per-field allowed-filter-lists table grounded in libaudit.c
 //! `audit_rule_fieldpair_data`, versions 3.1.5 (el8/el9) and 4.0.3 (el10).
 //! Table is identical across both versions (byte-diff clean).
-//! Primary source: depth-auditd-fieldtable.md (2026-06-17 overnight grounding).
+//! Primary source: `depth-auditd-fieldtable.md` (2026-06-17).
 //!
 //! # Scope corrections (honored here)
 //!

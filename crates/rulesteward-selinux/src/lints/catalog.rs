@@ -43,7 +43,7 @@ pub const SE_CODES: &[LintCode] = &[
 mod tests {
     use super::SE_CODES;
 
-    /// The frozen v1 selinux-lint taxonomy (Phase 0 of lane 2b). Every code
+    /// The frozen v1 selinux-lint taxonomy. Every code
     /// the backend will emit is listed here in sorted order; the lint pass
     /// starts emitting an already-catalogued code rather than editing this
     /// shared file.

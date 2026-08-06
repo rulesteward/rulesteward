@@ -1,11 +1,7 @@
-//! End-to-end Phase-0 wiring proof for `rulesteward sysctl lint` (#150).
+//! End-to-end tests for `rulesteward sysctl lint` (#150).
 //!
 //! Exercises the subcommand through the real binary: clap parse -> command
-//! dispatch -> lint -> human/JSON output -> exit code. The F01/W01 lint passes are
-//! still empty Phase-0 stubs, so ANY input currently yields a clean result; this
-//! test only proves the `sysctl lint` verb is wired and runs end to end. The
-//! pass-FIRES cases land with the F01/W01 impl (test-author barrier + impl
-//! pipeline).
+//! dispatch -> lint -> human/JSON output -> exit code.
 
 use std::io::Write;
 
@@ -27,9 +23,9 @@ fn config_file(body: &str) -> tempfile::NamedTempFile {
 
 #[test]
 fn clean_file_exits_zero_with_no_findings() {
-    // A plain sysctl.conf-shaped file. With the F01/W01 passes stubbed empty the
-    // run is clean: exit 0 and no diagnostic output (the human "no findings"
-    // state - the renderer emits an empty string for zero diagnostics).
+    // A plain sysctl.conf-shaped file with nothing for F01/W01 to report: exit 0
+    // and no diagnostic output (the human "no findings" state - the renderer
+    // emits an empty string for zero diagnostics).
     let cfg = config_file("# kernel hardening\nkernel.randomize_va_space = 2\n");
     let out = bin()
         .args(["sysctl", "lint", cfg.path().to_str().unwrap()])
@@ -86,10 +82,7 @@ fn json_format_emits_the_sysctl_lint_envelope() {
 }
 
 // ---------------------------------------------------------------------------
-// v1 lint tests (issue #150), authored at the test-author barrier BEFORE the
-// F01/W01 impl. RED against the Phase-0 stub: the lint passes return nothing and
-// the dir handler treats a directory target as a tool failure, so these fail for
-// the RIGHT reason (missing finding / wrong exit code), not a compile error.
+// v1 lint tests (issue #150).
 // ---------------------------------------------------------------------------
 
 /// Write `name` containing `body` into `dir`.
@@ -104,9 +97,7 @@ fn w01_fires_across_dropins_in_lexicographic_order() {
     // dead -> sysctld-W01. Exit code reflects a warning (1).
     //
     // PINS: `sysctl lint <dir>` enumerates the directory's *.conf files in
-    // lexicographic order and runs W01 across them. The Phase-0 handler rejects a
-    // directory target as a tool failure (exit 3) and the W01 pass is stubbed, so
-    // this is RED today; the impl adds dir enumeration + the cross-file W01 pass.
+    // lexicographic order and runs W01 across them.
     let dir = tempfile::tempdir().expect("temp dir");
     write_in(dir.path(), "10-a.conf", "net.ipv4.ip_forward=1\n");
     write_in(dir.path(), "90-b.conf", "net.ipv4.ip_forward=0\n");
@@ -139,9 +130,7 @@ fn w01_fires_across_dropins_in_lexicographic_order() {
 fn malformed_file_exits_with_the_parse_error_code() {
     // A malformed line is sysctld-F01 (Fatal, parse failure). Per
     // exit_code::compute, every backend's parse-failure code (`fapd-F01` / `au-F01`
-    // / `sshd-F01`) maps to EXIT_RULE_PARSE_ERROR (5); the impl must add
-    // `sysctld-F01` to that match. Today the lint stub emits nothing -> exit 0, so
-    // this is RED for the right reason (wrong exit code).
+    // / `sshd-F01` / `sysctld-F01`) maps to EXIT_RULE_PARSE_ERROR (5).
     //
     // `kernel.dmesg_restrict` is a bare key with no `=`: malformed -> F01.
     let cfg = config_file("kernel.dmesg_restrict\n");
@@ -227,11 +216,11 @@ kernel.kptr_restrict = 1
 // ---------------------------------------------------------------------------
 // issue #337: with real byte spans + staged source, the human renderer takes the
 // ariadne path and shows a source snippet (box-drawing underline) anchored at the
-// real offending line, matching auditd/sshd. RED before the fix: the diagnostics
-// carried a 0..0 span, so the CLI staged no source and the PLAIN renderer (no
-// box-drawing) was used in both file and dir mode. The `\u{2500}` (-) box-drawing
-// char proves the snippet path; the literal `key = value` source-line text proves
-// the SNIPPET (the F01/W01 messages never contain that exact literal).
+// real offending line, matching auditd/sshd. A diagnostic carrying a 0..0 span
+// stages no source and falls back to the PLAIN renderer (no box-drawing). The
+// `\u{2500}` (-) box-drawing char proves the snippet path; the literal
+// `key = value` source-line text proves the SNIPPET (the F01/W01 messages never
+// contain that exact literal).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -369,7 +358,7 @@ kernel.dmesg_restrict
 
 #[test]
 fn human_file_mode_snippet_anchors_correctly_with_multibyte_before_the_finding() {
-    // issue #337 (strengthening, per the spec + idiomatic reviewers): a multibyte UTF-8
+    // issue #337: a multibyte UTF-8
     // char on a line BEFORE the finding exercises the byte-span -> char-span conversion
     // the renderer does (human.rs `byte_span_to_char_span`). The parser emits a BYTE
     // span; the renderer converts it to a char offset for ariadne. A byte/char mismatch
@@ -415,7 +404,7 @@ kernel.kptr_restrict = 1
 
 #[test]
 fn human_snippet_survives_four_byte_and_cjk_multibyte_and_keeps_its_caret_column() {
-    // Issue #595, session 9m lane 4: the end-to-end obligation for a change to
+    // Issue #595: the end-to-end obligation for a change to
     // the DEFAULT renderer's byte-span -> char-span conversion. The sibling test
     // above uses a single 2-byte scalar; this one uses the two widest classes
     // together - a 4-byte emoji (U+1F600) and three 3-byte CJK scalars - because
@@ -499,8 +488,6 @@ kernel.kptr_restrict = 1
 
 // ---------------------------------------------------------------------------
 // issue #335: the version-aware sysctld-W02 STIG baseline, gated on --target.
-// RED before the impl: --target is unknown to clap (or W02 is the empty stub), so
-// these fail for the right reason (no W02 emitted / wrong exit code).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -640,11 +627,9 @@ fn help_lists_the_target_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
-// (findings-only). RED today: `SysctlLintArgs.format` is `HumanJsonFormat`
-// (human|json only), so clap rejects `--format sarif` at parse time. The
-// planned impl switches `SysctlLintArgs.format` to `OutputFormat` and routes
-// the new Sarif arm through `output::emit_lint`.
+// #511: SARIF output for the lint verbs (findings-only).
+// `SysctlLintArgs.format` is `OutputFormat` (human|json|sarif) and the Sarif
+// arm routes through `output::emit_lint`.
 // ---------------------------------------------------------------------------
 
 /// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
@@ -822,9 +807,7 @@ fn sarif_format_target_rhel9_w02_carries_stig_taxonomy_and_taxa() {
 }
 
 /// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
-/// still reject it as an unrecognized flag on `sysctl lint`. GREEN today
-/// (clap already rejects the unknown flag) and must stay green after the
-/// impl.
+/// reject it as an unrecognized flag on `sysctl lint`.
 #[test]
 fn sarif_include_pass_is_rejected_for_sysctl_lint() {
     let cfg = config_file("kernel.sysrq = 0\n");

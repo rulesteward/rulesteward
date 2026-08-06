@@ -986,7 +986,7 @@ pub fn evaluate(rules: &[Rule], sets: &SetTable, facts: &AccessFacts) -> Verdict
 }
 
 // ---------------------------------------------------------------------------
-// Tests (RED written first, then impl made them GREEN)
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -2477,7 +2477,7 @@ mod tests {
 
     /// `exe=untrusted` FIRES for an untrusted subject (`subj_trust=No`).
     /// A literal-path impl compares the exe path against "untrusted" -> `NoMatch`
-    /// -> the deny rule never fires -> this assertion fails. RED until #126.
+    /// -> the deny rule never fires -> this assertion fails.
     #[test]
     fn exe_untrusted_macro_matches_untrusted_subject() {
         use crate::facts::Trust;
@@ -2662,8 +2662,7 @@ mod tests {
     /// Set `%apps = untrusted,/usr/bin/foo`, rule `exe=%apps`, subject is
     /// untrusted and its exe is NOT a literal member -> the embedded `untrusted`
     /// macro must FIRE (set contains "untrusted" AND `subj_trust=No`). A
-    /// literal-set-membership-only impl returns `NoMatch` and never denies. RED
-    /// until the `SetRef` macro path lands.
+    /// literal-set-membership-only impl returns `NoMatch` and never denies.
     #[test]
     fn exe_setref_with_untrusted_member_fires_for_untrusted_subject() {
         use crate::facts::Trust;
@@ -3058,20 +3057,16 @@ mod tests {
     // `subj_trust=Unknown` downgrades to NotEvaluable (same as exe=untrusted
     // and trust=0).
     //
-    // On CURRENT code the dir= arm falls through to `prefix_string_match`,
-    // which for the bare `Str("untrusted")` case returns `NotEvaluable`
-    // unconditionally (prefix_string_match:L162: the `"untrusted"` branch
-    // returns `FieldEval::NotEvaluable` regardless of trust state). So:
-    //   - `subj_trust=No` -> currently NotEvaluable (should be Match/Deny) RED
-    //   - `subj_trust=Yes` -> currently NotEvaluable (should be NoMatch/Allow)
-    //     the current verdict is uncertain Allow; the test expects decisive Allow
-    //   - `subj_trust=Unknown` -> currently NotEvaluable (correct outcome,
-    //     wrong reason - the current impl has no trust DB consultation, so the
-    //     reason string differs from the expected but the overall verdict is
-    //     the same; this test asserts uncertain.is_some() which IS currently
-    //     true, but the fix must preserve it with proper trust-DB reasoning)
-    //
-    // The No and Yes cases are definitively RED on current code.
+    // So the bare `dir=untrusted` value must NOT fall through to the generic
+    // `prefix_string_match` path, which for the bare `Str("untrusted")` case
+    // returns `NotEvaluable` unconditionally (prefix_string_match:L162: the
+    // `"untrusted"` branch returns `FieldEval::NotEvaluable` regardless of
+    // trust state). The required outcomes are:
+    //   - `subj_trust=No`      -> Match   -> Deny, uncertain=None
+    //   - `subj_trust=Yes`     -> NoMatch -> fallthrough Allow, uncertain=None
+    //   - `subj_trust=Unknown` -> NotEvaluable -> uncertain=Some, with the
+    //     reason produced by trust-DB consultation rather than by the
+    //     prefix-match path
     // -----------------------------------------------------------------------
 
     /// `dir=untrusted` FIRES for an untrusted subject (`subj_trust=No`).
@@ -3080,10 +3075,11 @@ mod tests {
     /// the dir= arm treats `untrusted` as the SUBJECT trust macro (same as
     /// `exe=untrusted`). It matches IFF the subject is NOT in the trust DB.
     ///
-    /// Current code: `prefix_string_match` returns `NotEvaluable` for a bare
-    /// `dir=untrusted` value regardless of trust state (`prefix_string_match`
-    /// line ~162). So the deny rule becomes a `PossibleMatch`; the ruleset falls
-    /// through to the allow -> verdict is Allow. This assertion (`Deny`) is RED.
+    /// An impl that routes the bare `dir=untrusted` value through
+    /// `prefix_string_match` gets `NotEvaluable` regardless of trust state
+    /// (`prefix_string_match` line ~162), so the deny rule becomes a
+    /// `PossibleMatch` and the ruleset falls through to the allow -> Allow,
+    /// not the asserted `Deny`.
     #[test]
     fn dir_untrusted_macro_matches_untrusted_subject() {
         use crate::facts::Trust;
@@ -3119,11 +3115,11 @@ mod tests {
     /// trusted, the `untrusted` macro is a decisive `NoMatch` -> the deny rule
     /// is skipped -> fallthrough Allow, uncertain=None.
     ///
-    /// Current code: `prefix_string_match` returns `NotEvaluable` for bare
-    /// `dir=untrusted`, so the deny rule becomes a `PossibleMatch`; the verdict
-    /// is the allow rule but `uncertain` is set. This test asserts
-    /// `uncertain.is_none()` (a decisive `NoMatch`, not uncertain). RED on
-    /// current code because `NotEvaluable` sets `uncertain`.
+    /// An impl that routes bare `dir=untrusted` through `prefix_string_match`
+    /// gets `NotEvaluable`, so the deny rule becomes a `PossibleMatch`: the
+    /// verdict is still the allow rule but `uncertain` is set. This test asserts
+    /// `uncertain.is_none()` (a decisive `NoMatch`, not uncertain), which
+    /// `NotEvaluable` cannot satisfy.
     #[test]
     fn dir_untrusted_macro_no_match_trusted_subject() {
         use crate::facts::Trust;
@@ -3505,14 +3501,13 @@ mod tests {
     //
     // In the MODERN fapolicyd grammar, object-side `dir=untrusted` appears as a
     // post-colon attribute in `Rule.object`. The evaluator routes it through
-    // `eval_object_field`, whose `dir=` arm (eval_object_field:~L530-536)
-    // currently does a plain `prefix_string_match(facts.path, ...)`. For the
-    // bare string "untrusted", `prefix_string_match` returns `NotEvaluable` no
-    // matter what `obj_trust` is. So:
-    //   - `obj_trust=No`      -> currently NotEvaluable (should be Match/Deny)  RED
-    //   - `obj_trust=Yes`     -> currently NotEvaluable (should be NoMatch/Allow) RED
-    //   - `obj_trust=Unknown` -> currently NotEvaluable (correct outcome, now for
-    //                            the right reason after the fix)
+    // `eval_object_field`, whose `dir=` arm (eval_object_field:~L530-536) must
+    // not fall through to a plain `prefix_string_match(facts.path, ...)`: for
+    // the bare string "untrusted", `prefix_string_match` returns `NotEvaluable`
+    // no matter what `obj_trust` is. The required outcomes are:
+    //   - `obj_trust=No`      -> Match   -> Deny
+    //   - `obj_trust=Yes`     -> NoMatch -> Allow, uncertain=None
+    //   - `obj_trust=Unknown` -> NotEvaluable, from trust-DB consultation
     //
     // These tests are RED on the 0677e98 base (subject fix only, no object fix).
     // -----------------------------------------------------------------------
@@ -3524,11 +3519,11 @@ mod tests {
     ///
     /// Expected: `decision=Allow` (fallthrough), `source=Fallthrough`, `uncertain=None`.
     ///
-    /// Current code: `prefix_string_match(path, "untrusted")` returns
+    /// An impl that calls `prefix_string_match(path, "untrusted")` gets
     /// `NotEvaluable` unconditionally, so the deny rule downgrades to
     /// `PossibleMatch` regardless of trust. There is no second rule so the
-    /// verdict is Allow but `uncertain` IS set. This test asserts
-    /// `uncertain.is_none()` (a decisive `NoMatch`) -> RED.
+    /// verdict is Allow but `uncertain` IS set, which cannot satisfy this
+    /// test's `uncertain.is_none()` assertion (a decisive `NoMatch`).
     #[test]
     fn object_dir_untrusted_macro_no_fire_for_trusted_object() {
         use crate::facts::Trust;

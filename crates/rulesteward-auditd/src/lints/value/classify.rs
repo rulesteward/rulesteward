@@ -1,6 +1,6 @@
 //! The typed `FieldValue` interpretation of a `-F` value string, and the
-//! base-0 numeric parsing it rests on. Split out of `value.rs` (#438); see the
-//! parent `value` module doc for the overall design.
+//! base-0 numeric parsing it rests on. See the parent `value` module doc for
+//! the overall design.
 
 use rulesteward_core::parse_base0_u64 as parse_u64_base0;
 
@@ -25,7 +25,7 @@ pub enum FieldValue {
     Opaque,
     /// A `-F perm=` value that parses as a `rwxa` permission-letter
     /// set on a [`FieldType::Perm`] field, folded into an order-free bitmask
-    /// (session 9m lane 1, round 3 ATL, issues #600/#601). `lib/libaudit.c`'s
+    /// (issues #600/#601). `lib/libaudit.c`'s
     /// `audit_rule_fieldpair_data` case-folds every character
     /// (`tolower((unsigned char)v[i])`) and ORs the letters into one bitmask
     /// before the kernel ever compares it, so `perm=wa`/`perm=aw`/`perm=WA`
@@ -172,8 +172,8 @@ pub fn classify(ft: FieldType, raw: &str) -> FieldValue {
         FieldType::Numeric | FieldType::NumericEqNe => {
             parse_u64_base0(v).map_or(FieldValue::Opaque, FieldValue::Unsigned)
         }
-        // -F perm=: fold rwxa letters into an order-free bitmask (session 9m
-        // lane 1, round 3 ATL). Falls back to Opaque for a value that fails to
+        // -F perm=: fold rwxa letters into an order-free bitmask. Falls back
+        // to Opaque for a value that fails to
         // parse as perm letters -- see PermMask::parse. A WATCH's -p never
         // reaches here: FieldType::Perm comes only from AuditField::Perm
         // (field_type.rs), and a watch's perms travel as PermBits through

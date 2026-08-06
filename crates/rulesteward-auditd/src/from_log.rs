@@ -1,6 +1,6 @@
 //! auditd log-to-rule converter.
 //!
-//! Issue #91 -- pipeline P2.
+//! Issue #91.
 //!
 //! # Grounding
 //! - Read-only line scan of `audit.log`; aggregate by `key=` field (f3 section 5.3c).

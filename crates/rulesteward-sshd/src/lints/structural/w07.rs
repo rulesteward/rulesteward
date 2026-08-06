@@ -778,7 +778,7 @@ fn multitype_axis_shadow(
 /// positive (`a*`: no literal, FRESH fails it) is conservatively treated as
 /// witness-less - the walk's documented literals+FRESH accepted-FN posture, an FN
 /// (suppressed flag) never an FP. Gates the TOP of [`multitype_shadow`] - BOTH
-/// multitype routes (#452 rounds 5-7): the DECLINE fallback because
+/// multitype routes (#452): the DECLINE fallback because
 /// [`block_level_shadow`] is MEMBERSHIP-BLIND (it compares first-setter values
 /// without asking whether ANY connection satisfies the later block), and the axis
 /// WALK because it inspects only the WALKED axis - a witness-less NON-walked axis
@@ -911,7 +911,7 @@ fn match_blocks_overlap(a: &MatchBlock, b: &MatchBlock) -> bool {
 /// residual is closed by the [`name_axes_admit_witness`] gate at the top of
 /// [`multitype_shadow`], whose literals+FRESH witness search runs the real
 /// `match_pattern_list` semantics and covers BOTH multitype routes, walk and
-/// decline (#452 rounds 5-7).
+/// decline (#452).
 fn name_list_matches_nobody(values: &[String]) -> bool {
     let negated: BTreeSet<&str> = values.iter().filter_map(|v| v.strip_prefix('!')).collect();
     values
@@ -1260,17 +1260,17 @@ mod w07_tests {
     //! case rather than risking a false positive. Opt-in NSS-backed membership
     //! resolution that would let W07 reason about `User` vs `Group` overlap is a
     //! post-v0.3 follow-up tracked as #400. `cross_type_user_and_group_do_not_flag_w07`
-    //! locks this so the implementer cannot accidentally flag it.
+    //! locks this so the pass cannot accidentally flag it.
     //!
     //! # Per-sub-population cross-Match shadow (#409)
     //! W07 flags a later block when some NON-EMPTY SUB-POPULATION of the connections
     //! it matches is won by an EARLIER block with a DIFFERENT value - even when a
     //! different earlier block agrees with the later value for a DIFFERENT
-    //! sub-population. The v0.3 block-level rule missed this: it asked only whether
-    //! SOME earlier overlapping block agreed with the later value ANYWHERE, so an
-    //! agreeing block covering one sub-population masked a differing block colliding
-    //! with another. `Host alpha` yes / `Host beta` no / `Host alpha,beta` yes now
-    //! flags line 6 for the beta sub-population (GROUND TRUTH `sshd -T -C host=beta`
+    //! sub-population. A block-level rule asking only whether
+    //! SOME earlier overlapping block agrees with the later value ANYWHERE misses
+    //! this: an agreeing block covering one sub-population masks a differing block
+    //! colliding with another. `Host alpha` yes / `Host beta` no / `Host alpha,beta`
+    //! yes flags line 6 for the beta sub-population (GROUND TRUTH `sshd -T -C host=beta`
     //! -> `x11forwarding no` on OpenSSH 10.2p1: the middle block wins over block 2),
     //! locked by `partitioned_host_sets_flag_beta_subpopulation_w07`,
     //! `partitioned_user_sets_flag_bob_subpopulation_w07`,
@@ -1290,7 +1290,7 @@ mod w07_tests {
     //! `single_localport_region_reduces_to_block_level_w07` (single-port equality
     //! must not regress). NOTE the first and fourth guards are NOT diagnostic-free:
     //! their covering block 0 genuinely shadows the MIDDLE block (a true cross-Match
-    //! shadow, flagged on line 4 both before and after #409); the guard is that block
+    //! shadow, flagged on line 4); the guard is that block
     //! 2 (line 6) is not OVER-flagged, so they pin the exact diag set `{line 4}`.
     //!
     //! # Other documented v0.3 accepted false negatives
@@ -1968,8 +1968,7 @@ mod w07_tests {
         // user==alice AND user==bob simultaneously - impossible, so the block matches
         // NOBODY and can never shadow the later `Match User alice`. An impl that
         // UNIONS the two repeated `User` criteria (user in {alice, bob}) wrongly
-        // treats the first block as overlapping and false-fires. (Currently RED: the
-        // impl false-fires 1 diag; GREEN after the AND fix.)
+        // treats the first block as overlapping and false-fires.
         assert!(
             w07_diags(
                 "Match User alice User bob\n    X11Forwarding yes\n\
@@ -1993,7 +1992,7 @@ mod w07_tests {
         // x11forwarding no (later block applies; block-0 does NOT match alice),
         // user=carol -> yes (block-0 applies), so the two never both apply. An impl
         // that OR-unions the repeated criteria to {alice,carol,bob} wrongly overlaps
-        // on alice and false-fires. (Currently RED until the intersection fix lands.)
+        // on alice and false-fires.
         assert!(
             w07_diags(
                 "Match User alice,carol User bob,carol\n    X11Forwarding yes\n\
@@ -2012,7 +2011,7 @@ mod w07_tests {
         // satisfies both. GROUND TRUTH (`sshd -T` on 10.2p1): addr 10.0.5.5 -> yes
         // (block-0's /16 applies), addr 10.5.5.5 -> no (later applies); never both.
         // An OR-union impl treats block-0 as the wider /8, wrongly overlaps 10.5.x,
-        // and false-fires. (Currently RED until the intersection fix lands.)
+        // and false-fires.
         assert!(
             w07_diags(
                 "Match Address 10.0.0.0/8 Address 10.0.0.0/16\n    X11Forwarding yes\n\
@@ -2127,9 +2126,7 @@ mod w07_tests {
         // the later block's 10.1.2.3, so no connection satisfies both. GROUND TRUTH
         // (`sshd -T` on OpenSSH 10.2p1 with this exact fixture): addr 10.1.2.3 ->
         // x11forwarding no (block-0 excluded, later applies), addr 10.2.2.2 -> yes
-        // (block-0 applies); the two never both apply. Currently RED: the impl's
-        // repeated-occurrence branch is negation-blind and false-fires; GREEN once
-        // the conservative guard lands.
+        // (block-0 applies); the two never both apply.
         assert!(
             w07_diags(
                 "Match Address 10.0.0.0/8,!10.1.0.0/16 Address 10.0.0.0/8\n    X11Forwarding yes\n\
@@ -2256,10 +2253,9 @@ mod w07_tests {
     }
 
     // ---- NEGATIVE (#409 over-flag guards): per-region detection must stay FP-free.
-    // ---- These PASS today (block-level rule) and must STAY correct after #409. Two
-    // ---- of them are NOT diagnostic-free: the covering block 0 genuinely shadows the
-    // ---- MIDDLE block (line 4), so they pin the exact diag set {line 4} - the guard
-    // ---- is that block 2 / line 6 is not OVER-flagged (see the barrier report). ----
+    // ---- Two of them are NOT diagnostic-free: the covering block 0 genuinely
+    // ---- shadows the MIDDLE block (line 4), so they pin the exact diag set
+    // ---- {line 4} - the guard is that block 2 / line 6 is not OVER-flagged. ----
 
     #[test]
     fn agreeing_earlier_block_covering_whole_population_suppresses_flag_w07() {
@@ -2769,43 +2765,42 @@ mod w07_tests {
 
     // ---- Multi-type one-axis reduction (#452, #494) ----
     // Grounding: /home/runner/rulesteward-docs/research-notes/452-multitype-grounding.md
-    // (session 7d, 2026-07-10). Oracle: live `sshd -T -C` in rockylinux containers,
+    // (2026-07-10). Oracle: live `sshd -T -C` in rockylinux containers,
     // OpenSSH 9.9p1 (rocky9) cross-checked against OpenSSH 8.0p1 (rocky8) - all 17
     // probed outcomes IDENTICAL across both versions.
     //
-    // #494: today's multi-type reasoning goes through `block_level_shadow`, whose
+    // #494: routing multi-type reasoning through `block_level_shadow` alone, whose
     // candidate earlier setters are filtered by `match_blocks_overlap`, which requires
-    // an EXACT same-criterion-type-set match. A bare `Match User alice` predecessor
-    // (type-set {user}) is silently DROPPED as a candidate winner for a later
+    // an EXACT same-criterion-type-set match, silently DROPS a bare
+    // `Match User alice` predecessor
+    // (type-set {user}) as a candidate winner for a later
     // `Match User alice Address ...` block (type-set {user,address}), even though the
     // predecessor is unconditionally satisfied by every connection the later block
-    // matches. This produces both a false positive (a later block that agrees with the
+    // matches. That produces both a false positive (a later block that agrees with the
     // TRUE (predecessor) winner still gets flagged against the wrong, merely
     // type-set-identical, comparator) and a false negative (a later block that
     // genuinely differs from the dropped predecessor is never flagged at all).
     //
-    // The fix (design LOCKED, not implemented by these tests): select earlier setters
+    // `multitype_earlier_setters` therefore selects earlier setters
     // STRUCTURALLY - `Match all` OR type_set(earlier) subset-or-equal type_set(later) -
     // rather than via `match_blocks_overlap`'s exact-set gate. When exactly one axis X
     // exists on which every selected setter differs from the later block (every other
     // axis is a setter no-op: either unconstrained by the setter, i.e. universe, or an
     // EXACT match of the later block's own restriction on that axis), the analysis
-    // reduces to the shipped single-type region walk on X. Otherwise it DECLINES the
+    // reduces to the single-type region walk on X. Otherwise it DECLINES the
     // per-axis reduction and falls back to `block_level_shadow`, still using the
     // structurally-selected (not `match_blocks_overlap`-selected) earlier-setter set.
     //
-    // CE1/CE2/CE3/CE4 below are RED against TODAY's code (verified via a scratch
-    // `w07_diags` dump against this exact main-branch build before authoring these
-    // tests): CE4 and CE3 are currently silent (false negatives); CE1 and CE2 currently
-    // flag the WRONG (supernet) block while staying silent on the true shadow (both a
-    // false positive and a false negative on the same fixture). CE6, the two-axis
-    // DECLINE lock, and the type-outside-T (G3) lock are LOCKS: the scratch dump showed
-    // today's block-level fallback already produces the CE-pinned correct answer on
-    // those fixtures (via the pre-existing `Match all` short-circuit in
-    // `match_blocks_overlap`, or via today's exact-type-set match happening to coincide
-    // with the new structural selection, or via both today's and the new selection
-    // excluding a type-outside-T predecessor identically) - these guard the fix against
-    // REGRESSING an already-correct case, not against a currently-broken one.
+    // CE1/CE2/CE3/CE4 below pin the fixtures a `match_blocks_overlap`-gated
+    // block-level rule gets WRONG: CE4 and CE3 stay silent (false negatives); CE1 and
+    // CE2 flag the WRONG (supernet) block while staying silent on the true shadow
+    // (both a false positive and a false negative on the same fixture). CE6, the
+    // two-axis DECLINE lock, and the type-outside-T (G3) lock guard shapes the
+    // block-level fallback answers correctly on its own (via the `Match all`
+    // short-circuit in `match_blocks_overlap`, via an exact-type-set match coinciding
+    // with the structural selection, or via both selections excluding a
+    // type-outside-T predecessor identically) - they guard against REGRESSING an
+    // already-correct case.
 
     #[test]
     fn ce4_452_target_partition_flags_only_the_shadowed_subnet() {
@@ -2820,12 +2815,13 @@ mod w07_tests {
         // 10.2.0.0/16 sub-population with a DIFFERING value -> line 6 is a real
         // sub-population shadow. GROUND TRUTH (452-multitype-grounding.md CE4,
         // OpenSSH 9.9p1/8.0p1): addr=10.2.0.5 -> no (middle block wins); addr=10.1.0.5
-        // -> yes; addr=10.3.0.5 -> yes. RED: TODAY's `match_blocks_overlap`-gated
-        // block-level fallback finds no differing earlier winner here (verified: main
-        // emits nothing on this fixture) since block-level compares only the FIRST
+        // -> yes; addr=10.3.0.5 -> yes. A `match_blocks_overlap`-gated
+        // block-level fallback finds no differing earlier winner here (verified:
+        // `main` emits nothing on this fixture), because block-level comparison
+        // looks only at the FIRST
         // overlapping setter's value block-wide, not per sub-population, and this
         // shape needs a THIRD (partition) block to expose the gap the same way #409's
-        // partition tests did for the single-type case.
+        // partition tests do for the single-type case.
         let d = w07_diags(
             "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
              Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
@@ -2856,8 +2852,8 @@ mod w07_tests {
         // the true winner). GROUND TRUTH (CE1, OpenSSH 9.9p1/8.0p1): user=alice,
         // addr=10.2.0.5 -> yes (bare-User block wins, NOT the /16 `no`); addr=10.5.0.5
         // and addr=10.1.0.5 -> yes; user=bob,addr=10.2.0.5 -> no (default, no block
-        // applies). RED both ways: TODAY (confirmed via a scratch dump against this
-        // exact fixture on main) flags line 6 - a LATENT FALSE POSITIVE, since
+        // applies). A type-set-exact gate goes wrong BOTH ways: it
+        // flags line 6 - a FALSE POSITIVE, since
         // `match_blocks_overlap` drops the bare-User predecessor (type-set size 1 != 2)
         // and instead compares the /8 block against the /16 block, whose value happens
         // to differ - and stays silent on line 4, a FALSE NEGATIVE, since the /16
@@ -2895,8 +2891,8 @@ mod w07_tests {
         // bare-Address block, so nothing differing remains uncovered - line 6 stays
         // clean. GROUND TRUTH (CE2, OpenSSH 9.9p1/8.0p1): user=alice,addr=10.2.0.5 ->
         // yes (bare-Address wins, block2's `no` is DEAD); addr=10.5.0.5 -> yes;
-        // user=bob,addr=10.2.0.5 -> yes (bare-Address has no user restriction). RED:
-        // TODAY (confirmed via scratch dump) flags line 6 instead (the same
+        // user=bob,addr=10.2.0.5 -> yes (bare-Address has no user restriction). A
+        // type-set-exact gate flags line 6 instead (the same
         // supernet-vs-subnet FP as CE1) and stays silent on line 4.
         let d = w07_diags(
             "Match Address 10.2.0.0/16\n    X11Forwarding yes\n\
@@ -2924,8 +2920,8 @@ mod w07_tests {
         // block's (`yes`) - a genuine, unqualified whole-population shadow: the later
         // `yes` never actually applies for any connection. GROUND TRUTH (CE3, OpenSSH
         // 9.9p1/8.0p1): user=alice,addr=10.2.0.5 -> no; user=alice,addr=192.168.1.1 ->
-        // no (the /8 block's `yes` NEVER wins). RED: TODAY (confirmed via scratch
-        // dump) is completely silent on this fixture - `match_blocks_overlap` excludes
+        // no (the /8 block's `yes` NEVER wins). A type-set-exact gate is
+        // completely silent on this fixture - `match_blocks_overlap` excludes
         // the bare-User predecessor purely on type-set-size mismatch (1 vs 2), so no
         // candidate winner is ever considered for the later block.
         let d = w07_diags(
@@ -2942,22 +2938,21 @@ mod w07_tests {
 
     #[test]
     fn ce6_match_all_agreeing_interleave_stays_correct_regression_lock() {
-        // LOCK, not RED: `Match all` yes / `User alice Address 10.2.0.0/16` no /
+        // LOCK: `Match all` yes / `User alice Address 10.2.0.0/16` no /
         // `User alice Address 10.0.0.0/8` yes. `Match all` is ALWAYS satisfied, so it
         // is the unconditional first winner of BOTH later blocks' entire populations:
         // the /16 block's `no` (line 4) is a real dead shadow, and the /8 block's
         // `yes` (line 6) agrees with the `Match all` winner everywhere, so it is NOT a
         // differing shadow. GROUND TRUTH (CE6, OpenSSH 9.9p1/8.0p1): every probe ->
-        // yes (`Match all` wins unconditionally). A scratch `w07_diags` dump against
-        // this EXACT fixture on unmodified main (session 7d-p1, before any #494 fix)
-        // already produces `{line 4}` and nothing else: `match_blocks_overlap`
+        // yes (`Match all` wins unconditionally). The diag set is `{line 4}` and
+        // nothing else: `match_blocks_overlap`
         // special-cases `Match all` as an unconditional overlap regardless of
-        // criterion-type-set size, so `Match all` already qualifies as a candidate
-        // winner for the /8 block today (via the pre-existing `is_unconditional_match_all`
-        // short-circuit, not the new structural subset selection), and it is the FIRST
-        // (and therefore decisive) candidate in source order for both later blocks.
-        // This test is a non-regression LOCK for the #494 fix: it must not disturb an
-        // interleave that a `Match all` predecessor already gets right.
+        // criterion-type-set size, so `Match all` qualifies as a candidate
+        // winner for the /8 block via the `is_unconditional_match_all`
+        // short-circuit rather than the structural subset selection, and it is the
+        // FIRST (and therefore decisive) candidate in source order for both later
+        // blocks. This test is a non-regression LOCK: the multi-type path must not
+        // disturb an interleave that a `Match all` predecessor already gets right.
         let d = w07_diags(
             "Match all\n    X11Forwarding yes\n\
              Match User alice Address 10.2.0.0/16\n    X11Forwarding no\n\
@@ -2975,28 +2970,28 @@ mod w07_tests {
         // LOCK: the accepted-FN DECLINE case. `User alice Address 10.1.0.0/16` yes /
         // `User alice,bob Address 10.0.0.0/8` no. The earlier block's type-set
         // {user,address} equals the later block's, so it is structurally selected
-        // either way (old `match_blocks_overlap` or the new subset-or-equal rule).
+        // either way (`match_blocks_overlap` or the subset-or-equal rule).
         // But NEITHER axis is a setter no-op: on `user`, the earlier block's {alice}
         // does NOT cover the later block's {alice,bob} (bob is missing); on `address`,
         // the earlier block's 10.1.0.0/16 does NOT cover the later block's wider
         // 10.0.0.0/8. No single axis exists on which the earlier setter is neutral
-        // everywhere else, so the design DECLINES the per-axis reduction and falls
+        // everywhere else, so `multitype_shadow` DECLINES the per-axis reduction and falls
         // back to `block_level_shadow` - which still uses the structurally-selected
         // earlier-setter set (here, the same single candidate either selection method
         // would pick), so the coarse whole-block comparison (`yes` != `no`) still
-        // fires. This is an ACCEPTED simplification, not a precision loss vs today:
+        // fires. This is an ACCEPTED simplification, not a precision loss:
         // for user=alice,addr=10.1.0.5 (the only connection where BOTH blocks'
         // criteria are simultaneously satisfiable), the earlier block genuinely wins
         // and the later `no` really is dropped, so flagging line 4 is correct; the
         // decline only means finer PARTIAL-shadow reasoning across the mismatched
         // bob/10.0.0.0/8 remainder is not attempted (a documented v0.3-style accepted
-        // FN, not a false positive). A scratch `w07_diags` dump against this exact
-        // fixture on unmodified main already produces `{line 4}` (both blocks share an
-        // identical 2-type set, so today's `match_blocks_overlap` already selects the
+        // FN, not a false positive). Both blocks share an
+        // identical 2-type set, so `match_blocks_overlap` also selects the
         // earlier block as a candidate and `block_level_shadow` finds the differing
-        // value) - this locks that the #494 fix's DECLINE fallback must reproduce that
-        // same answer, not silently drop it in the name of two-axis conservatism.
-        // GROUNDING CLASS: inference from CE4 semantics + observed-vs-main (no
+        // value; this locks that the DECLINE fallback reproduces that
+        // same `{line 4}` answer, not silently dropping it in the name of two-axis
+        // conservatism.
+        // GROUNDING CLASS: inference from CE4 semantics (no
         // transcript-pinned CE entry for this exact fixture).
         let d = w07_diags(
             "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
@@ -3012,7 +3007,7 @@ mod w07_tests {
 
     #[test]
     fn g4_repeated_negated_address_does_not_block_a_whole_population_shadow() {
-        // RED: G4's guard ("repeated CIDR/port criteria carrying `!` in L decline")
+        // G4's guard ("repeated CIDR/port criteria carrying `!` in L decline")
         // must decline only the PER-AXIS reduction attempt, not the coarse
         // `block_level_shadow` fallback. `Match User alice` yes (subset predecessor,
         // universe on `address`) / `Match User alice Address 10.0.0.0/8 Address
@@ -3026,12 +3021,12 @@ mod w07_tests {
         // still catch (structurally selecting the bare-User block as a subset
         // predecessor, exactly as CE3 does, independent of L's own repeated-negation
         // detail). Semantically identical to CE3 with an irrelevant repeated-negated
-        // Address decoration on the later block. RED: TODAY (confirmed via scratch
-        // dump against this exact fixture on main) is silent - `match_blocks_overlap`
+        // Address decoration on the later block. A `match_blocks_overlap`-gated path
+        // is silent here: it
         // excludes the bare-User predecessor on type-set-size mismatch (as in CE3) AND
         // its separate repeated-negation cross-occurrence guard would independently
         // suppress overlap even if the sizes matched.
-        // GROUNDING CLASS: inference from CE3 semantics + observed-vs-main (no
+        // GROUNDING CLASS: inference from CE3 semantics (no
         // transcript-pinned CE entry for this exact fixture).
         let d = w07_diags(
             "Match User alice\n    X11Forwarding yes\n\
@@ -3048,20 +3043,18 @@ mod w07_tests {
 
     #[test]
     fn g4_repeated_negated_address_agreeing_value_stays_clean() {
-        // LOCK, pairs with the RED case directly above: same repeated-negated later
+        // LOCK, pairs with the case directly above: same repeated-negated later
         // block shape, but the subset predecessor's value AGREES (`no` both times).
         // Whichever earlier-setter set G4's DECLINE fallback uses, an agreeing value
-        // can never produce a differing-value shadow, so this must stay clean both
-        // before and after the #494 fix - it locks that G4's guard does not
-        // accidentally FABRICATE a flag out of the newly-structurally-included subset
-        // predecessor when there is nothing to shadow. TODAY (confirmed via scratch
-        // dump) is already silent on this fixture (for the unrelated reason that the
-        // predecessor is excluded entirely), so this also guards against a regression
-        // where the #494 fix's broader earlier-setter inclusion starts comparing
+        // can never produce a differing-value shadow, so this stays clean - it locks
+        // that G4's guard does not
+        // accidentally FABRICATE a flag out of the structurally-included subset
+        // predecessor when there is nothing to shadow. It also guards against a
+        // regression where the broader earlier-setter inclusion starts comparing
         // against the wrong (block-level, non-region) value and false-fires on
         // agreement.
-        // GROUNDING CLASS: inference from CE3 semantics (agreeing-value variant) +
-        // observed-vs-main (no transcript-pinned CE entry for this exact fixture).
+        // GROUNDING CLASS: inference from CE3 semantics (agreeing-value variant;
+        // no transcript-pinned CE entry for this exact fixture).
         assert!(
             w07_diags(
                 "Match User alice\n    X11Forwarding no\n\
@@ -3085,14 +3078,14 @@ mod w07_tests {
         // already locks for a fully-disjoint type pair (#400): a static linter cannot
         // resolve whether a connection's client hostname happens to equal `web.corp`
         // without live DNS/NSS-style resolution, so the pair is left conservatively
-        // clean rather than guessed at. TODAY (confirmed via scratch dump) is already
-        // silent here too - `match_blocks_overlap` also requires an identical type-set,
+        // clean rather than guessed at. `match_blocks_overlap` is silent here too - it
+        // also requires an identical type-set,
         // so a {user,host} vs {user,address} pair fails its size/key check the same
-        // way. This locks that #494's structural subset-or-equal rule does not widen
+        // way. This locks that the structural subset-or-equal rule does not widen
         // to "any SHARED type overlaps", which would incorrectly let the outside-T
         // `host` criterion leak into the reduction.
         // GROUNDING CLASS: inference from CE5 field-absent semantics + the #400
-        // cross-type contract + observed-vs-main (no transcript-pinned CE entry for
+        // cross-type contract (no transcript-pinned CE entry for
         // this exact fixture).
         assert!(
             w07_diags(
@@ -3106,7 +3099,7 @@ mod w07_tests {
 
     #[test]
     fn ce7_disjoint_one_axis_nested_other_axis_stays_clean() {
-        // LOCK (barrier-review strengthening, NEEDS_REWORK round 1): the per-type
+        // LOCK: the per-type
         // co-satisfiability gate. `User alice Address 10.1.0.0/16` yes / `User bob
         // Address 10.0.0.0/8` no: the two blocks share the identical {user,address}
         // type-set and are NESTED on the address axis (10.1.0.0/16 inside
@@ -3117,21 +3110,20 @@ mod w07_tests {
         // addr=10.1.0.5 -> no and user=bob,addr=10.5.0.5 -> no (the later block wins
         // its own population; the alice block never applies to bob); user=alice,
         // addr=10.1.0.5 -> yes (block 1); user=alice,addr=10.5.0.5 -> no (default;
-        // NEITHER block matches). This kills the wrong impl the impl-blind barrier
-        // adversary constructed: a per-axis walk that folds subset/same-set earlier
+        // NEITHER block matches). This kills a wrong impl:
+        // a per-axis walk that folds subset/same-set earlier
         // setters into a single-axis region walk but DROPS the per-type
-        // co-satisfiability gate (today enforced by `match_blocks_overlap`'s
+        // co-satisfiability gate (enforced by `match_blocks_overlap`'s
         // per-shared-type `.all()` conjunction) would see only the nested address
         // axis, treat the alice block as a differing earlier winner for part of the
         // /8, and FP-flag line 4. The neighboring fixtures do not discriminate that
         // impl: `multi_type_block_level_fallback_flags_and_disjoint_is_clean`'s
         // disjoint pair is disjoint on BOTH axes, and the two-axis DECLINE fixture
         // above expects {line 4}, which a naive per-axis walk coincidentally also
-        // produces. Main today is clean on this fixture (verified empirically: this
-        // assertion passes against the UNMODIFIED production code in this worktree -
-        // today's `match_blocks_overlap` returns no-overlap via its disjoint-user
-        // conjunct); the #494 structural subset selection must PRESERVE a per-type
-        // co-satisfiability check, not trade it away for the axis walk.
+        // produces. `match_blocks_overlap` returns no-overlap here via its
+        // disjoint-user conjunct; the structural subset selection PRESERVES a
+        // per-type co-satisfiability check rather than trading it away for the axis
+        // walk.
         assert!(
             w07_diags(
                 "Match User alice Address 10.1.0.0/16\n    X11Forwarding yes\n\
@@ -3142,17 +3134,15 @@ mod w07_tests {
         );
     }
 
-    // ---- Mutation-survivor killers for the multi-type reduction (#452 ATL round) ----
-    // The post-GREEN mutation gate on the multi-type reduction code left survivors
-    // whose common cause was one-sided axis coverage: every CE1-CE7 fixture walks the
-    // ADDRESS axis with USER as the neutral axis. The fixtures below rotate the walk
+    // ---- Mutation-survivor killers for the multi-type reduction (#452) ----
+    // Every CE1-CE7 fixture walks the ADDRESS axis with USER as the neutral axis,
+    // which leaves the rotated shapes uncovered. The fixtures below rotate the walk
     // axis (CE8: user walk) and the neutral axis (CE10: address cover; CE9prime:
     // localport), and pin the guard seams (exact_name_set, G4) from both sides.
     // Oracle-pinned fixtures cite their CE label in
     // /home/runner/rulesteward-docs/research-notes/452-multitype-grounding.md
     // ("Mutation-survivor fixture shapes"); the rest carry an explicit GROUNDING
-    // CLASS inference note, and EVERY fixture's current-impl output was observed via
-    // a scratch `w07_diags` dump before being pinned here.
+    // CLASS inference note.
 
     #[test]
     fn ce8_user_axis_walk_flags_partition_and_all_agreeing_is_clean() {
@@ -3180,7 +3170,7 @@ mod w07_tests {
         // ALL-AGREEING variant: identical partition structure, every value `yes`.
         // Nothing behaviorally differs anywhere, so the walk must stay silent.
         // GROUNDING CLASS: inference from CE8 (value-agreement corollary; mirrors
-        // `partition_all_same_value_is_clean`) + observed-vs-main.
+        // `partition_all_same_value_is_clean`).
         // KILLS (multitype_names_axis_shadow): `-> true` (flags the clean fixture),
         // `&&` -> `||` at the member/winner conjunction (a later-member candidate
         // alone would satisfy the disjunction), and `!=` -> `==` at the winner-value
@@ -3289,7 +3279,7 @@ mod w07_tests {
         // shadowed sub-population, i.e. a documented ACCEPTED FN of the locked
         // one-axis design (the same class the two-axis DECLINE lock above pins).
         // GROUNDING CLASS: inference from the locked design's neutrality rule
-        // (subset-or-equal cover required) + observed-vs-main; no transcript-pinned
+        // (subset-or-equal cover required); no transcript-pinned
         // CE entry for this exact fixture.
         // KILLS (exact_name_set): the `-> Some(garbage)` return replacements
         // (Some(BTreeSet::new()) / Some(junk-literal)): both make BOTH sides of the
@@ -3319,7 +3309,7 @@ mod w07_tests {
         // -> block 2 `no` vs L's yes) again makes this an ACCEPTED FN of the locked
         // conservative design, exactly like the proper-subset fixture above.
         // GROUNDING CLASS: inference from the locked design's no-glob/no-negation
-        // neutrality guard + observed-vs-main; no transcript-pinned CE entry.
+        // neutrality guard; no transcript-pinned CE entry.
         // KILLS (exact_name_set): `||` -> `&&` in the reject condition
         // (`starts_with('!') || contains(*/?)`): under `&&` a negation-only value
         // like `!bob` is no longer rejected and is kept as a LITERAL, so
@@ -3347,8 +3337,8 @@ mod w07_tests {
         // first setter (`User alice` yes) agrees with L -> clean. sshd truth
         // (bob@10.1.0.5 -> block 2 `no` while L says yes) makes this an ACCEPTED FN
         // of G4's conservatism. GROUNDING CLASS: inference from CE12's
-        // addr_match_list negation grounding + the locked G4 guard +
-        // observed-vs-main; no transcript-pinned CE entry for this exact fixture.
+        // addr_match_list negation grounding + the locked G4 guard;
+        // no transcript-pinned CE entry for this exact fixture.
         // KILLS (later_has_repeated_negated_region): `-> false` (G4 disabled, the
         // user-axis walk runs - the setters are universe on address, so USER is the
         // unique axis - and block 2's differing `no` wins the bob witness,
@@ -3380,7 +3370,7 @@ mod w07_tests {
         // single-type guard's boundary pinned by `single_region_type_pinned_directly`
         // (a SINGLE negated instance stays a region type; only a repeat trips it).
         // GROUNDING CLASS: inference from CE4 + the #403 negation-aware carve
-        // semantics (both transcript-grounded classes) + observed-vs-main; no
+        // semantics (both transcript-grounded classes); no
         // transcript-pinned CE entry for this exact fixture.
         // KILLS (later_has_repeated_negated_region): `>=` -> `<` at the occurrence
         // count and `&&` -> `||` joining it (both make a SINGLE negated occurrence
@@ -3441,7 +3431,7 @@ mod w07_tests {
         // walk: treat the lenient-parsed port set exactly like an address set
         // (agreeing setter consumes its ports, differing setter wins the remainder).
         // GROUNDING CLASS: tool-determinism lock (lenient-parse domain) + CE9 for
-        // the sshd-invalidity of the fixture itself + observed-vs-main; deliberately
+        // the sshd-invalidity of the fixture itself; deliberately
         // NOT a claim about sshd behavior (sshd refuses to load this config).
         // KILLS (multitype_port_axis_shadow + the `"localport"` walk-arm in
         // multitype_axis_shadow): the walk-arm deletion and `-> false` body
@@ -3479,8 +3469,8 @@ mod w07_tests {
         // condition (`is_unconditional_match_all(earlier) || !constrains_axis`):
         // under `&&` a non-`Match all` setter without a port criterion takes the
         // set-intersection branch with an EMPTY port set, wins NOTHING instead of
-        // everything, and the flag is silently lost (the mutation gate's one
-        // first-round survivor, w07.rs:676).
+        // everything, and the flag is silently lost (a mutation-gate survivor,
+        // w07.rs:676).
         let d = w07_diags(
             "Match User alice,bob LocalPort 22\n    X11Forwarding yes\n\
              Match User alice,bob\n    X11Forwarding no\n\
@@ -3494,13 +3484,13 @@ mod w07_tests {
         assert_eq!(d[0].line, 6, "the universe setter wins port 2222 with `no`");
     }
 
-    // ---- Multi-type NOBODY-block FP locks (#452 round 3, impl-aware adversary) ----
-    // The #452 rewrite routed multi-type later blocks off `match_blocks_overlap`
-    // (onto the structural `multitype_earlier_setters` selection) and thereby DROPPED
+    // ---- Multi-type NOBODY-block FP locks (#452) ----
+    // Routing multi-type later blocks off `match_blocks_overlap`
+    // (onto the structural `multitype_earlier_setters` selection) drops
     // its `block_matches_nobody(later)` short-circuit: a multi-type later block whose
-    // AND-ed criteria admit NO connection is now FP-flagged by both the reduction
-    // walk and the DECLINE fallback, where pre-#452 main was clean. Adversary-
-    // grounded (impl-aware review round 3): `sshd_config(5)` says a Match line's
+    // AND-ed criteria admit NO connection would then be FP-flagged by both the
+    // reduction walk and the DECLINE fallback.
+    // Grounding: `sshd_config(5)` says a Match line's
     // criteria are "used only if ALL of the criteria on the line are satisfied" (a
     // repeated type is an intersection), and live `sshd -T -C` on OpenSSH 9.9p1 with
     // `Match all X11Forwarding yes` / `Match User alice User bob Address 10.0.0.0/8
@@ -3510,21 +3500,19 @@ mod w07_tests {
     // (`repeated_same_type_criteria_are_and_match_nobody_is_clean`,
     // `match_all_does_not_shadow_a_nobody_block_is_clean`,
     // `block_matches_nobody_pinned_directly`) cover only single-type later blocks;
-    // the four tests below close the MULTI-TYPE gap. All four are RED against the
-    // current impl (each emits a line-4 FP, verified via a scratch `w07_diags` dump
-    // against this exact build before pinning); the implementer applies the
-    // `block_matches_nobody(later)` guard to make them green.
+    // the four tests below close the MULTI-TYPE gap, held by `multitype_shadow`'s
+    // `block_matches_nobody(later)` guard.
 
     #[test]
     fn multi_type_nobody_block_repeated_user_is_not_a_shadowee_fallback_clean() {
-        // Adversary-grounded (sshd -T -C 9.9p1, sshd_config(5) AND-of-criteria; the
+        // Grounded (sshd -T -C 9.9p1, sshd_config(5) AND-of-criteria; the
         // exact oracle fixture quoted in the section comment above): the later block
         // AND-s `User alice` with `User bob` - no user is both - so it matches
         // NOBODY, and `Match all`'s differing `yes` has nothing to drop. This is the
         // DECLINE-fallback route: L's type-set {user,address} has TWO qualifying
         // axes for the always-neutral `Match all` setter (no unique axis), so the
-        // coarse block-level comparison runs and currently FP-flags line 4 against
-        // the `Match all` winner. The multi-type analogue of
+        // coarse block-level comparison runs; without the nobody guard it would
+        // FP-flag line 4 against the `Match all` winner. The multi-type analogue of
         // `match_all_does_not_shadow_a_nobody_block_is_clean`.
         assert!(
             w07_diags(
@@ -3567,8 +3555,8 @@ mod w07_tests {
         // nothing. The multi-type analogue of the Address arm of
         // `block_matches_nobody_pinned_directly` /
         // `repeated_disjoint_address_criteria_match_nobody_is_clean` (which pin the
-        // single-type path). Adversary-grounded (sshd_config(5) AND-of-criteria;
-        // same round-3 finding); currently FP-flags line 4 via the fallback.
+        // single-type path). Grounded in sshd_config(5) AND-of-criteria; without the
+        // nobody guard the fallback would FP-flag line 4.
         assert!(
             w07_diags(
                 "Match all\n    X11Forwarding yes\n\
@@ -3586,8 +3574,8 @@ mod w07_tests {
         // arrives on exactly ONE local port, so `LocalPort 22` AND `LocalPort 2222`
         // is unsatisfiable and the block matches nobody. The multi-type analogue of
         // `repeated_disjoint_localport_criteria_match_nobody_is_clean`.
-        // Adversary-grounded (sshd_config(5) AND-of-criteria; same round-3
-        // finding); currently FP-flags line 4 via the fallback.
+        // Grounded in sshd_config(5) AND-of-criteria; without the nobody guard the
+        // fallback would FP-flag line 4.
         assert!(
             w07_diags(
                 "Match all\n    X11Forwarding yes\n\
@@ -3598,41 +3586,39 @@ mod w07_tests {
         );
     }
 
-    // ---- SINGLE-INSTANCE nobody-criterion FP locks (#452 round 4, adversary round 2) ----
-    // `block_matches_nobody` only inspects REPEATED criterion types
-    // (`instances.len() >= 2`), so a block whose SINGLE-instance criterion admits no
-    // witness slips the round-3 nobody guard entirely and is still FP-flagged.
+    // ---- SINGLE-INSTANCE nobody-criterion FP locks (#452) ----
+    // A `block_matches_nobody` inspecting only REPEATED criterion types
+    // (`instances.len() >= 2`) misses a block whose SINGLE-instance criterion admits
+    // no witness, which would then still be FP-flagged.
     // OpenSSH `match_pattern_list` requires some POSITIVE pattern to match AND no
     // negated pattern to match, which yields two single-instance nobody shapes:
     // a PURE-NEGATION list (`!alice` positively matches NOBODY - the OpenSSH
     // footgun: it does NOT mean "everyone except alice") and a SELF-NEGATED list
     // (`!alice,alice`: alice is vetoed by the negation, everyone else fails the
-    // positive). Adversary-grounded, sshd -T -C 9.9p1: both user=alice and user=bob
+    // positive). Grounded, sshd -T -C 9.9p1: both user=alice and user=bob
     // probes -> yes (the nobody block's `no` never applies); satisfiability CONTROL:
     // `User !alice,*` IS satisfiable (bob -> no), so flagging THAT one is correct
-    // and stays locked below. Both fixtures' current-impl [line 4] FP was observed
-    // via a scratch `w07_diags` dump before pinning.
+    // and stays locked below.
     //
-    // FIX CAUTION (for the implementer): the single-instance nobody predicate must
-    // treat an UN-NEGATED positive glob (`a*`, `*`) as SATISFIABLE - only
-    // pure-negation and fully-self-negated lists are nobody. The control assertion
-    // in the second test enforces that boundary mechanically.
+    // BOUNDARY: the single-instance nobody predicate treats an UN-NEGATED positive
+    // glob (`a*`, `*`) as SATISFIABLE - only pure-negation and fully-self-negated
+    // lists are nobody. The control assertion in the second test enforces that
+    // boundary mechanically.
 
     #[test]
     fn single_instance_self_negated_user_list_matches_nobody_is_clean() {
-        // RED (round 4): `User !alice,alice` is a SINGLE-instance list that matches
+        // `User !alice,alice` is a SINGLE-instance list that matches
         // NOBODY - alice matches the positive `alice` but is vetoed by `!alice`
         // (match_pattern_list's negation short-circuit), and every other name fails
         // the sole positive pattern. The block's `no` therefore never applies and
         // the bare-Address predecessor's differing `yes` has nothing to drop ->
-        // truth EMPTY. Adversary-grounded (sshd -T -C 9.9p1: user=alice and
-        // user=bob probes both -> yes; the block never applies). NOTE this is a NEW
-        // regression vs pre-#452 main, not just an uncovered case: main's
-        // `match_blocks_overlap` identical-type-set gate rejected the bare-Address
-        // predecessor ({address} vs {user,address}) before any value comparison, so
-        // main was CLEAN here; the #494 structural subset-or-equal selection now
-        // admits the predecessor, and the single-instance gap in
-        // `block_matches_nobody` lets the value comparison FP-flag line 4.
+        // truth EMPTY. Grounded (sshd -T -C 9.9p1: user=alice and
+        // user=bob probes both -> yes; the block never applies). The structural
+        // subset-or-equal selection ADMITS the bare-Address predecessor
+        // ({address} vs {user,address}), which a `match_blocks_overlap`
+        // identical-type-set gate would reject before any value comparison, so a
+        // single-instance gap in `block_matches_nobody` would let the value
+        // comparison FP-flag line 4.
         assert!(
             w07_diags(
                 "Match Address 10.0.0.0/8\n    X11Forwarding yes\n\
@@ -3645,11 +3631,11 @@ mod w07_tests {
 
     #[test]
     fn single_instance_pure_negation_user_list_matches_nobody_is_clean() {
-        // CONTROL (green, must STAY green after the fix): `User !alice,*` IS
+        // CONTROL (must stay green): `User !alice,*` IS
         // satisfiable - the positive `*` admits every user the negation does not
-        // veto (adversary probe: bob -> no), so the later block genuinely loses its
+        // veto (probe: bob -> no), so the later block genuinely loses its
         // `no` to the earlier `Match all yes` for every user it matches, and the
-        // line-4 flag is CORRECT. This pins the fix-caution boundary: an un-negated
+        // line-4 flag is CORRECT. This pins the boundary: an un-negated
         // positive glob keeps the list satisfiable; the nobody predicate must not
         // over-reach to any list that merely CONTAINS a negation.
         let control = w07_diags(
@@ -3662,18 +3648,17 @@ mod w07_tests {
             "the satisfiable !alice,* control must keep its correct flag"
         );
         assert_eq!(control[0].line, 4);
-        // RED (round 4): `User !alice` is a PURE-NEGATION single-instance list.
+        // `User !alice` is a PURE-NEGATION single-instance list.
         // OpenSSH match_pattern_list returns a match only when some POSITIVE
         // pattern matches, so a negation-only list positively matches NOBODY - it
         // does NOT mean "everyone except alice". The block never applies, so the
-        // earlier `Match all yes` drops nothing -> truth EMPTY. Adversary-grounded
+        // earlier `Match all yes` drops nothing -> truth EMPTY. Grounded
         // (sshd -T -C 9.9p1: user=alice and user=bob probes both -> yes). Unlike
-        // the self-negated fixture above, this FP is PRE-EXISTING IN-FAMILY on
-        // main: a `Match all` predecessor short-circuits match_blocks_overlap's
-        // overlap check, and block_matches_nobody's repeated-types-only scan never
-        // inspected the single-instance pure-negation list, so main FP-flagged this
-        // shape too - the round-4 fix retires both the new and the inherited FP at
-        // one root.
+        // the self-negated fixture above, this shape FP-flags on EITHER selection
+        // route: a `Match all` predecessor short-circuits match_blocks_overlap's
+        // overlap check, and a repeated-types-only nobody scan never
+        // inspects the single-instance pure-negation list. `name_list_matches_nobody`
+        // retires both at one root.
         assert!(
             w07_diags(
                 "Match all\n    X11Forwarding yes\n\
@@ -3684,24 +3669,23 @@ mod w07_tests {
         );
     }
 
-    // ---- WIDER-NEGATED-GLOB nobody FP locks on the DECLINE path (#452 round 5) ----
-    // Completion of the round-4 single-instance-nobody family (adversary round 2,
-    // second finding): `name_list_matches_nobody` handles pure-negation and
+    // ---- WIDER-NEGATED-GLOB nobody FP locks on the DECLINE path (#452) ----
+    // Completion of the single-instance-nobody family:
+    // `name_list_matches_nobody` handles pure-negation and
     // EXACT self-negation only, deliberately treating a WIDER negated glob vetoing a
     // narrower positive (`!a*,ab`) as satisfiable on the assumption the
     // overlap/witness oracles reject such lists independently. That assumption
     // holds on the axis-WALK path (its member() search runs match_pattern_list and
-    // finds no witness - verified clean by the adversary) but NOT on the DECLINE
+    // finds no witness) but NOT on the DECLINE
     // path: `block_level_shadow` is MEMBERSHIP-BLIND (it compares first-setter
     // values without ever asking whether any connection satisfies the later block),
     // so with a `Match all` or subset predecessor the dead block still FP-flags.
-    // Adversary-grounded, sshd -T -C 9.9p1 (all probes yes; the wider negated glob
+    // Grounded, sshd -T -C 9.9p1 (all probes yes; the wider negated glob
     // vetoes the narrower positive): user=ab -> yes, user=xyz -> yes, user=b -> yes
-    // (the block never applies). Each fixture's current-impl [line 4] FP was
-    // observed via a scratch `w07_diags` dump before pinning.
+    // (the block never applies).
     //
-    // FIX NOTE (for the implementer): the fix is a later-block WITNESS check on the
-    // decline path (reusing the walk's member()/match_pattern_list machinery to ask
+    // DESIGN NOTE: the decline path uses a later-block WITNESS check
+    // (reusing the walk's member()/match_pattern_list machinery to ask
     // "does ANY candidate name satisfy the later block?"), NOT glob-subsumption
     // math bolted onto name_list_matches_nobody - pattern-subsumption reasoning is
     // exactly what that predicate's doc comment declines, and the witness search
@@ -3709,15 +3693,15 @@ mod w07_tests {
 
     #[test]
     fn wider_negated_glob_nobody_via_match_all_decline_is_clean() {
-        // RED (round 5): `User !a*,ab` matches NOBODY - the positive `ab` only
+        // `User !a*,ab` matches NOBODY - the positive `ab` only
         // admits the user "ab", and the negated glob `!a*` vetoes every name
         // starting with "a", including "ab" itself; every other name fails the sole
-        // positive. Adversary-grounded (sshd -T -C 9.9p1: user=ab -> yes, user=xyz
+        // positive. Grounded (sshd -T -C 9.9p1: user=ab -> yes, user=xyz
         // -> yes, user=b -> yes; the block's `no` never applies). The `Match all`
         // predecessor is neutral on both of L's axes, so no unique reduction axis
         // exists and the DECLINE route runs `block_level_shadow`, which is
-        // membership-blind and currently FP-flags line 4 against the `Match all`
-        // winner.
+        // membership-blind and would FP-flag line 4 against the `Match all`
+        // winner but for the witness gate.
         assert!(
             w07_diags(
                 "Match all\n    X11Forwarding yes\n\
@@ -3730,12 +3714,12 @@ mod w07_tests {
 
     #[test]
     fn wider_negated_glob_nobody_via_subset_predecessor_decline_is_clean() {
-        // RED (round 5): the same dead `User !a*,ab` block behind a bare-Address
+        // The same dead `User !a*,ab` block behind a bare-Address
         // SUBSET predecessor (the #494 selection shape) instead of `Match all`. The
         // predecessor's /8 exactly equals L's /8 (neutral on address) and it does
         // not constrain user (universe there), so BOTH axes qualify, no unique axis
-        // exists, and the DECLINE route again compares values membership-blind ->
-        // currently FP-flags line 4. Same adversary grounding as above (sshd -T -C
+        // exists, and the DECLINE route again compares values membership-blind,
+        // which would FP-flag line 4. Same grounding as above (sshd -T -C
         // 9.9p1: all probes yes; the block never applies); proves the gap is the
         // decline route itself, not something about `Match all` predecessors.
         assert!(
@@ -3750,11 +3734,11 @@ mod w07_tests {
 
     #[test]
     fn bang_star_negated_glob_nobody_decline_is_clean() {
-        // RED (round 5): `User !*,alice` - the negated glob `!*` vetoes EVERY name,
+        // `User !*,alice` - the negated glob `!*` vetoes EVERY name,
         // so no candidate can survive it and the positive `alice` is unreachable:
         // the list matches nobody. Same wider-negated-glob shape at its extreme
-        // (the widest possible veto), same DECLINE-route FP via the `Match all`
-        // predecessor, currently flagging line 4. Adversary-grounded (sshd -T -C
+        // (the widest possible veto), same DECLINE-route FP shape via the
+        // `Match all` predecessor on line 4. Grounded (sshd -T -C
         // 9.9p1: all probes yes; the wider negated glob vetoes the narrower
         // positive). Distinct from the SATISFIABLE `!alice,*` control pinned in
         // `single_instance_pure_negation_user_list_matches_nobody_is_clean`: there
@@ -3772,27 +3756,24 @@ mod w07_tests {
 
     #[test]
     fn single_instance_nobody_walk_route_stays_clean() {
-        // LOCK (round 6, green today): the WALK-route single-instance analogue of
+        // LOCK: the WALK-route single-instance analogue of
         // `multi_type_nobody_block_repeated_user_is_not_a_shadowee_walk_clean`. The
         // bare-Address predecessor (10.1.0.0/16, universe on `user`, NON-covering on
         // `address` vs L's /8) gives the reduction a UNIQUE address axis, so this is
-        // an axis-WALK case that bypasses the round-5 witness gate on the DECLINE
+        // an axis-WALK case that bypasses the witness gate on the DECLINE
         // route entirely - the only thing keeping it clean is the nobody guard
         // itself, whose name-list branch (`name_list_matches_nobody`) recognizes the
-        // self-negated `!alice,alice` list (round-4 oracle transcripts: sshd -T -C
+        // self-negated `!alice,alice` list (oracle transcripts: sshd -T -C
         // 9.9p1, user=alice and user=bob probes both take the OTHER block's value;
-        // the self-negated block never applies - same nobody list as the round-4
-        // fixtures, different route). KILLS the mutation survivor
-        // `name_list_matches_nobody -> bool with false` (w07.rs:909, surfaced after
-        // the round-5 witness gate took over the round-4 fixtures' protection):
-        // the implementer PROVED non-equivalence empirically by temp-applying the
+        // the self-negated block never applies). Aimed at the mutation survivor
+        // `name_list_matches_nobody -> bool with false` (w07.rs:909):
+        // non-equivalence was PROVED empirically by temp-applying the
         // mutant on this exact fixture - the real impl emits nothing, the mutant
         // misses the nobody guard, walks the unique address axis, hands the
         // differing `no` setter the 10.1.0.0/16 sub-population, and FP-flags
-        // line 4. BACK-REFERENCE: the round-7 hoist (name_axes_admit_witness moved
-        // above the walk) re-masked this LINT-LEVEL kill - the hoisted witness gate
-        // now suppresses this fixture even under that mutant - so
-        // `name_list_matches_nobody_direct_pin` (round 8) is the surviving DIRECT
+        // line 4. Because `name_axes_admit_witness` sits ABOVE the walk, that
+        // hoisted witness gate suppresses this fixture even under that mutant, so
+        // `name_list_matches_nobody_direct_pin` is the surviving DIRECT
         // kill for it; this test remains the walk-route behavioral lock.
         assert!(
             w07_diags(
@@ -3804,38 +3785,37 @@ mod w07_tests {
         );
     }
 
-    // ---- WALK-ROUTE wider-negated-glob nobody FP locks (#452 round 7) ----
-    // The walk-route TWIN of the round-5 decline-route locks: the round-5 witness
-    // gate (`name_axes_admit_witness`) sits on the DECLINE path only, and the axis
-    // WALK never inspects a witness-less NON-walked axis - the round-1 #494
-    // mechanism resurfaced through a nobody shape `block_matches_nobody` cannot see
+    // ---- WALK-ROUTE wider-negated-glob nobody FP locks (#452) ----
+    // The walk-route TWIN of the decline-route locks above: a witness
+    // gate (`name_axes_admit_witness`) would sit on the DECLINE path only, and the
+    // axis WALK never inspects a witness-less NON-walked axis - the #494
+    // mechanism through a nobody shape `block_matches_nobody` cannot see
     // (its `name_list_matches_nobody` handles pure-negation / exact self-negation,
     // not a wider negated glob vetoing a narrower positive). A bare-Address subset
     // predecessor makes ADDRESS the unique reduction axis, so the walk carves the
     // predecessor's /16 out of L's /8 and flags the differing value without ever
     // asking whether ANY user satisfies L's dead `!a*,ab` (or `!*,alice`) list.
-    // Adversary-grounded, sshd -T -C 9.9p1 (global X11Forwarding no; probes ab,
+    // Grounded, sshd -T -C 9.9p1 (global X11Forwarding no; probes ab,
     // xyz, b, abcd at addr=10.5.0.5 all -> no; the later block's `yes` never
-    // applies to anyone). Both fixtures' current-impl [line 4] FP was observed via
-    // a scratch `w07_diags` dump before pinning. After this round, walk and decline
-    // - the only two multitype routes - are BOTH witness-gated, closing the family
-    // exhaustively.
+    // applies to anyone). Walk and decline - the only two multitype routes - are
+    // BOTH witness-gated, closing the family exhaustively.
     //
-    // FIX NOTE (for the implementer): hoist `name_axes_admit_witness` to the TOP of
+    // DESIGN NOTE: `name_axes_admit_witness` sits at the TOP of
     // `multitype_shadow` so it guards both routes. The check is SUPPRESS-ONLY (it
-    // can only turn a flag into silence), so hoisting it cannot introduce new FPs.
+    // can only turn a flag into silence), so guarding both routes cannot introduce
+    // new FPs.
 
     #[test]
     fn walk_route_wider_negated_glob_nobody_is_clean() {
-        // RED (round 7): `User !a*,ab` matches NOBODY (the negated glob `!a*`
+        // `User !a*,ab` matches NOBODY (the negated glob `!a*`
         // vetoes the only positive `ab`; every other name fails the positive - the
-        // same dead list as the round-5 decline fixtures). The bare-Address
+        // same dead list as the decline-route fixtures above). The bare-Address
         // predecessor (10.1.0.0/16: universe on user, NON-covering on L's /8)
-        // makes ADDRESS the unique reduction axis, so this takes the WALK route,
-        // bypassing the round-5 decline-path witness gate; the walk hands the
+        // makes ADDRESS the unique reduction axis, so this takes the WALK route; a
+        // decline-path-only witness gate would leave the walk handing the
         // differing `no` predecessor the 10.1.0.0/16 sub-population of a block no
-        // connection can ever satisfy and currently FP-flags line 4.
-        // Adversary-grounded (sshd -T -C 9.9p1: probes ab, xyz, b, abcd at
+        // connection can ever satisfy, FP-flagging line 4.
+        // Grounded (sshd -T -C 9.9p1: probes ab, xyz, b, abcd at
         // addr=10.5.0.5 all -> no under a global X11Forwarding no; L's `yes` never
         // applies).
         assert!(
@@ -3850,13 +3830,13 @@ mod w07_tests {
 
     #[test]
     fn walk_route_bang_star_negated_glob_nobody_is_clean() {
-        // RED (round 7): the same walk-route shape at the veto's extreme -
+        // The same walk-route shape at the veto's extreme -
         // `User !*,alice`, where the negated glob `!*` vetoes EVERY name and the
-        // positive `alice` is unreachable (the round-5 `bang_star` fixture's list,
-        // now reached via the WALK route instead of the decline route). The unique
-        // address axis again lets the walk flag line 4 against the differing
+        // positive `alice` is unreachable (the `bang_star` decline fixture's list,
+        // reached via the WALK route instead). The unique
+        // address axis would otherwise let the walk flag line 4 against the differing
         // bare-Address predecessor without a membership check on the dead user
-        // list. Same adversary grounding (sshd -T -C 9.9p1: all probes -> no; the
+        // list. Same grounding (sshd -T -C 9.9p1: all probes -> no; the
         // block never applies); still distinct from the SATISFIABLE `!alice,*`
         // control (there the positive is the glob and bob survives).
         assert!(
@@ -3871,21 +3851,21 @@ mod w07_tests {
 
     #[test]
     fn name_list_matches_nobody_direct_pin() {
-        // Direct unit pin on the private fast-path predicate (round 8). The round-7
-        // hoist of `name_axes_admit_witness` to the top of `multitype_shadow`
+        // Direct unit pin on the private fast-path predicate. `name_axes_admit_witness`
+        // at the top of `multitype_shadow`
         // SUBSUMES this predicate's domain through the lint() entry point: every
         // list it recognizes as nobody is also witness-less, so the mutation
-        // survivor `name_list_matches_nobody -> bool with false` became GENUINELY
-        // behavior-equivalent end-to-end (the implementer proved the whole suite
-        // passes with the mutant applied; this supersedes the round-6 lint-level
-        // kill, which the hoist re-masked). Rather than a documented-equivalence
+        // survivor `name_list_matches_nobody -> bool with false` is GENUINELY
+        // behavior-equivalent end-to-end (the whole suite was observed to pass with
+        // the mutant applied, which re-masks the lint-level kill above).
+        // Rather than a documented-equivalence
         // exclusion, this test kills the mutant DIRECTLY and pins the fast-path
         // contract: TRUE only for pure-negation and EXACT self-negation (literal or
         // glob-string-identical); FALSE for anything with a surviving positive.
         // The ["!a*","ab"] FALSE case is INTENTIONAL - the wider-glob-veto shape is
         // deliberately NOT detected here (no glob-subsumption math in the fast
         // path); the hoisted witness gate catches it with real match_pattern_list
-        // semantics (#452 rounds 5-7), and this pin keeps the predicate honest
+        // semantics (#452), and this pin keeps the predicate honest
         // about exactly where its cheap exact-match contract ends.
         let nobody = |vals: &[&str]| -> bool {
             let owned: Vec<String> = vals.iter().map(|v| (*v).to_string()).collect();
@@ -3899,7 +3879,7 @@ mod w07_tests {
         // (`a*` vs `a*`), no glob expansion involved -> nobody.
         assert!(nobody(&["!a*", "a*"]));
         // A positive glob not exactly negated keeps the list satisfiable
-        // (`!alice,*` admits every user except alice - the round-4 control).
+        // (`!alice,*` admits every user except alice - the satisfiability control).
         assert!(!nobody(&["!alice", "*"]));
         // A plain literal with no negation at all is trivially satisfiable.
         assert!(!nobody(&["alice"]));
@@ -3911,7 +3891,7 @@ mod w07_tests {
 
     #[test]
     fn unmodeled_criterion_rdomain_takes_fallback_arm_and_flags() {
-        // GREEN pin (round 9, from the idiomatic review): the `_` arm of
+        // GREEN pin: the `_` arm of
         // `multitype_axis_shadow` is documented "unreachable" but IS live, and this
         // pins it. Reachability trace: `RDomain` is a VALID sshd Match criterion
         // (sshd_config(5); accepted by the parser's generic criterion split and
@@ -4033,7 +4013,7 @@ mod w07_tests {
         // APPLIES). The block therefore co-satisfies `User *` and line 4 IS a shadow.
         // A blanket `to_ascii_lowercase()` applied to ALL name axes would fold `ALICE`
         // onto `alice`, declare the list nobody, and drop this finding - this test
-        // fails such an impl. Expected to PASS before the fix (regression guard).
+        // fails such an impl.
         let d = w07_diags(
             "Match User *\n    X11Forwarding yes\n\
              Match User !alice,ALICE\n    X11Forwarding no\n",
@@ -4056,7 +4036,6 @@ mod w07_tests {
         // axis. No single connection is both `ALICE` and `alice`, so the two blocks
         // are provably disjoint and nothing is shadowed. A blanket lowercase across
         // all name axes would make them overlap and manufacture a false W07 here.
-        // Expected to PASS before the fix (regression guard).
         assert!(
             w07_diags(
                 "Match User ALICE\n    X11Forwarding yes\n\
@@ -4111,8 +4090,7 @@ mod w07_tests {
         // case-SENSITIVE impl already flags this. It is here because a half-fix that
         // folds only the pattern BREAKS it: the pattern becomes `web.corp` while the
         // witness stays `WEB.CORP`, so the block stops matching ITSELF and the
-        // finding silently disappears. Expected to PASS before the fix; it fails only
-        // for an impl that folds one side.
+        // finding silently disappears. It fails only for an impl that folds one side.
         let d = w07_diags(
             "Match Host WEB.CORP\n    X11Forwarding yes\n\
              Match Host WEB.CORP\n    X11Forwarding no\n",
@@ -4184,7 +4162,7 @@ mod w07_tests {
         // sites would pass them; here it would make `ALICE` and `alice` co-satisfy
         // and manufacture a false W07. `match_usergroup_pattern_list` passes
         // dolower=0 (match.c:177-186), so no connection is both users and nothing is
-        // shadowed. Expected to PASS before the fix (regression guard).
+        // shadowed.
         assert!(
             w07_diags(
                 "Match User ALICE Address 10.0.0.0/8\n    X11Forwarding yes\n\
@@ -4196,11 +4174,11 @@ mod w07_tests {
         );
     }
 
-    // ---- GROUP axis stays case-sensitive too (#495 round 3) ----
+    // ---- GROUP axis stays case-sensitive too (#495) ----
     //
-    // The round-2 barrier landed User-axis counter-guards but left the Group axis
-    // UNGUARDED: a wrong impl that gates the fold on `kind == "host" || kind ==
-    // "group"` (instead of host only) passes the whole pre-round-3 suite. The
+    // Without a Group-axis counter-guard, a wrong impl that gates the fold on
+    // `kind == "host" || kind == "group"` (instead of host only) passes every
+    // User-axis guard above. The
     // three tests below are the Group mirrors of the User counter-axis guards
     // above, closing that hole.
     //
@@ -4217,7 +4195,7 @@ mod w07_tests {
     //   comment `/* Case sensitive match */` - the IDENTICAL call User goes
     //   through, just reached via group membership instead of `ci->user`.
     //
-    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+    // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
     // `Match Group runner` + `PermitTTY no`, probed with `user=runner` (a real
     // member of the local `runner` group, gid 1000):
     // - Lowercase pattern `Match Group runner` -> `permittty no` (the block
@@ -4294,13 +4272,13 @@ mod w07_tests {
         );
     }
 
-    // ---- HOST fold fidelity: ASCII-only, not full Unicode (#495 round 4) ----
+    // ---- HOST fold fidelity: ASCII-only, not full Unicode (#495) ----
     //
-    // The round-1..3 suite pins WHICH axis folds (host, not user/group) and THAT
-    // both sides of the comparison fold, but never HOW FAR the fold reaches. A
+    // The fixtures above pin WHICH axis folds (host, not user/group) and THAT
+    // both sides of the comparison fold, but not HOW FAR the fold reaches. A
     // wrong impl that uses Rust's full-Unicode `str::to_lowercase()` instead of
-    // `to_ascii_lowercase()` passes the entire pre-round-4 suite (507/507):
-    // every existing fixture's mixed-case pairs differ only in the ASCII a-z/A-Z
+    // `to_ascii_lowercase()` passes all of them:
+    // every one of their mixed-case pairs differs only in the ASCII a-z/A-Z
     // range, where the two functions agree.
     //
     // # Grounding (PRIMARY SOURCE: openssh-portable, pinned tag `V_10_2_P1`)
@@ -4331,7 +4309,7 @@ mod w07_tests {
 
     #[test]
     fn kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07() {
-        // #495 round-4 FIDELITY guard, FP direction. `k` (U+006B) and U+212A
+        // #495 FIDELITY guard, FP direction. `k` (U+006B) and U+212A
         // KELVIN SIGN are wholly distinct host patterns under sshd's byte-wise
         // ASCII fold (the oracle above), so the two blocks are disjoint and
         // nothing is shadowed. A wrong impl using `str::to_lowercase()` maps
@@ -4351,7 +4329,7 @@ mod w07_tests {
 
     #[test]
     fn accented_e_host_pattern_does_not_fold_across_case_w07() {
-        // #495 round-4 FIDELITY guard, FP direction, operator-facing mirror of the
+        // #495 FIDELITY guard, FP direction, operator-facing mirror of the
         // KELVIN SIGN guard above. U+00C9 (LATIN CAPITAL LETTER E WITH ACUTE) and
         // U+00E9 (LATIN SMALL LETTER E WITH ACUTE) are both non-ASCII bytes in
         // UTF-8 (`c3 89` / `c3 a9`), so sshd's byte-wise fold never touches them
@@ -4370,33 +4348,32 @@ mod w07_tests {
         );
     }
 
-    // ---- HOST fold on a GLOB, and full multi-site Unicode fidelity (#495 round 5) ----
+    // ---- HOST fold on a GLOB, and full multi-site Unicode fidelity (#495) ----
     //
-    // These two fixtures closed the round-5 holes at the #495 barrier; the fold has
-    // since been implemented ([`host_axis_folds`] / [`match_pattern_list`]) and the
+    // The fold lives in [`host_axis_folds`] / [`match_pattern_list`] and the
     // exhaustive sweep over axis x shape x block x charset lives in
-    // `tests/w07_case_fold_matrix.rs`. The prose below records why these SPECIFIC
-    // shapes had to exist, in the pre-fix terms the suite was authored against.
+    // `tests/w07_case_fold_matrix.rs`. The two fixtures below cover shapes that
+    // sweep does not reach through the lint entry point.
     //
     // Every host GLOB in the suite above is already lowercase (`*.corp`, `a*`, `*`);
     // the only UPPERCASE host tokens are LITERALS (`WEB.CORP`, `CAF\u{C9}`, `K`). So
-    // pattern-folding is never exercised on a glob, and an impl that folds the
+    // pattern-folding is never exercised on a glob there, and an impl that folds the
     // incoming VALUE always but folds the PATTERN only when it contains no `*`/`?`
-    // passes the whole pre-round-5 suite (509/509): it never meets an uppercase glob
+    // passes every one of those fixtures: it never meets an uppercase glob
     // to skip.
     //
-    // Separately, the round-4 Unicode guards above
+    // Separately, the Unicode guards above
     // (`kelvin_sign_host_pattern_does_not_fold_onto_ascii_k_w07`,
     // `accented_e_host_pattern_does_not_fold_across_case_w07`) are both
     // SINGLE-criterion-type fixtures (no `Address`), so they route exclusively
     // through [`member_of_type`] / [`match_pattern_list`] on the single-type path. A
     // `to_lowercase()` (full Unicode) confined to any OTHER fold site therefore
-    // passes them too - the same structural hole that let a User-axis-only fold
-    // survive earlier rounds recurred here because the new guards were single-type.
+    // passes them too - the same structural hole that lets a User-axis-only fold
+    // survive a single-type-only guard set.
 
     #[test]
     fn uppercase_host_glob_folds_onto_lowercase_literal_w07() {
-        // #495 round-5 FIDELITY guard, FN direction. The earlier block's glob is
+        // #495 FIDELITY guard, FN direction. The earlier block's glob is
         // uppercase (`*.CORP`) and the later block is the lowercase literal
         // `web.corp`. An impl that folds the pattern only when it has no `*`/`?`
         // (`wrongGLOB`) leaves `*.CORP` un-folded (it contains `*`), so
@@ -4404,7 +4381,7 @@ mod w07_tests {
         // even though it correctly folds every literal-vs-literal and
         // literal-vs-lowercase-glob pair the rest of the suite exercises.
         //
-        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
         // `Match Host *.CORP` + `PermitTTY no`, probed against the global default
         // `PermitTTY yes`:
         // - host=`web.corp` -> `permittty no` (the block APPLIES: the pattern folds).
@@ -4433,13 +4410,13 @@ mod w07_tests {
 
     #[test]
     fn kelvin_sign_shadow_reaches_nobody_guard_and_multitype_member_w07() {
-        // #495 round-5 FIDELITY guard, FN direction. Adding `Address` forces the
+        // #495 FIDELITY guard, FN direction. Adding `Address` forces the
         // multi-type route: the LATER block's `Host !k,\u{212A}` list first passes
         // through [`block_matches_nobody`]'s self-negation check, then (once past
         // that guard) through [`multitype_names_axis_shadow`]'s `member` closure -
         // two independent host-comparison sites a single-type fixture never reaches.
         //
-        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15, this session)
+        // # Live oracle (local `sshd -T -C`, OpenSSH_10.2p1, 2026-07-15)
         // `Match Host !k,\u{212A}` + `PermitTTY no`, probed against the global
         // default `PermitTTY yes`:
         // - host=`\u{212A}` (KELVIN SIGN) -> `permittty no` (the block APPLIES:
@@ -4458,8 +4435,8 @@ mod w07_tests {
         // `multitype_names_axis_shadow`'s `member` closure, the same Unicode fold
         // collapses the KELVIN witness candidate onto `k`, which the block's own
         // `!k` negation then excludes, so no candidate satisfies membership and the
-        // walk finds no shadow either. Both are proven survivors of the round-4
-        // guards; this fixture kills both.
+        // walk finds no shadow either. Both survive the single-type Unicode guards
+        // above; this fixture kills both.
         let d = w07_diags(
             "Match Host *\n    X11Forwarding yes\n\
              Match Host !k,\u{212A} Address 10.0.0.0/8\n    X11Forwarding no\n",

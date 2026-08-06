@@ -1,8 +1,6 @@
 //! Shared inline-comment stripping, parameterized per backend (#562).
 //!
-//! Phase-0 stub for the 9i fan-out: the module file exists so parallel lanes
-//! never edit `lib.rs` concurrently. Lane 3 (#562) owns the body: one
-//! parameterized stripper replacing the three line-level implementations
+//! One parameterized stripper replacing the three line-level implementations
 //! (fapolicyd `parser/inline.rs`, auditd `parser.rs`, sudoers `parser.rs`),
 //! with each backend's quote rules expressed as explicit parameters. sshd's
 //! token-level `algo_list_value` stripping stays separate by decision
@@ -209,16 +207,9 @@ mod tests {
     // `inline_comment_index` (lines 27-37) + `strip_inline_comment` (40-43).
     // No quote awareness; `#` counts as inline only after a preceding
     // non-whitespace token seen earlier in the same left-to-right scan.
-    // (The rows below reproduce the values of what were EXISTING pinned
-    // tests in inline.rs's own `#[cfg(test)] mod tests` -
-    // finds_trailing_hash / ignores_column_0_hash / ignores_leading_ws_hash /
-    // detects_hash_immediately_after_token / strip_preserves_when_no_inline_hash
-    // / strip_cuts_at_inline_hash; those old tests were removed once the
-    // barrier ruling made them obsolete duplicates of these rows - see
-    // `/mnt/side-projects/9i-closeout/lane-3-stripper-report.md` "Barrier
-    // rework" for the old-test -> row mapping. Per-row citations below point
-    // at the live function span (inline.rs:27-37 / 40-43), not the deleted
-    // test line numbers.)
+    // (These rows are the sole record of this equivalence today; per-row
+    // citations below point at the live function span (inline.rs:27-37 /
+    // 40-43), not any deleted test's line numbers.)
     mod fapolicyd_table {
         use super::*;
 
@@ -261,7 +252,7 @@ mod tests {
             (r"allow \#x", r"allow \"),
             // Empty line: the byte loop never executes -> None -> unchanged.
             ("", ""),
-            // Round-3 CONCERN row (author's discretion): a leading `#` sets
+            // CONCERN row (author's discretion): a leading `#` sets
             // `seen_token = true` (inline.rs:33-34, the `_` wildcard arm
             // catches `#` too - `seen_token` is only gated on `' '`/`'\t'`,
             // not on "is this byte itself a `#`"), so a SECOND `#` later on
@@ -371,14 +362,12 @@ mod tests {
     // `strip_inline_comment` (lines 237-315) + `paren_opens_runas`
     // (324-335). Double-quote aware, plus the `#include`/`#includedir`
     // bypass and the `#<digits>` UID/GID-token exception (with runas-paren
-    // state tracking). The first block below reproduces the values of what
-    // were EXISTING pinned tests in `parser.rs`'s own `#[cfg(test)] mod
-    // tests`, already grounded against real `visudo`/`cvtsudoers` behavior;
-    // those old tests were removed once the barrier ruling made them
-    // obsolete duplicates of these rows (the full old-test -> row mapping
-    // is recorded in `/mnt/side-projects/9i-closeout/lane-3-stripper-report.md`
-    // "Barrier rework" section) - the per-row citations below now point at
-    // the live `strip_inline_comment` function span (parser.rs:237-315)
+    // state tracking). The first block below reproduces values already
+    // grounded against real `visudo`/`cvtsudoers` behavior (the report
+    // mapping named test cases to these rows lives in git history, since
+    // `parser.rs`'s own `#[cfg(test)] mod tests` duplicating them was
+    // removed once these rows made them redundant); per-row citations point
+    // at the live `strip_inline_comment` function span (parser.rs:237-315)
     // rather than the deleted test line numbers. The rest are new cases
     // hand-traced against the same function for the required table shapes
     // (quote states, `#include`, empty line, `#` at position 0, escaped
@@ -388,34 +377,33 @@ mod tests {
 
         const STRIP_CASES: &[(&str, &str)] = &[
             // parser.rs:295 `,` prev-byte arm (was
-            // `strip_keeps_percent_hash_gid_token_...`; see report mapping).
+            // `strip_keeps_percent_hash_gid_token_...`).
             ("%#1000 ALL=(ALL) ALL", "%#1000 ALL=(ALL) ALL"),
             ("Defaults passprompt=foo#1000", "Defaults passprompt=foo"),
             // parser.rs:295-299 (skip multi-digit UID, strip later real
-            // comment; see report mapping).
+            // comment).
             (
                 "root,#1000 ALL=(ALL) ALL # real comment",
                 "root,#1000 ALL=(ALL) ALL ",
             ),
-            // parser.rs:295-299 (UID token at EOL, single + multi digit; see
-            // report mapping).
+            // parser.rs:295-299 (UID token at EOL, single + multi digit).
             ("root,#7", "root,#7"),
             ("root,#1000", "root,#1000"),
             // parser.rs:295-299 (UID token then a normal token then a
-            // comment; see report mapping).
+            // comment).
             ("u,#5 h = /bin/ls #c", "u,#5 h = /bin/ls "),
             // parser.rs:295-299 (post-`=` alias-member UID kept, not gated
-            // on `=`; see report mapping).
+            // on `=`).
             ("User_Alias FOO = #1000", "User_Alias FOO = #1000"),
             // parser.rs:263,295,299 (#407 colon / open-paren runas
-            // positions; see report mapping).
+            // positions).
             (
                 "alice ALL=(root:#1000) /bin/su",
                 "alice ALL=(root:#1000) /bin/su",
             ),
             ("alice ALL=(#1000) /bin/su", "alice ALL=(#1000) /bin/su"),
             // parser.rs:263,295,299 (malformed GID tail still kept -
-            // classifier not validator; see report mapping).
+            // classifier not validator).
             (
                 "alice ALL=(root:#1000abc) /bin/su",
                 "alice ALL=(root:#1000abc) /bin/su",
@@ -425,13 +413,13 @@ mod tests {
                 "alice ALL=(#1000abc) /bin/su",
             ),
             // parser.rs:264,299 (real comment still stripped after a closed
-            // runas group; see report mapping).
+            // runas group).
             (
                 "alice ALL=(root) /bin/su # comment",
                 "alice ALL=(root) /bin/su ",
             ),
             // parser.rs:263,299 + `paren_opens_runas` (324-335): mid-command
-            // paren does not open runas state (see report mapping).
+            // paren does not open runas state .
             (
                 "alice localhost = /bin/echo (#foo",
                 "alice localhost = /bin/echo (",
@@ -445,7 +433,7 @@ mod tests {
             ),
             // parser.rs:262,264 (`b')' if !in_quotes`): a `)` inside double
             // quotes does not close runas state; the `#foo` inside the
-            // still-open paren is a kept token (see report mapping).
+            // still-open paren is a kept token .
             (
                 "alice ALL=(root:\"a)\"#foo) /bin/su",
                 "alice ALL=(root:\"a)\"#foo) /bin/su",
@@ -486,14 +474,12 @@ mod tests {
             // Empty line: the byte loop never executes -> whole (empty)
             // line.
             ("", ""),
-            // ---- Round-3 adversarial strengthening (killing rows for the
-            // prev_allows_uid byte-set, parser.rs:286-298): the pre-rework
-            // table only pinned ',' '%' and whitespace via the KEEP path
-            // (strip_keeps_percent_hash_gid_token_...,
-            // strip_handles_a_uid_token_then_a_normal_token...), so a wrong
-            // impl that drops ':' '(' '>' '@' '"' from the set still passed.
+            // ---- Strengthening rows for the `prev_allows_uid` byte-set
+            // (parser.rs:286-298): earlier rows in this table pin ',' '%'
+            // and whitespace via the KEEP path, so a wrong impl that
+            // dropped ':' '(' '>' '@' '"' from the set would still pass.
             // Each row below forces the byte immediately BEFORE `#` to be
-            // one of the previously-undiscriminated bytes, with a digit
+            // one of those otherwise-undiscriminated bytes, with a digit
             // immediately after `#` so `next_is_digit` is unconditionally
             // true and only `prev_allows_uid` decides the outcome.
             //
@@ -539,8 +525,8 @@ mod tests {
             // is true and this is KEPT, unchanged - narrowing the check to
             // ASCII whitespace would be the #426 regression.
             ("foo\u{000B}#1000", "foo\u{000B}#1000"),
-            // ---- Round-4 residual: `':'` was the ONE prev_allows_uid byte
-            // still undiscriminated by round 3. Every existing `':'`-before-
+            // ---- `':'` is the one `prev_allows_uid` byte NOT discriminated
+            // by the rows above. Every existing `':'`-before-
             // `#` row in this table sits inside a runas paren
             // (`"alice ALL=(root:#1000) /bin/su"` etc.), so parser.rs:299's
             // `in_runas_paren ||` short-circuit KEEPs without the scan ever

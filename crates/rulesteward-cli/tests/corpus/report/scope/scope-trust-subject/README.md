@@ -22,7 +22,7 @@ allow perm=any uid=0 trust=1 : all
 - `perm=any` renders `perm:"any"`.
 - Subject side carries two attrs and renders `uid=0 trust=1` (space-separated
   subject Attrs, Display for Rule `format.rs:62-64`); object side is `all`.
-- `trust` is either-side (`attrs.rs:57`); here it sits on the SUBJECT side and
+- `trust` is either-side (`attrs.rs:50`); here it sits on the SUBJECT side and
   still yields `scope:"trust"` (the README scope axis: `trust` matches object OR
   subject). Neither `uid=` nor `trust=` is an `exe=`/`path=`/`dir=` value, so
   `subjectPaths:[]` and `objectPaths:[]`.

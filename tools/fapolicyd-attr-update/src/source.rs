@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn verify_sha256_fails_closed_on_a_mismatch() {
-        // ATL round-1 strengthening: the error must carry BOTH sides of the
+        // The error must carry BOTH sides of the
         // comparison VERBATIM - the expected hex we passed in AND the real
         // computed hash of the content (the NIST "abc" vector, hardcoded above,
         // NOT recomputed through the impl's own hex encoder). An implementation

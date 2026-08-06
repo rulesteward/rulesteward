@@ -87,10 +87,9 @@ enum Layout {
 
 /// Outcome of the post-apply `fapolicyd-cli --check-rules` verification (#211).
 ///
-/// Phase-0 frozen data shape (session 6a); Lane B populates it. `status` is
-/// `"passed"` | `"failed"` | `"unavailable"` (the binary is absent OR too old
-/// to support `--check-rules` per #222: the check degrades gracefully and the
-/// exit code stays clean).
+/// `status` is `"passed"` | `"failed"` | `"unavailable"` (the binary is absent
+/// OR too old to support `--check-rules` per #222: the check degrades
+/// gracefully and the exit code stays clean).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckRules {
@@ -127,9 +126,9 @@ pub(crate) struct MigratePlan {
     /// True when the legacy file was removed from disk.
     legacy_deleted: bool,
     /// Post-apply `fapolicyd-cli --check-rules` outcome (#211). `None` when the check
-    /// did not run (dry-run, no-work layouts, or pre-#211 behavior). Additive
-    /// optional field, JSON key `checkRules` (#221 rename from `fagenrulesCheck`);
-    /// `schemaVersion` bumped 1 -> 2 for the v0.3 rename (CC-2 breaking-only).
+    /// did not run (dry-run or a no-work layout). Additive optional field, JSON
+    /// key `checkRules` (#221 rename from `fagenrulesCheck`); `schemaVersion` is
+    /// 2 for that rename (CC-2 breaking-only).
     check_rules: Option<CheckRules>,
 }
 
@@ -152,7 +151,7 @@ fn version_rank(v: TargetVersionArg) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Probe abstraction (#211 Lane B skeleton, session 6a)
+// Probe abstraction (#211)
 // ---------------------------------------------------------------------------
 
 /// Outcome of a `fagenrules`-family check invocation.
@@ -641,8 +640,7 @@ mod tests {
 
     /// Probe-free entry for the legacy migration unit tests below. The production
     /// migration is `run_with_probe`; these tests drive it with an in-memory
-    /// `FakeMigrateProbe` that never shells out (the same determinism the old
-    /// standalone `run()` provided before it was removed as duplicate logic).
+    /// `FakeMigrateProbe` that never shells out, so they stay deterministic.
     fn run(args: MigrateArgs) -> anyhow::Result<i32> {
         run_with_probe(args, &FakeMigrateProbe::absent())
     }
@@ -767,13 +765,11 @@ mod tests {
 
     // --- detect_layout: fagenrules `ls | wc -w` parity (issue #274 lockstep) ---
     //
-    // `detect_layout` reuses the SHARED `directory_has_rules_files` helper, so
-    // when that helper widens to fagenrules's `ls | wc -w` semantics (any
-    // non-dotfile entry -- file OR subdirectory, any extension), migrate's
-    // classification must move in lockstep with the fapd-F02 layout lint.
+    // `detect_layout` reuses the SHARED predicates, so its classification moves
+    // in lockstep with the fapd-F02 layout lint on fagenrules's `ls | wc -w`
+    // semantics (any non-dotfile entry -- file OR subdirectory, any extension).
     // A wrong impl that widens only the F02 predicate and leaves migrate's
-    // classification on the old `*.rules`-file-only gate cannot pass these.
-    // RED until the shared helper is widened (detect_layout returns LegacyOnly).
+    // classification on a `*.rules`-file-only gate cannot pass these.
 
     /// legacy + rules.d/ holding ONLY a `README` (a non-`.rules` file) ->
     /// `Layout::Both`. `ls | wc -w` counts `README`, so the daemon would abort;
@@ -807,9 +803,9 @@ mod tests {
 
     /// Regression: legacy + rules.d/ holding ONLY a dotfile (`.40-x.rules`) stays
     /// `Layout::LegacyOnly`. `ls` without `-a` omits dotfiles, so `wc -w` is 0 and
-    /// the daemon does NOT abort -- the widen must not change this case.
-    /// (Distinct from the existing `detect_layout_dotfile_in_rules_d_is_legacy_only_not_trap`;
-    /// kept here alongside the widen tests to pin the dotfile boundary against them.)
+    /// the daemon does NOT abort -- the BROAD predicate must not reach this case.
+    /// (Distinct from `detect_layout_dotfile_in_rules_d_is_legacy_only_not_trap`;
+    /// kept here alongside the parity tests to pin the dotfile boundary against them.)
     #[test]
     fn detect_layout_legacy_only_when_rules_d_has_only_dotfile_after_widen() {
         let d = tempfile::tempdir().unwrap();
@@ -822,10 +818,9 @@ mod tests {
         );
     }
 
-    /// e2e: legacy + rules.d/ holding ONLY a `README` now hits the coexistence
+    /// e2e: legacy + rules.d/ holding ONLY a `README` hits the coexistence
     /// trap. Without `--delete-legacy`, migrate must refuse (`EXIT_ERRORS`) instead
-    /// of treating it as a plain legacy-only migration. RED until the widen lands
-    /// (today this case is `LegacyOnly` and migrates cleanly to `EXIT_CLEAN`).
+    /// of treating it as a plain legacy-only migration.
     #[test]
     fn run_readme_only_rules_d_with_legacy_hits_coexistence_trap() {
         let d = tempfile::tempdir().unwrap();
@@ -849,15 +844,14 @@ mod tests {
 
     // --- no-legacy case must keep NARROW (.rules-files-present) semantics ---
     //
-    // The owner's lockstep widen applies ONLY to the legacy-PRESENT coexistence
-    // trap (legacy + any content -> Both). With NO legacy file, the
+    // The BROAD `ls | wc -w` predicate applies ONLY to the legacy-PRESENT
+    // coexistence trap (legacy + any content -> Both). With NO legacy file, the
     // ModernOnly-vs-Neither distinction asks "is rules.d/ already a working
     // modern layout?" -- which means LOADABLE `.rules` files, not just any
     // non-dotfile entry.  A no-legacy rules.d/ holding only a `README` or a bare
     // subdir has ZERO loadable rules, so the answer is Neither ("Nothing to
     // migrate"), NOT ModernOnly ("Already migrated" -- which would be a false
-    // claim).  These tests are RED against the broad shared predicate and go
-    // GREEN once the implementer splits it (broad for the trap, narrow here).
+    // claim).
 
     /// NO legacy + rules.d/ holding ONLY a `README` (a non-`.rules` file) ->
     /// `Layout::Neither`.  Without a legacy file there is no coexistence trap;
@@ -906,8 +900,7 @@ mod tests {
     /// must say "Nothing to migrate" (layout `nothing-to-migrate`), NOT
     /// "Already migrated" (layout `already-modern`).  Both classifications exit
     /// `EXIT_CLEAN`, so the exit code alone cannot tell them apart -- the
-    /// `plan.layout` string is the discriminator.  RED while the broad predicate
-    /// mislabels this as `already-modern`.
+    /// `plan.layout` string is the discriminator.
     #[test]
     fn run_no_legacy_readme_only_reports_nothing_to_migrate() {
         let d = tempfile::tempdir().unwrap();
@@ -1186,7 +1179,7 @@ mod tests {
 
     #[test]
     fn render_human_all_error_layouts_emit_empty_stdout() {
-        // #315 (full fix): NONE of migrate's error / refusal layouts may print the
+        // #315: NONE of migrate's error / refusal layouts may print the
         // "Migration applied"/"Migration plan" header on stdout -- a command that
         // migrated nothing must never claim it did. The header is OPT-IN for the two
         // success layouts (see the regression test below), so every error layout
@@ -1424,22 +1417,21 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #211 probe tests (must be RED against the skeleton)
+    // #211 probe tests
     // -----------------------------------------------------------------------
 
     /// Test #211-1: apply + probe success -> plan has `check_rules.status ==
     /// "passed"`, exit 0.
     ///
-    /// RED: `run_with_probe_to_plan` skeleton never calls the probe and keeps
-    /// `check_rules: None`, so `unwrap()` on `check_rules` panics and
-    /// the status assertion fails.
+    /// An impl that never calls the probe leaves `check_rules` at `None`, so
+    /// `unwrap()` on `check_rules` panics and the status assertion fails.
     #[test]
     fn probe_success_sets_status_passed_and_exits_clean() {
         let d = setup_legacy_dir();
         let probe = FakeMigrateProbe::success("Rules are current");
         let (code, plan) = run_with_probe_to_plan(apply_args(d.path()), &probe).unwrap();
         assert_eq!(code, EXIT_CLEAN, "probe success must yield exit 0");
-        // RED: probe must be called exactly once on apply.
+        // The probe must be called exactly once on apply.
         assert_eq!(
             probe.call_count(),
             1,
@@ -1450,7 +1442,7 @@ mod tests {
             !d.path().join("fapolicyd.rules").exists(),
             "legacy file must be moved on apply"
         );
-        // RED: check_rules must be Some with status "passed" - not None.
+        // check_rules must be Some with status "passed" - not None.
         let check = plan
             .check_rules
             .as_ref()
@@ -1465,9 +1457,8 @@ mod tests {
     /// Test #211-2: apply + probe failure -> plan has `check_rules.status ==
     /// "failed"`, exit 2 (D7), and the files were moved.
     ///
-    /// RED: `run_with_probe_to_plan` skeleton always exits clean and keeps
-    /// `check_rules: None`; both the exit-2 assertion and the status
-    /// assertion fail.
+    /// An impl that always exits clean and leaves `check_rules` at `None`
+    /// fails both the exit-2 assertion and the status assertion.
     #[test]
     fn probe_failure_exits_two_and_legacy_file_is_gone() {
         let d = setup_legacy_dir();
@@ -1487,7 +1478,7 @@ mod tests {
             d.path().join("rules.d").join("99-migrated.rules").exists(),
             "target file must exist even when probe fails (D7)"
         );
-        // RED: check_rules must be Some with status "failed".
+        // check_rules must be Some with status "failed".
         let check = plan
             .check_rules
             .as_ref()
@@ -1501,19 +1492,17 @@ mod tests {
 
     /// Test #211-3: probe absent (`Ok(None)`) -> status "unavailable", exit 0.
     ///
-    /// RED: `run_with_probe` skeleton never calls the probe, so `call_count`
-    /// stays at 0 and the `call_count >= 1` assertion fails.
-    /// Note: the exit-code assertion (`EXIT_CLEAN`) IS vacuously green in the
-    /// skeleton because the skeleton always exits clean - this is documented
-    /// as acceptable for the exit-code portion only. The `call_count` + status
-    /// assertions are RED.
+    /// An impl that never calls the probe leaves `call_count` at 0 and fails
+    /// the `call_count >= 1` assertion. The exit-code assertion (`EXIT_CLEAN`)
+    /// alone is vacuous - an impl that always exits clean satisfies it - so
+    /// the `call_count` and status assertions are what discriminate here.
     #[test]
     fn probe_absent_is_unavailable_and_exits_clean() {
         let d = setup_legacy_dir();
         let probe = FakeMigrateProbe::absent();
         let code = run_with_probe(apply_args(d.path()), &probe).unwrap();
         assert_eq!(code, EXIT_CLEAN, "absent probe must yield exit 0");
-        // RED: probe must be called (its Ok(None) return drives "unavailable").
+        // The probe must be called (its Ok(None) return drives "unavailable").
         assert_eq!(
             probe.call_count(),
             1,
@@ -1523,10 +1512,9 @@ mod tests {
 
     /// Test #211-4: dry-run -> probe NOT invoked (`call_count` == 0).
     ///
-    /// This test is GREEN-BY-VACUITY in the skeleton: the skeleton never calls
-    /// the probe, so the assertion `call_count == 0` passes trivially.
-    /// Documented per the task brief: the only test allowed to be vacuously
-    /// green.
+    /// `call_count == 0` is vacuous against an impl that never calls the probe
+    /// at all; what it discriminates is an impl that calls the probe
+    /// unconditionally, ignoring dry-run.
     #[test]
     fn dry_run_probe_not_invoked() {
         let d = setup_legacy_dir();
@@ -1542,8 +1530,8 @@ mod tests {
 
     /// Test #211-5: probe spawn error (Err) -> treat as "unavailable", exit 0.
     ///
-    /// RED: `run_with_probe` skeleton never calls the probe, so `call_count`
-    /// stays at 0 and the `call_count >= 1` assertion fails.
+    /// An impl that never calls the probe leaves `call_count` at 0 and fails
+    /// the `call_count >= 1` assertion.
     #[test]
     fn probe_spawn_error_treated_as_unavailable() {
         let d = setup_legacy_dir();
@@ -1555,7 +1543,7 @@ mod tests {
             code, EXIT_CLEAN,
             "spawn error must degrade gracefully (exit 0)"
         );
-        // RED: probe must be called for us to observe the Err return.
+        // The probe must be called for us to observe the Err return.
         assert_eq!(
             probe.call_count(),
             1,
@@ -1647,7 +1635,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #212 render_markdown_report tests (must be RED against the skeleton)
+    // #212 render_markdown_report tests
     // -----------------------------------------------------------------------
 
     /// Build a plan suitable for #212 renderer testing: applied=true,
@@ -1682,12 +1670,9 @@ mod tests {
     /// rules-unchanged count present (3 total - 1 rewritten = 2 unchanged),
     /// legacy -> target move present, resulting layout section present, no
     /// timestamp anywhere (D1), and fagenrules section absent when check is None.
-    ///
-    /// RED: `render_markdown_report` panics with `todo!()` in the skeleton.
     #[test]
     fn render_markdown_report_full_content() {
         let plan = applied_plan_with_rewrite();
-        // RED: this panics (todo!) until the implementer provides the body.
         let md = render_markdown_report(&plan);
 
         // 1-based line number of the rewrite.
@@ -1796,17 +1781,13 @@ mod tests {
 
     /// Test #212-8: absent --report -> no report file written anywhere.
     ///
-    /// This is a behavioral test of the `run_with_probe` + report-write path.
-    /// RED: `run_with_probe` skeleton does not write any report, so the
-    /// "no file written" assertion is vacuously green. However, the test also
-    /// asserts that the report argument is `None` - which is already enforced
-    /// by the args helper. The RED aspect is the coupling: when the implementer
-    /// adds the report-write path, if they fail to gate it on `args.report.is_some()`,
-    /// they would write to a default path and break this test.
-    ///
-    /// Note: the truly RED assertion here is in test #212-9 (unwritable path).
-    /// This test is partially vacuous in the skeleton; we document it as the
-    /// "no-report" contract pin.
+    /// This is a behavioral test of the `run_with_probe` + report-write path,
+    /// and it is the "no-report" contract pin. The "no file written" assertion
+    /// is vacuous against an impl that writes no report at all; what it
+    /// discriminates is a report-write path not gated on
+    /// `args.report.is_some()`, which would write to a default path even with
+    /// `--report` absent. The unwritable-path case is pinned separately by
+    /// test #212-9.
     #[test]
     fn no_report_flag_writes_no_report_file() {
         let d = setup_legacy_dir();
@@ -1834,12 +1815,11 @@ mod tests {
     /// Test #212-9: unwritable --report path -> exit 3 (`EXIT_TOOL_FAILURE`),
     /// migration still applied.
     ///
-    /// Owner decision (test-author proposed, pin here): the report write happens
-    /// AFTER the apply; the apply stands even if the report write fails.
+    /// The report write happens AFTER the apply; the apply stands even if the
+    /// report write fails.
     ///
-    /// RED: `run_with_probe` skeleton ignores `args.report`, so the exit-3
-    /// assertion fails (it exits 0 or 2 from the probe result, never 3 from
-    /// a report-write error).
+    /// An impl that ignores `args.report` fails the exit-3 assertion: it exits
+    /// 0 or 2 from the probe result, never 3 from a report-write error.
     #[test]
     fn unwritable_report_path_exits_tool_failure_and_migration_applied() {
         let d = setup_legacy_dir();

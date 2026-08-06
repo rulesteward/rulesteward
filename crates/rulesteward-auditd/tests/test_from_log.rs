@@ -1,4 +1,4 @@
-//! RED barrier tests for the `--from-log` reader module (#91).
+//! Tests for the `--from-log` reader module (#91).
 //!
 //! # Grounding
 //! - Read-only line scan of `audit.log`; aggregate by `key=` field: f3 section 5.3c.

@@ -22,7 +22,7 @@ allow perm=execute all : trust=1
 - `perm=execute` renders `perm:"execute"`.
 - Subject side is `all`; object side is `trust=1` (Display-rendered sides,
   `format.rs:56-74`).
-- `trust=1` is a trust predicate (`trust` is either-side, `attrs.rs:57`); on the
+- `trust=1` is a trust predicate (`trust` is either-side, `attrs.rs:50`); on the
   object side it yields `scope:"trust"`. `trust` is not an `exe=`/`path=`/`dir=`
   value, so `subjectPaths:[]` and `objectPaths:[]`.
 - No inline `filehash=`/`sha256hash=`, no `--against-trustdb`: `hash:null`,

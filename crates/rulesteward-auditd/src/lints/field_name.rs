@@ -1,11 +1,10 @@
 //! Canonical `-F` field-name strings for [`AuditField`] (#458).
 //!
-//! Both `operator_validity::e02` and `field_filter::e04` used to carry their
-//! own byte-identical private `field_name_str` match, one per file. This
-//! module unifies them into a single [`field_name`] free function so the
-//! 45-arm map is defined exactly once (matching the sibling `field_type` /
-//! `op_str` / `filter_list_name` / `field_restriction` free-fn convention in
-//! this crate).
+//! This module defines [`field_name`] as the single free function backing
+//! the 45-arm map, matching the sibling `field_type` / `op_str` /
+//! `filter_list_name` / `field_restriction` free-fn convention in this
+//! crate. `operator_validity::e02` and `field_filter::e04` call it rather
+//! than keeping their own private `field_name_str` match.
 //!
 //! Deliberately hosted here (`lints/field_name.rs`), NOT in `ast.rs`: the
 //! global `.cargo/mutants.toml` `exclude_globs` excludes `**/ast.rs` from

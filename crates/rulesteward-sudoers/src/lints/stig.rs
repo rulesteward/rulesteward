@@ -16,30 +16,29 @@
 //!
 //! These IDs were RE-GROUNDED 2026-06-29 (#355, #359) against
 //! ComplianceAsCode/content commit `65ccea603ee2c305fdb4c6f54cb911449d969d55`
-//! (the `stigid@ol8` keys) plus the DISA RHEL 9 4320xx cluster. The earlier
-//! `[VERIFY]` IDs were mismapped: the RHEL-08 `!authenticate` and pw IDs were
-//! swapped, and `use_pty`/`visiblepw` were wrongly attributed to DISA STIG
-//! (both are CIS / general-hardening controls with no `stigid@` mapping). The
+//! (the `stigid@ol8` keys) plus the DISA RHEL 9 4320xx cluster. `use_pty` and
+//! `visiblepw` are CIS / general-hardening controls with no `stigid@` mapping
+//! and must never be attributed to DISA STIG. The
 //! `tests::w04_weakening_findings_cite_grounded_controls` drift-guard pins these.
 //!
 //! - `!authenticate` -- bypasses per-invocation re-authentication.
 //!   DISA STIG RHEL-08-010381 / RHEL-09-432025 / RHEL-10-600530
 //!   (ComplianceAsCode `sudo_remove_no_authenticate`; RHEL-10-600530 grounded
-//!   #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
+//!   #563 against the DISA RHEL 10 STIG V1R1 XCCDF).
 //! - `targetpw` / `rootpw` / `runaspw` -- prompts for the target/root/runas
 //!   user's password rather than the invoking user's, breaking PAM/audit
 //!   accountability.
 //!   DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550
 //!   (ComplianceAsCode `sudoers_validate_passwd`; RHEL-10-600550 grounded
-//!   #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
+//!   #563 against the DISA RHEL 10 STIG V1R1 XCCDF).
 //! - `visiblepw` -- allows sudo to proceed when the password would be visible
 //!   (e.g. when a tty is not associated with stdin).
 //!   CIS / general hardening; no DISA sudo STIG control.
 //! - `!use_pty` (explicit negation of the pty requirement) -- deliberately
 //!   disabling pseudo-terminal allocation is a present weakening.
 //!   CIS Benchmark 5.2.2 / PCI-DSS Req-10.2.5; no DISA sudo STIG control
-//!   (ComplianceAsCode `sudo_add_use_pty` carries no `stigid@` key; the
-//!   RHEL-08-010382 it formerly cited is the unrelated "restrict privilege
+//!   (ComplianceAsCode `sudo_add_use_pty` carries no `stigid@` key;
+//!   RHEL-08-010382 is the unrelated "restrict privilege
 //!   elevation to authorized personnel" control).
 //! - `timestamp_timeout` with a NEGATIVE value (e.g. `-1`) -- the sudo credential
 //!   cache then never expires, so a user re-authenticates once and is trusted
@@ -48,7 +47,7 @@
 //!   the name-presence `WEAKENING_PRESENT` table).
 //!   DISA STIG RHEL-08-010384 / RHEL-09-432015 / RHEL-10-600540
 //!   (ComplianceAsCode `sudo_require_reauthentication`, #363; RHEL-10-600540
-//!   grounded #563, 9i lane-7, against the DISA RHEL 10 STIG V1R1 XCCDF).
+//!   grounded #563 against the DISA RHEL 10 STIG V1R1 XCCDF).
 //!
 //! ## Missing-required (merged, #347, #363) -- fire on absence / conflict
 //!
@@ -64,7 +63,7 @@
 //! the RHEL 8 V2R7 / RHEL 9 V2R8 / RHEL 10 V1R1 STIG sudo clusters) confirm neither
 //! carries a `stigid@` mapping. They are CIS Benchmark 5.2.2 (use_pty) / 5.2.3
 //! (logfile) + PCI-DSS Req-10.2.5 controls, and are cited as such (#526
-//! renumber, LOCKED post-A0 2026-07-18; the stale "1.3.2"/"1.3.3" ids
+//! renumber; the stale "1.3.2"/"1.3.3" ids
 //! were an older CIS benchmark generation's numbering).
 //!
 //! `timestamp_timeout` (#363) IS a DISA STIG control (RHEL-08-010384 /
@@ -176,7 +175,7 @@ const WEAKENING_PRESENT: &[WeakeningRow] = &[
 
 /// `targetpw` / `rootpw` / `runaspw`: DISA STIG RHEL-08-010383 /
 /// RHEL-09-432020 / RHEL-10-600550 (`WEAKENING_PRESENT` rows above).
-/// RHEL-10-600550 (#563, 9i lane-7) grounded against the DISA RHEL 10 STIG
+/// RHEL-10-600550 (#563) grounded against the DISA RHEL 10 STIG
 /// V1R1 XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use
 /// the invoking user's password for privilege escalation when using
 /// \"sudo\""; see `lane-7-sudoersids-report.md`).
@@ -222,8 +221,8 @@ fn cis_title(id: &str) -> &'static str {
         .title
 }
 
-/// `use_pty`: CIS Benchmark 5.2.2 (RENUMBERED #526, LOCKED post-A0
-/// 2026-07-18, was the stale "1.3.2"; id + title drawn from `lints::cis`) /
+/// `use_pty`: CIS Benchmark 5.2.2 (RENUMBERED #526,
+/// was the stale "1.3.2"; id + title drawn from `lints::cis`) /
 /// PCI-DSS Req-10.2.5 (unaffected by the renumber, no title). Shared by the
 /// per-file `!use_pty` negation (`check_file`) and the merged
 /// missing-`use_pty` (`check_merged_required`) findings -- same control, two
@@ -236,7 +235,7 @@ fn use_pty_controls() -> Vec<ControlRef> {
 }
 
 /// I/O logging (`logfile=` / `log_output`): CIS Benchmark 5.2.3 (RENUMBERED
-/// #526, LOCKED post-A0 2026-07-18, was the stale "1.3.3"; id + title drawn
+/// #526, was the stale "1.3.3"; id + title drawn
 /// from `lints::cis`) / PCI-DSS Req-10.2.5 (unaffected by the renumber, no
 /// title) (`check_merged_required`'s missing-I/O-log finding).
 fn io_log_controls() -> Vec<ControlRef> {
@@ -250,7 +249,7 @@ fn io_log_controls() -> Vec<ControlRef> {
 /// RHEL-10-600540. Shared by the per-file NEGATIVE-value weakening
 /// (`check_file`) and the merged ABSENT/CONFLICTING findings
 /// (`check_merged_required`) -- same control, three emit sites.
-/// RHEL-10-600540 (#563, 9i lane-7) grounded against the DISA RHEL 10 STIG
+/// RHEL-10-600540 (#563) grounded against the DISA RHEL 10 STIG
 /// V1R1 XCCDF (Group V-281209 / SV-281209r1166579_rule, "RHEL 10 must
 /// require reauthentication when using the \"sudo\" command"; see
 /// `lane-7-sudoersids-report.md`).
@@ -979,13 +978,12 @@ mod tests {
     /// If this fails, RE-RUN the grounding pass against a pinned ComplianceAsCode
     /// commit + DISA -- do NOT just edit the string to make it pass (#355, #359, #363).
     ///
-    /// `use_pty`'s CIS id is RENUMBERED (#526, LOCKED post-A0 2026-07-18): the
+    /// `use_pty`'s CIS id is RENUMBERED (#526): the
     /// stale "1.3.2" (an older CIS benchmark generation's numbering, surviving
     /// in ComplianceAsCode only as a `cis@sle12`/`cis@sle15` rule reference) is
     /// WRONG for the pinned commit `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`,
     /// whose `sudo_add_use_pty` control anchors at "5.2.2" (uniform across
-    /// rhel8/rhel9/rhel10; see `lints::cis`). RED until the implementer swaps
-    /// the `USE_PTY_CONTROLS` id and the matching message-text literal.
+    /// rhel8/rhel9/rhel10; see `lints::cis`).
     #[test]
     fn w04_weakening_findings_cite_grounded_controls() {
         // Each finding's message must contain the grounded citation.
@@ -1048,16 +1046,15 @@ mod tests {
     // -----------------------------------------------------------------------
     // Typed ControlRef backfill (#503, v0.7): each W04 weakening finding
     // gains typed `rulesteward_core::ControlRef` entries mirroring its
-    // free-text citation (frozen above and pinned by
+    // free-text citation (above, pinned by
     // `w04_weakening_findings_cite_grounded_controls`). Messages stay
-    // BYTE-IDENTICAL; only `Diagnostic::controls` is populated. RED until the
-    // implementer wires `.with_controls(...)` at each emit site.
+    // BYTE-IDENTICAL; only `Diagnostic::controls` is populated.
     // -----------------------------------------------------------------------
 
     /// The `targetpw` / `rootpw` / `runaspw` pw-family weakenings ALL cite the
     /// SAME control, DISA STIG RHEL-08-010383 / RHEL-09-432020 / RHEL-10-600550
-    /// (`WEAKENING_PRESENT` rows at stig.rs:116/123/130), and all fire from the
-    /// SAME generic loop (stig.rs:258-273). Each finding must carry THREE typed
+    /// (`WEAKENING_PRESENT` rows at stig.rs:115/123/130), and all fire from the
+    /// SAME generic loop (stig.rs:257-272). Each finding must carry THREE typed
     /// `ControlRef`s, all `Framework::Stig`, in citation order (RHEL-08, then
     /// RHEL-09, then RHEL-10). Looping over all THREE fixtures (mirroring the
     /// `w04_weakening_findings_cite_grounded_controls` drift-guard, which
@@ -1066,14 +1063,10 @@ mod tests {
     /// would pass a targetpw-only test yet ship rootpw + runaspw empty. The
     /// mutation gate cannot backstop an omission, so it is pinned here.
     ///
-    /// #563 (9i lane-7): extended from a dual RHEL-08/RHEL-09 pin to a triple
-    /// RHEL-08/RHEL-09/RHEL-10 pin (was `len() == 2`, `controls[0]`/`[1]`
-    /// only) -- `RHEL-10-600550` grounded against the DISA RHEL 10 STIG V1R1
+    /// `RHEL-10-600550` (#563) grounded against the DISA RHEL 10 STIG V1R1
     /// XCCDF (Group V-281210 / SV-281210r1166582_rule, "RHEL 10 must use the
     /// invoking user's password for privilege escalation when using
-    /// \"sudo\""; see `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE
-    /// length assertion that the RHEL-10 addition breaks, so it is updated in
-    /// place per the discipline in the lane-7 brief rather than left stale-red.
+    /// \"sudo\""; see `lane-7-sudoersids-report.md`).
     #[test]
     fn w04_pw_family_findings_carry_stig_controls() {
         use rulesteward_core::Framework;
@@ -1102,15 +1095,14 @@ mod tests {
     }
 
     /// `Defaults !use_pty` cites CIS Benchmark 5.2.2 AND PCI-DSS Req-10.2.5
-    /// (stig.rs:211-212, the negated `use_pty` arm of `check_file`). The dual
+    /// (stig.rs:210-211, the negated `use_pty` arm of `check_file`). The dual
     /// CROSS-framework citation must become TWO typed `ControlRef`s: one
-    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 -- LOCKED post-A0
-    /// 2026-07-18, was the stale "1.3.2"; see `lints::cis`) carrying the CaC
+    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 --
+    /// was the stale "1.3.2"; see `lints::cis`) carrying the CaC
     /// title via `.with_name(..)`, and one `Framework::Pci` (bare id
     /// `"Req-10.2.5"`, unaffected by the renumber, no name), in citation order
     /// (CIS first, then PCI, matching the message text's
-    /// "CIS Benchmark ... / PCI-DSS ..." order). RED until the implementer
-    /// swaps `USE_PTY_CONTROLS`'s id to "5.2.2" and attaches the title.
+    /// "CIS Benchmark ... / PCI-DSS ..." order).
     #[test]
     fn w04_not_use_pty_finding_carries_cis_and_pci_controls() {
         use rulesteward_core::Framework;
@@ -1147,18 +1139,14 @@ mod tests {
     }
 
     /// `Defaults !authenticate` cites DISA STIG RHEL-08-010381 AND
-    /// RHEL-09-432025 AND RHEL-10-600530 (stig.rs:192, the negated
+    /// RHEL-09-432025 AND RHEL-10-600530 (stig.rs:191, the negated
     /// `authenticate` arm of `check_file`). All three ids are
     /// `Framework::Stig`, in citation order (RHEL-08, RHEL-09, RHEL-10).
     ///
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600530` grounded
+    /// `RHEL-10-600530` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281208 /
     /// SV-281208r1166576_rule, "RHEL 10 must require users to reauthenticate
-    /// for privilege escalation"; see `lane-7-sudoersids-report.md`). This is
-    /// an EXHAUSTIVE length assertion that the RHEL-10 addition breaks, so it
-    /// is updated in place per the discipline in the lane-7 brief rather than
-    /// left stale-red.
+    /// for privilege escalation"; see `lane-7-sudoersids-report.md`).
     #[test]
     fn w04_not_authenticate_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1185,20 +1173,16 @@ mod tests {
 
     /// A NEGATIVE `Defaults timestamp_timeout=-1` (the per-file weakening,
     /// line >= 1) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015 AND
-    /// RHEL-10-600540 (stig.rs:248, the negative-value arm of `check_file`).
+    /// RHEL-10-600540 (stig.rs:247, the negative-value arm of `check_file`).
     /// All three ids are `Framework::Stig`, in citation order. `use_pty` +
     /// `logfile` are present so ONLY the per-file timestamp weakening is the
     /// timestamp finding under test (no merged absent/conflict finding
     /// fires).
     ///
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// `RHEL-10-600540` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
     /// SV-281209r1166579_rule, "RHEL 10 must require reauthentication when
-    /// using the \"sudo\" command"; see `lane-7-sudoersids-report.md`). This
-    /// is an EXHAUSTIVE length assertion that the RHEL-10 addition breaks, so
-    /// it is updated in place per the discipline in the lane-7 brief rather
-    /// than left stale-red.
+    /// using the \"sudo\" command"; see `lane-7-sudoersids-report.md`).
     #[test]
     fn w04_negative_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1228,10 +1212,10 @@ mod tests {
     }
 
     /// The merged-required MISSING `use_pty` absence finding (line 0) cites
-    /// CIS Benchmark 5.2.2 AND PCI-DSS Req-10.2.5 (stig.rs:382, the
+    /// CIS Benchmark 5.2.2 AND PCI-DSS Req-10.2.5 (stig.rs:381, the
     /// `!has_use_pty` branch of `check_merged_required`). Its controls must be
-    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 -- LOCKED post-A0
-    /// 2026-07-18, was the stale "1.3.2") carrying the CaC title via
+    /// `Framework::Cis` (id `"5.2.2"`, RENUMBERED #526 --
+    /// was the stale "1.3.2") carrying the CaC title via
     /// `.with_name(..)`, then `Framework::Pci` (id `"Req-10.2.5"`, unaffected,
     /// no name), matching the `!use_pty` per-file finding's pair (same
     /// control, different emit site -- pins that the impl wires the renumber
@@ -1277,10 +1261,10 @@ mod tests {
     }
 
     /// The merged-required MISSING I/O-logging absence finding (line 0) cites
-    /// CIS Benchmark 5.2.3 AND PCI-DSS Req-10.2.5 (stig.rs:395, the
+    /// CIS Benchmark 5.2.3 AND PCI-DSS Req-10.2.5 (stig.rs:394, the
     /// `!has_io_log` branch of `check_merged_required`). Its controls must be
-    /// `Framework::Cis` (id `"5.2.3"`, RENUMBERED #526 -- LOCKED post-A0
-    /// 2026-07-18, was the stale "1.3.3", DISTINCT from use_pty's `5.2.2`)
+    /// `Framework::Cis` (id `"5.2.3"`, RENUMBERED #526 --
+    /// was the stale "1.3.3", DISTINCT from use_pty's `5.2.2`)
     /// carrying the CaC title via `.with_name(..)`, then `Framework::Pci` (id
     /// `"Req-10.2.5"`, unaffected, no name). The absence finding's message
     /// names "logging"; use_pty is present so only the I/O-log (and
@@ -1295,7 +1279,7 @@ mod tests {
             .into_iter()
             .find(|d| d.message.contains("logging"))
             .expect("the merged missing-I/O-logging absence finding fires");
-        // #526 adversarial-review fix: the FREE-TEXT message must also carry the
+        // #526: the FREE-TEXT message must also carry the
         // renumbered id, mirroring `use_pty`'s must_cite guard in
         // `w04_weakening_findings_cite_grounded_controls` -- without this, an
         // impl could renumber the TYPED ControlRef to 5.2.3 while the message
@@ -1336,20 +1320,16 @@ mod tests {
 
     /// The merged-required ABSENT `timestamp_timeout` finding (line 0, the
     /// STIG's PRIMARY trigger) cites DISA STIG RHEL-08-010384 AND
-    /// RHEL-09-432015 (stig.rs:425, the `[] if !has_negated_timestamp_timeout`
+    /// RHEL-09-432015 (stig.rs:424, the `[] if !has_negated_timestamp_timeout`
     /// arm of `check_merged_required`). Both ids are `Framework::Stig`, in
     /// citation order. `use_pty` + `logfile` present so ONLY the
     /// timestamp_timeout absence fires. Same control-id pair as the per-file
     /// negative weakening, DIFFERENT emit site -- pins that the impl wires
     /// controls at the merged-absent site too (a partial impl fails).
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// `RHEL-10-600540` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
     /// SV-281209r1166579_rule; same control as the per-file negative
     /// weakening above, DIFFERENT emit site; see `lane-7-sudoersids-report.md`).
-    /// This is an EXHAUSTIVE length assertion that the RHEL-10 addition
-    /// breaks, so it is updated in place per the discipline in the lane-7
-    /// brief rather than left stale-red.
     #[test]
     fn w04_missing_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1378,16 +1358,13 @@ mod tests {
 
     /// The merged-required CONFLICTING `timestamp_timeout` finding (line 0, 2+
     /// distinct values) cites DISA STIG RHEL-08-010384 AND RHEL-09-432015
-    /// (stig.rs:438, the `_multiple` arm of `check_merged_required`). Both ids
+    /// (stig.rs:437, the `_multiple` arm of `check_merged_required`). Both ids
     /// are `Framework::Stig`, in citation order. Two merged files set `=5` and
     /// `=30`; the conflict finding's message contains "conflict".
-    /// #563 (9i lane-7): extended from a dual pin to a triple pin (was
-    /// `len() == 2`, `controls[0]`/`[1]` only) -- `RHEL-10-600540` grounded
+    /// `RHEL-10-600540` (#563) grounded
     /// against the DISA RHEL 10 STIG V1R1 XCCDF (Group V-281209 /
     /// SV-281209r1166579_rule; same control, third emit site; see
-    /// `lane-7-sudoersids-report.md`). This is an EXHAUSTIVE length assertion
-    /// that the RHEL-10 addition breaks, so it is updated in place per the
-    /// discipline in the lane-7 brief rather than left stale-red.
+    /// `lane-7-sudoersids-report.md`).
     #[test]
     fn w04_conflicting_timestamp_timeout_finding_carries_stig_controls() {
         use rulesteward_core::Framework;
@@ -1420,7 +1397,7 @@ mod tests {
     }
 
     /// `visiblepw`'s citation is "CIS / general hardening; not a DISA STIG
-    /// control" (stig.rs:137) -- it carries NO bare numeric control id. There
+    /// control" (stig.rs:136) -- it carries NO bare numeric control id. There
     /// is no grounded id to attach, so a `visiblepw` finding must carry an
     /// EMPTY `controls` vec: the deliberate exclusion is documented here rather
     /// than by inventing a `Cis` id the citation text does not provide. (If a
@@ -1467,7 +1444,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #563 (9i lane-7): RHEL-10 STIG control ids for W04
+    // #563: RHEL-10 STIG control ids for W04
     // -----------------------------------------------------------------------
     //
     // Grounded against the DISA RHEL 10 STIG V1R1 XCCDF
@@ -1482,9 +1459,7 @@ mod tests {
 
     /// Each affected W04 weakening finding's message must cite its new
     /// RHEL-10 id, mirroring `w04_weakening_findings_cite_grounded_controls`'
-    /// must-cite shape but scoped to the RHEL-10 additions only. RED until
-    /// the implementer appends the RHEL-10 id to the `WEAKENING_PRESENT`
-    /// free-text citation strings (and the matching typed control consts).
+    /// must-cite shape but scoped to the RHEL-10 additions only.
     #[test]
     fn rhel10_w04_weakening_findings_cite_grounded_controls() {
         let must_cite = [
@@ -1506,23 +1481,23 @@ mod tests {
         }
 
         // Per-control pin: each finding's own weakening message must NOT pick
-        // up a SIBLING RHEL-10 id from one of the other two new controls in
-        // this same lane (guards against the 3 new ids getting swapped
+        // up a SIBLING RHEL-10 id from one of the other two RHEL-10 controls
+        // (guards against the 3 ids getting swapped
         // between `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
-        // `TIMESTAMP_TIMEOUT_CONTROLS`), mirroring the pre-existing
+        // `TIMESTAMP_TIMEOUT_CONTROLS`), mirroring the
         // RHEL-08/RHEL-09 `must_not_cite` pattern above.
         //
-        // Round-6 fix: the `!authenticate` and `targetpw` fixtures set no
+        // The `!authenticate` and `targetpw` fixtures set no
         // `timestamp_timeout` anywhere, so `lint_w04` ALSO emits the merged
         // missing-required absence finding (#347/#363) for
-        // `timestamp_timeout` on those same fixtures -- and once the
-        // implementer appends the grounded `RHEL-10-600540` id to
-        // `TIMESTAMP_TIMEOUT_CONTROLS` (this same lane's own change), that
+        // `timestamp_timeout` on those same fixtures, and because
+        // `TIMESTAMP_TIMEOUT_CONTROLS` carries the grounded
+        // `RHEL-10-600540` id, that
         // absence finding's message legitimately contains "RHEL-10-600540".
         // That is a DIFFERENT, correctly-cited finding, not
         // cross-contamination of the `!authenticate`/`targetpw` weakening
         // finding under test (same defect class as the use_pty/visiblepw
-        // guard fixed in round 4), so each check is scoped to the specific
+        // guard), so each check is scoped to the specific
         // weakening finding by filtering on `focus` (a substring unique to
         // that finding's own message -- "authenticate" / "targetpw" --
         // which the merged timestamp-absence message never contains) before
@@ -1899,13 +1874,13 @@ mod tests {
     /// target with zero eligible drop-ins (`resolve::tests::
     /// empty_directory_resolves_to_no_files` -- there is no singular top-level
     /// file to anchor a line-0 finding against). #485 is specifically about a
-    /// top-level FILE target that resolves to zero entries; the orchestrator's
+    /// top-level FILE target that resolves to zero entries; the
     /// locked decision is BROAD -- ANY top-level FILE that resolves to zero
     /// entries synthesizes one phantom segment, not just a byte-empty or
     /// whitespace-only source (see `byte_empty_file_fires_all_three_absence_findings_via_resolver`
     /// / `whitespace_only_file_fires_all_three_absence_findings_via_resolver` /
     /// `file_with_only_empty_includedir_fires_all_three_absence_findings_via_resolver`
-    /// below). Post-fix, this artificial empty-slice input is no longer
+    /// below). This artificial empty-slice input is not
     /// reachable from ANY top-level FILE target -- only from an empty
     /// top-level DIRECTORY, or a caller constructing `&[]` by hand.
     #[test]
@@ -2321,16 +2296,12 @@ mod tests {
         }
     }
 
-    /// RED (#485, frozen): a byte-empty (0-byte) linted FILE must fire all three
+    /// PIN (#485): a byte-empty (0-byte) linted FILE must fire all three
     /// merged-absence findings (use_pty, I/O logging, timestamp_timeout), exactly
-    /// matching the comment-only case above -- the orchestrator's locked decision
+    /// matching the comment-only case above -- the locked decision
     /// is that empty is not a special "nothing to require against" case, it is the
     /// STRONGEST case (a merged config that is empty definitionally lacks every
-    /// requirement). Today this is silent: the resolver's blank-only-segment drop
-    /// (resolve.rs's `flush` closure) collapses a byte-empty top-level file to a
-    /// zero-length `Vec<SudoersFile>`, and `check_merged_required`'s `files.first()`
-    /// guard then returns no findings at all. That is the bug this test pins the
-    /// fix for.
+    /// requirement).
     #[test]
     fn byte_empty_file_fires_all_three_absence_findings_via_resolver() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2388,7 +2359,7 @@ mod tests {
         }
     }
 
-    /// RED (#485, frozen): a whitespace-only linted FILE (spaces/tabs/blank
+    /// PIN (#485): a whitespace-only linted FILE (spaces/tabs/blank
     /// lines, no byte content that trims to non-empty) must fire the same three
     /// merged-absence findings as the byte-empty case above. `classify_logical_line`
     /// (parser.rs) treats a line whose trimmed text is empty as `LineKind::Blank`
@@ -2454,7 +2425,7 @@ mod tests {
         }
     }
 
-    /// PIN (#485, frozen): the BROAD-vs-NARROW discriminator. The orchestrator's
+    /// PIN (#485): the BROAD-vs-NARROW discriminator. The
     /// locked decision is BROAD: sudo-W04 fires whenever a linted FILE resolves to
     /// ZERO files, regardless of WHY -- not narrowly scoped to a byte-empty or
     /// whitespace-only SOURCE. A non-empty top-level FILE whose ONLY content is an
@@ -2534,7 +2505,7 @@ mod tests {
         }
     }
 
-    /// PIN (#485, frozen): the fix's LOCATION discriminator. A DIRECTORY target
+    /// PIN (#485): the fix's LOCATION discriminator. A DIRECTORY target
     /// whose only drop-in is byte-empty must resolve to ZERO files and fire NO
     /// sudo-W04 -- the #485 zero-result synthesis is scoped to
     /// `resolve_target_with_host`'s single-FILE branch ONLY; it must NOT reach
@@ -2584,7 +2555,7 @@ mod tests {
         );
     }
 
-    /// PIN (#485, frozen): the fix's SCOPE discriminator (companion to the
+    /// PIN (#485): the fix's SCOPE discriminator (companion to the
     /// directory-target guard above). A parent file with a real rule of its own
     /// PLUS an `@include` of a byte-empty child must resolve to EXACTLY ONE
     /// segment (the parent's own content) -- the empty child contributes NOTHING,
@@ -2629,9 +2600,9 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // `w04_control_ref` / `ControlFamily` (#551): the domain-typed, per-target
-    // accessor that replaces an EARLIER version of `tools/sudoers-stig-update`
-    // which widened `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
-    // `TIMESTAMP_TIMEOUT_CONTROLS` to `pub` and indexed them by POSITION
+    // accessor an external caller uses INSTEAD of widening
+    // `AUTHENTICATE_CONTROLS` / `PW_FAMILY_CONTROLS` /
+    // `TIMESTAMP_TIMEOUT_CONTROLS` to `pub` and indexing them by POSITION
     // (`Rhel8 -> [0]`, `Rhel9 -> [1]`, `Rhel10 -> [2]`) from outside this
     // crate -- an ordering these three tables carry only as an internal
     // convention, enforced NOWHERE inside `rulesteward-sudoers` itself (every

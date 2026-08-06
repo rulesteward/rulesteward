@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Self-test for scripts/rs-capture-guard.sh (session 9k-1), the SOURCED
-# write-discipline helper every Tier-2 capture script uses. See that file's
+# Self-test for scripts/rs-capture-guard.sh, the SOURCED write-discipline
+# helper every Tier-2 capture script uses. See that file's
 # own header for the "Disk quota exceeded" incident this helper exists to
 # prevent, and CONTRIBUTING.md's "Differential oracle contract" for the rc
 # table (a failed write here is always rc 2 - "tool/environment error" -
@@ -357,11 +357,11 @@ rc=0
 assert_rc "case14b_guard_init_empty_label_exits_2" 2 "${rc}" "${out}"
 
 # ---------------------------------------------------------------------------
-# Case (session 9k-1 integration remediation): rs_checked_append_write
-# APPENDS rather than truncating - two calls against the same destination
-# must both survive in the file, in order. This is the append-mode sibling
-# of rs_checked_write, added because a Tier-2 capture that emits one row per
-# loop iteration cannot use the truncating form for every row.
+# Case: rs_checked_append_write APPENDS rather than truncating - two calls
+# against the same destination must both survive in the file, in order. This
+# is the append-mode sibling of rs_checked_write, for a Tier-2 capture that
+# emits one row per loop iteration and so cannot use the truncating form for
+# every row.
 # ---------------------------------------------------------------------------
 dest15="${TMPROOT}/case15-out.txt"
 out="${TMPROOT}/case15.out"

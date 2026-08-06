@@ -542,8 +542,7 @@ fn trustdb_list_missing_db_dir_exits_three() {
 }
 
 // ---------------------------------------------------------------------------
-// IntegrityMode gating tests (issue #292) -- RED until the implementer fills
-// IntegrityMode::enforces and wires --config/--integrity into run_check/diff/stale.
+// IntegrityMode gating tests (issue #292).
 //
 // GROUNDED CONTRACT (fapolicyd.conf(5)):
 //   integrity=none   -> SizeMismatch and HashMismatch are NOT enforced (visible only).
@@ -552,13 +551,6 @@ fn trustdb_list_missing_db_dir_exits_three() {
 //   Missing/ReadError -> ALWAYS enforced regardless of integrity mode.
 //   No conf file found -> STRICT (sha256) mode.
 //   --integrity <level> overrides --config.
-//
-// The stub IntegrityMode::enforces always returns true, so:
-//   - Tests expecting exit 1 will PASS (stub agrees: it's enforced).
-//   - Tests expecting exit 0 (drift not enforced) will FAIL (stub returns
-//     enforced=true and raises the exit code when it shouldn't).
-//   - The "not enforced" annotation tests will FAIL (stub never annotates).
-//   - The JSON enforced=false tests will FAIL (stub always writes enforced=true).
 // ---------------------------------------------------------------------------
 
 /// Helper: write a synthetic fapolicyd.conf to a temp file with a given
@@ -630,14 +622,11 @@ fn build_mixed_fixture_db(
 /// are hash and size mismatches -- those are visible but NOT enforced under
 /// `integrity=none`.
 ///
-/// RED: the stub IntegrityMode::enforces always returns true, so the command
-/// will exit 1 when it should exit 0.
-///
 /// Additionally checks that the human output CONTAINS some indication that
 /// drift exists but is not enforced (we check for the path of the hash-mismatch
 /// entry, confirming it appears in output). The exact annotation wording is
-/// intentionally NOT pinned here (the implementer chooses it); the e2e smoke
-/// for the "not enforced" annotation wording lives below.
+/// intentionally NOT pinned here; the e2e smoke for the "not enforced"
+/// annotation wording lives below.
 #[test]
 fn integrity_none_hash_and_size_mismatch_exit_zero() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -701,9 +690,8 @@ fn integrity_none_hash_and_size_mismatch_exit_zero() {
 /// Under `integrity=none`, a Missing entry IS enforced (exit 1) even though
 /// hash and size mismatches are not.
 ///
-/// GREEN: the stub always returns enforced=true, so Missing -> exit 1 matches.
-/// This test should PASS even with the stub. Included to confirm that Missing
-/// is always enforced and the none-exits-0 tests above don't silently mask it.
+/// Confirms that Missing is always enforced and that the none-exits-0 tests
+/// above don't silently mask it.
 #[test]
 fn integrity_none_missing_is_still_exit_one() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -731,14 +719,12 @@ fn integrity_none_missing_is_still_exit_one() {
         .code(1);
 }
 
-/// INVARIANT GUARD (not a RED test): `NotInDb` is ALWAYS enforced and is NEVER
-/// subject to integrity demotion. `NotInDb` is a `CheckVerdict`-only state (the
+/// INVARIANT GUARD: `NotInDb` is ALWAYS enforced and is NEVER subject to
+/// integrity demotion. `NotInDb` is a `CheckVerdict`-only state (the
 /// queried path is recorded NOWHERE in the trust DB) -- it has no `DiskVerdict`
 /// variant, so the `IntegrityMode::enforces` table structurally cannot reach it,
 /// and the only place this rule can be wrong is in the CLI wiring.
 ///
-/// This test is GREEN against the always-true stub (the stub over-enforces, which
-/// is the CORRECT answer for `NotInDb`) and MUST STAY GREEN against the real impl.
 /// Its value is as a regression guard: it kills a wrong impl that lumps `NotInDb`
 /// into the demotable class and (incorrectly) demotes it under `integrity=none`,
 /// which would flip the exit code to 0 and/or set `enforced: false`.
@@ -815,9 +801,6 @@ fn integrity_none_not_in_db_is_always_enforced_invariant_guard() {
 
 /// `trustdb diff --config <conf with integrity=sha256>` exits 1 when there is
 /// any hash or size mismatch.
-///
-/// GREEN-ish with stub: stub returns enforced=true -> exit 1 matches. But this
-/// also confirms sha256 mode works after the impl (should still be 1).
 #[test]
 fn integrity_sha256_hash_mismatch_exit_one() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -854,9 +837,9 @@ fn integrity_sha256_hash_mismatch_exit_one() {
 /// extra token (merely logged as "Wrong number of arguments"). So a hash
 /// mismatch under this conf MUST be enforced -> exit 1.
 ///
-/// RED before the fix: `conf_value` returns the raw `"sha256 \r"`, and the
-/// OLD `from_conf_value` did an exact-string match against `"sha256"`,
-/// missed, and fell back to `IntegrityMode::None` (unenforced) -> exit 0.
+/// Counterfactual: an exact-string match of `conf_value`'s raw `"sha256 \r"`
+/// against `"sha256"` misses and falls back to `IntegrityMode::None`
+/// (unenforced) -> exit 0.
 #[test]
 fn integrity_crlf_sha256_trailing_space_before_cr_enforces_hash_mismatch() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -888,14 +871,14 @@ fn integrity_crlf_sha256_trailing_space_before_cr_enforces_hash_mismatch() {
 /// Issue #582 RULING 1 + the empirical matrix: `integrity = sha256\r\n` (NO
 /// space before the '\r', so the daemon's byte-exact tokenizer binds the
 /// WHOLE `"sha256\r"` as one token) is a conf the real daemon REFUSES TO
-/// START with (verified live on fapolicyd 1.3.2/1.4.5). Per the user ruling,
+/// START with (verified live on fapolicyd 1.3.2/1.4.5).
 /// `resolve_integrity_mode` must never weaken enforcement because it could
-/// not resolve the conf's intended mode -- exactly like the pre-existing
+/// not resolve the conf's intended mode -- exactly like the
 /// unreadable-conf arm -- so it assumes the strictest mode (sha256), and a
 /// hash mismatch is enforced -> exit 1.
 ///
-/// RED before the fix: falls back to `IntegrityMode::None` (unenforced) ->
-/// exit 0, which is NOT parity with a daemon that never even starts under
+/// Counterfactual: falling back to `IntegrityMode::None` (unenforced) ->
+/// exit 0 is NOT parity with a daemon that never even starts under
 /// this conf.
 #[test]
 fn integrity_crlf_sha256_no_space_before_cr_assumes_strict_enforces_hash_mismatch() {
@@ -964,11 +947,12 @@ fn integrity_tab_after_equals_assumes_strict_enforces_hash_mismatch() {
 // Mutation-gate hardening (issue #582/#596): `resolve_integrity_mode`'s match
 // has THREE arms -- (1) key present + recognised, (2) key present but
 // UNRECOGNISED (assume strict sha256), (3) key ABSENT from a found conf
-// (daemon default: none). Every fixture above writes an `integrity = <value>`
-// line via `write_conf`/`write_conf_raw_bytes`, so arm 3 (a conf that EXISTS
-// but never mentions `integrity` at all) was untested: a mutant collapsing
-// the `None if raw.is_none()` guard to `false` makes that arm unreachable and
-// silently promotes an absent key to full sha256 enforcement. The three tests
+// (daemon default: none). Arm 3 (a conf that EXISTS but never mentions
+// `integrity` at all) is reached only by the tests below; every fixture above
+// writes an `integrity = <value>` line via `write_conf`/`write_conf_raw_bytes`.
+// A mutant collapsing the `None if raw.is_none()` guard to `false` makes that
+// arm unreachable and silently promotes an absent key to full sha256
+// enforcement. The three tests
 // below pin all three arms structurally, asserting BOTH the resolved MODE
 // (via exit code) and the exact operator-visible SOURCE STRING the `integrity:
 // ...` human-output header reports -- asserting only the mode would let a
@@ -978,10 +962,10 @@ fn integrity_tab_after_equals_assumes_strict_enforces_hash_mismatch() {
 /// Arm 3: the conf file EXISTS but has NO `integrity` key at all
 /// (`raw.is_none()`). Per the doc contract this is the daemon's OWN default
 /// (`IntegrityMode::None`, no checking) -- a DIFFERENT resolution than "key
-/// present but unrecognised" (arm 2, which assumes STRICT sha256). This is
-/// the test that kills the survivor: the mutated guard falls through to arm
-/// 2's "invalid integrity value" branch instead, flipping both the resolved
-/// mode (None -> Sha256) and the reported source string.
+/// present but unrecognised" (arm 2, which assumes STRICT sha256). A mutated
+/// guard falls through to arm 2's "invalid integrity value" branch instead,
+/// flipping both the resolved mode (None -> Sha256) and the reported source
+/// string.
 #[test]
 fn integrity_conf_exists_but_key_absent_defaults_to_none_and_reports_absent_source() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1040,8 +1024,7 @@ fn integrity_conf_exists_but_key_absent_defaults_to_none_and_reports_absent_sour
 /// raw value verbatim (`"<path> (integrity=<value>)"`). Exit-code coverage
 /// for a recognised value already exists elsewhere in this file (e.g.
 /// `integrity_sha256_hash_mismatch_exit_one`); this test closes the gap on
-/// the SOURCE STRING, which no existing test asserted before this hardening
-/// pass.
+/// the SOURCE STRING.
 #[test]
 fn integrity_recognised_value_reports_value_in_source() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1137,9 +1120,6 @@ fn integrity_unrecognised_value_reports_invalid_source_verbatim() {
 
 /// `integrity=size` enforces size mismatch (exit 1) but NOT hash mismatch
 /// (exit 0 for hash-only drift).
-///
-/// RED for the hash-mismatch sub-case: stub returns enforced=true -> exit 1,
-/// but the intended behavior after impl is exit 0.
 #[test]
 fn integrity_size_enforces_size_mismatch_but_not_hash_mismatch() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1169,7 +1149,6 @@ fn integrity_size_enforces_size_mismatch_but_not_hash_mismatch() {
     let conf = write_conf("size");
 
     // Hash-only drift under integrity=size: NOT enforced -> exit 0.
-    // RED: stub exits 1 instead.
     let out_hash = bin()
         .args(["fapolicyd", "trustdb", "check", "--db"])
         .arg(db_dir.path())
@@ -1186,7 +1165,6 @@ fn integrity_size_enforces_size_mismatch_but_not_hash_mismatch() {
     );
 
     // Size drift under integrity=size: enforced -> exit 1.
-    // GREEN with stub (both exit 1).
     bin()
         .args(["fapolicyd", "trustdb", "check", "--db"])
         .arg(db_dir.path())
@@ -1205,9 +1183,6 @@ fn integrity_size_enforces_size_mismatch_but_not_hash_mismatch() {
 /// Per the grounded contract (fapolicyd.conf(5)): under `ima`, the daemon checks
 /// the IMA xattr hash, NOT the trust-DB digest, so a trust-DB `HashMismatch` is
 /// NOT enforced; `SizeMismatch` (a prerequisite check) IS enforced.
-///
-/// RED for the hash-mismatch sub-case: the stub returns enforced=true -> exit 1,
-/// but the intended behavior after impl is exit 0.
 #[test]
 fn integrity_ima_enforces_size_mismatch_but_not_hash_mismatch() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1237,7 +1212,6 @@ fn integrity_ima_enforces_size_mismatch_but_not_hash_mismatch() {
     // Use the --integrity ima FLAG (no conf) so this also proves the flag path
     // surfaces the `ima` mode via from_conf_value.
     // Hash-only drift under integrity=ima: NOT enforced -> exit 0.
-    // RED: stub exits 1 instead.
     let out_hash = bin()
         .args(["fapolicyd", "trustdb", "check", "--db"])
         .arg(db_dir.path())
@@ -1254,7 +1228,6 @@ fn integrity_ima_enforces_size_mismatch_but_not_hash_mismatch() {
     );
 
     // Size drift under integrity=ima: enforced -> exit 1.
-    // GREEN with stub (both exit 1).
     bin()
         .args(["fapolicyd", "trustdb", "check", "--db"])
         .arg(db_dir.path())
@@ -1268,9 +1241,8 @@ fn integrity_ima_enforces_size_mismatch_but_not_hash_mismatch() {
 /// `--integrity sha256` flag overrides a `--config` whose conf says
 /// `integrity=none` -> exit 1 for hash mismatch (sha256 enforced).
 ///
-/// GREEN-ish with stub: stub returns enforced=true -> exit 1 matches.
-/// Becomes a true gating test after the impl: if --integrity doesn't override
-/// --config's none, the hash-mismatch path would exit 0 (wrong).
+/// If `--integrity` did not override `--config`'s none, the hash-mismatch path
+/// would exit 0 (wrong).
 #[test]
 fn integrity_flag_overrides_config_none_to_sha256() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1304,9 +1276,8 @@ fn integrity_flag_overrides_config_none_to_sha256() {
 /// When `--config` points at a non-existent file (no conf found), STRICT mode
 /// (sha256) is assumed -> any mismatch exits 1.
 ///
-/// GREEN-ish with stub: stub always enforces -> exits 1 matches.
-/// True gate after impl: if the no-conf path doesn't go STRICT, hash-only
-/// drift would (incorrectly) exit 0.
+/// If the no-conf path did not go STRICT, hash-only drift would (incorrectly)
+/// exit 0.
 #[test]
 fn no_conf_file_means_strict_mode_exits_one_for_hash_mismatch() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1343,9 +1314,6 @@ fn no_conf_file_means_strict_mode_exits_one_for_hash_mismatch() {
 /// Under `integrity=none`, the JSON output of `trustdb check --format json`
 /// must carry an `enforced: false` field on hash-mismatch and size-mismatch
 /// rows, and must end with a trailing newline.
-///
-/// RED: the stub always writes `enforced: true`, so the `enforced: false`
-/// assertions will fail.
 #[test]
 fn integrity_none_json_has_enforced_false_on_drift_rows_and_trailing_newline() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1416,8 +1384,7 @@ fn integrity_none_json_has_enforced_false_on_drift_rows_and_trailing_newline() {
 /// Under `integrity=sha256`, JSON rows for hash and size mismatch carry
 /// `enforced: true`.
 ///
-/// GREEN-ish with stub: stub sets enforced=true. Included so the test suite
-/// covers the sha256 enforced=true JSON surface (and keeps the matrix complete).
+/// Covers the sha256 enforced=true JSON surface, keeping the matrix complete.
 #[test]
 fn integrity_sha256_json_has_enforced_true_on_drift_rows() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1463,8 +1430,6 @@ fn integrity_sha256_json_has_enforced_true_on_drift_rows() {
 /// a substring indicating the verdict is visible but not enforced (i.e. some
 /// form of "not enforced" annotation), AND also contains the integrity value
 /// "none". We do NOT pin the exact wording to keep it robust.
-///
-/// RED: the stub does not annotate rows at all; the annotation won't appear.
 #[test]
 fn integrity_none_human_output_contains_not_enforced_annotation() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1495,8 +1460,7 @@ fn integrity_none_human_output_contains_not_enforced_annotation() {
     let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
     // The annotation must contain "not enforced" (case-insensitive acceptable
     // since we only check lowercase here). This is the stable semantic anchor;
-    // the implementer may word it as "not enforced under integrity=none" or
-    // similar.
+    // the wording may be "not enforced under integrity=none" or similar.
     assert!(
         stdout.to_lowercase().contains("not enforced"),
         "human output under integrity=none must annotate drift as 'not enforced'; got:\n{stdout}"
@@ -1513,13 +1477,10 @@ fn integrity_none_human_output_contains_not_enforced_annotation() {
 //
 // The check-verb tests above already exercise the demotion boundary, but a wrong
 // impl that drops the `&& enforced` exit-gate in run_diff / run_stale specifically
-// would survive on those alone (the pre-existing diff/stale tests run with NO
+// would survive on those alone (the diff/stale tests above run with NO
 // --config -> STRICT mode, where the gate is a no-op). These tests pin the
-// demotion boundary for `diff` and `stale` too.
-//
-// They are GREEN against the CORRECT impl (they lock behavior, killing the
-// wrong-impl shortcut), and RED against the current always-true stub (the stub
-// over-enforces, so the integrity=none exit-0 expectation fails).
+// demotion boundary for `diff` and `stale` too, locking the behavior against
+// the wrong-impl shortcut.
 // ---------------------------------------------------------------------------
 
 /// Build a fixture DB with exactly two on-disk drift entries (one HashMismatch,
@@ -1555,13 +1516,12 @@ fn build_two_drift_fixture(
     (path_hash, path_size)
 }
 
-/// A1: `trustdb diff` (vs-disk, NO --against) under `integrity=none` exits 0 even
+/// `trustdb diff` (vs-disk, NO --against) under `integrity=none` exits 0 even
 /// with a HashMismatch AND a SizeMismatch entry: both are demoted (visible, not
 /// enforced). The JSON rows carry `enforced:false`; the human output still SHOWS
 /// both drift rows with the "not enforced" annotation; the row count equals the
 /// drift count (demoted rows are NOT dropped).
 ///
-/// RED against the always-true stub (it exits 1). GREEN against the correct impl.
 /// Pins the demotion exit-gate for `run_diff` specifically.
 #[test]
 fn integrity_none_diff_vs_disk_demotes_hash_and_size_exit_zero() {
@@ -1637,11 +1597,10 @@ fn integrity_none_diff_vs_disk_demotes_hash_and_size_exit_zero() {
     }
 }
 
-/// A2: `trustdb stale --db <same fixture> --config <integrity=none>` exits 0; the
+/// `trustdb stale --db <same fixture> --config <integrity=none>` exits 0; the
 /// stale rows are visible with `enforced:false` in JSON.
 ///
-/// RED against the always-true stub. GREEN against the correct impl. Pins the
-/// demotion exit-gate for `run_stale` specifically.
+/// Pins the demotion exit-gate for `run_stale` specifically.
 #[test]
 fn integrity_none_stale_demotes_hash_and_size_exit_zero() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1712,12 +1671,11 @@ fn integrity_none_stale_demotes_hash_and_size_exit_zero() {
     }
 }
 
-/// A3: `trustdb stale --db <fixture with a SizeMismatch> --config <integrity=size>`
+/// `trustdb stale --db <fixture with a SizeMismatch> --config <integrity=size>`
 /// exits 1: SizeMismatch IS enforced under `integrity=size`.
 ///
-/// GREEN against BOTH the stub (over-enforces -> exit 1) and the correct impl
-/// (size enforces SizeMismatch -> exit 1). Locks that `stale` honors the
-/// ENFORCED side of the boundary under `size`, not just the demoted side.
+/// Locks that `stale` honors the ENFORCED side of the boundary under `size`,
+/// not just the demoted side.
 #[test]
 fn integrity_size_stale_size_mismatch_exits_one() {
     let files = tempfile::tempdir().expect("files tempdir");
@@ -1744,20 +1702,15 @@ fn integrity_size_stale_size_mismatch_exits_one() {
         .code(1);
 }
 
-/// B: An UNRECOGNIZED `--integrity` value on the explicit CLI flag must be
+/// An UNRECOGNIZED `--integrity` value on the explicit CLI flag must be
 /// REJECTED with a non-zero (clap parse-error) exit, NOT silently mapped to
-/// `none` and exited 0. The accepted set is exactly {none, size, ima, sha256}.
-///
-/// RED against the current impl: `--integrity` is a free-form `Option<String>`
-/// that `from_conf_value` maps (unknown -> none), so the command parses and exits
-/// 0. The implementer converts `--integrity` to a value-enum that accepts ONLY
-/// the four keywords, after which an invalid value is a clap parse error.
+/// `none` and exited 0. The accepted set is exactly {none, size, ima, sha256}:
+/// `--integrity` is a clap value-enum, so an invalid value is a parse error.
 ///
 /// SCOPE NOTE: this rejection applies ONLY to the explicit `--integrity` FLAG.
 /// An unknown/unparseable `integrity=` value inside a `--config` FILE is a
 /// DIFFERENT failure mode from this test's flag rejection (issue #582 RULING
-/// 1, corrected from an earlier "keeps the daemon-faithful unknown->none
-/// behavior" claim that the empirical fapolicyd8/9/10 matrix refuted): the
+/// 1, grounded in the empirical fapolicyd8/9/10 matrix): the
 /// real daemon REFUSES TO START on such a conf, so `resolve_integrity_mode`
 /// maps it to the STRICT `Sha256` mode (never weaken enforcement because the
 /// conf's intended mode could not be resolved) rather than to `none` -- see
@@ -1820,7 +1773,7 @@ fn unknown_integrity_flag_value_is_rejected_not_silently_none() {
 }
 
 // ---------------------------------------------------------------------------
-// Special-file (FIFO) arm - #583 half A
+// Special-file (FIFO) arm - #583
 // ---------------------------------------------------------------------------
 
 /// Create a FIFO at `dir/name` via the `mkfifo(1)` coreutil. No writer is ever

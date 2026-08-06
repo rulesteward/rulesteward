@@ -1,10 +1,10 @@
 //! auditd rule cost calculator.
 //!
-//! Issue #88 -- pipeline P2.
+//! Issue #88.
 //!
 //! # Grounding
-//! - Single ~1200 B/event constant (ENRICHED) LOCKED 2026-06-03 (issue #88 body,
-//!   Wave-1b VM measurement; supersedes per-record-sum model).
+//! - Single ~1200 B/event constant (ENRICHED) is LOCKED (issue #88 body, VM
+//!   measurement; supersedes per-record-sum model).
 //! - RAW factor ~0.75x (f3 section 3.4).
 //! - Decimal GB (`10^9`) matches SIEM billing (f3 section 4.1).
 //! - `gb_per_month` = `gb_per_day` * 30.4 (f3 section 4.1 math).

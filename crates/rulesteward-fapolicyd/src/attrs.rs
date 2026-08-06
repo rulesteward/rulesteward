@@ -18,22 +18,18 @@
 //! subject side; `trust`/`dir`/`ftype` object-only in legacy; `exe_dir`/
 //! `exe_type` legal ONLY on the legacy subject side - see the note below)
 //! see the truth table inline in `parser::grammar::legacy_classify`.
-//! Session 3a intentionally kept that knowledge parser-internal because no
-//! public consumer exists yet; a future session may expose a public
-//! flavor-aware API when fapd-E02 / fapd-E03 lint codes give it a concrete
-//! consumer.
+//! That knowledge stays parser-internal because no public consumer exists
+//! yet; a public flavor-aware API can be added when fapd-E02 / fapd-E03
+//! lint codes give it a concrete consumer.
 //!
-//! NOTE on removed names: `exe_dir` and `exe_type` were removed from
-//! `SUBJECT_ONLY` on 2026-05-29. Runtime testing against fapolicyd
-//! 1.3.2, 1.4.3, and 1.4.5 confirmed that both names are REJECTED with
+//! `exe_dir` and `exe_type` are absent from `SUBJECT_ONLY` (this module's
+//! flavor-agnostic/modern baseline table). Runtime testing against fapolicyd
+//! 1.3.2, 1.4.3, and 1.4.5 confirms that both names are REJECTED with
 //! "Field type (`exe_dir`) is unknown" in the MODERN (colon) grammar - they
 //! do not appear in the man page and are not valid MODERN fapolicyd
-//! attribute names. That removal from `SUBJECT_ONLY` (this module's
-//! flavor-agnostic/modern baseline table) remains correct and is
-//! unaffected by the note below.
+//! attribute names.
 //!
-//! CORRECTION (ATL round 2 MISS 2, 2026-07-18, doc-truth-decay): the
-//! rejection above is MODERN-ONLY. Upstream `subject-attr.c` table1 (the
+//! That rejection is MODERN-ONLY. Upstream `subject-attr.c` table1 (the
 //! LEGACY/ORIG-format subject table, distinct from the modern table2)
 //! DOES list `EXE_DIR`/`EXE_TYPE`, and a legacy (no-colon) rule using them
 //! LOADS cleanly on both fapolicyd 1.3.2 and 1.4.5 (live-verified
@@ -41,12 +37,9 @@
 //! both versions; the modern `allow exe_dir=/usr/bin/ : all` is REJECTED
 //! on both, unaffected). `parser::grammar::legacy_classify` (not this
 //! module) is the source of truth for that legacy-only legality - see its
-//! `legacy_classify_exe_dir_and_exe_type_are_subject_anchors` test. Their
-//! ORIGINAL 2026-05-29 removal from `fapd-E01`'s false-negative was a real
-//! bug fix for the MODERN grammar; treating them as universally-unknown
-//! (both flavors) was the doc-truth-decay this correction resolves.
+//! `legacy_classify_exe_dir_and_exe_type_are_subject_anchors` test.
 //! The `dir=` value keywords `execdirs`/`systemdirs`/`untrusted` (handled
-//! by fapd-W08) are distinct and were not affected by any of this.
+//! by fapd-W08) are distinct and unaffected by any of this.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttrSide {
@@ -75,7 +68,7 @@ pub const OBJECT_ONLY: &[&str] = &["path", "device", "filehash", "sha256hash", "
 pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 
 /// Attribute names legal ONLY on the legacy-grammar subject side (issue #546,
-/// ATL round 2 MISS 2, 2026-07-18): upstream `subject-attr.c` table1 (the
+/// 2026-07-18): upstream `subject-attr.c` table1 (the
 /// LEGACY/ORIG-format subject table) lists `EXE_DIR`/`EXE_TYPE`, but the
 /// MODERN table (table2, modeled by [`SUBJECT_ONLY`] above) does not.
 /// Live-verified on both fapolicyd 1.3.2 and 1.4.5: legacy
@@ -90,7 +83,7 @@ pub const BOTH_SIDES: &[&str] = &["all", "dir", "ftype", "trust"];
 /// `legacy_classify`'s per-token routing already guarantees they land on the
 /// subject side) - referenced by name from both so the two cannot drift.
 ///
-/// `exe_device` (issue #570, lane-6, 2026-07-23): a fresh `WebFetch` of
+/// `exe_device` (issue #570, 2026-07-23): a fresh `WebFetch` of
 /// upstream `src/library/subject-attr.c` at the `v1.3.2` tag confirms table1
 /// (LEGACY/ORIG-format subject table) lists `exe_device`; the same fetch at
 /// `v1.4.5` confirms it is ABSENT there (dropped between 1.3.2 and 1.4.5).
@@ -256,9 +249,8 @@ mod tests {
         // Neither is a MODERN (colon-grammar) fapolicyd attribute -
         // fapolicyd 1.3.2/1.4.3/1.4.5 all reject them there ("Field type
         // (exe_dir) is unknown"). `classify`/`is_known` model the modern,
-        // flavor-agnostic baseline table, so this assertion is unchanged and
-        // still correct. Doc-truth-decay correction (ATL round 2 MISS 2,
-        // 2026-07-18): they ARE legal LEGACY-format subject attrs
+        // flavor-agnostic baseline table, so this assertion is correct.
+        // Live-verified 2026-07-18: they ARE legal LEGACY-format subject attrs
         // (`subject-attr.c` table1, live-verified on both versions) - that
         // legacy-only legality lives in `parser::grammar::legacy_classify`,
         // not here; do not read "unknown" here as "unknown in every

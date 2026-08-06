@@ -1,18 +1,6 @@
 //! End-to-end CLI tests: exercise the built binary offline and assert the
 //! intended exit-code contract - 0 in sync, 1 on drift, 2 on error. Mirrors
 //! `tools/auditd-stig-update/tests/cli.rs`'s shape.
-//!
-//! # RED-state note (session 9d lane 2b, test-author dispatch)
-//!
-//! `src/main.rs` is a bare stub that ALWAYS exits 2 (no `check`/`derive`
-//! subcommand parsing, no XCCDF extraction exists yet). Every test below
-//! that expects a 0 or 1 exit is therefore RED today (it will observe 2,
-//! not the code it asserts) - this is the expected, uniform RED state, not
-//! several independent failures. The two tests that already expect exit 2
-//! (`unknown_subcommand_exits_2`, `missing_file_exits_2`) are GREEN today by
-//! construction of the stub, and remain meaningful forward-looking pins once
-//! real subcommand parsing lands (an unknown subcommand or unreadable file
-//! must still exit 2 then).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -43,7 +31,7 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
-// --- exit-code contract: 0 in sync (RED today) -------------------------------
+// --- exit-code contract: 0 in sync -------------------------------------------
 
 #[test]
 fn check_real_rhel9_fixture_is_in_sync_with_the_shipped_table() {
@@ -63,7 +51,7 @@ fn check_real_rhel9_fixture_is_in_sync_with_the_shipped_table() {
     );
 }
 
-// --- exit-code contract: 1 drift (RED today) --------------------------------
+// --- exit-code contract: 1 drift ---------------------------------------------
 
 #[test]
 fn check_file_drift_names_the_removed_v_number() {
@@ -93,7 +81,7 @@ fn check_file_drift_names_the_removed_v_number() {
     assert!(stdout.contains("DRIFT"), "stdout={stdout}");
 }
 
-// --- derive: always exits 0 (a report, not a gate); RED today ---------------
+// --- derive: always exits 0 (a report, not a gate) --------------------------
 
 #[test]
 fn derive_file_exits_0_and_prints_paste_ready() {
@@ -109,7 +97,7 @@ fn derive_file_exits_0_and_prints_paste_ready() {
     assert!(stdout.contains("paste-ready"), "stdout={stdout}");
 }
 
-// --- help/plumbing (RED today: the stub does not implement --help) ---------
+// --- help/plumbing -----------------------------------------------------------
 
 #[test]
 fn help_exits_0_and_documents_the_tool() {
@@ -121,9 +109,9 @@ fn help_exits_0_and_documents_the_tool() {
     );
 }
 
-// --- exit-code contract: 2 on error, with a SPECIFIC message (RED today: the
-// always-exit-2 stub satisfies the code but not the message assertions, so a
-// wrong impl cannot pass these by exiting 2 unconditionally) -------------------
+// --- exit-code contract: 2 on error, with a SPECIFIC message: an impl that
+// exits 2 unconditionally satisfies the code assertion but not the message
+// assertion, so it cannot pass these ------------------------------------------
 
 #[test]
 fn unknown_subcommand_exits_2() {

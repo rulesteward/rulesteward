@@ -17,8 +17,8 @@
 //! All nine rows are DISA severity `medium` (confirmed against the XCCDF
 //! `severity` attribute on every one of the 9 Rule elements); the two
 //! non-medium severities the wider #518 classification found
-//! (RHEL-09-431010 high, RHEL-08-010171 low) belong to selinux lane 2b, not
-//! fapolicyd.
+//! (RHEL-09-431010 high, RHEL-08-010171 low) belong to the selinux crate,
+//! not fapolicyd.
 
 use rulesteward_core::{ControlRef, Framework};
 
@@ -68,7 +68,7 @@ pub struct StigControl {
 /// Implementer note: source the exact `stig_id`/`v_number`/`severity`/`title`
 /// values from `/mnt/side-projects/9d-v0_8-wave2b/grounding/g7-g8-xccdf-vnumbers.md`
 /// section 2 (cross-checked against the raw `grounding/xccdf/*.xml` fixtures) -
-/// never hand-invent a V-number (session `.wolf/cerebrum.md` standing rule).
+/// never hand-invent a V-number.
 #[must_use]
 pub fn stig_controls(target: TargetVersion) -> &'static [StigControl] {
     const RHEL8: &[StigControl] = &[

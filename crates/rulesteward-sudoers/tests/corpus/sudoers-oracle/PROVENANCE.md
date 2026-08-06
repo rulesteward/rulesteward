@@ -548,12 +548,12 @@ case it is missing. See the Tier-1 test's module doc "Negation" section.
 filed):**
 
 - `rulesteward_core::comment::comment_index`'s `prev_allows_uid` byte-set
-  (`crates/rulesteward-core/src/comment.rs:149-155`) does not include `b'!'`.
+  (`crates/rulesteward-core/src/comment.rs:147-153`) does not include `b'!'`.
   In `!#1000`, the byte immediately before `#` is `!`, which is not in the
   set, so `#` is read as a comment start; the rest of the line is stripped,
   and the lone `!` has nothing after it to complete a `user host = command`
   spec, so the whole line becomes `Malformed`.
-- **The byte-set cannot simply add `b'!'`.** `crates/rulesteward-sudoers/src/lints/tokens/mod.rs:384-388`
+- **The byte-set cannot simply add `b'!'`.** `crates/rulesteward-sudoers/src/lints/tokens/mod.rs:382-386`
   records the EXISTING exclusion of `!` as deliberate and verified, but for a
   DIFFERENT `!`: `Defaults!<cmnd>` scope-binding syntax, where
   `Defaults!#1000` really IS rc 1 in real `visudo`, and treating that `#` as

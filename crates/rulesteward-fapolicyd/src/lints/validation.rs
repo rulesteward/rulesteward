@@ -351,12 +351,6 @@ mod tests {
         // Renamed from e02_hex64_rejects_wrong_length.
         // 63 and 65 chars are not in {32,40,64,128} -> fapd-E02.
         // After CLEAN-3a these must still fire E02 (the off-length branch).
-        // RED until the implementation replaces the Hex64/len!=64 branch with
-        // the new HashVerdict classifier. 63 fires E02 today (len!=64); 65 too.
-        // After implementation, 63/65 remain E02 (not in {32,40,64,128}).
-        // The test is GREEN today for 63/65 alone; but the whole test module
-        // will be RED once e02_hash_accepts_canonical_64_hex_both_cases and
-        // e02_classify_hash_digest_keys are written above.
         let s63 = "a".repeat(63);
         let s65 = "a".repeat(65);
         let diags63 = walk(
@@ -505,8 +499,7 @@ mod tests {
     fn e02_diagnostics_identical_for_legacy_and_modern_flavor() {
         // #295: fapd-E02 validates attribute VALUES and never reads
         // `Rule.syntax`, so a legacy-parsed rule must produce identical
-        // diagnostics to the modern form. The value-lint output tests
-        // previously exercised only `modern_rule`. `uid=bad@name` (illegal name
+        // diagnostics to the modern form. `uid=bad@name` (illegal name
         // char) and `filehash=abc` (off-length) each fire one fapd-E02.
         let modern = walk(
             &[modern_rule(
@@ -544,28 +537,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // CLEAN-3a: RED barrier tests for fapd-E02 widen + new fapd-W11
-    //
-    // Three of the four tests below are RED today (assertion failures):
-    //   - e02_accepts_128_hex_sha512:  current len!=64 check fires E02 on 128.
-    //   - w11_warns_on_md5_length_not_e02: W11 does not exist; E02 fires on 32.
-    //   - w11_warns_on_sha1_length:    W11 does not exist; E02 fires on 40.
-    //
-    // Note on e02_still_errors_on_off_length_and_non_hex: this test is GREEN
-    // today (current code fires E02 for both 50-hex and 64-non-hex). The original
-    // plan claimed the 64-non-hex case was RED, but that is incorrect: the current
-    // code checks length FIRST (fires on 50 since 50!=64) and non-hex SECOND
-    // (fires on 64 non-hex since z is not a hex digit). This test is therefore a
-    // PRESERVATION ANCHOR, not a RED barrier. It is included to prevent the
-    // CLEAN-3a implementation from accidentally accepting malformed values.
-    // The RED state of the module comes from the three assertion failures above.
+    // fapd-E02 accepted hash lengths, and the fapd-W11 weak-digest warning.
     // -----------------------------------------------------------------
 
     #[test]
     fn e02_accepts_128_hex_sha512() {
         // 128 lowercase-hex is a valid SHA512 digest -> must NOT fire fapd-E02.
-        // RED today: current len!=64 check fires E02 on 128.
-        // Ideally yields no diagnostic at all (no W11 for strong digests).
+        // Yields no diagnostic at all (no W11 for strong digests).
         let v = "a".repeat(128);
         let entries = vec![modern_rule(
             1,
@@ -589,7 +567,6 @@ mod tests {
     fn w11_warns_on_md5_length_not_e02() {
         // 32 lowercase-hex is a valid MD5 digest -> weak digest -> fapd-W11 Warning.
         // Must NOT fire fapd-E02.
-        // RED today: W11 does not exist; E02 fires on 32-hex (len!=64).
         let v = "a".repeat(32);
         let entries = vec![modern_rule(
             1,
@@ -636,7 +613,6 @@ mod tests {
     fn w11_warns_on_sha1_length() {
         // 40 lowercase-hex is a valid SHA1 digest -> weak digest -> fapd-W11 Warning.
         // Must NOT fire fapd-E02.
-        // RED today: W11 does not exist; E02 fires on 40-hex (len!=64).
         let v = "a".repeat(40);
         let entries = vec![modern_rule(
             1,

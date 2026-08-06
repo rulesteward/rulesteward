@@ -9,7 +9,7 @@
 //! tools/*-update crates use: it needs two files per version, not one file per
 //! product).
 //!
-//! PROVENANCE CONTRACT (ATL round-1 adversary miss #1): the offline
+//! PROVENANCE CONTRACT: the offline
 //! `--fixtures` path must verify each file's bytes against the config's sha256
 //! pins, exactly like the network path - the PR gate runs `check --fixtures`
 //! on the committed fixtures, so an unverified offline read is a fail-OPEN
@@ -172,9 +172,8 @@ fn check_mutated_object_table_row_reports_drift_and_exits_1() {
     );
 }
 
-/// SIDE-ONLY drift still exits 1 (ATL round-1 mutation survivor: main.rs
-/// `name_drift.is_empty() && side_drift.is_empty()` mutated `&&` -> `||`
-/// survived because every prior drift case tripped BOTH halves). Dropping the
+/// SIDE-ONLY drift still exits 1 (main.rs's gate is
+/// `name_drift.is_empty() && side_drift.is_empty()`, never `||`). Dropping the
 /// `SUBJ_TRUST` row from 1.4.5's `table2` changes NO names (`trust` remains
 /// via 1.4.5's object table and both 1.3.2 tables, so the cross-version name
 /// union is untouched) but demotes derived-1.4.5 `trust` from Both to
@@ -258,7 +257,7 @@ fn check_truncated_fixture_fails_closed_exits_2() {
     );
 }
 
-/// PROVENANCE fail-closed (ATL round-1 adversary miss #1, CLI half): fixture
+/// PROVENANCE fail-closed (CLI half): fixture
 /// bytes that PARSE identically to the committed ones (the tamper is a benign
 /// trailing comment, outside every table, containing no quotes - the derived
 /// registry is byte-for-byte the same 18 names) but do NOT match the default
@@ -313,11 +312,7 @@ fn check_missing_version_directory_fails_closed_exits_2() {
 }
 
 /// `derive` must print the ACTUAL rendered registry, filtered to the selected
-/// `--version` only (ATL round-1 mutation survivors: `render_row` gutted to
-/// `""`/`"xyzzy"`, `derive_version` -> `Ok(vec![])`, `cmd_derive` ->
-/// `Ok(Default::default())`, the `--version` filter's `&&`/`!=` operators, and
-/// `flag` -> `None` all survived because the prior suite never asserted derive
-/// OUTPUT content). Pins: the per-version header with the exact name count,
+/// `--version` only. Pins: the per-version header with the exact name count,
 /// three exact rendered rows (one per Side variant), exactly 18 row lines, and
 /// the ABSENCE of the non-selected version (kills the filter mutants: an
 /// inverted/ignored filter prints 1.3.2's section too).
@@ -379,7 +374,7 @@ fn derive_unknown_version_exits_2() {
     );
 }
 
-/// ATL round-3 clean-run survivor (main.rs:55 `print_help` -> `()`): the help
+/// The help
 /// text must actually print - exit 0 with non-empty usage on stderr naming
 /// both subcommands and the offline flag (mirrors
 /// tools/sshd-stig-update/tests/cli.rs's help pin).

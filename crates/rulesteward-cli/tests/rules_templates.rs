@@ -1,7 +1,6 @@
 //! Integration gate for the `rules-templates/` sample fapolicyd rule files.
 //!
-//! These tests are RED until the implementer creates the directory, sample
-//! `.rules` files, and `LICENSE`. They verify:
+//! They verify:
 //!
 //! 1. `rules-templates/` exists and contains at least 2 non-dotfile `*.rules` files.
 //! 2. Each `*.rules` file contains at least one fapolicyd decision line (non-comment
@@ -177,8 +176,6 @@ fn rules_templates_license_exists_and_is_bsd3() {
 /// Runs `rulesteward fapolicyd lint rules-templates/` and asserts:
 /// - exit code 0 (no Fatal/Error/Warning diagnostics).
 /// - JSON output contains no `fapd-` codes at all (the array is `[]`).
-///
-/// This test is RED until the implementer creates fully-clean sample files.
 #[test]
 fn rules_templates_lint_clean_exit_zero_no_diagnostics() {
     let dir = rules_templates_dir();

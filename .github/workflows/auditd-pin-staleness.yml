@@ -1,6 +1,6 @@
 name: auditd-pin-staleness
 
-# Monthly upstream-pin staleness check for the auditd STIG tool (#550, 9j lane 5): probe
+# Monthly upstream-pin staleness check for the auditd STIG tool (#550): probe
 # DISA's CDN for a newer `V<major>R<minor>` revision than each product's pinned zip in
 # tools/auditd-stig-update/stig-refs.toml. On a hit (a newer revision, or the pin itself
 # having aged out of DISA's retention window), open/update a tracking issue - it never
@@ -82,8 +82,8 @@ jobs:
           set -uo pipefail
           # Actionable PinStatus outcomes (see pin.rs::report's own message text):
           # Newer -> "a newer DISA STIG revision exists"; PinNotFound -> "was not found
-          # (404)"; Unparseable -> "no usable V<major>R<minor> token" (USER RULING,
-          # #550 lane-5 ATL: an unparseable pin is a config/typo problem a human must
+          # (404)"; Unparseable -> "no usable V<major>R<minor> token" (#550: an
+          # unparseable pin is a config/typo problem a human must
           # still act on - report()'s own message already says so, and if DISA ever
           # changes its filename scheme, the pin legitimately becomes unparseable while
           # check/derive keep working, silently switching staleness detection off

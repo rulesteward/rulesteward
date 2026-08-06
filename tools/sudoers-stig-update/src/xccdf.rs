@@ -127,7 +127,7 @@ pub fn parse_controls(xccdf: &str) -> Result<Vec<DerivedControl>, String> {
             .captures(rule_body)
             .map_or("", |c| c.get(1).map_or("", |m| m.as_str()));
 
-        // Selector: content-based, never positional (see module doc + BLOCKER 1 --
+        // Selector: content-based, never positional (see module doc +
         // `tests::selector_is_content_based_not_positional`). Checked against BOTH
         // check-content and fixtext, case-insensitively.
         let haystack = format!("{check} {fixtext}").to_lowercase();
@@ -232,20 +232,20 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Item 1: offline derive correctness -- exact ids/titles per product.
+    // Offline derive correctness -- exact ids/titles per product.
     // Real, verbatim DISA XCCDF content verified at authoring time against
     // /home/runner/rulesteward-docs/grounding/auditd-stig/stig_research/
     // (the SAME cached XCCDF documents crates/rulesteward-sudoers/src/lints/
     // stig.rs's PW_FAMILY_CONTROLS / AUTHENTICATE_CONTROLS /
     // TIMESTAMP_TIMEOUT_CONTROLS ids are grounded against; RHEL-10 explicitly
-    // per #563 / 9i lane-7's citations table, RHEL-08/09 mechanically
-    // cross-checked by grep at authoring time; adversarial round: an
+    // per #563's citations table, RHEL-08/09 mechanically
+    // cross-checked by grep at authoring time; an
     // independent reviewer additionally fetched and byte-verified all nine
     // ids AND every fixture Group against the current V2R8/V2R9/V1R2 DISA
     // revisions -- see this crate's stig-refs.toml).
     //
-    // Each fixture is now in TRUE DOCUMENT ORDER (adversarial round, BLOCKER
-    // 1): a wrong impl that assigns Groups to families POSITIONALLY (e.g.
+    // Each fixture is in TRUE DOCUMENT ORDER:
+    // a wrong impl that assigns Groups to families POSITIONALLY (e.g.
     // "the Nth Group is the Nth family") must fail these, since the real
     // per-product ordering is auth/ts/pw (rhel10), ts/pw/auth (rhel9), and
     // [3 unrelated]/decoy/auth/pw/ts (rhel8) -- never `Family::ALL`'s own
@@ -339,7 +339,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Item 3 (no-drift) + BLOCKER 3: the golden cross-check. The XCCDF-derived
+    // The golden cross-check. The XCCDF-derived
     // table for EACH of the three RHEL targets must reproduce
     // `derive::code_table(target)` EXACTLY (0 drift) -- mirrors
     // `tools/sshd-stig-update`'s `rhelN_fixture_reproduces_code_table_exactly`
@@ -382,7 +382,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BLOCKER 1 (adversarial round): the selector must be CONTENT-based, never
+    // The selector must be CONTENT-based, never
     // positional/ordinal. A wrong impl that assigns `Family::ALL[0..3]` to the
     // first 3 `<Group>` blocks in document order passes every test ABOVE this
     // point ONLY if every fixture happens to present the families in
@@ -449,7 +449,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BLOCKER 2 (adversarial round): the Group-level <title> trap. Every
+    // The Group-level <title> trap. Every
     // fixture Group carries its REAL `<Group><title>` (the SRG requirement
     // id, e.g. "SRG-OS-000373-GPOS-00156"), immediately followed by the
     // Rule's own <title> (the real human-readable title). A selector reading
@@ -528,10 +528,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Item 4: anti-vacuity. A parse bug (or a wrong file) that finds 0 -- or
+    // Anti-vacuity. A parse bug (or a wrong file) that finds 0 -- or
     // fewer than the mandatory 3 -- sudo-W04 families must fail CLOSED, never
     // silently report an empty/partial `Ok` that a caller could mistake for
-    // "0 drift". CONCERN (adversarial round): the error text must contain the
+    // "0 drift". The error text must contain the
     // literal substring "found 0" / "found 1" -- a looser `err.contains('0')`
     // is satisfied by unrelated digits echoed into the message (e.g. the
     // substring "sudo-W04" itself contains a '0'; any echoed "RHEL-10-..."
@@ -589,13 +589,13 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
     }
 
     // -----------------------------------------------------------------------
-    // Impl-aware adversarial review, post-#551 GREEN (round 1): the anti-vacuity
+    // The anti-vacuity
     // guard above (`out.len() < Family::ALL.len()`) counts ROWS, not DISTINCT
     // families, so it is completely unguarded against the OVER-match direction.
     // These two tests close that gap.
     // -----------------------------------------------------------------------
 
-    /// MISS 1 (the serious one): a future DISA revision that ADDS a second
+    /// The serious over-match case: a future DISA revision that ADDS a second
     /// Rule to an already-matched family (two `!authenticate` Rules, plus one
     /// Rule each for the other two mandatory families -- 4 rows, all 3
     /// families "covered") must fail CLOSED, never silently resolve the
@@ -647,7 +647,7 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
         );
     }
 
-    /// MISS 2: a weaker but still-wrong classification. Three rows, but ALL
+    /// A weaker but still-wrong classification. Three rows, but ALL
     /// belonging to the SAME single family (Authenticate) -- 1 DISTINCT
     /// family, 3 rows. The row-counting guard (`out.len() < 3`) sees 3 rows
     /// and lets this through as `Ok`, which upstream's `diff_controls`
@@ -683,7 +683,7 @@ If any occurrences of "!authenticate" are returned, this is a finding.</check-co
     }
 
     // -----------------------------------------------------------------------
-    // Mutation-gate hardening (post-#551 GREEN, round 2): the PwFamily branch
+    // The PwFamily branch
     // is a 3-way disjunction (`targetpw || rootpw || runaspw`), but every real
     // DISA fixture's pw-family Rule enumerates ALL THREE keywords in the same
     // check-content/fixtext (measured: rhel8/9/10 each contain targetpw=4,

@@ -12,14 +12,12 @@
 //! If `checkmodule` is not in PATH these tests skip rather than fail, so the
 //! suite still passes on a machine without the `SELinux` toolchain.
 //!
-//! That leniency has a failure mode, and this file lived in it. A skipped test
-//! and a passing test are indistinguishable in `cargo test` output, because
-//! stdout is swallowed for non-failing tests. So "6 compile-oracle assertions
-//! ran" and "6 no-ops ran" looked identical, and until 2026-07-25 the second
-//! was what happened on EVERY CI run: `checkpolicy` (which provides
-//! `checkmodule`) was installed in no workflow in this repo. The doc here
-//! previously asserted "In CI the tests will execute", which had never been
-//! true.
+//! That leniency has a failure mode: a skipped test and a passing test are
+//! indistinguishable in `cargo test` output, because stdout is swallowed for
+//! non-failing tests, so "6 compile-oracle assertions ran" and "6 no-ops ran"
+//! look identical. If `checkpolicy` (which provides `checkmodule`) is absent
+//! from a CI workflow that runs this suite, the suite can silently verify
+//! nothing here while still reporting green.
 //!
 //! The fix is an explicit declaration rather than an inference. Set
 //! `RS_REQUIRE_CHECKMODULE=1` and a missing `checkmodule` is a hard failure
@@ -389,8 +387,8 @@ const MALFORMED_TE: &str = "module rs_negative_control 1.0;\n\
 
 /// The anti-vacuity guard for this file.
 ///
-/// Two failure modes are covered here, both of which previously looked exactly
-/// like success:
+/// Two failure modes are covered here, both of which look exactly like
+/// success without this guard:
 ///
 /// 1. **The oracle is absent.** The six tests above skip, and `cargo test`
 ///    swallows stdout on non-failing tests, so a fully dormant harness is

@@ -25,8 +25,8 @@ fn write(dir: &std::path::Path, rel: &str, content: &str) {
 /// True if `s` contains an ISO-8601 date (`YYYY-MM-DD`) -- the discriminating
 /// shape of a generation timestamp (D1 forbids one in the report). Precise on
 /// purpose: matching a 2-char substring like "T0" false-fires on the random
-/// config-dir path the report legitimately echoes (a real CI flake:
-/// `/tmp/.tmpU0JT0k` contains "T0"). The caller-supplied path is allowed to be
+/// config-dir path the report legitimately echoes
+/// (`/tmp/.tmpU0JT0k` contains "T0"). The caller-supplied path is allowed to be
 /// random; only the GENERATOR adding a timestamp is forbidden.
 fn contains_iso_date(s: &str) -> bool {
     s.as_bytes().windows(10).any(|w| {
@@ -40,8 +40,8 @@ fn contains_iso_date(s: &str) -> bool {
 
 #[test]
 fn iso_date_matcher_is_precise() {
-    // Regression for the CI flake: the random tempdir path that tripped the old
-    // substring check must NOT register as a timestamp.
+    // The random tempdir path must NOT register as a timestamp: a 2-char
+    // substring check would false-fire on it.
     assert!(
         !contains_iso_date("/tmp/.tmpU0JT0k"),
         "tempdir path is not a date"
@@ -174,13 +174,12 @@ fn migrate_coexistence_trap_human_stdout_has_no_applied_header() {
         .stdout(predicate::str::contains("Migration applied").not());
 }
 
-// --- #315 full fix: every error layout reports on stderr and prints no header ---
+// --- #315: every error layout reports on stderr and prints no header ---
 //
-// The render fall-through that #315 reported (the misleading "Migration applied"
-// header on stdout) affected ALL of migrate's error layouts, not just the
-// coexistence-trap refusal. These pin, via the real binary, that each
-// deterministically-triggerable error layout (a) exits non-zero, (b) reports the
-// reason on stderr, and (c) prints no "Migration applied" header on stdout.
+// These pin, via the real binary, that each deterministically-triggerable error
+// layout (a) exits non-zero, (b) reports the reason on stderr, and (c) prints no
+// "Migration applied" header on stdout. The contract covers ALL of migrate's
+// error layouts, not just the coexistence-trap refusal.
 //
 // read-error and remove-error are NOT deterministically triggerable without
 // filesystem fault injection (TOCTOU / permission tricks that root bypasses), so
@@ -251,8 +250,7 @@ fn migrate_version_downgrade_reports_on_stderr_no_header() {
     let d = tempfile::tempdir().unwrap();
     write(d.path(), "fapolicyd.rules", "allow perm=any all : all\n");
     // --from newer than --to: migrate refuses (no downgrade) with layout "error"
-    // (EXIT_TOOL_FAILURE = 3). This layout always had a stderr message; the fix is
-    // that it no longer also prints the "Migration applied" header on stdout.
+    // (EXIT_TOOL_FAILURE = 3).
     Command::cargo_bin("rulesteward")
         .unwrap()
         .args([
@@ -316,10 +314,6 @@ fn empty_path_dir() -> tempfile::TempDir {
 /// On a host where `fapolicyd-cli` is unreachable (forced via a PATH that
 /// contains only an empty directory), `--apply` must succeed (exit 0) and
 /// the human output must mention that verification was unavailable or skipped.
-///
-/// RED until #211 is implemented: the current binary exits 0 but the human
-/// output contains no verification line at all, so the `contains` assertion
-/// fails.
 #[test]
 fn migrate_apply_without_fagenrules_degrades_gracefully() {
     let d = tempfile::tempdir().unwrap();
@@ -338,8 +332,8 @@ fn migrate_apply_without_fagenrules_degrades_gracefully() {
         .env("PATH", empty_path.path())
         .assert()
         .success()
-        // RED: the current binary emits no verification line.
-        // After #211: must contain "unavailable" or "skipped" or "verification".
+        // The verification line must contain "unavailable", "skipped" or
+        // "verification".
         .stdout(
             predicate::str::contains("unavailable")
                 .or(predicate::str::contains("skipped"))
@@ -362,9 +356,6 @@ fn migrate_apply_without_fagenrules_degrades_gracefully() {
 /// `fagenrulesCheck` -> `checkRules` (aligned to the `fapolicyd-cli
 /// --check-rules` verb) and the migrate envelope `schemaVersion` bumps
 /// 1 -> 2 (CC-2 breaking-only bump).
-///
-/// RED until #221 is implemented: the current binary still emits the old
-/// `fagenrulesCheck` key (a populated object, post-#211) at `schemaVersion` 1.
 #[test]
 fn migrate_apply_json_check_rules_unavailable_when_binary_absent() {
     let d = tempfile::tempdir().unwrap();
@@ -387,20 +378,19 @@ fn migrate_apply_json_check_rules_unavailable_when_binary_absent() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("json must parse");
-    // RED: current binary emits schemaVersion 1; after #221 it must be 2.
     assert_eq!(
         v["schemaVersion"],
         serde_json::json!(2),
         "migrate envelope schemaVersion must be 2 after the #221 checkRules rename: {stdout}"
     );
-    // RED: the old `fagenrulesCheck` key must be GONE (renamed, not shimmed).
-    // A backward-compat impl emitting BOTH keys must fail this.
+    // The `fagenrulesCheck` key must be GONE (renamed to `checkRules`, not
+    // shimmed). A backward-compat impl emitting BOTH keys must fail this.
     assert!(
         v.get("fagenrulesCheck").is_none(),
         "old fagenrulesCheck key must be removed (renamed to checkRules) after #221: {stdout}"
     );
-    // RED: current binary emits the check object under the old key; after #221
-    // it is `checkRules`, populated as {"status": "unavailable", ...}.
+    // The check object lives under `checkRules`, populated as
+    // {"status": "unavailable", ...}.
     let check = &v["checkRules"];
     assert!(
         !check.is_null(),
@@ -425,9 +415,6 @@ fn migrate_apply_json_check_rules_unavailable_when_binary_absent() {
 
 /// `--report <PATH>` in apply mode writes a markdown file containing the
 /// migration details.
-///
-/// RED until #212 is implemented: the current binary ignores `--report` and
-/// writes nothing, so the file-exists assertion fails.
 #[test]
 fn migrate_apply_report_flag_writes_markdown_file() {
     let d = tempfile::tempdir().unwrap();
@@ -446,7 +433,6 @@ fn migrate_apply_report_flag_writes_markdown_file() {
         .args(argv)
         .assert()
         .success();
-    // RED: no report written yet.
     assert!(
         report_path.exists(),
         "migration report must be written at the --report path"
@@ -477,8 +463,6 @@ fn migrate_apply_report_flag_writes_markdown_file() {
 
 /// `--report <PATH>` in dry-run mode writes a markdown report documenting
 /// the PLAN (what WOULD happen), without applying anything.
-///
-/// RED until #212 is implemented.
 #[test]
 fn migrate_dry_run_report_flag_writes_plan_markdown() {
     let d = tempfile::tempdir().unwrap();
@@ -493,7 +477,6 @@ fn migrate_dry_run_report_flag_writes_plan_markdown() {
         .args(argv)
         .assert()
         .success();
-    // RED: no report written yet.
     assert!(
         report_path.exists(),
         "dry-run report must be written at the --report path"
@@ -511,9 +494,8 @@ fn migrate_dry_run_report_flag_writes_plan_markdown() {
 
 /// Absent `--report` flag -> no report file written anywhere.
 ///
-/// This test is VACUOUSLY GREEN in the skeleton (no report is ever written),
-/// but it pins the contract: the implementer must not write a default report
-/// path when `--report` is absent.
+/// Pins the contract: no default report path is written when `--report` is
+/// absent.
 #[test]
 fn migrate_absent_report_flag_writes_no_extra_files() {
     let d = tempfile::tempdir().unwrap();

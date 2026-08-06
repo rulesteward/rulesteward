@@ -3,7 +3,7 @@
 //! (broad allow on execute).
 //!
 //! Spans on emitted diagnostics are file-relative byte ranges lifted from
-//! `Rule.span` (set by the parser in session 3a). `source_id` is set to
+//! `Rule.span` (set by the parser). `source_id` is set to
 //! `file.display().to_string()` on every rule-level diagnostic so ariadne
 //! can key its Source cache.
 //!
@@ -120,7 +120,7 @@ fn e01(entries: &[Entry], file: &Path) -> Vec<Diagnostic> {
                     // those stay correct.
                     let col = attr_span.start - r.span.start + 1;
                     // exe_dir/exe_type are legal ONLY on the legacy subject
-                    // side (issue #546, ATL round 2 MISS 2): they are unknown
+                    // side (issue #546): they are unknown
                     // to the MODERN table (`attrs::is_known` correctly
                     // rejects them there, unaffected below), but
                     // `parser::grammar::legacy_classify`'s per-token routing
@@ -328,21 +328,20 @@ mod tests {
     // EXITS(1) - fapolicyd never starts, so the host loses all
     // execution-control enforcement.
     //
-    // Today `e01` only calls `attrs::is_known(key)` (side-blind: true for a
-    // name in ANY of SUBJECT_ONLY/OBJECT_ONLY/BOTH_SIDES regardless of which
-    // side it was found on), so every one of these fixtures is RED (e01
-    // returns zero diagnostics). After the fix (compare `attrs::classify(key)`
-    // against the side the `Attr::Kv` was actually found on - `r.subject` vs
-    // `r.object`), each must fire fapd-E01.
+    // `e01` compares `attrs::classify(key)` against the side the `Attr::Kv` was
+    // actually found on (`r.subject` vs `r.object`), so each of these fixtures
+    // must fire fapd-E01. A side-blind `attrs::is_known(key)` check alone (true
+    // for a name in ANY of SUBJECT_ONLY/OBJECT_ONLY/BOTH_SIDES regardless of
+    // which side it was found on) returns zero diagnostics on all five.
     // ------------------------------------------------------------------
 
     #[test]
     fn e01_fires_on_mode_placed_on_subject_side() {
-        // `mode` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `mode` is OBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
         // `allow perm=any mode=0755 : all` -> fapolicyd9 (1.4.5) "Field type
         // (mode) is unknown in line 2" + "Subject is missing"; fapolicyd8
-        // (1.3.2) "Field type (mode) is unknown in line 2". RuleSteward today:
-        // exit 0, zero diagnostics on every --target (the bug).
+        // (1.3.2) "Field type (mode) is unknown in line 2". An impl with no
+        // side check would exit 0 with zero diagnostics on every --target.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -388,10 +387,10 @@ mod tests {
 
     #[test]
     fn e01_fires_on_uid_placed_on_object_side() {
-        // `uid` is SUBJECT_ONLY (attrs.rs:41). Daemon fixture (grounded):
+        // `uid` is SUBJECT_ONLY (attrs.rs:37). Daemon fixture (grounded):
         // `allow perm=any all : uid=0` -> fapolicyd9 "Field type (uid) is
-        // unknown in line 2" + "Object is missing". RuleSteward today: exit 0,
-        // zero diagnostics.
+        // unknown in line 2" + "Object is missing". An impl with no side check
+        // would exit 0 with zero diagnostics.
         let entries = vec![modern_rule(
             1,
             Decision::Allow,
@@ -434,7 +433,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_path_placed_on_subject_side() {
-        // `path` is OBJECT_ONLY (attrs.rs:55). Daemon fixture (grounded):
+        // `path` is OBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
         // `allow perm=any path=/bin/sh : all` -> fapolicyd9 "Field type (path)
         // is unknown in line 2" + "Subject is missing".
         let entries = vec![modern_rule(
@@ -459,7 +458,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_exe_placed_on_object_side() {
-        // `exe` is SUBJECT_ONLY (attrs.rs:48). Daemon fixture (grounded):
+        // `exe` is SUBJECT_ONLY (attrs.rs:41). Daemon fixture (grounded):
         // `allow perm=any all : exe=/bin/sh` -> fapolicyd9 "Field type (exe)
         // is unknown in line 2" + "Object is missing".
         let entries = vec![modern_rule(
@@ -484,7 +483,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_pattern_placed_on_object_side() {
-        // `pattern` is SUBJECT_ONLY (attrs.rs:52). Daemon fixture (grounded):
+        // `pattern` is SUBJECT_ONLY (attrs.rs:45). Daemon fixture (grounded):
         // `allow perm=any all : pattern=ld_so` -> fapolicyd9 "Field type
         // (pattern) is unknown in line 2" + "Object is missing". Distinct from
         // fapd-E06's `check_pattern` (version_target.rs), which only scans
@@ -567,7 +566,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_gid_placed_on_object_side() {
-        // `gid` is SUBJECT_ONLY (attrs.rs:43). Live-differential grounded
+        // `gid` is SUBJECT_ONLY (attrs.rs:39). Live-differential grounded
         // 2026-07-17: `allow perm=any all : gid=100` -> fapolicyd8 (1.3.2)
         // AND fapolicyd9 (1.4.5) both reject with "Field type (gid) is
         // unknown in line 2" + "Object is missing in line 2" - confirming
@@ -595,7 +594,7 @@ mod tests {
 
     #[test]
     fn e01_fires_on_sha256hash_placed_on_subject_side() {
-        // `sha256hash` is OBJECT_ONLY (attrs.rs:55). Live-differential
+        // `sha256hash` is OBJECT_ONLY (attrs.rs:48). Live-differential
         // grounded 2026-07-17: `allow perm=any sha256hash=<64 hex> : all`
         // -> fapolicyd8 (1.3.2) AND fapolicyd9 (1.4.5) both reject with
         // "Field type (sha256hash) is unknown in line 2" + "Subject is
@@ -631,9 +630,9 @@ mod tests {
     // in existence for `filehash` - see `version_target.rs::
     // check_subject_device` / `check_filehash`), so they must be EXCLUDED
     // from fapd-E01's general version-invariant side check entirely,
-    // deferring wholly to fapd-E06. These are PASSING controls today (E01
-    // has no side check yet) that must KEEP PASSING after the #545 fix -
-    // they pin the exclusion boundary, not a RED regression.
+    // deferring wholly to fapd-E06. These are negative controls that pin the
+    // exclusion boundary: a side check that did not exclude `device` and
+    // `filehash` would wrongly fire fapd-E01 on these fixtures.
     // ------------------------------------------------------------------
 
     #[test]
@@ -779,8 +778,7 @@ mod tests {
         assert!(w02(&entries, &p()).is_empty());
     }
 
-    // RED test for 3f: fapd-E01 caret must point at the offending attribute,
-    // not the whole rule.
+    // fapd-E01 caret must point at the offending attribute, not the whole rule.
     //
     // Fixture (notional source line, byte offsets):
     //   "allow uid=0 badkey=foo : all\n"
@@ -791,12 +789,8 @@ mod tests {
     // uid=0 attr = 0..0   (valid, placeholder span is fine - not the lint target)
     // badkey=foo  = 12..22 (unknown key, the offending attr)
     //
-    // After 3f impl:
-    //   e01 reads attr.span from Attr::Kv and emits Diagnostic { span: 12..22, column: 13 }.
-    //
-    // Today (placeholder spans + rule-level span in e01):
-    //   e01 emits Diagnostic { span: 0..28, column: 1 }.
-    //   -> test is RED.
+    // e01 reads attr.span from Attr::Kv and emits
+    // Diagnostic { span: 12..22, column: 13 }.
     //
     // The test asserts EXACT byte range (12..22) and column (13 = 1-based position
     // of byte 12 on a line that starts at byte 0: 12 bytes before it -> col 13).
@@ -835,7 +829,6 @@ mod tests {
         assert_eq!(d.code.as_ref(), "fapd-E01");
 
         // The span must be the ATTRIBUTE span, not the rule span.
-        // Today e01 emits r.span (0..28); this assertion is RED.
         assert_eq!(
             d.span, attr_span,
             "fapd-E01 span must point at the offending attribute (12..22), \
@@ -844,7 +837,6 @@ mod tests {
 
         // The column must correspond to the attribute's byte offset within
         // its source line. Column is 1-based: byte 12 from line-start -> col 13.
-        // Today e01 hardcodes column 1; this assertion is also RED.
         assert_eq!(
             d.column, expected_col,
             "fapd-E01 column must be 13 (byte 12 from line start, 1-based), \

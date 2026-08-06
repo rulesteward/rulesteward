@@ -46,11 +46,10 @@ const SELINUX_TRIAGE_SCHEMA_VERSION: u32 = 1;
 pub fn run(cmd: SelinuxCommand) -> anyhow::Result<i32> {
     match cmd {
         SelinuxCommand::Triage(args) => triage(&args),
-        // `commands::selinux::mod` (added #520, session 9d lane 2b) only ever
-        // reconstructs and dispatches a `SelinuxCommand::Triage` to this
-        // function; `Lint`/`Doctor` route to their own sibling modules and
-        // never reach here. This file's triage logic is otherwise unchanged
-        // from the single-file `commands/selinux.rs` it was moved out of.
+        // `commands::selinux::mod` (#520) only ever reconstructs and
+        // dispatches a `SelinuxCommand::Triage` to this function;
+        // `Lint`/`Doctor` route to their own sibling modules and never reach
+        // here.
         SelinuxCommand::Lint(_) | SelinuxCommand::Doctor(_) => {
             unreachable!("commands::selinux::mod only ever dispatches Triage to this fn")
         }
@@ -95,7 +94,7 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
     // tracks which groups had Reason(0) so we can render a DISTINCT operator
     // message for #122.
     //
-    // A FAILED `--policy` load is a loud error (round-2 decision): we must NOT
+    // A FAILED `--policy` load is a loud error: we must NOT
     // silently fall back to the floor with exit 0. Report it and return
     // EXIT_ERRORS, staying read-only (no panic).
     //
@@ -182,7 +181,7 @@ fn triage(args: &TriageArgs) -> anyhow::Result<i32> {
 /// The load-bearing ordering: a genuinely-blocked member (TE gap / constraint /
 /// bounds / bad-context) MUST outrank the `Reason(0)` "already allows" member, so
 /// the output never tells the operator the policy "already allows" a group that
-/// in fact contains an enforced block (the round-2 grounded bug).
+/// in fact contains an enforced block.
 #[cfg(feature = "authoritative-categorizer")]
 fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
     match (kind, outcome) {
@@ -211,9 +210,9 @@ fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
 /// just the first representative). A `(source_type, target_type, tclass)` triple
 /// is only as coarse as `group_denials` - two AVCs differing only in MLS level
 /// land in ONE group - so replaying a single representative would let a
-/// `Reason(0)` member mask a constraint-blocked member (the round-2 grounded
-/// bug). The group's `kind` is set to the MOST ACTIONABLE per-context verdict
-/// (see [`verdict_rank`]); a group is reported "already allows" ONLY when EVERY
+/// `Reason(0)` member mask a constraint-blocked member. The group's `kind` is
+/// set to the MOST ACTIONABLE per-context verdict (see [`verdict_rank`]); a
+/// group is reported "already allows" ONLY when EVERY
 /// distinct context replays to `Reason(0)`.
 ///
 /// On `CategorizeError` (hard errors, not BADSCON) that context is skipped with a
@@ -225,8 +224,8 @@ fn verdict_rank(kind: DenialKind, outcome: ReplayOutcome) -> u8 {
 ///
 /// Returns `Err` when an explicitly-supplied `--policy` cannot be loaded
 /// (`Policy::load` failed). The caller maps this to `EXIT_ERRORS` - a failed
-/// `--policy` load must FAIL LOUD, never silently fall back to the floor
-/// (round-2 decision). The run stays read-only and does not panic.
+/// `--policy` load must FAIL LOUD, never silently fall back to the floor.
+/// The run stays read-only and does not panic.
 #[cfg(feature = "authoritative-categorizer")]
 fn apply_authoritative_categorizer(
     policy_path: Option<&Path>,

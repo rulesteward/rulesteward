@@ -115,7 +115,7 @@ use crate::lints::{SshdLintContext, anchored};
 #[must_use]
 pub fn lint_drop_in(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let main_path = dir.join("sshd_config");
-    // Routed through `rulesteward_core::fsread` (#560, closeout miss): the
+    // Routed through `rulesteward_core::fsread` (#560): the
     // main config a directory target reads first must not hang/OOM when it
     // is a special file (FIFO/socket/device node) rather than a regular file.
     let Ok(main_src) = rulesteward_core::fsread::read_to_string(&main_path) else {
@@ -231,7 +231,7 @@ struct Provenance {
 #[must_use]
 pub fn lint_merged(dir: &Path, ctx: &SshdLintContext) -> Vec<Diagnostic> {
     let base_path = dir.join("sshd_config");
-    // Routed through `rulesteward_core::fsread` (#560, closeout miss): same
+    // Routed through `rulesteward_core::fsread` (#560): same
     // guard as `lint_drop_in` above, for the merged-effective entrypoint's
     // own main-config read.
     let Ok(base_src) = rulesteward_core::fsread::read_to_string(&base_path) else {
@@ -1208,18 +1208,14 @@ X11UseLocalhost yes
     // NESTED INCLUDE TESTS (issue #323)
     // ----------------------------------------------------------------------
     //
-    // Background: build_stream() PREVIOUSLY expanded Include one level deep only
-    // (main -> sshd_config.d/*.conf).  A drop-in that itself contained an Include
-    // of a SECOND file was NOT followed, so a baseline-failing value set in that
-    // second-level file was a silent false negative.
+    // build_stream() resolves Include RECURSIVELY with a cycle guard, propagating
+    // the enclosing is_match_all tag and stamping each spliced directive with the
+    // file it actually came from.  A drop-in that itself contains an Include of a
+    // SECOND file is therefore followed, so a baseline-failing value set in that
+    // second-level file is not a silent false negative.
     //
-    // This fix makes build_stream() resolve Include recursively with a cycle
-    // guard, propagating the enclosing is_match_all tag and stamping each spliced
-    // directive with the file it actually came from.
-    //
-    // Tests #1 and #2 below WERE RED under the old one-level impl and are now
-    // GREEN under the recursive impl.  Test #3 is a safety guard (green both
-    // before and after the fix).  Test #4 references an existing test that already
+    // Tests #1 and #2 below pin the recursive expansion; test #3 is a safety guard
+    // (termination on a cycle); test #4 references an existing test that already
     // covers the non-nested baseline.
 
     /// Build a layout where drop-in A itself contains a verbatim `Include` of a
@@ -1258,12 +1254,10 @@ X11UseLocalhost yes
         (dir, diags)
     }
 
-    // -- Test #1 (was RED under the old one-level impl; now GREEN) ------------
+    // -- Test #1 (a second-level Include is followed) -------------------------
 
     #[test]
     fn nested_include_baseline_override_fires_f02() {
-        // Was RED under the old one-level impl; now GREEN under the recursive impl.
-        //
         // Layout:
         //   sshd_config:       Include sshd_config.d/*.conf
         //                      PermitRootLogin no          <- baseline-passing (operator hardening)
@@ -1328,12 +1322,10 @@ X11UseLocalhost yes
         );
     }
 
-    // -- Test #2 (was RED under the old one-level impl; now GREEN) ------------
+    // -- Test #2 (`Match all` tag propagates through a nested Include) --------
 
     #[test]
     fn nested_include_inside_match_all_propagates_tag() {
-        // Was RED under the old one-level impl; now GREEN under the recursive impl.
-        //
         // Layout:
         //   sshd_config:       PermitRootLogin no          <- baseline-passing global
         //                      Match all
@@ -1405,7 +1397,7 @@ X11UseLocalhost yes
         );
     }
 
-    // -- Test #3 (safety guard -- GREEN before AND after the fix) ------------
+    // -- Test #3 (safety guard -- termination on an Include cycle) ----------
 
     #[test]
     fn include_cycle_terminates() {
@@ -1463,10 +1455,8 @@ X11UseLocalhost yes
         // This call must RETURN (no infinite loop, no panic).
         let diags = lint_drop_in(dir.path(), &ctx());
 
-        // Under the recursive impl, at most one F02 is expected (the cycle must
-        // not cause double-counting); under the old one-level impl it was zero
-        // (second.conf was never read).  Either way, assert no panics and no more
-        // than one F02.
+        // At most one F02 is expected (the cycle must not cause double-counting).
+        // Assert no panics and no more than one F02.
         let f02_count = diags.iter().filter(|d| d.code == "sshd-F02").count();
         assert!(
             f02_count <= 1,
@@ -1475,10 +1465,10 @@ X11UseLocalhost yes
         );
         // (No assertion that f02_count == 1 here: it may be 0 or 1 depending on
         // cycle-guard semantics.  The load-bearing invariant is termination + no
-        // duplication.  A separate post-GREEN test pins the exact-1 case.)
+        // duplication.  A separate test pins the exact-1 case.)
     }
 
-    // -- Depth-cap boundary (post-GREEN strengthening; kills off-by-one mutants) --
+    // -- Depth-cap boundary (kills off-by-one mutants) --------------------------
     //
     // The recursive Include resolver caps depth at `SERVCONF_MAX_DEPTH` via
     // `if chain.len() > SERVCONF_MAX_DEPTH { continue; }` (drop_in.rs ~:298),
@@ -1885,21 +1875,21 @@ X11UseLocalhost yes
     }
 
     // ------------------------------------------------------------------
-    // #324 round-2: diamond / double-Include dedup + depth-cap boundary
+    // #324: diamond / double-Include dedup + depth-cap boundary
     // on the conditional-Match collection path (`collect_conditional_matches`
     // / `follow_includes`). Crate-level mirrors of the CLI e2e tests.
     // ------------------------------------------------------------------
 
     #[test]
     fn merged_diamond_include_conditional_match_reported_once() {
-        // FINDING 1 (RED today, count == 2): one drop-in `50-m.conf` reachable via
-        // TWO overlapping Include globs (`*.conf` and `5*.conf`, both matching it)
-        // holds a conditional `Match User alice` block with a weak cipher. The
-        // merged single-file W03 pass must report that one physical Match-body
-        // finding EXACTLY ONCE. `collect_conditional_matches` has a per-ANCESTRY
-        // cycle guard but no across-walk file dedup, so it visits `50-m.conf` once
-        // per Include edge and collects the conditional Match block TWICE -> two
-        // identical W03s. This asserts count == 1, so it is RED until the dedup lands.
+        // One drop-in `50-m.conf` reachable via TWO overlapping Include globs
+        // (`*.conf` and `5*.conf`, both matching it) holds a conditional
+        // `Match User alice` block with a weak cipher. The merged single-file W03
+        // pass must report that one physical Match-body finding EXACTLY ONCE.
+        // `collect_conditional_matches` carries an across-walk file dedup on top of
+        // its per-ANCESTRY cycle guard, so visiting `50-m.conf` once per Include
+        // edge still collects the conditional Match block only once, rather than
+        // twice with two identical W03s.
         let dir = tempfile::tempdir().expect("tempdir");
         let dropin_dir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropin_dir).expect("mkdir sshd_config.d");
@@ -1969,7 +1959,7 @@ X11UseLocalhost yes
 
     #[test]
     fn merged_conditional_match_at_max_depth_fires_w03() {
-        // FINDING 2, lower edge (kills `> -> >=` and `> -> ==` at follow_includes).
+        // Lower edge (kills `> -> >=` and `> -> ==` at follow_includes).
         // A chain of EXACTLY SERVCONF_MAX_DEPTH hops places the conditional Match
         // weak cipher at the deepest level the resolver still follows (`cap > cap`
         // is false). The correct `>` impl reaches it -> one W03 anchored to the
@@ -1994,7 +1984,7 @@ X11UseLocalhost yes
 
     #[test]
     fn merged_conditional_match_one_past_max_depth_does_not_fire_w03() {
-        // FINDING 2, upper edge: a conditional Match finding one Include hop BEYOND
+        // Upper edge: a conditional Match finding one Include hop BEYOND
         // SERVCONF_MAX_DEPTH is NOT reached (`cap + 1 > cap` skips the include), so
         // no W03 fires. Together with the at-max-depth test this straddles the exact
         // boundary, so a `>=` mutant (which also cuts at the cap) cannot survive.

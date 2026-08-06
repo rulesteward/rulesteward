@@ -1,6 +1,6 @@
-//! RED barrier tests for the legacy-grammar `exe_device=` false-fapd-F01
+//! Regression tests for the legacy-grammar `exe_device=` false-fapd-F01
 //! reject on rhel8, and its rhel9/rhel10 version-divergence follow-up
-//! (issue #570, lane-6, sequenced after #568).
+//! (issue #570, sequenced after #568).
 //!
 //! Ground truth (fresh `WebFetch` of upstream `src/library/subject-attr.c` at
 //! the pinned `v1.3.2` / `v1.4.5` tags, 2026-07-23 - matches the issue's cited
@@ -21,11 +21,11 @@
 //! rejected "Field type (`exe_device`) is unknown" on 1.4.5 (fapolicyd9).
 //!
 //! Unlike `exe_dir`/`exe_type` (legacy subject-only, but version-INVARIANT -
-//! valid on BOTH 1.3.2 and 1.4.5, fixed in 9e-wave2c/#546 via
-//! `LEGACY_ONLY_SUBJECT_ATTRS` alone), `exe_device` is version-DIVERGENT
-//! (1.3.2-only), so it needs BOTH the parser-level legacy-subject-anchor fix
-//! (mirroring `exe_dir`/`exe_type`) AND a new fapd-E06 version-divergence arm
-//! mirroring `version_target.rs::check_subject_device` (valid on rhel8,
+//! valid on BOTH 1.3.2 and 1.4.5, via `LEGACY_ONLY_SUBJECT_ATTRS` alone),
+//! `exe_device` is version-DIVERGENT (1.3.2-only), so it needs BOTH the
+//! parser-level legacy-subject-anchor entry (mirroring `exe_dir`/`exe_type`)
+//! AND a fapd-E06 version-divergence arm mirroring
+//! `version_target.rs::check_subject_device` (valid on rhel8,
 //! flagged on rhel9/rhel10).
 //!
 //! `--target` None-convention: `exe_device`'s rhel8-only validity is
@@ -35,18 +35,17 @@
 //! `check_subject_device`'s own `check2_none_accepts_subject_side_device_clean`
 //! pin in `version_target.rs`), staying CLEAN under no `--target`.
 //!
-//! Today: `parser::grammar::legacy_classify("exe_device")` returns `None`
-//! (not in `LEGACY_ONLY_SUBJECT_ATTRS`), so the legacy parse (via
-//! `positional_split`, #546) fails too. `parser::mod::parse_line` tries
-//! `modern_rule()` first; on a DUAL failure (both modern and legacy fail) it
-//! surfaces MODERN's diagnostic, not legacy's "unknown or legacy-illegal
-//! attribute" message from `positional_split` - so the observed fapd-F01 is
-//! the MODERN "malformed rule syntax: found end of input expected any, ' ',
-//! '\t', or colon separator" message (see `parser::mod::parse_line`'s "Both
-//! failed - return modern's diagnostics" branch), a false positive under
-//! EVERY target (including rhel8, where the real daemon accepts it). Every
-//! test below that expects a successful parse is RED today (panics in the
-//! `unwrap_or_else` parse step itself).
+//! `parser::grammar::legacy_classify("exe_device")` is in
+//! `LEGACY_ONLY_SUBJECT_ATTRS`, so the legacy parse (via `positional_split`,
+//! #546) accepts this rule on rhel8. Without that entry,
+//! `parser::mod::parse_line` would try `modern_rule()` first and, on a DUAL
+//! failure (both modern and legacy fail), surface MODERN's diagnostic
+//! instead of legacy's "unknown or legacy-illegal attribute" message from
+//! `positional_split` - the MODERN "malformed rule syntax: found end of
+//! input expected any, ' ', '\t', or colon separator" message (see
+//! `parser::mod::parse_line`'s "Both failed - return modern's diagnostics"
+//! branch) - a false positive under EVERY target, including rhel8, where
+//! the real daemon accepts it.
 
 use std::path::Path;
 
@@ -96,10 +95,7 @@ fn legacy_exe_device_parses_with_exe_device_on_subject_side() {
 /// doesn't know `exe_device` at all - only `LEGACY_ONLY_SUBJECT_ATTRS` +
 /// `Rule.syntax == Legacy` makes `walker::e01` skip it), nor fapd-E06 (no
 /// `--target` follows the established E06 None-closed convention - see the
-/// module doc). RED for two independent reasons today: the parse itself
-/// fails (fapd-F01 pre-empts everything), and even a parser-only fix would
-/// still need `walker::e01` to consult the (not-yet-updated)
-/// `LEGACY_ONLY_SUBJECT_ATTRS`.
+/// module doc).
 #[test]
 fn legacy_exe_device_full_lint_clean_under_no_target() {
     let file = Path::new("legacy-exe-device.rules");
@@ -197,8 +193,8 @@ fn legacy_exe_device_rhel9_and_rhel10_fire_e06() {
 /// (e) Negative control: the legacy leniency for `exe_device` extends ONLY to
 /// that name - a genuinely unknown attribute (not in the modern table, the
 /// legacy table, or `LEGACY_ONLY_SUBJECT_ATTRS`) must still be rejected as a
-/// legacy-illegal token, exactly as today. Must PASS both before and after
-/// the fix (pins the fix isn't a blanket "anything goes" fallback).
+/// legacy-illegal token. Pins that the `exe_device` leniency is not a
+/// blanket "anything goes" fallback.
 #[test]
 fn legacy_rule_with_genuinely_unknown_attr_still_errors_exe_device_lane() {
     let file = Path::new("legacy-bogus.rules");

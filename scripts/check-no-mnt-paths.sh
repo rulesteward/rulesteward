@@ -12,7 +12,7 @@
 # A line containing the literal absolute-mount prefix, UNLESS it is a comment IN
 # THAT FILE'S LANGUAGE, or carries the `mnt-path-exempt:` marker.
 #
-# Comment syntax is language-specific, and getting that wrong leaked twice:
+# Comment syntax is language-specific:
 #   - Rust: ONLY `//`, `///`, `//!`. A leading `#` is an ATTRIBUTE, so
 #     `#[path = "/mnt/..."]` (a compile-time file read) is a violation, as is
 #     the inner `#![...]` form. `/* */` blocks are deliberately NOT recognised
@@ -142,10 +142,10 @@ else
     done
 fi
 
-# Comment syntax is LANGUAGE-SPECIFIC. Getting this wrong is how the first two
-# cuts of this gate leaked: `#` was treated as a comment everywhere, but in Rust
-# `#` starts an ATTRIBUTE. `#[path = "/mnt/..."]` makes rustc read that file at
-# compile time, so it is a hard build dependency, not provenance.
+# Comment syntax is LANGUAGE-SPECIFIC. `#` is a comment in sh, yaml and
+# justfiles, but in Rust `#` starts an ATTRIBUTE. `#[path = "/mnt/..."]` makes
+# rustc read that file at compile time, so it is a hard build dependency, not
+# provenance.
 comment_style_for() {
     case "$1" in
     *.rs) echo rust ;;

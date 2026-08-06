@@ -1,11 +1,10 @@
-//! RED barrier tests for au-E04 (field <-> filter-list legality lint) -- issue #269.
+//! Tests for au-E04 (field <-> filter-list legality lint) -- issue #269.
 //!
 //! au-E04 is an Error-tier, load-aborting class: the kernel/auditctl ABORTS the
 //! load when a field is used on a filter list that is illegal for that field.
 //! This mirrors the au-E03 class (load-aborting duplicate) in severity.
 //!
 //! The entrypoint being tested is `lints::field_filter::e04(&[LocatedRule])`.
-//! It does NOT exist yet -- these tests are RED by construction.
 //!
 //! # Grounding
 //!
@@ -18,9 +17,6 @@
 //!
 //! Live differential: auditctl -R in --cap-add containers (fapolicyd9:latest,
 //! fapolicyd10:latest) and a live rocky10 VM read-only.
-//!
-//! Full grounding doc:
-//! /home/runner/rulesteward-docs/research-notes/overnight/2026-06-17/depth-auditd-fieldtable.md
 //!
 //! # EAU_* error codes from the live differential
 //!

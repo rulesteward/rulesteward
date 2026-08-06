@@ -1,7 +1,7 @@
 name: sysctld-oracle-drift
 
-# Weekly LIVE differential drift check for the sysctld backend (epic #499,
-# session 9k-1 Lane B): re-derives the sysctl.d/sysctl.conf precedence +
+# Weekly LIVE differential drift check for the sysctld backend (epic
+# #499): re-derives the sysctl.d/sysctl.conf precedence +
 # masking oracle from a REAL systemd-sysctl binary (in the shared
 # rs-oracle{8,9,10} containers) and fails on drift against the shipped
 # parser/lints. On drift, open/update a tracking issue (it never edits code).
@@ -59,7 +59,7 @@ jobs:
         with:
           key: sysctld-oracle-drift
       - name: Build the shared rs-oracle8/9/10 images
-        # Shared by all three session 9k-1 lanes (auditd/sysctld/sudoers) - see
+        # Shared by all three oracle backends (auditd/sysctld/sudoers) - see
         # tools/oracle-images/README.md. A build failure here (e.g. a Rocky repo
         # hiccup) fails the job distinctly from a drift.
         run: |

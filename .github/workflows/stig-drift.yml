@@ -11,28 +11,24 @@ name: stig-drift
 # open/update a tracking issue (it never edits code). The on-demand path is
 # `just stig-check`.
 #
-# #512 (session 9h-v0_8-wave4 Lane B): this RETIRES the prior weekly
-# `check --latest` probe against ComplianceAsCode's `releases/latest` API - now that
-# this tool derives from the official DISA XCCDF (mirroring
-# tools/sshd-stig-update / tools/auditd-stig-update, which already source DISA),
-# there is no equivalent API to probe: DISA has no releases/latest endpoint, each
-# RHEL STIG is versioned by FILENAME. This run instead derives at the PINNED zips
+# This tool derives from the official DISA XCCDF (mirroring
+# tools/sshd-stig-update / tools/auditd-stig-update, which also source DISA), so
+# there is no `--latest` API to probe: DISA has no releases/latest endpoint, each
+# RHEL STIG is versioned by FILENAME. This run derives at the PINNED zips
 # (tools/stig-update/stig-refs.toml), mirroring sshd-stig-drift.yml /
-# auditd-stig-drift.yml exactly. It therefore catches:
+# auditd-stig-drift.yml exactly (#512). It therefore catches:
 #   - a DISA in-place re-publish of a pinned filename (rare but real),
 #   - a DISA XCCDF reformat that breaks the parser (fail-closed -> the job fails),
 #   - the committed fixtures having themselves drifted from live DISA.
-# It CANNOT auto-detect a brand-new DISA revision (new filename) - this tool used to
-# be able to detect ComplianceAsCode staleness via `--latest`, a capability
-# sshd-stig-update/auditd-stig-update never had; now that all three tools are
-# DISA-sourced, all three share the same gap. Staleness detection for a brand-new
+# It CANNOT auto-detect a brand-new DISA revision (new filename); all three
+# DISA-sourced tools share that gap. Staleness detection for a brand-new
 # DISA revision across all three DISA-sourced tools is tracked in #550 (a
 # `probe-latest` HEAD-probe of the next candidate `V<major>R<minor>` filename); this
 # workflow does not implement that probe. Until #550 lands, the issue body below
 # reminds a human to periodically check dl.dod.cyber.mil for a newer RHEL STIG.
 #
-# Cron slot: Mondays 06:00 UTC (unchanged from the retired CaC-latest probe;
-# sshd-stig-drift.yml runs Tuesdays 07:00 UTC and auditd-stig-drift.yml runs
+# Cron slot: Mondays 06:00 UTC (sshd-stig-drift.yml runs Tuesdays 07:00 UTC
+# and auditd-stig-drift.yml runs
 # Wednesdays 07:00 UTC, so this slot stays clear of both).
 on:
   schedule:

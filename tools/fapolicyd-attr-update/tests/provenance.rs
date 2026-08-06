@@ -1,4 +1,4 @@
-//! Fixture PROVENANCE gate (ATL round-1 adversary miss #1, library half): the
+//! Fixture PROVENANCE gate (library half): the
 //! COMMITTED `tests/fixtures/<version>/{subject,object}-attr.c` bytes must
 //! match the sha256 pins in the COMMITTED `attr-refs.toml`, for every pinned
 //! version. GREEN today (the fixtures were copied + verified from the pinned

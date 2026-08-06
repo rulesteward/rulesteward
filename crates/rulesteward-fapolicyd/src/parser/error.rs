@@ -44,7 +44,7 @@ mod tests {
 
     /// Build a minimal Rich error for a known-bad input and assert the diagnostic
     /// message starts with the operator-friendly prefix.
-    /// RED: fails if the prefix is absent (old format!("{err}") form).
+    /// Fails if the prefix is absent (a bare format!("{err}") form).
     #[test]
     fn rich_to_diagnostic_message_has_operator_friendly_prefix() {
         // Parse a deliberately invalid input to get a real Rich<char> error.

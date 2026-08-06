@@ -1,4 +1,4 @@
-//! Data-driven `sudoers(5)` differential-oracle corpus (#538, session 9k-1 Lane C).
+//! Data-driven `sudoers(5)` differential-oracle corpus (#538).
 //!
 //! Checks `RuleSteward`'s own answer (the hand-rolled `parser::parse` + the
 //! `oracle` projection/classification helpers in `src/oracle.rs`) against a REAL
@@ -9,9 +9,7 @@
 //! sudoers`) is the Tier-2 (live) half, re-pointing this SAME test at a freshly
 //! captured corpus via `RS_ORACLE_CORPUS_SUDOERS`.
 //!
-//! # Frozen API this test requires from `rulesteward_sudoers::oracle` (landed in
-//! `00d543f`; this section remains the single best description of the frozen
-//! contract, so it is retitled rather than deleted now that the oracle exists)
+//! # Frozen API this test requires from `rulesteward_sudoers::oracle`
 //!
 //! - `VisudoVerdict::{Accept, Reject}` + `UnclassifiedVisudo` (the fail-closed
 //!   error when rc and evidence text disagree).
@@ -139,15 +137,12 @@
 //! `StructureProjection` axis (not a same-shape widening of `users`/`hosts`),
 //! which is a bigger surface than this dispatch's scope; left for a follow-up.
 //!
-//! **Scoping honesty (corrected 2026-07-27):** an earlier version of this
-//! module doc and `PROVENANCE.md` described the round-2 fix (this "Type
-//! tags" section) as if negation were now covered too. It was NOT - see
-//! "Negation" immediately below, which covers it for THIS round. What
-//! remains genuinely open after this round: alias resolution and
-//! `networkaddr` shape-detection (both just above) and tags/runas (just
-//! above); a `#uid` value outside sudo's representable range (see "uid/gid
-//! canonicalization"'s closing note) is ALSO left open, deliberately, as a
-//! narrower, documented follow-up.
+//! **Scoping honesty:** negation is NOT covered by the "Type tags" fix
+//! above - see "Negation" immediately below. What remains genuinely open:
+//! alias resolution and `networkaddr` shape-detection (both just above) and
+//! tags/runas (just above); a `#uid` value outside sudo's representable
+//! range (see "uid/gid canonicalization"'s closing note) is ALSO left open,
+//! deliberately, as a narrower, documented follow-up.
 //!
 //! ## Negation (added 2026-07-27)
 //!
@@ -191,8 +186,8 @@
 //! resolution must trim ANY whitespace immediately after the bang-run before
 //! taking the remainder as the base value, matching the real tool.
 //!
-//! **`resolve_bang_run` is EXACT, not an approximation (confirmed 2026-07-27,
-//! round 4):** `alice ALL = ! !/usr/bin/su` and `alice ALL = ! !`
+//! **`resolve_bang_run` is EXACT, not an approximation (confirmed
+//! 2026-07-27):** `alice ALL = ! !/usr/bin/su` and `alice ALL = ! !`
 //! (whitespace-SEPARATED bangs) are both SYNTAX ERRORS on all three images,
 //! while the glued `!!` form parses fine. Real sudo's lexer therefore matches
 //! the bang-run as a single CONTIGUOUS token (no embedded whitespace between
@@ -212,7 +207,7 @@
 //! captured JSON, so this needed ZERO corpus churn - no new scenario, no floor
 //! change.
 //!
-//! **First end-to-end coverage (round 4, 2026-07-27):** every negation test
+//! **First end-to-end coverage (2026-07-27):** every negation test
 //! above builds its `SudoersFile` BY HAND, so it proves the PROJECTOR handles
 //! a negated token but never that the PARSER can actually PRODUCE one - a
 //! hand-built AST supplies its own input, so a parser-side gap underneath is
@@ -259,9 +254,8 @@
 //!    `INTERCEPT:` and a regex `Cmnd_Alias` `^...$` both syntax-error on el8 but
 //!    parse clean on el9/el10) - this corpus deliberately avoids such
 //!    version-gated constructs (a separate, newly-discovered divergence class
-//!    outside #538's documented gaps; see PROVENANCE.md). L1 was a clean
-//!    regression layer with an EMPTY xfail table through round 3; round 4
-//!    (2026-07-27) gave it its FIRST entry, `accept-negated-uid-subject`
+//!    outside #538's documented gaps; see PROVENANCE.md). L1's xfail table
+//!    gained its FIRST entry on 2026-07-27, `accept-negated-uid-subject`
 //!    (`!#1000 ALL = ALL`) - real `visudo` accepts it, but
 //!    `rulesteward_sudoers::parser::parse` classifies the whole line
 //!    `Malformed`. This is a `rulesteward-core` parser gap (`comment_index`'s
@@ -294,9 +288,9 @@
 //!    ACCEPTS and `cvtsudoers -f json`'s stdout parses as JSON, does
 //!    `project_ast` agree with `project_cvtsudoers_json`?
 //!
-//!    Through session 9k-1 this layer carried four KNOWN #538 divergences as
-//!    `L3_XFAIL` entries. Session 9m closed a SUBSET of #538: gaps A, B and C
-//!    below are fixed, so those four entries and their `match` arms are gone,
+//!    This layer once carried four KNOWN #538 divergences as `L3_XFAIL`
+//!    entries. A subset of #538 - gaps A, B and C below - is now fixed, so
+//!    those four entries and their `match` arms are gone,
 //!    the four scenarios are now ordinary compared rows, and the three
 //!    gaps are pinned directly by `tests/iss538_parser_gaps.rs` (which drives
 //!    the public `parse` / `lint` entry points rather than this
@@ -304,25 +298,18 @@
 //!
 //!    A LATER, NARROWER #538 subclass (a glued `Option_Spec` keyword and/or
 //!    a comma INSIDE a quoted option value, each interacting with the
-//!    comma/colon splitters) was found later in the session, UNRELATED to
-//!    the four scenarios above. A round-6 attempt at both halves (commit
-//!    `ec11a15`) greened 9 tests but regressed two confirmed cases against
-//!    real `visudo` (a false `sudo-F01` fatal on a comma-free option value,
-//!    and a silently swallowed grant/alias), and was narrow-reverted in
-//!    commit `50594c4`, which left all 9 marked `#[ignore]`. The
-//!    glued-keyword half was then fixed properly by commit `2de19ea`
-//!    ("position-anchor the option-value quote opener"), which retires the
-//!    position-blind `is_option_value_quote_opener`/`word_immediately_before`
-//!    pair `ec11a15` had only patched around; 6 of the 9 tests are ordinary
-//!    passing rows since then. The remaining 3 (a comma inside a quoted
-//!    option value confusing the `','` arm of `split_top_level_segments`,
-//!    unrelated to any glued spelling) are STILL OPEN and remain marked
-//!    `#[ignore]` in `tests/iss538_parser_gaps.rs` (search that file for
-//!    `"known-open #538 defect"`) rather than deleted, so they remain
-//!    executable documentation of the still-open defect. A future session
-//!    must NOT read this module and conclude #538 can be closed: it is only
-//!    PARTIALLY fixed. For the record, the three FIXED gaps from the
-//!    original (pre-round-6) lane were:
+//!    comma/colon splitters) is UNRELATED to the four scenarios above. Of the
+//!    9 tests exercising this subclass, 6 are ordinary passing rows (the
+//!    glued-keyword half is fixed by position-anchoring the option-value
+//!    quote opener, retiring the position-blind
+//!    `is_option_value_quote_opener`/`word_immediately_before` pair). The
+//!    remaining 3 (a comma inside a quoted option value confusing the `','`
+//!    arm of `split_top_level_segments`, unrelated to any glued spelling) are
+//!    STILL OPEN and remain marked `#[ignore]` in `tests/iss538_parser_gaps.rs`
+//!    (search that file for `"known-open #538 defect"`) rather than deleted,
+//!    so they remain executable documentation of the still-open defect. A
+//!    future session must NOT read this module and conclude #538 can be
+//!    closed: it is only PARTIALLY fixed. The three FIXED gaps are:
 //!      - **Gap A** - the tag-parsing loop in `parser::parse_cmnd_spec` only
 //!        recognized `TAG:` syntax; an `=`-form `Option_Spec` (`ROLE=`,
 //!        `TYPE=`, `NOTBEFORE=`, `TIMEOUT=`, ...) has no colon, so the whole
@@ -339,8 +326,8 @@
 //!      - **Gap C** - an `Option_Spec`'s own `=` desynced
 //!        `split_top_level_segments`, so a following tag colon was mistaken
 //!        for a top-level host-group separator and the whole line was
-//!        discarded as `Malformed`. No corpus scenario exercised it; it was
-//!        found during 9m's satisfiability run and is covered by host probes.
+//!        discarded as `Malformed`. No corpus scenario exercised it; it is
+//!        covered by host probes.
 //!
 //!    `L3_XFAIL` retains ONE entry, `accept-negated-uid-subject`, which is a
 //!    `rulesteward-core` bug and NOT #538 - see that const's doc comment.
@@ -386,8 +373,8 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-uid-leading-zero`) added 2026-07-27 to ground the "Type tags" /
 /// "uid/gid canonicalization" findings in the module doc - see there; 3
 /// more `accept-*` scenarios (`accept-negated-uid-subject`,
-/// `accept-negated-user`, `accept-negated-host`) added 2026-07-27 (round 4),
-/// where the first two give the round-3 negation MARK its first end-to-end
+/// `accept-negated-user`, `accept-negated-host`) added 2026-07-27, where the
+/// first two give the negation MARK its first end-to-end
 /// (parser -> captured-oracle) coverage, and the third is L1's first-ever
 /// xfail (see the module doc's "L1" section and `L1_XFAIL`); 4 more `accept-*`
 /// scenarios (`accept-glued-closing-quote-principal`,
@@ -423,8 +410,8 @@ const SCENARIO_FLOOR: usize = 45;
 ///
 /// DERIVED FROM A RUN, never computed. This is a ONE-SIDED floor: set too
 /// high it is unsatisfiable and blocks the implementer forever, set too low
-/// it silently weakens the differential, and both are defects. Session 9k-1
-/// froze it at a value no contract-honouring implementation could reach (66
+/// it silently weakens the differential, and both are defects. This constant
+/// was frozen at a value no contract-honouring implementation could reach (66
 /// against an achievable 60); that survived two full adversarial rounds
 /// because every reviewer asked "what WRONG implementation passes these
 /// tests?" and nobody asked "does any CORRECT one pass them?". So the
@@ -434,7 +421,7 @@ const SCENARIO_FLOOR: usize = 45;
 /// The arithmetic below is a cross-check ON the measurement, never its
 /// source.
 ///
-/// Measured 2026-07-30 (session 9m, lane 3) against a throwaway reference
+/// Measured 2026-07-30 against a throwaway reference
 /// implementation of ALL THREE #538 gaps and the full closed TEN-keyword
 /// `Option_Spec` set, with the four `Some(538)` entries removed from
 /// `L3_XFAIL` - the state this constant is frozen for, since removing them
@@ -510,15 +497,15 @@ const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
 /// Reusing `L2_XFAIL` for L1 would silently exempt an L1 comparison the
 /// moment an L2 entry is added, even though nothing about L1 itself changed.
 ///
-/// First entry added 2026-07-27 (round 4): `accept-negated-uid-subject`
+/// First entry added 2026-07-27: `accept-negated-uid-subject`
 /// (`!#1000 ALL = ALL`). Real `visudo` accepts it (`{"userid": 1000,
 /// "negated": true}`), but `rulesteward_sudoers::parser::parse` classifies
 /// the WHOLE LINE `Malformed`. Root cause is NOT in this lane -
 /// `rulesteward_core::comment::comment_index`'s `prev_allows_uid` byte-set
-/// (`crates/rulesteward-core/src/comment.rs:149-155`) omits `b'!'`, so in
+/// (`crates/rulesteward-core/src/comment.rs:147-153`) omits `b'!'`, so in
 /// `!#1000` the `#` reads as a comment start, the rest of the line is
 /// stripped, and the lone `!` has no `=` to complete a `UserSpec`. This is
-/// NOT the same `!` `lints/tokens/mod.rs:384-388` deliberately excludes -
+/// NOT the same `!` `lints/tokens/mod.rs:382-386` deliberately excludes -
 /// that one is `Defaults!<cmnd>` scope-binding, where `Defaults!#1000` really
 /// IS rc 1 and stripping really is correct; one byte-set serves two
 /// meanings of `!` with opposite right answers, so the fix is
@@ -540,10 +527,10 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// number, so a reader can never mistake a drafted issue for a real, filed
 /// one.
 ///
-/// This table held four `Some(538)` entries through session 9k-1:
-/// `accept-selinux-role-type`, `accept-user-list-whitespace-bug`,
-/// `accept-notbefore` and `accept-timeout-option`. Session 9m fixed exactly
-/// the divergences these four entries pinned (#538 gaps A and B - see the
+/// This table held four `Some(538)` entries: `accept-selinux-role-type`,
+/// `accept-user-list-whitespace-bug`, `accept-notbefore` and
+/// `accept-timeout-option`. A fix closed exactly the divergences these four
+/// entries pinned (#538 gaps A and B - see the
 /// module doc's L3 section), so they were deleted rather than widened or
 /// skipped - deleting the entry that pins a divergence IS how a fix is
 /// demonstrated here, and an xfail surviving its own fix would mean the fix
@@ -559,7 +546,7 @@ const L2_XFAIL: &[&str] = &["accept-undefined-alias-ref", "accept-alias-cycle"];
 /// matched"), so a CORRECT parser makes an entry left in place FAIL. There is
 /// no path to green that keeps them.
 ///
-/// `accept-negated-uid-subject` (round 4, 2026-07-27) is the L3 half of
+/// `accept-negated-uid-subject` (added 2026-07-27) is the L3 half of
 /// `L1_XFAIL`'s first entry (see that const's doc comment for the root
 /// cause): since `rulesteward_sudoers::parser::parse` classifies the whole
 /// line `Malformed`, `project_ast` sees no `UserSpec` at all
@@ -990,7 +977,7 @@ fn project_ast_marks_negation_on_commands() {
          got {:?}",
         negated_path.commands
     );
-    // The exact killing assertion for the round-1 defect this reintroduced:
+    // The exact killing assertion for the defect this reintroduced:
     // a projector that discards negation makes these two equal.
     assert_ne!(
         plain.commands, negated_path.commands,
@@ -1020,7 +1007,7 @@ fn project_ast_negation_is_kleene_star_not_a_single_strip() {
     // negate the value of the item; an even number just cancel each other
     // out." Confirmed live (all three images): `!!/usr/bin/su` ->
     // `{"command": "/usr/bin/su"}` with NO `negated` key; `!!!/usr/bin/su` ->
-    // `negated: true`. A single-character strip (the pre-round-3 contract)
+    // `negated: true`. A single-character strip
     // gets both the VALUE and the PARITY wrong for anything but exactly one
     // `!`. Covers commands, users, and hosts - `resolve_command_negation` /
     // `tag_member` are separate functions and could parity-count one while
@@ -1377,14 +1364,14 @@ fn project_ast_tags_host_netgroup_but_not_networkaddr_or_hash_prefixed_hostname(
 
 #[test]
 fn project_cvtsudoers_json_marks_negated_companion_flag() {
-    // REVERSED 2026-07-27 (was `..._ignores_negated_companion_flag`, which
-    // asserted the companion flag must NOT change the value): review found
-    // that assertion pinned the exact symmetric-erasure bug the round-2
-    // type-tag fix closed for sigils, reintroduced here - the oracle DOES
-    // distinguish "alice" from "NOT alice" via this flag, and RuleSteward
-    // must too. Reversing a test that encoded WRONG behavior is a
-    // STRENGTHENING under the frozen-tests rule, never a weakening - see the
-    // module doc's "Negation" section for the full reasoning and grounding.
+    // This asserts the companion `negated` flag DOES change the value - the
+    // oracle distinguishes "alice" from "NOT alice" via this flag, and
+    // RuleSteward must too. The opposite assertion (that the flag must NOT
+    // change the value) pinned the exact symmetric-erasure bug the type-tag
+    // fix closed for sigils, reintroduced here. Reversing a test that
+    // encoded WRONG behavior is a STRENGTHENING under the frozen-tests rule,
+    // never a weakening - see the module doc's "Negation" section for the
+    // full reasoning and grounding.
     let doc_for = |negated: bool| {
         let mut user_elem = serde_json::json!({ "username": "alice" });
         if negated {
@@ -1718,8 +1705,8 @@ fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
 /// `just test` and `just ci` never set the override, so they still get equality in
 /// both directions.
 ///
-/// TWO different scripts set the override, and an earlier version of this
-/// function keyed only on `CorpusMode`, which cannot tell them apart:
+/// TWO different scripts set the override; keying only on `CorpusMode`
+/// cannot tell them apart:
 ///
 /// - `scripts/rs-branch-diff.sh` replays ANOTHER TREE's corpus against a binary
 ///   compiled before it grew. `SCENARIO_FLOOR` is compiled in, so equality there
@@ -1738,7 +1725,6 @@ fn project_cvtsudoers_json_location_discriminates_between_the_three_arrays() {
 /// a scheduled gate that had it since `d0c2975`, for no benefit to that gate.
 /// `RS_BRANCH_DIFF` is set only by the branch driver, so the relaxation now
 /// follows the CALLER rather than the mere presence of an override.
-/// Senior integration review, session 9p; original split, session 9p round 2.
 fn assert_scenario_cardinality(ids: &[String], mode: CorpusMode) {
     // Not `CorpusMode`, because both scripts produce `Fresh`.
     let replaying_another_tree = std::env::var_os("RS_BRANCH_DIFF").is_some();
@@ -1884,7 +1870,7 @@ fn l1_f01_matches_visudo_verdict_per_target() {
                 // that an L2 divergence (visudo default vs strict gate) can
                 // never silently exempt an L1 comparison (our parser vs
                 // visudo's default gate) it was never measured against. Its
-                // first entry (round 4, 2026-07-27) is a rulesteward-core
+                // first entry is a rulesteward-core
                 // parser gap, not a sudoers-lane defect - see L1_XFAIL's doc
                 // comment and PROVENANCE.md.
                 assert_ne!(
@@ -1912,8 +1898,9 @@ fn l1_f01_matches_visudo_verdict_per_target() {
     // Every L1_XFAIL entry is a REAL, confirmed divergence (see L1_XFAIL's
     // doc comment), so those pairs are deliberately excluded from
     // `compared`; the floor must subtract them rather than assume every pair
-    // agrees. (This formula was latent-wrong before round 4 - it happened to
-    // be correct only because L1_XFAIL was always empty.)
+    // agrees. (This formula was unexercised until `L1_XFAIL` gained an
+    // entry - it happened to be correct only because subtracting zero is a
+    // no-op.)
     let l1_clean_floor = SCENARIO_FLOOR * TARGETS.len() - L1_XFAIL.len() * TARGETS.len();
     assert!(
         compared >= l1_clean_floor,
@@ -2191,8 +2178,7 @@ fn l3_structure_projection_matches_cvtsudoers() {
                         // oversight, but state the property precisely: what it
                         // refuses is a token quoted on only ONE end, which is
                         // the shape a mis-split produces. It does not refuse
-                        // every unbalanced token, and an earlier version of this
-                        // comment claimed it did.)
+                        // every unbalanced token.)
                         //
                         // `trim_matches` strips ANY number of quotes from BOTH
                         // ends independently, so it also absorbs an UNBALANCED

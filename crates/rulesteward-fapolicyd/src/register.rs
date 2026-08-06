@@ -1059,10 +1059,10 @@ mod tests {
     // (B) Set-ref vs literal: `exe=%exes` (with %exes={/bin/a}) vs
     //     `exe=/bin/a` (literal, no set expansion) must produce EMPTY drift.
     //
-    // The current impl's `row_key` uses source-order render, so both cases
-    // produce different keys -> spurious add+remove -> these tests are RED.
-    // The implementer must re-point `row_key` to use `canonical_grant_key`
-    // (or an equivalent canonical key over the stored row) so they turn GREEN.
+    // A `row_key` that rendered the stored row in source order would produce a
+    // different key for each side of both cases -> a spurious add+remove pair.
+    // `row_key` therefore builds a canonical key over the stored row (the
+    // `canonical_grant_key` equivalent for a `RegisterRow`).
 
     fn make_row(
         subject: &str,
@@ -1094,8 +1094,8 @@ mod tests {
     /// Canonical predicate is equal (object side is an order-insensitive
     /// conjunction per f2 section 4.1). Expected: EMPTY drift.
     ///
-    /// RED against the current impl: `row_key` uses source-order `object` string,
-    /// so "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/" -> two different
+    /// A source-order `object` string in `row_key` would make
+    /// "dir=/a/ ftype=text/plain" != "ftype=text/plain dir=/a/" -> two different
     /// keys -> spurious add+remove (2 drift rows instead of 0).
     #[test]
     fn compute_drift_object_attr_reorder_is_empty() {
@@ -1118,8 +1118,8 @@ mod tests {
     /// expands and sorts to the same value as the literal per f2 section 4.1).
     /// Expected: EMPTY drift.
     ///
-    /// RED against the current impl: `row_key` uses source-order `subject` string,
-    /// so "exe=%exes" != "exe=/bin/a" -> different keys -> spurious add+remove.
+    /// A source-order `subject` string in `row_key` would make
+    /// "exe=%exes" != "exe=/bin/a" -> different keys -> spurious add+remove.
     #[test]
     fn compute_drift_setref_vs_literal_is_empty() {
         // current: subject uses %set reference, setExpansions records the members

@@ -30,7 +30,7 @@
 
 pub mod ast;
 pub mod lints;
-// Differential-oracle adapter (session 9k-1). Not a product feature: it is the
+// Differential-oracle adapter. Not a product feature: it is the
 // product side of `tests/sudoers_corpus_oracle.rs`, which checks this crate's
 // parser against what the real `visudo -c -f -` and `cvtsudoers -f json` said.
 // It lives in `src/` so the fail-closed classifier and the two projections are

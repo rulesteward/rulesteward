@@ -1,24 +1,23 @@
-//! The live fetch seam. [`fetch_xccdf`]/[`read_local`] (added #512, session
-//! 9h-v0_8-wave4 Lane B) are the DISA zip fetch path this port's `check`/`derive`
-//! subcommands now use - download a DISA STIG zip, unzip it, and read out the
-//! `*Manual-xccdf.xml`, byte-identical logic to `tools/sshd-stig-update/src/source.rs`
-//! / `tools/auditd-stig-update/src/source.rs` (a `curl` + `unzip` shell-out, isolated
-//! here so the derivation core ([`crate::xccdf`]) stays offline-testable with
-//! fixtures).
+//! The live fetch seam. [`fetch_xccdf`]/[`read_local`] are the DISA zip fetch path
+//! this crate's `check`/`derive` subcommands use - download a DISA STIG zip, unzip it,
+//! and read out the `*Manual-xccdf.xml`, byte-identical logic to
+//! `tools/sshd-stig-update/src/source.rs` / `tools/auditd-stig-update/src/source.rs`
+//! (a `curl` + `unzip` shell-out, isolated here so the derivation core
+//! ([`crate::xccdf`]) stays offline-testable with fixtures).
 //!
 //! The rest of this module (`curl`, `controls_optional`, `fetch_status`, `tree`,
-//! `rule_fetcher`, `latest_release`, ...) is the CaC-era ComplianceAsCode fetch that
-//! `main.rs`'s new DISA-sourced `check`/`derive` subcommands no longer call directly -
+//! `rule_fetcher`, `latest_release`, ...) is the ComplianceAsCode fetch that
+//! `main.rs`'s DISA-sourced `check`/`derive` subcommands do not call directly -
 //! but it is NOT dead code: `tools/cis-update` (which path-deps this crate for its
-//! own, still-`ComplianceAsCode`-sourced CIS derivation) calls `controls_optional`,
+//! own, `ComplianceAsCode`-sourced CIS derivation) calls `controls_optional`,
 //! `tree`, `rule_fetcher`, and `latest_release` directly from its `main.rs`
 //! (`cmd_check`/`cmd_derive`, for the `--latest`/`--stig-refs` paths), in addition to
 //! `fetch_status` (via its own thin wrapper in `tools/cis-update/src/source.rs`).
-//! Every function in this module stays `pub`/reachable per the #512 survival
-//! constraint (verified live: `grep -rn stig_source:: tools/cis-update/src/main.rs`).
+//! Every function in this module therefore stays `pub`/reachable
+//! (verified live: `grep -rn stig_source:: tools/cis-update/src/main.rs`).
 //! Any `check --latest` mentioned in the doc comments below refers to
 //! `cis-update`'s OWN `--latest` flag - THIS crate's `check`/`derive` subcommands
-//! dropped `--latest` entirely in #512 (DISA has no releases/latest API).
+//! have no `--latest` (DISA has no releases/latest API).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -148,7 +147,7 @@ pub fn controls_optional(reff: &str, product: &str) -> Result<Option<String>, St
 /// distinguishable from a transport failure). `-f` is intentionally NOT passed, so an
 /// HTTP 404 still exits 0 and we read the code; `%{http_code}` is appended to stdout.
 /// Public: `tools/cis-update` builds its own 404-as-`None` controls fetch on this
-/// same seam (part of the shared lib surface #512 must keep alive).
+/// same seam (part of the shared lib surface this crate keeps alive for it).
 pub fn fetch_status(url: &str) -> Result<(u16, String), String> {
     let out = Command::new("curl")
         .args(["-sSL", "--max-time", "60", "-w", "%{http_code}", url])
@@ -227,7 +226,7 @@ fn reject_if_truncated(tree_json: &str) -> Result<(), String> {
 
 /// The latest ComplianceAsCode release tag (for `cis-update`'s own `check --latest`
 /// flag - see `tools/cis-update/src/main.rs::cmd_check`, which calls this function
-/// directly; THIS crate's own `check` subcommand has no `--latest` flag as of #512).
+/// directly; THIS crate's own `check` subcommand has no `--latest` flag).
 pub fn latest_release() -> Result<String, String> {
     let json = curl(&format!(
         "https://api.github.com/repos/{REPO}/releases/latest"

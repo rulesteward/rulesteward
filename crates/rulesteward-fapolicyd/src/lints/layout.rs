@@ -260,7 +260,7 @@ mod tests {
         );
     }
 
-    // --- widen: fagenrules `ls | wc -w` parity (RED until implementation lands) ---
+    // --- fagenrules `ls | wc -w` parity ---
     //
     // fagenrules's daemon-level conflict gate in fagenrules is:
     //   if [ -e ${OldDestinationFile} ]; then
@@ -269,8 +269,8 @@ mod tests {
     //     fi
     //   fi
     // `ls` without `-a` counts every non-dotfile entry regardless of extension
-    // or whether it is a file or a subdirectory.  The current implementation
-    // gates on `*.rules` files only; these tests assert the widened behavior.
+    // or whether it is a file or a subdirectory.  These tests assert that
+    // `check_layout` matches that breadth rather than gating on `*.rules` only.
 
     /// legacy + rules.d/ containing only a `README` file (no `.rules` extension)
     /// must fire fapd-F02.  `ls | wc -w` counts `README`; the daemon aborts.

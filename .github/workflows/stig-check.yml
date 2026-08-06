@@ -9,11 +9,10 @@ name: stig-check
 # Fail the build if crates/rulesteward-sysctld/src/lints/baseline.rs no longer
 # matches the official DISA XCCDF content that grounds it.
 #
-# #512 (session 9h-v0_8-wave4 Lane B): this gate now runs OFFLINE, against the
+# This gate runs OFFLINE, against the
 # committed real-DISA fixtures under tools/stig-update/tests/fixtures/ (the pinned
 # DISA sysctl Groups) - mirroring tools/auditd-stig-update's and
-# tools/sshd-stig-update's own PR-time gates exactly, replacing the prior
-# ComplianceAsCode-live-fetch-at-PR-time shape this workflow used to have. That is a
+# tools/sshd-stig-update's own PR-time gates exactly (#512). That is a
 # deliberate reliability choice: the DISA CDN (dl.dod.cyber.mil) is not a dependency
 # a PR should block on. The offline gate catches the common case - a human edits
 # baseline.rs (or the tool's derivation logic) out of sync with the grounded DISA

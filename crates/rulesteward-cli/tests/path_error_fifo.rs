@@ -13,27 +13,27 @@
 //! (same: exit 124, killed by timeout)
 //! ```
 //!
-//! `sshd lint`, `sysctl lint`, and `auditd lint` do NOT reproduce a hang on a
-//! bare top-level FIFO argument today: each already gates on
-//! `path.is_file()`/`path.is_dir()` BEFORE ever calling `std::fs::read_to_string`,
-//! so a FIFO (which is neither) is already rejected without blocking --
+//! `sshd lint`, `sysctl lint`, and `auditd lint` cannot hang on a bare
+//! top-level FIFO argument: each gates on
+//! `path.is_file()`/`path.is_dir()` BEFORE ever reading the path,
+//! so a FIFO (which is neither) is rejected without blocking --
 //! confirmed live: `sshd lint <fifo>` -> "not a file or directory" (exit 3, no
 //! hang); `sysctl lint <fifo>` -> same; `auditd lint <fifo>` -> "path does not
 //! exist" (exit 3, no hang, though that specific wording is arguably
 //! misleading for a path that demonstrably exists). `selinux lint` does NOT
-//! join that gated group: `commands/selinux/lint.rs:56` calls raw
-//! `std::fs::read_to_string` on the resolved path unconditionally, with no
-//! `is_file()`/`is_dir()` check first -- so a bare top-level FIFO argument
-//! (or a FIFO at the default `/etc/selinux/config` path) hangs exactly like
-//! the fapolicyd and sudoers cases described next, and is pinned as a fifth
+//! join that gated group: `commands/selinux/lint.rs:56` reads the resolved
+//! path with no `is_file()`/`is_dir()` check first -- so a bare top-level FIFO
+//! argument (or a FIFO at the default `/etc/selinux/config` path) would hang
+//! exactly like the fapolicyd and sudoers cases described next if the read
+//! were not routed through `fsread`, and it is pinned as a fifth
 //! load-bearing regression test in the "A FIFTH hang" section further down.
-//! Only `fapolicyd lint --file` (no pre-check at all in single-file mode)
+//! `fapolicyd lint --file` (no pre-check at all in single-file mode)
 //! and `sudoers lint`
-//! (`resolve::resolve_target`'s non-directory branch calls
-//! `std::fs::read_to_string` unconditionally) hang TODAY without the #560
-//! fix, so those are the two backends pinned here as the load-bearing RED
+//! (`resolve::resolve_target`'s non-directory branch reads with no type
+//! check) have that same unguarded shape, so those are the two backends
+//! pinned here as the first load-bearing
 //! regression tests. The shared `rulesteward_core::fsread::read_to_string`
-//! contract every backend is expected to route through (including
+//! contract every backend routes through (including
 //! sshd/sysctl/auditd, per the #560 brief's call-site list) is pinned at the
 //! unit level in `rulesteward-core/src/fsread.rs`: regular files, symlinks
 //! to regular files, directories, FIFOs, character devices (`/dev/null`,
@@ -48,11 +48,12 @@
 //! (`commands/sshd.rs:64`, `path.is_dir()`) runs BEFORE the single-file arm's
 //! `!path.is_file()` fast-fail (`commands/sshd.rs:84`) and the #560
 //! `rulesteward_core::fsread` guard it routes through (`commands/sshd.rs:93`).
-//! `lint_drop_in`/`lint_merged` (`rulesteward-sshd/src/lints/drop_in.rs:118`,
-//! `:231`) each call raw `std::fs::read_to_string(dir.join("sshd_config"))`
-//! directly, unguarded -- so a FIFO named `sshd_config` inside a directory
-//! target hangs forever on the blocking `open()` (man fifo(7): a read-only
-//! open of a FIFO blocks until a writer appears), exactly like the two cases
+//! `lint_drop_in`/`lint_merged` (`rulesteward-sshd/src/lints/drop_in.rs`)
+//! each read `dir.join("sshd_config")` with no file-type check of
+//! their own -- so a FIFO named `sshd_config` inside a directory
+//! target would hang forever on the blocking `open()` (man fifo(7): a
+//! read-only open of a FIFO blocks until a writer appears) were the read not
+//! routed through `fsread`, exactly like the two cases
 //! above, and is pinned as a third load-bearing regression test below.
 //!
 //! # A FOURTH hang: `sysctl lint --system`'s masked-file read
@@ -63,10 +64,12 @@
 //! masked-file push in `rulesteward-sysctld/src/system.rs`'s `enumerate` has
 //! no `is_file()` filter before it collects a masked entry, unlike the
 //! surviving-file push a few lines below it, which IS gated by `path.is_file()`.
-//! `w03c_masked_key_drops` (same file) then calls raw `std::fs::read_to_string`
-//! on every masked entry to check whether it silently drops a key. A masked
-//! `.conf`-named FIFO with no writer hangs forever on that blocking `open()`
-//! (man fifo(7): a read-only open of a FIFO blocks until a writer appears),
+//! `w03c_masked_key_drops` (same file) then reads every masked entry to check
+//! whether it silently drops a key. A masked
+//! `.conf`-named FIFO with no writer would hang forever on that blocking
+//! `open()`
+//! (man fifo(7): a read-only open of a FIFO blocks until a writer appears)
+//! were that read not routed through `fsread`,
 //! exactly like the cases above, and is pinned as a fourth load-bearing
 //! regression test below.
 //!
@@ -74,14 +77,14 @@
 //!
 //! Unlike `sshd lint`/`sysctl lint`/`auditd lint` above, `selinux lint`
 //! has NO `is_file()`/`is_dir()` gate before its single read call:
-//! `run_lint_with_probe` (`commands/selinux/lint.rs:56`) calls raw
-//! `std::fs::read_to_string(&path)` unconditionally on whatever `path`
+//! `run_lint_with_probe` (`commands/selinux/lint.rs:56`) reads whatever `path`
 //! resolves to (the caller-supplied positional argument, or the default
 //! `/etc/selinux/config` when omitted) -- the same unguarded shape as the
 //! `fapolicyd lint --file` and `sudoers lint` cases above, not the gated
 //! sshd/sysctl/auditd shape. A FIFO named `config` (the default basename)
-//! with no writer hangs forever on that blocking `open()` (man fifo(7): a
-//! read-only open of a FIFO blocks until a writer appears), and is pinned
+//! with no writer would hang forever on that blocking `open()` (man fifo(7): a
+//! read-only open of a FIFO blocks until a writer appears) were the read not
+//! routed through `fsread`, and it is pinned
 //! as a fifth load-bearing regression test below.
 
 use std::time::Duration;
@@ -151,7 +154,7 @@ fn assert_fast_tool_failure(out: &std::process::Output, fifo: &std::path::Path) 
 }
 
 /// The exact reproduction from issue #560 ("fapolicyd lint --file /dev/zero
-/// hangs"): `--file` on a FIFO must no longer hang.
+/// hangs"): `--file` on a FIFO must fail fast, not hang.
 #[test]
 fn fapolicyd_lint_file_fifo_fails_fast() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -161,8 +164,8 @@ fn fapolicyd_lint_file_fifo_fails_fast() {
 }
 
 /// `sudoers lint <fifo>`: `resolve::resolve_target`'s single-file branch
-/// calls `std::fs::read_to_string` with no prior type check (resolve.rs:88),
-/// so this hangs identically to the fapolicyd case above before the fix.
+/// reads with no prior type check (resolve.rs:88), so an unguarded read there
+/// hangs identically to the fapolicyd case above.
 #[test]
 fn sudoers_lint_fifo_fails_fast() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -171,17 +174,17 @@ fn sudoers_lint_fifo_fails_fast() {
     assert_fast_tool_failure(&out, &fifo);
 }
 
-/// The impl-aware adversarial review's miss (9i lane-2 closeout):
 /// `sshd lint <dir>` where `<dir>/sshd_config` (the main config the
 /// directory-mode dispatch always reads first) is a FIFO with no writer.
-/// Unlike a bare top-level FIFO argument (already rejected without blocking
+/// Unlike a bare top-level FIFO argument (rejected without blocking
 /// by the `is_dir()`/`is_file()` gates in `commands/sshd.rs`, see the module
 /// docs above), the directory dispatch (`commands/sshd.rs:64`) is entered
 /// BEFORE any special-file check, and `lint_drop_in`/`lint_merged`
-/// (`rulesteward-sshd/src/lints/drop_in.rs:118`, `:231`) each read the main
-/// config with raw `std::fs::read_to_string`, not
-/// `rulesteward_core::fsread::read_to_string` -- so this hangs identically
-/// to the two cases above. A wedged process yields `status.code() == None`
+/// (`rulesteward-sshd/src/lints/drop_in.rs`) each read the main
+/// config with no file-type check of their own -- so a read there that did
+/// not go through `rulesteward_core::fsread::read_to_string` would hang
+/// identically to the two cases above. A wedged process yields
+/// `status.code() == None`
 /// (killed by the bounded timeout, not exited normally);
 /// `assert_fast_tool_failure` treats that `None` as the hang signal, exactly
 /// as it does for the fapolicyd/sudoers cases above.
@@ -193,13 +196,13 @@ fn sshd_lint_directory_main_config_fifo_fails_fast() {
     assert_fast_tool_failure(&out, &fifo);
 }
 
-/// The masked-file read miss (9i lane-2 closeout round 3, issue #560):
+/// The masked-file read (issue #560):
 /// `sysctl lint --system --root <root>` where `<root>/run/sysctl.d/50-x.conf`
 /// is a FIFO masked by a same-basename regular file at
 /// `<root>/etc/sysctl.d/50-x.conf` (etc/sysctl.d has higher precedence than
-/// run/sysctl.d). `w03c_masked_key_drops` reads every masked entry with raw
-/// `std::fs::read_to_string`, so the masked FIFO hangs exactly like the
-/// cases above. After the fix, the masked FIFO read is skipped cleanly (a
+/// run/sysctl.d). `w03c_masked_key_drops` reads every masked entry, so an
+/// unguarded read there hangs on the masked FIFO exactly like the
+/// cases above. The masked FIFO read must instead be skipped cleanly (a
 /// FIFO has no assignments to drop, so no `sysctld-W03` fires for it) and
 /// the single surviving assignment is clean, so the run must exit 0
 /// (`EXIT_CLEAN`) -- never hang, never any other code.
@@ -245,11 +248,10 @@ fn sysctl_lint_system_masked_fifo_fails_fast() {
     );
 }
 
-/// The unguarded top-level read miss (9i lane-2 closeout round 4, issue
-/// #560): `selinux lint <fifo>`'s single read call
-/// (`commands/selinux/lint.rs:56`) has no `is_file()`/`is_dir()` gate
-/// before it, so this hangs identically to the fapolicyd/sudoers cases
-/// above.
+/// The unguarded top-level read (issue #560): `selinux lint <fifo>`'s single
+/// read call (`commands/selinux/lint.rs:56`) has no `is_file()`/`is_dir()`
+/// gate before it, so an unguarded read there hangs identically to the
+/// fapolicyd/sudoers cases above.
 #[test]
 fn selinux_lint_fifo_fails_fast() {
     let dir = tempfile::tempdir().expect("tempdir");

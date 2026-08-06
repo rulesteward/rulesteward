@@ -129,8 +129,7 @@ mod tests {
     /// from `SUBJECT_ONLY`/`OBJECT_ONLY`/`BOTH_SIDES` at test runtime, so an
     /// implementation that hardcodes today's 18-name / 9-5-4 split would pass
     /// today but FAIL this test the moment `attrs.rs` changes - exactly the
-    /// silent-drift-defeat this test exists to make impossible (barrier
-    /// adversarial-review strengthening, 7b-v0_6-wave2).
+    /// silent-drift-defeat this test exists to make impossible.
     #[test]
     fn shipped_registry_projects_the_real_attrs_consts() {
         // Anti-vacuity spot-check on the IMPORTS themselves: if the path-dep or
@@ -166,7 +165,7 @@ mod tests {
         );
     }
 
-    /// GREEN-case (design decision #1a): the union of derived NAMES across BOTH
+    /// GREEN-case: the union of derived NAMES across BOTH
     /// pinned versions (1.3.2's 17 + 1.4.5's 18, with 1.3.2 a strict subset)
     /// equals the shipped union exactly. The shipped side is built DIRECTLY from
     /// the imported `attrs.rs` consts (via the path-dep) rather than through
@@ -198,7 +197,7 @@ mod tests {
         );
     }
 
-    /// GREEN-case (design decision #1b): the derived 1.4.5 SIDE classification
+    /// GREEN-case: the derived 1.4.5 SIDE classification
     /// matches the shipped `SUBJECT_ONLY`/`OBJECT_ONLY`/`BOTH_SIDES` split
     /// exactly (name-for-name, side-for-side). Deliberately uses ONLY 1.4.5 - see
     /// the module doc comment for why 1.3.2 is excluded from this check.

@@ -8,12 +8,12 @@ use rulesteward_core::comment::{StripConfig, strip};
 
 #[test]
 fn matches_old_parser_rs_strip_comment() {
-    // Ground truth: crates/rulesteward-auditd/src/parser.rs:267-277.
+    // Ground truth: crates/rulesteward-auditd/src/parser.rs:266-276.
     let cases: &[(&str, &str)] = &[
         // parser.rs:261-266 doc example: unquoted trailing comment.
         ("-F auid>=1000 # comment", "-F auid>=1000 "),
         ("-F auid>=1000 -k audit_rule", "-F auid>=1000 -k audit_rule"),
-        // Single-quote protects an embedded `#` (parser.rs:271, toggled on
+        // Single-quote protects an embedded `#` (parser.rs:270, toggled on
         // every `'`).
         ("-F 'auid>=1000#weird' -k x", "-F 'auid>=1000#weird' -k x"),
         // No require-preceding-token gate (unlike fapolicyd): column-0 `#`

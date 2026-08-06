@@ -890,9 +890,9 @@ mod tests {
 
     #[test]
     fn check_service_running_and_enabled_still_carries_enabled_control_when_stig_given() {
-        // running && enabled -> Ok (pre-existing behavior, unchanged), but the
-        // Enabled-family control must STILL attach when stig is given: control
-        // attachment is regardless-of-status, not Warn/Fail-only.
+        // running && enabled -> Ok, but the Enabled-family control must STILL
+        // attach when stig is given: control attachment is
+        // regardless-of-status, not Warn/Fail-only.
         let probe = FakeProbe {
             service: Some(ServiceState {
                 running: true,
@@ -1150,7 +1150,8 @@ mod tests {
 
     #[test]
     fn check_container_none_is_unknown_not_stub() {
-        // #134: the old "not yet implemented" Skip stub is gone.
+        // #134: `check_container(None)` is Unknown, never a "not yet
+        // implemented" Skip stub.
         let result = check_container(None);
         assert_eq!(result.status, CheckStatus::Unknown);
         assert!(
@@ -1492,18 +1493,18 @@ mod tests {
 
     #[test]
     fn is_deny_all_final_rule_accepts_the_deny_syslog_family_member() {
-        // Adversarial round 1 (Finding 1): `deny_syslog` is the THIRD member
-        // of the man-page DECISION deny family (G1.3, identical on 1.3.2 and
-        // 1.4.5; "any rule with a deny in the keyword will deny access"). A
-        // wrong impl accepting only {deny, deny_audit} passes every other
-        // predicate test yet wrongly rejects this compliant final rule.
+        // `deny_syslog` is the THIRD member of the man-page DECISION deny
+        // family (G1.3, identical on 1.3.2 and 1.4.5; "any rule with a deny
+        // in the keyword will deny access"). A wrong impl accepting only
+        // {deny, deny_audit} passes every other predicate test yet wrongly
+        // rejects this compliant final rule.
         assert!(is_deny_all_final_rule("deny_syslog perm=any all : all"));
     }
 
     #[test]
     fn is_deny_all_final_rule_accepts_the_deny_log_family_member() {
-        // Adversarial round 1 (Finding 1): `deny_log` is the FOURTH family
-        // member (G1.3/G1.4) - same kill as deny_syslog above.
+        // `deny_log` is the FOURTH family member (G1.3/G1.4) - same kill as
+        // deny_syslog above.
         assert!(is_deny_all_final_rule("deny_log perm=any all : all"));
     }
 
@@ -1534,9 +1535,8 @@ mod tests {
     // check_misconfig deny-all sub-condition wiring (#519).
     //
     // Every FapolicydConf literal below sets `compiled_final_rule` to
-    // something OTHER than `None` (the pre-existing 6 literals above all keep
-    // `None`, matching their unrelated pre-#519 conditions and staying
-    // unaffected by this addition).
+    // something OTHER than `None`; the 6 literals above all keep `None`,
+    // matching their own unrelated conditions.
     // -------------------------------------------------------------------------
 
     #[test]
@@ -1715,7 +1715,7 @@ mod tests {
         assert_eq!(parse_kernel_version(""), None);
     }
     // -------------------------------------------------------------------------
-    // JOB 1B: check_disk_space boundary tests
+    // check_disk_space boundary tests
     //
     // Kills survivors on the `< FAIL_BYTES` / `< WARN_BYTES` boundaries
     // (`<` vs `<=` / `==` / `>`) and the `bytes_free / (1024*1024)` arithmetic.
@@ -1826,7 +1826,7 @@ mod tests {
         );
     }
     // -------------------------------------------------------------------------
-    // JOB 1C: check_denial_rate top_denied section
+    // check_denial_rate top_denied section
     //
     // Kills the `delete !` survivor on `!stats.top_denied.is_empty()`.
     // Without the `!`, the top-denied section would be appended when the list

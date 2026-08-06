@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test suite for scripts/check-capture-writes.sh (session 9k-1, layer 3 of the
+# Test suite for scripts/check-capture-writes.sh (layer 3 of the
 # rs-capture-guard defense).
 #
 # FROZEN INVOCATION CONTRACT for the gate script (see check-capture-writes.sh's
@@ -359,11 +359,9 @@ assert_output_contains "case15_one_dirty_sibling_fails_the_scan" "capture_dirty.
 # ---------------------------------------------------------------------------
 # Case: THE REAL TREE, with no ROOT argument and the REAL, unmodified shipped
 # gate (never GATE_UNDER_TEST), must be clean AND must report scanning
-# exactly EXPECTED_CAPTURE_SCRIPTS scripts. This is the case whose absence
-# let the floor raise from 0 to 3 go unnoticed by this suite until `just ci`
-# actually ran the real gate against the real tree - every other case here
-# runs against a synthetic fixture, so none of them would have caught a
-# lane's capture_*.sh silently vanishing from the real repository. An
+# exactly EXPECTED_CAPTURE_SCRIPTS scripts. Every other case here runs
+# against a synthetic fixture, so none of them would catch a capture_*.sh
+# silently vanishing from the real repository. An
 # rc-only check would not catch that either: if EXPECTED_CAPTURE_SCRIPTS were
 # ever accidentally lowered while a script actually vanished, rc could still
 # come back 0. So the expected count is read directly out of the constant
@@ -391,10 +389,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Cases 17-21 (integration-gate remediation, session 9k-1): the gate now also
-# catches a bare redirect out of `echo`/`printf`, and the tail of a
-# `{ ...; } >>file` group-command block - not just `cat`. These three forms
-# are exactly what escaped the ORIGINAL version of this gate in
+# Cases 17-21: the gate also catches a bare redirect out of `echo`/`printf`,
+# and the tail of a `{ ...; } >>file` group-command block - not just `cat`.
+# These three forms are the ones this repo has actually gotten wrong, in
 # crates/rulesteward-auditd/tests/corpus/auditd-oracle/capture_auditd.sh (a
 # bare `{ ...; } >>"${out}"` header write and a bare `printf ... >>"${out}"`
 # per row). Run against GATE_UNDER_TEST (still the floor-0 copy from cases

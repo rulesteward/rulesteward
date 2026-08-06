@@ -1,14 +1,11 @@
 //! auditd module - rule parser, cost calculator, band classifier, and log converter.
-//!
-//! Module skeletons are wired here; real implementations land in pipeline P2
-//! (see per-module doc comments for issue references).
 
 pub mod ast;
 pub mod bands;
 pub mod cost;
 pub mod from_log;
 pub mod lints;
-// Differential-oracle adapter (session 9k-1). Not a product feature: it is the
+// Differential-oracle adapter. Not a product feature: it is the
 // product side of `tests/auditd_corpus_oracle.rs`, which checks this crate's
 // parser against what the real `auditctl -R` said. It lives in `src/` so the
 // one function that decides "did the daemon accept this line?" is covered by

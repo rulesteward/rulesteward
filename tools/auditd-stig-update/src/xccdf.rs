@@ -11,8 +11,8 @@
 //! `tools/sshd-stig-update`'s `xccdf.rs` extracts its canonical VALUE from
 //! `fixtext` ("the required VALUE is the fixtext's canonical `<Keyword> <args>`
 //! config line"). THIS extractor uses `check-content` instead. This is a
-//! grounded, deliberate choice, not an oversight: the P2 grounding doc (session
-//! 7c-v0_6-wave3, Part B.4) mechanically diffs fixtext-extracted lines against
+//! grounded, deliberate choice, not an oversight: the P2 grounding doc
+//! (Part B.4) mechanically diffs fixtext-extracted lines against
 //! check-content-extracted lines for all 146 audit-rule requirements across
 //! rhel8/9/10 and finds they DISAGREE for 41/51 (rhel9) and 35/50 (rhel10)
 //! requirements: fixtext systematically omits `-S all`, spells the `auid`
@@ -30,8 +30,8 @@
 //! A `<Group>`/`<Rule>` is an audit-rule requirement IFF its `check-content`
 //! contains at least one line (after trimming whitespace) matching
 //! `^((-A|-a|-w|-e|-f)\s+\S|--loginuid-immutable\b)` -- a literal
-//! `auditctl`-syntax rule line (widened #523 to also select a bare
-//! Control-rule requirement like "-e 2"/"-f 2"/"--loginuid-immutable"; see
+//! `auditctl`-syntax rule line, including a bare
+//! Control-rule requirement like "-e 2"/"-f 2"/"--loginuid-immutable" (see
 //! [`RULE_LINE_RE`]'s doc comment). This is a CHECK-CONTENT GATE,
 //! not a keyword/domain pre-check (grounding Part B.2): in practice every Rule
 //! carrying such a line is already an audit-domain check, and the explicit
@@ -44,10 +44,7 @@
 //! 1. Parse with a real, namespace-aware XML parser (NOT a regex/homegrown
 //!    decoder like the sshd tool's `xccdf.rs` -- the auditd Group/Rule shape has
 //!    no need for it and a real parser is simpler and correct-by-construction for
-//!    entity decoding). `quick-xml` is the crates.io-idiomatic minimal choice if a
-//!    dependency is added; confirm the exact API shape via docsrs before writing
-//!    the parse loop (project convention: prefer docsrs/context7 over
-//!    training-recall for a new dependency's API).
+//!    entity decoding).
 //! 2. Read `<Group id>` (the V-number), `Rule/version` (`RHEL-XX-NNNNNN`), and the
 //!    full `.//check-content` text.
 //! 3. Split check-content on `\n`, trim each line, keep lines matching
@@ -98,25 +95,25 @@ use crate::derive::DerivedRule;
 /// starts with `$` or `auditctl`/`cat`/`grep`, never with the rule flag as the
 /// first token).
 ///
-/// Widened (#523, session 9b-v0_8-wave2 lane 2e): `-e`/`-f` also select a bare
+/// `-e`/`-f` also select a bare
 /// Control-rule requirement ("-e 2" immutable-audit-config, "-f 2"
 /// panic-on-critical-failure) - real DISA requirements whose ENTIRE
 /// requirement is a bare control line, never a `-a`/`-A`/`-w` line at all.
-/// Verified live 2026-07-15: widening to also recognize `-e`/`-f` against the
-/// real pinned rhel8/9/10 XCCDF benchmarks selects EXACTLY the five new
-/// Groups this deepening adds (V-230402, V-258227, V-258229, V-281103,
+/// Verified live 2026-07-15: recognizing `-e`/`-f` against the
+/// real pinned rhel8/9/10 XCCDF benchmarks selects EXACTLY five additional
+/// Groups (V-230402, V-258227, V-258229, V-281103,
 /// V-281365) and introduces zero false positives elsewhere in any of the
 /// three benchmarks.
 ///
-/// Widened again (#523, additive round 2): `--loginuid-immutable` also
+/// `--loginuid-immutable` also
 /// selects a bare Control-rule requirement (make the audit loginuid
 /// unchangeable once set), a DISTINCT selector gap from the `-e`/`-f` case
 /// above - unlike `-e 2`/`-f 2`, this flag takes no value argument at all
 /// (`\s+\S` never matches after it), and it starts with a DOUBLE dash, so it
 /// matches none of the `-A|-a|-w|-e|-f` alternatives either. Verified live
 /// 2026-07-15: this is the ONLY occurrence of "loginuid" in either the RHEL8
-/// or RHEL9 pinned XCCDF (absent from RHEL10 entirely), so the added
-/// alternative selects exactly one new Group per fixture (V-230403,
+/// or RHEL9 pinned XCCDF (absent from RHEL10 entirely), so that
+/// alternative selects exactly one further Group per fixture (V-230403,
 /// V-258228) and introduces zero false positives.
 static RULE_LINE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"^((-A|-a|-w|-e|-f)\s+\S|--loginuid-immutable\b)").expect("valid regex")
@@ -232,8 +229,8 @@ pub fn parse_requirements(xccdf: &str) -> Result<Vec<DerivedRule>, String> {
                         let lines = extract_rule_lines(&content);
                         if !lines.is_empty() {
                             // `take()` moves each field out AND resets it to None in
-                            // one step. The trailing per-field `= None` resets the
-                            // old code carried are redundant: the only reader of these
+                            // one step, so a trailing per-field `= None` reset would
+                            // be redundant: the only reader of these
                             // fields is this handler, and the next `<Group>` start
                             // resets all three before any new content accumulates.
                             // stig_id is taken first so the fail-closed error message
@@ -314,8 +311,8 @@ mod tests {
     const RHEL9_FIXTURE: &str = include_str!("../tests/fixtures/rhel9_auditd_controls.xml");
     const RHEL10_FIXTURE: &str = include_str!("../tests/fixtures/rhel10_auditd_controls.xml");
 
-    /// Every requirement's V-number, from the appendix oracle (session
-    /// 7c-v0_6-wave3 P2 grounding doc, Part B.6 / appendix.txt), for uniqueness
+    /// Every requirement's V-number, from the appendix oracle (P2 grounding
+    /// doc, Part B.6 / appendix.txt), for uniqueness
     /// counting: `parse_requirements` emits one row PER LINE, so the requirement
     /// count is the number of DISTINCT v_numbers, not `derived.len()`.
     fn distinct_v_numbers(derived: &[DerivedRule]) -> usize {
@@ -326,14 +323,10 @@ mod tests {
     }
 
     // --- the drift-gate golden test: derived-from-real-XCCDF must equal the
-    // shipped table exactly, once both are filled in (currently RED for TWO
-    // independent reasons: parse_requirements is todo!(), AND the shipped
-    // RHEL*_REQUIRED tables are empty placeholders per the P2 dispatch's
-    // explicit "the implementer + tool derive fill real content" instruction).
-    // This is the same "fixture reproduces code_table exactly" shape as
-    // tools/sshd-stig-update's xccdf.rs tests -- it is the test that proves the
-    // `auditd-stig-check` CI gate (and `just auditd-stig-check-offline`) will
-    // report 0 drift once the implementer pastes `derive`'s output in. -------
+    // shipped table exactly. This is the same "fixture reproduces code_table
+    // exactly" shape as tools/sshd-stig-update's xccdf.rs tests -- it is the
+    // test that proves the `auditd-stig-check` CI gate (and
+    // `just auditd-stig-check-offline`) reports 0 drift. ----------------------
 
     #[test]
     fn rhel9_fixture_reproduces_code_table_exactly() {
@@ -346,18 +339,12 @@ mod tests {
         );
     }
 
-    // Barrier BLOCKER 1: the rhel9 pin above was the ONLY per-product golden
-    // test before this addition. Without a pin for EVERY product, an
+    // A pin is needed for EVERY product, not just rhel9: an
     // implementation that populates only RHEL9_REQUIRED (leaving
     // RHEL8_REQUIRED/RHEL10_REQUIRED as empty placeholders, or mis-wiring
-    // stig_required::baseline_for's match arms) passes every pre-existing
+    // stig_required::baseline_for's match arms) passes every other
     // test in this file while `--target rhel8`/`--target rhel10` silently
-    // emit zero au-W06 findings on a real host. RED now for the same two
-    // reasons as the rhel9 pin: parse_requirements is todo!(), AND the
-    // shipped RHEL8_REQUIRED/RHEL10_REQUIRED tables are empty placeholders
-    // (see stig_required.rs's module doc) -- GREEN only once the implementer
-    // populates ALL THREE shipped tables from `auditd-stig-update derive`'s
-    // per-product output.
+    // emit zero au-W06 findings on a real host.
 
     #[test]
     fn rhel8_fixture_reproduces_code_table_exactly() {
@@ -382,35 +369,27 @@ mod tests {
     }
 
     // --- known-answer counts (grounding doc Part B.2, re-verified against the
-    // cached XCCDFs via an independent ElementTree-based script; re-confirmed by
-    // this test-author's own fixture-generation script producing the SAME
-    // 45/61, 51/67, 50/75 counts before this file was written) ---------------
+    // cached XCCDFs via an independent ElementTree-based script) -------------
 
-    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): each fixture gained new
-    // real Groups whose ENTIRE requirement is a bare Control-rule line
-    // ("-e 2" / "-f 2") -- fetched live 2026-07-15 against the pinned DISA
-    // zips. `RULE_LINE_RE` (this module) now recognizes "-e"/"-f" leading
-    // tokens, so these Groups are selected by the selector (see
+    // Each fixture carries real Groups whose ENTIRE requirement is a bare
+    // Control-rule line ("-e 2" / "-f 2") -- fetched live 2026-07-15 against
+    // the pinned DISA zips. `RULE_LINE_RE` (this module) recognizes "-e"/"-f"
+    // leading tokens, so these Groups are selected by the selector (see
     // `control_rule_check_content_e_flag_is_selected_as_a_required_line` /
-    // `..._f_flag_...` below, which pin the mechanism directly). That bump
-    // already landed and is GREEN.
+    // `..._f_flag_...` below, which pin the mechanism directly).
     //
-    // SECOND, additive bump (also #523, additive round 2): the rhel8 and
-    // rhel9 fixtures each gained one more real Group whose ENTIRE requirement
-    // is the bare "--loginuid-immutable" Control-rule line -- V-230403
-    // (RHEL-08-030122) on rhel8, V-258228 (RHEL-09-654270) on rhel9. RHEL10's
-    // pinned XCCDF has no loginuid-immutable control at all (verified live
-    // 2026-07-15), so the rhel10 fixture/count is untouched. `RULE_LINE_RE`
-    // now also recognizes the "--loginuid-immutable" alternative (a DOUBLE
+    // The rhel8 and rhel9 fixtures each also carry one real Group whose
+    // ENTIRE requirement is the bare "--loginuid-immutable" Control-rule line
+    // -- V-230403 (RHEL-08-030122) on rhel8, V-258228 (RHEL-09-654270) on
+    // rhel9. RHEL10's pinned XCCDF has no loginuid-immutable control at all
+    // (verified live 2026-07-15). `RULE_LINE_RE`
+    // also recognizes the "--loginuid-immutable" alternative (a DOUBLE
     // dash, distinct from the single-dash "-A"/"-a"/"-w"/"-e"/"-f" leading
-    // tokens), so this Group is also selected: `rhel8_known_answer_counts`/
-    // `rhel9_known_answer_counts` and `decoys_excluded_exact_v_number_count`
-    // below reflect the post-loginuid 47/63 and 54/70 counts and are GREEN
+    // tokens), so that Group is selected too
     // (see `rhel{8,9}_fixture_selects_the_loginuid_immutable_control_line`
     // and
     // `control_rule_check_content_loginuid_immutable_flag_is_selected_as_a_required_line`
-    // below, which pin the mechanism directly). That bump has also landed
-    // and is GREEN.
+    // below, which pin the mechanism directly).
 
     #[test]
     fn rhel8_known_answer_counts() {
@@ -419,13 +398,12 @@ mod tests {
         assert_eq!(derived.len(), 63, "rhel8 total extracted line count");
     }
 
-    // FOURTH bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // DISA RHEL 9 STIG
     // V2R7 -> V2R9 rewrote 9 identity/login rules from single-line watch form
     // into dual-arch syscall form (net +9 lines, same 9 V-numbers) and added
     // V-279936 (cron_exec, 4 dual-arch lines replacing 2 old watch lines --
-    // same V-number, net +2 lines). Distinct V-number count is UNCHANGED (54:
-    // no V-number was added or removed, only line content/count per existing
-    // V-number); total extracted line count grows 70 -> 81.
+    // same V-number, net +2 lines). That rewrite changed line content and
+    // count per existing V-number without adding or removing any V-number.
     #[test]
     fn rhel9_known_answer_counts() {
         let derived = parse_requirements(RHEL9_FIXTURE).expect("fixture must parse");
@@ -440,13 +418,11 @@ mod tests {
         assert_eq!(derived.len(), 77, "rhel10 total extracted line count");
     }
 
-    // --- loginuid-immutable deepening, real-fixture pins (#523, additive
-    // round 2): the committed rhel8/rhel9 fixtures now each carry the REAL
-    // DISA Group for this control (see the fixtures' own updated title
-    // comment). Pinned separately from the aggregate known-answer counts
-    // above so a failure names the SPECIFIC missing v_number/line rather
-    // than only an aggregate count mismatch. GREEN today for the same
-    // RULE_LINE_RE reason as those counts.
+    // --- loginuid-immutable, real-fixture pins: the committed rhel8/rhel9
+    // fixtures each carry the REAL DISA Group for this control (see the
+    // fixtures' own title comment). Pinned separately from the aggregate
+    // known-answer counts above so a failure names the SPECIFIC missing
+    // v_number/line rather than only an aggregate count mismatch. ------------
 
     #[test]
     fn rhel8_fixture_selects_the_loginuid_immutable_control_line() {
@@ -482,7 +458,7 @@ mod tests {
         assert_eq!(rows[0].line, "--loginuid-immutable");
     }
 
-    // --- deepening (#523): the selector-widening mechanism, pinned directly
+    // --- the selector's control-line alternatives, pinned directly
     // against minimal synthetic fixtures (independent of the real-fixture
     // known-answer counts above) ------------------------------------------
 
@@ -491,14 +467,14 @@ mod tests {
         // SV-230402r1017208_rule (RHEL-08-030121): a real DISA requirement
         // whose ENTIRE requirement is a bare Control-rule line ("-e 2", the
         // immutable-audit-config flag) -- never a "-a"/"-A"/"-w" line at all.
-        // `RULE_LINE_RE` today only recognizes "-A"/"-a"/"-w" leading tokens,
-        // so this Group is currently DROPPED entirely (zero extracted lines),
+        // A selector recognizing only "-A"/"-a"/"-w" leading tokens drops
+        // this Group entirely (zero extracted lines),
         // even though "-e 2" is a real, parser-recognized
         // `AuditRule::Control(ControlRule::Enable(2))` line
         // (`crates/rulesteward-auditd/src/parser.rs`'s "-e" arm). Verified
-        // live 2026-07-15: widening the selector to also recognize "-e"/"-f"
+        // live 2026-07-15: recognizing "-e"/"-f"
         // leading tokens against the REAL pinned rhel8/9/10 XCCDF benchmarks
-        // selects EXACTLY the five new Groups this deepening adds
+        // selects EXACTLY five additional Groups
         // (V-230402, V-258227, V-258229, V-281103, V-281365) and introduces
         // ZERO false positives elsewhere in any of the three benchmarks
         // (mechanically re-verified against the live XCCDF text, not merely
@@ -551,11 +527,10 @@ If the value for "-f" is not "2", and availability is not documented as an overr
         // whose ENTIRE requirement is a bare Control-rule line
         // ("--loginuid-immutable", a DOUBLE-dash long-form flag with NO value
         // argument), companion to the "-e"/"-f" tests above but a DISTINCT
-        // selector gap: `RULE_LINE_RE` today only recognizes "-A"/"-a"/"-w"/
-        // "-e"/"-f" as the leading token; "--loginuid-immutable" starts with
-        // "--", which matches NONE of those five alternatives (unlike "-e 2"/
-        // "-f 2", which were selectable once "-e"/"-f" were added to the
-        // alternation -- this flag needs its OWN widening). Verified live
+        // selector gap: "--loginuid-immutable" starts with
+        // "--", which matches NONE of the single-dash "-A"/"-a"/"-w"/"-e"/"-f"
+        // alternatives, so it needs its OWN alternative in `RULE_LINE_RE`.
+        // Verified live
         // 2026-07-15 against the real pinned rhel8/rhel9 XCCDF benchmarks:
         // this is the ONLY occurrence of "loginuid" in either document
         // (confirmed absent from rhel10 entirely).
@@ -613,9 +588,7 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
 
     #[test]
     fn rhel9_cron_exec_four_lines_one_v_number() {
-        // #549 RE-GROUNDED (was `rhel9_multi_path_watch_cronjobs_two_lines_
-        // one_v_number`, which pinned SV-279936r1156361_rule as two distinct
-        // watched paths under one V-number). DISA RHEL 9 STIG V2R9 replaced
+        // DISA RHEL 9 STIG V2R9 replaced
         // the two old cron watch lines with FOUR dual-arch (b32/b64) execve/
         // subj_type=crond_t syscall lines (euid=0 and auid>=1000 variants),
         // still one V-number (RHEL-09-654097, cron_exec key).
@@ -676,9 +649,7 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
 
     #[test]
     fn rhel9_identity_key_shared_across_distinct_v_numbers() {
-        // #549 RE-GROUNDED (was `rhel9_watch_single_path_identity_key_shared_
-        // across_distinct_v_numbers`, which pinned SV-258217r1045436_rule as a
-        // plain single-path watch). DISA RHEL 9 STIG V2R9 rewrote V-258217
+        // DISA RHEL 9 STIG V2R9 rewrote V-258217
         // (RHEL-09-654215) from single-line watch form into dual-arch (b32/b64)
         // syscall form, so `parse_requirements` now emits TWO rows for it, not
         // one; the FIRST in document order is the b32 line. The `identity` key
@@ -759,7 +730,7 @@ If the login UIDs are not set to be immutable by adding the "--loginuid-immutabl
         // cur_stig_id.is_none()`, states "Only the FIRST <version> in a Rule
         // is the STIG id; a second <version> (not observed, but defended per
         // the module doc's 'fail closed for a future DISA reformat' posture)
-        // is ignored." (mutation gate, session 7c pipeline P2: the
+        // is ignored." (mutation gate: the
         // `cur_stig_id.is_none() -> true` mutant survived because no test
         // pinned this contract). Pin: the FIRST <version> wins, not the
         // last.

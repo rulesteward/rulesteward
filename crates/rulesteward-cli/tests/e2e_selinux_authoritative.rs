@@ -1,4 +1,4 @@
-//! End-to-end RED tests for `rulesteward selinux triage --policy <path>` (#124).
+//! End-to-end tests for `rulesteward selinux triage --policy <path>` (#124).
 //!
 //! This entire suite exercises the authoritative `--policy` path, which only
 //! exists in the libsepol-backed default build. It is gated on the
@@ -9,22 +9,13 @@
 //! `e2e_selinux.rs` are NOT gated and run in both configs.
 #![cfg(feature = "authoritative-categorizer")]
 //!
-//! These tests pin the OPERATOR-FACING behaviour of wiring the authoritative
-//! libsepol categorizer (`rulesteward_selinux::categorize`) into the CLI via a
-//! new `--policy <path>` flag, and flipping the `authoritative-categorizer`
+//! These tests pin the OPERATOR-FACING behaviour of the authoritative
+//! libsepol categorizer (`rulesteward_selinux::categorize`) wired into the CLI
+//! via the `--policy <path>` flag, with the `authoritative-categorizer`
 //! cargo feature default-ON so the plain `cargo test -p rulesteward-cli` build
-//! links libsepol and runs the categorize path.
-//!
-//! # Why these are RED before the implementation
-//!
-//! No `--policy` flag exists on `TriageArgs` yet (see `cli.rs` `TriageArgs`), and
-//! `commands/selinux.rs::triage` never calls `categorize`. So today:
-//!   - `selinux triage --policy <x>` fails with a clap "unexpected argument"
-//!     error (exit 2), so every `.success()` + authoritative-output assertion
-//!     below FAILS = the watched-it-fail RED state.
-//!
-//! Post-impl they flip GREEN: the flag parses, the authoritative replay runs,
-//! and the output reflects the authoritative `DenialKind`.
+//! links libsepol and runs the categorize path: the flag parses, the
+//! authoritative replay runs, and the output reflects the authoritative
+//! `DenialKind`.
 //!
 //! # Grounding
 //!
@@ -137,11 +128,10 @@ const AVC_MLS_CONSTRAINT: &str = r#"type=AVC msg=audit(1700000000.002:1002): avc
 /// (frozen `permissive_flag_is_ignored_by_categorizer` invariant), so libsepol
 /// still returns reason bit 0x2 (`SEPOL_COMPUTEAV_CONS`) -> `DenialKind::Constraint`
 /// (a DECLINE kind: NO allow is emitted, per TC-H13). But the floor sets
-/// `any_permissive = true`. This is the round-2 impl-aware adversarial miss: the
-/// PERMISSIVE-MODE banner was gated ONLY on `any_permissive`, so a permissive
-/// DECLINE printed a banner promising "the suggested allow below" while emitting
-/// NO allow (self-contradictory). The banner must be suppressed when no allow is
-/// suggested.
+/// `any_permissive = true`. A PERMISSIVE-MODE banner gated ONLY on
+/// `any_permissive` would make a permissive DECLINE print a banner promising
+/// "the suggested allow below" while emitting NO allow (self-contradictory).
+/// The banner must be suppressed when no allow is suggested.
 ///
 /// Grounding: "Constraint decline = no allow" is f4 §8 + TC-H13/H14;
 /// "permissive flag is ignored by the authoritative categorizer" is the frozen
@@ -310,7 +300,7 @@ fn triage_policy_reason_zero_has_distinct_already_allows_message() {
          ALREADY ALLOWS the denied access (#122); got:\n{allowed_msg}"
     );
     // (A') reason==0 MUST NOT carry the bad-context phrasing. The current
-    //      `ContextInvalid` template (triage.rs:294-302) says \"does not define\"
+    //      `ContextInvalid` template (triage.rs:293-301) says \"does not define\"
     //      one of the security contexts + \"invalid or unknown context\"; the
     //      reason==0 message must use neither (the contexts ARE defined).
     assert!(
@@ -320,7 +310,7 @@ fn triage_policy_reason_zero_has_distinct_already_allows_message() {
     );
 
     // (B) BADSCON MUST carry its OWN distinct bad-context phrase (verbatim from
-    //     the unchanged `ContextInvalid` template, triage.rs:294-302) that the
+    //     the unchanged `ContextInvalid` template, triage.rs:293-301) that the
     //     already-allows message does not. This is what makes the discriminator
     //     survive the incidental `{src}` difference: it pins the bad-context
     //     message to bad-context-specific wording, not just "not equal".
@@ -373,7 +363,7 @@ fn triage_policy_reason_zero_has_distinct_already_allows_message() {
          A lazy strings|grep impl would wrongly emit it. got:\n{constrained_msg}"
     );
     // And it MUST reflect the authoritative Constraint verdict (the phrase emitted
-    // ONLY by the authoritative Constraint/Bounds arms; triage.rs:247-256), proving
+    // ONLY by the authoritative Constraint/Bounds arms; triage.rs:246-255), proving
     // the real replay - not the shortcut - produced the message.
     assert!(
         constrained_msg.contains("authoritative policy analysis"),
@@ -421,19 +411,20 @@ fn triage_mixed_already_allows_and_other_groups_renders_both() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 + 4: heterogeneous group (the grounded MISS from the round-2 review)
+// Test 3 + 4: heterogeneous group
 // ---------------------------------------------------------------------------
 //
-// THE BUG (impl-aware adversarial finding): `apply_authoritative_categorizer`
-// (commands/selinux.rs) builds ONE synthetic AvcDenial per group from the FIRST
-// matching denial's raw contexts and replays it ONCE. But `group_denials` groups
+// THE DEFECT THIS PINS: an `apply_authoritative_categorizer`
+// (commands/selinux.rs) that builds ONE synthetic AvcDenial per group from the
+// FIRST matching denial's raw contexts and replays it ONCE. `group_denials`
+// groups
 // by the `(source_type, target_type, tclass)` triple ONLY - it does NOT split on
 // the MLS level / role components of the raw context. So two AVCs that share the
 // triple but carry DIFFERENT contexts (here: differing target MLS levels - one
 // TE-allowed Reason(0), one MLS-constraint-blocked) collapse into ONE group, and
-// whichever record happens to be FIRST decides the single replay's verdict.
+// whichever record happens to be FIRST would decide the single replay's verdict.
 //
-// When the TE-allowed (Reason 0) record is first, the whole group is rendered as
+// With the TE-allowed (Reason 0) record first, the whole group then renders as
 // "already allows", telling the operator the policy permits an access that is in
 // fact BLOCKED for the constrained member - a dangerous false reassurance.
 //
@@ -470,7 +461,7 @@ fn triage_audit_log_with_kat_policy(log_contents: &str) -> String {
 /// Heterogeneous group, Reason(0)-FIRST ordering: the TE-allowed record precedes
 /// the MLS-constrained one. A naive single-synthetic-replay-per-group impl picks
 /// the FIRST record's contexts (the allowed s0->s0 one), gets Reason(0), and
-/// emits "already allows" for the whole group - the exact MISS this pins.
+/// emits "already allows" for the whole group - the exact defect this pins.
 #[test]
 fn triage_heterogeneous_group_reason_zero_first_must_not_say_already_allows() {
     // Order: ALLOWED (Reason 0) first, then the MLS-constrained member.
@@ -517,14 +508,14 @@ fn triage_heterogeneous_group_constrained_first_must_not_say_already_allows() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: permissive denial under --policy (round-2 f4-inv-6 reversal)
+// Test 5: permissive denial under --policy (f4-inv-6 reversal)
 // ---------------------------------------------------------------------------
 //
-// SANCTIONED SPEC CHANGE: the user reversed f4 §2.5 invariant 6
-// (`f4-selinux-triage-grounding.md` line 294-296). A `permissive=1` denial MUST
-// now get a suggested allow PLUS a PERMISSIVE-MODE caveat banner - on BOTH the
-// always-on floor path (covered by the selinux crate's `h4_*` h-test) AND this
-// `--policy` authoritative path.
+// RULING (operator-sanctioned spec change, not drift): f4 §2.5 invariant 6
+// (`f4-selinux-triage-grounding.md` line 294-296)
+// is reversed. A `permissive=1` denial MUST get a suggested allow PLUS a
+// PERMISSIVE-MODE caveat banner - on BOTH the always-on floor path (covered by
+// the selinux crate's `h4_*` h-test) AND this `--policy` authoritative path.
 //
 // `AVC_TE_PERMISSIVE` is a TE-gap (`src_t -> tgt_t : file write`, not allowed by
 // kat.policy, no constraint) flipped to `permissive=1`. The authoritative
@@ -550,13 +541,13 @@ fn triage_policy_permissive_emits_allow_with_banner() {
         .clone();
     let msg = String::from_utf8(out).expect("UTF-8 stdout (permissive --policy)");
 
-    // The PERMISSIVE-MODE caveat banner MUST be present (round-2 reversal).
+    // The PERMISSIVE-MODE caveat banner MUST be present (f4-inv-6 reversal).
     assert!(
         msg.contains(PERMISSIVE_BANNER_MARKER),
         "permissive denial under --policy MUST carry the '{PERMISSIVE_BANNER_MARKER}' \
          banner (f4-inv-6 reversal); got:\n{msg}"
     );
-    // A suggested allow MUST be emitted (no longer withheld for permissive).
+    // A suggested allow MUST be emitted for a permissive denial.
     assert!(
         msg.contains("allow src_t tgt_t:file write;")
             || msg.contains("allow src_t tgt_t:file { write };"),
@@ -567,16 +558,16 @@ fn triage_policy_permissive_emits_allow_with_banner() {
 
 // ---------------------------------------------------------------------------
 // Test 5b: permissive DECLINE under --policy must NOT print a self-
-// contradictory banner (round-2 impl-aware adversarial miss)
+// contradictory banner
 // ---------------------------------------------------------------------------
 //
 // `AVC_MLS_CONSTRAINT_PERMISSIVE` is the permissive twin of the MLS-constraint
 // record: the authoritative categorizer (which ignores the permissive flag)
 // returns `Constraint`, a DECLINE kind, so NO allow is emitted (per TC-H13). The
-// floor still sets `any_permissive = true`. Before the fix, the PERMISSIVE-MODE
-// banner was gated only on `any_permissive`, so this case printed a banner whose
+// floor still sets `any_permissive = true`. A PERMISSIVE-MODE
+// banner gated only on `any_permissive` prints, for this case, a banner whose
 // text promises "The suggested allow below ... before applying it" while no allow
-// followed - a self-contradictory message. The banner must be suppressed when no
+// follows - a self-contradictory message. The banner must be suppressed when no
 // allow is suggested; the Constraint decline wording already explains why.
 //
 // Grounding: "Constraint = no allow" is f4 §8 + TC-H13; "the banner accompanies
@@ -627,19 +618,19 @@ fn triage_policy_permissive_decline_suppresses_banner() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: failed --policy load -> non-zero exit (round-2 decision)
+// Test 6: failed --policy load -> non-zero exit
 // ---------------------------------------------------------------------------
 //
-// DECISION (round-2): a `--policy` that cannot be loaded must FAIL LOUD, not
+// RULING: a `--policy` that cannot be loaded must FAIL LOUD, not
 // silently fall back to the floor. `selinux triage --record <valid> --policy
 // /nonexistent` MUST exit with the project's error code EXIT_ERRORS (2; see
 // crates/rulesteward-cli/src/exit_code.rs). The run must stay read-only and not
 // panic (clean non-zero exit, not an abort).
+// Rationale + evidence: #124
 //
-// Why RED today: `apply_authoritative_categorizer` currently logs a warning on a
-// load failure and returns an empty set, and `triage` returns EXIT_CLEAN (0). So
-// the `.code(2)` assertion fails (observed code is 0) = the watched-it-fail RED
-// state.
+// An `apply_authoritative_categorizer` that logged a warning on a load failure
+// and returned an empty set would leave `triage` returning EXIT_CLEAN (0),
+// which the `.code(2)` assertion excludes.
 
 /// The project's error exit code (spec §12.4). Mirrors
 /// `rulesteward_cli::exit_code::EXIT_ERRORS`, which is crate-private to the cli
@@ -674,17 +665,18 @@ fn triage_policy_load_failure_exits_nonzero() {
 // Test 7: Reason(0) distinct explanation in the JSON path too (locked #122)
 // ---------------------------------------------------------------------------
 //
-// THE BUG (impl-aware adversarial round-3 finding): the #122 Reason(0) vs BADSCON
+// THE DEFECT THIS PINS: the #122 Reason(0) vs BADSCON
 // distinction is threaded into the HUMAN render path
 // (`render_human_with_already_allows` in commands/selinux.rs receives the
-// `already_allows_groups` set), but the JSON `--format json` path
-// (commands/selinux.rs ~lines 86-90) calls `build_report` WITHOUT the
-// already-allows distinction. So `selinux triage --record <reason-zero-AVC>
-// --policy <p> --format json` emits the BADSCON `ContextInvalid` explanation
+// `already_allows_groups` set). A JSON `--format json` path
+// (commands/selinux.rs ~lines 86-90) that called `build_report` WITHOUT the
+// already-allows distinction would make `selinux triage --record
+// <reason-zero-AVC> --policy <p> --format json` emit the BADSCON
+// `ContextInvalid` explanation
 // ("...the supplied policy does not define one of the security contexts...") for a
 // Reason(0) already-allowed denial - factually wrong (the contexts ARE defined;
-// the policy already allows the access). The human path is correct; the JSON path
-// leaks the forbidden "does not define" wording.
+// the policy already allows the access), leaking the forbidden "does not define"
+// wording into the JSON path the human path does not.
 //
 // This is the JSON TWIN of `triage_policy_reason_zero_has_distinct_already_allows_message`.
 //
@@ -697,9 +689,9 @@ fn triage_policy_load_failure_exits_nonzero() {
 //
 // Why a wrong impl fails (the same discrimination as the human twin, but read out
 // of the machine-readable `groups[0].explanation` field instead of stdout text):
-//   1. The current impl leaves both sub-cases on the untouched `ContextInvalid`
-//      JSON explanation, so the Reason(0) `explanation` lacks "already allow"
-//      (assertion A fails) and carries "does not define" (assertion A' fails).
+//   1. An impl that leaves both sub-cases on the untouched `ContextInvalid`
+//      JSON explanation makes the Reason(0) `explanation` lack "already allow"
+//      (assertion A fails) and carry "does not define" (assertion A' fails).
 //   2. An impl that makes BOTH say "already allow" fails the BADSCON
 //      `not(contains("already allow"))` assertion (B').
 

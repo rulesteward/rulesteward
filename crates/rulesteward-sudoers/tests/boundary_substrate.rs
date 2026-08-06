@@ -857,15 +857,13 @@ fn glued_closing_quote_in_the_principal_list_still_reports_the_grant() {
 /// to its non-ASCII sibling), where the comma-continuation filter rather than
 /// trimming is what the spurious candidate defeats.
 ///
-/// The guard's SPELLING has changed twice - `bytes.get(close + 1)` when this was
-/// first written, `lhs[close + 1..].chars().next()` since round 2 - but the
-/// mutants remain constructible at that `+`, and a `--list` reports them at
-/// `parser.rs`'s closer guard to this day. A previous version of this paragraph
-/// declared them "not constructible" and removed the `verified:` stamp on the
-/// grounds that nothing was left to re-verify. That was an OVER-correction: only
-/// the spelling was stale, the substance was true, and the stamp was earned.
-/// Re-deriving gives the right answer, so re-derive rather than trusting either
-/// this paragraph or that one.
+/// The guard's SPELLING has changed since this was first written (now
+/// `lhs[close + 1..].chars().next()`, rather than `bytes.get(close + 1)`),
+/// but the mutants remain constructible at that `+`, and a `--list` reports
+/// them at `parser.rs`'s closer guard to this day. A spelling change is not
+/// a mutant's disappearance: only the spelling is stale, the substance (that
+/// both mutants are constructible) still holds. Re-derive rather than
+/// trusting a claim that the mutants are "not constructible" at face value.
 ///
 /// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the current
 /// spelling: rc 101, with exactly
@@ -947,12 +945,11 @@ fn glued_closing_quote_splits_the_user_list_from_the_host_list() {
 /// those inputs let trimming or the comma filter absorb the stray candidate.
 /// This input is the shape where BOTH stop absorbing it.
 ///
-/// The guard's spelling has changed - `bytes.get(close + 1)` when this was
-/// written, `lhs[close + 1..].chars().next()` since round 2 - and an earlier
-/// version of this paragraph concluded from that that "neither named mutant
-/// exists to re-derive". Wrong: the `+` is still there and still mutable, and a
-/// `--list` reports both mutants at that site today. A spelling change is not a
-/// mutant's disappearance, and treating it as one retires a live witness.
+/// The guard's spelling has changed (now `lhs[close + 1..].chars().next()`,
+/// rather than `bytes.get(close + 1)`), but the `+` is still there and still
+/// mutable, and a `--list` reports both mutants at that site today. A
+/// spelling change is not a mutant's disappearance, and treating it as one
+/// retires a live witness.
 ///
 /// verified: 2026-08-03 - `close + 1` -> `close - 1` built and run at the
 /// current spelling: rc 101, with this test and its non-ASCII sibling failing
@@ -1040,10 +1037,8 @@ fn a_three_token_left_hand_side_with_a_spaced_quote_is_also_rejected() {
 
 /// The two-token controls, which must keep parsing.
 ///
-/// There is NO arity check in the tree - an earlier version of this doc said
-/// "the arity check above", pointing at an `#[ignore]`d test rather than at any
-/// code, and describing an internal design property of a repair that was
-/// reverted (see #669). This is a forward-looking constraint on whatever fix
+/// There is NO arity check in the tree today (see #669). This is a
+/// forward-looking constraint on whatever fix
 /// #669 eventually takes: if it ever makes one of these ten shapes fire
 /// `sudo-F01`, it has become a false-FATAL generator, which is the worst
 /// regression shape for a compliance linter. Whatever detects the arity should
@@ -1120,14 +1115,7 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
     }
 }
 
-/// The OPENER mirror of the case above, and the sweep that #651 round 2 owed
-/// and did not pay.
-///
-/// Round 2 fixed the CLOSER guard's byte-level whitespace test and left the
-/// OPENER guard three lines above it with the identical shape, recording it as
-/// "unswept rather than cleared". A fresh adversary found the input in one
-/// round, which is the whole argument for sweeping at the time rather than
-/// annotating.
+/// The OPENER mirror of the case above.
 ///
 /// `alice,<U+00A0>"b c" ALL` : the run candidate is correctly rejected (its
 /// `before` ends with `,`), and the byte-level opener guard did not recognise
@@ -1140,10 +1128,10 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
 /// The one-byte ASCII-space control `alice, "b c" ALL` is **rc 0**, not rc 1:
 /// the comma makes `alice, "b c"` a single `User_List`, so the LHS has TWO
 /// tokens and #669's gap does not touch it. That is what makes it a control.
-/// Its verdict IS therefore pinnable, and is pinned below. (An earlier version
-/// of this doc called it rc 1, which under this file's own rule would have told
-/// a maintainer that `RuleSteward` should emit `sudo-F01` on a line sudo
-/// accepts - the false-FATAL direction this file exists to prevent.)
+/// Its verdict IS therefore pinnable, and is pinned below (misclassifying it
+/// as rc 1 would tell a maintainer that `RuleSteward` should emit
+/// `sudo-F01` on a line sudo accepts - the false-FATAL direction this file
+/// exists to prevent).
 ///
 /// VT (`0x0B`) is the same case with no multi-byte encoding. sudo treats both as
 /// WORD characters, not separators: `alice,<0x0B>bob ALL = NOPASSWD: ALL` is
@@ -1176,18 +1164,18 @@ fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
 /// ESCAPED whitespace before an opening quote. This is where matching the
 /// PREDICATE without matching the CONTEXT went wrong, and it is a fail-open.
 ///
-/// Round 3 swept the opener guard to `char::is_whitespace` so it would agree
-/// with `unquoted_whitespace_runs`. The predicates then agreed and the
-/// RECOGNIZERS still did not: `unquoted_whitespace_runs` treats a whitespace
-/// char as a token end only when it is NOT backslash-escaped and sits outside a
-/// quoted region, and the guard applied neither qualifier.
+/// Widening the opener guard to `char::is_whitespace` made it agree with
+/// `unquoted_whitespace_runs` on the PREDICATE, but the RECOGNIZERS still did
+/// not agree: `unquoted_whitespace_runs` treats a whitespace char as a token
+/// end only when it is NOT backslash-escaped and sits outside a quoted
+/// region, and the guard applied neither qualifier.
 ///
 /// So on `a\<VT>"b c" = NOPASSWD: ALL` the widened guard suppressed the opener
 /// candidate as "already covered by a run", while the escape meant no run was
 /// ever emitted to cover it. Zero candidates, `(lhs, "")`, and a false
 /// `sudo-F01` that dropped a DISA STIG passwordless-ALL finding on a line
-/// `visudo` accepts. The fork point reported it correctly, so round 3 traded one
-/// swallowed principal for one dropped grant.
+/// `visudo` accepts. The fork point reported it correctly - widening the
+/// predicate alone traded one swallowed principal for one dropped grant.
 ///
 /// The repair suppresses only when a run ACTUALLY ends at the quote, which
 /// inherits the escape and quote context from the one recognizer that already
@@ -1248,7 +1236,7 @@ fn escaped_whitespace_before_an_opening_quote_still_reports_the_grant() {
 #[ignore = "#677: an empty quoted principal is accepted; the glued spelling is a #651 regression"]
 fn an_empty_quoted_principal_is_rejected() {
     for src in [
-        // The #651 regression: rejected at ee250aa, accepted now.
+        // The #651 regression: rejected before, accepted now.
         "\"\"ALL = /bin/ls\n",
         // Pre-existing on both shas.
         "\"\" ALL = /bin/ls\n",
@@ -1268,8 +1256,8 @@ fn an_empty_quoted_principal_is_rejected() {
 /// `!runs.iter().any(|(_, end)| end == open)` reads "no run ends AT this quote".
 /// The mutation gate found that flipping the comparison to `end != open` - which
 /// reads "every run ends at this quote", vacuously true when there are none -
-/// survived every other test on the branch. It is the round-3 too-wide bug
-/// wearing a different spelling: whenever ANY run exists elsewhere in the LHS,
+/// survived every other test on the branch. It is the same too-wide-suppression
+/// shape wearing a different spelling: whenever ANY run exists elsewhere in the LHS,
 /// the mutant suppresses the glued-opener candidate that this input needs.
 ///
 /// `alice, x"b c" = NOPASSWD: ALL` is `visudo -c -f -` rc 0 with

@@ -369,10 +369,8 @@ mod tests {
     // predicate to allow `:` / `>` / `@` before a `#<digits>` token. That is
     // required for the VALID scope targets `Defaults:#1000` (user UID),
     // `Defaults>#1000` (runas UID) and `Defaults@#1000` (a host literally named
-    // `#1000`) -- all visudo rc=0 -- to survive the comment strip; previously the
-    // whole `<sigil>#1000 !lecture` was swallowed as a comment and the line folded
-    // to `Malformed("Defaults<sigil> scope is missing its target")`, a FALSE
-    // POSITIVE. But the SAME widening lets the INVALID `Defaults:#1000abc` /
+    // `#1000`) -- all visudo rc=0 -- to survive the comment strip. But the SAME
+    // widening lets the INVALID `Defaults:#1000abc` /
     // `Defaults>#1000abc` / `Defaults@#1000abc` (a `#<digits>` token with a
     // non-digit tail, visudo rc=1) reach the AST as a clean `DefaultsEntry` with a
     // `#`-prefixed binding. visudo lexes `#<digits>` UNIFORMLY in all three scope
@@ -391,10 +389,7 @@ mod tests {
     /// `#`-GID whose digit run is followed by a non-digit tail.
     ///
     /// Oracle: `visudo -c` rc=1, "syntax error" at col 15 (the `abc` tail).
-    /// Verified locally: visudo 1.9.17p2, 2026-07-03. RED before the
-    /// `check_defaults` scope-target check: the #407 predicate widening let this
-    /// parse to a clean `DefaultsEntry { scope: User("#1000abc") }` with ZERO
-    /// diagnostics.
+    /// Verified locally: visudo 1.9.17p2, 2026-07-03.
     #[test]
     fn f02_defaults_user_scope_gid_form_digits_then_letters_fires() {
         let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults:#1000abc !lecture\n");
@@ -450,10 +445,8 @@ mod tests {
     /// `#`-GID whose digit run is followed by a non-digit tail.
     ///
     /// Oracle: `visudo -c` rc=1, "syntax error" at col 15 (the `abc` tail).
-    /// Verified locally: visudo 1.9.17p2, 2026-07-03. RED before the `>` was added
-    /// to `prev_allows_uid` + the Runas-scope check: previously `>#1000abc`
-    /// stripped as a comment, folding the line to `Malformed` / sudo-F01 -- so this
-    /// asserts the code is now `sudo-F02` (not F01) with the runas-scope message.
+    /// Verified locally: visudo 1.9.17p2, 2026-07-03. Asserts the code is
+    /// `sudo-F02` (not F01) with the runas-scope message.
     #[test]
     fn f02_defaults_runas_scope_gid_form_digits_then_letters_fires() {
         let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults>#1000abc !lecture\n");
@@ -511,10 +504,9 @@ mod tests {
     /// `#1000abc` is a syntax error even though `#1000` alone is a valid host.
     ///
     /// Oracle: `visudo -c` rc=1, "syntax error" at col 15 (the `abc` tail).
-    /// Verified locally: visudo 1.9.17p2, 2026-07-03. RED before the `@` predicate
-    /// widening + Host-scope check: previously stripped to `Malformed` / sudo-F01.
-    /// Asserts the code is now `sudo-F02` with a HOST-appropriate message that does
-    /// NOT call the token a GID.
+    /// Verified locally: visudo 1.9.17p2, 2026-07-03. Asserts the code is
+    /// `sudo-F02` with a HOST-appropriate message that does NOT call the token
+    /// a GID.
     #[test]
     fn f02_defaults_host_scope_hash_tail_digits_then_letters_fires() {
         let diags = lint("root ALL=(ALL:ALL) ALL\nDefaults@#1000abc !lecture\n");
@@ -605,7 +597,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #407 round-2: `Defaults` scope target is a COMMA LIST -- validate per
+    // #407: `Defaults` scope target is a COMMA LIST -- validate per
     // element, not the whole raw binding string.
     // -----------------------------------------------------------------------
     //
@@ -619,9 +611,7 @@ mod tests {
 
     /// `Defaults:#1000,alice !lecture` -- a valid two-element user list (a UID
     /// plus a plain username). visudo rc=0 (`cvtsudoers` Binding: `userid 1000`
-    /// then `username alice`). RED before the per-element split: the whole
-    /// binding `"#1000,alice"` was validated as one string (starts `#`, non-digit
-    /// tail) and wrongly fired F02. Must be CLEAN.
+    /// then `username alice`). Must be CLEAN.
     #[test]
     fn f02_defaults_user_scope_list_uid_then_name_no_f02() {
         let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults:#1000,alice !lecture\n")
@@ -652,7 +642,6 @@ mod tests {
     }
 
     /// `Defaults>#1000,root !lecture` -- valid runas list (UID + name). rc=0.
-    /// RED before the per-element split (whole binding `"#1000,root"` mis-fired).
     #[test]
     fn f02_defaults_runas_scope_list_uid_then_name_no_f02() {
         let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults>#1000,root !lecture\n")
@@ -667,7 +656,7 @@ mod tests {
     }
 
     /// `Defaults@#1000,localhost !lecture` -- valid host list (`#1000` a host
-    /// literally named `#1000`, plus `localhost`). rc=0. RED before the split.
+    /// literally named `#1000`, plus `localhost`). rc=0.
     #[test]
     fn f02_defaults_host_scope_list_hash_then_name_no_f02() {
         let f02_diags: Vec<_> = lint("root ALL=(ALL:ALL) ALL\nDefaults@#1000,localhost !lecture\n")
@@ -683,9 +672,7 @@ mod tests {
 
     /// `Defaults:alice,#1000abc !lecture` -- companion FALSE-NEGATIVE case: the
     /// SECOND element `#1000abc` is a malformed GID tail (visudo rc=1, "syntax
-    /// error" at col 21). RED before the per-element split: the raw binding
-    /// `"alice,#1000abc"` does not start with `#`, so the whole-string check was
-    /// silent. After: exactly one F02 that NAMES the specific bad element
+    /// error" at col 21). Exactly one F02 that NAMES the specific bad element
     /// `#1000abc` (NOT the whole binding, and NOT the valid `alice`).
     #[test]
     fn f02_defaults_user_scope_list_second_element_bad_gid_fires() {
@@ -1121,8 +1108,8 @@ mod tests {
     }
 
     /// `Defaults:alice, #1001` -- valid name+UID list, space after comma (rc=0).
-    /// Companion FP-fix witness: the old truncation leaked `#1001` into the
-    /// settings scan; the rework keeps it a scope member so nothing fires.
+    /// Companion FP-fix witness: guards against `#1001` leaking into the
+    /// settings scan; it must stay a scope member so nothing fires.
     #[test]
     fn f02_defaults_user_scope_space_list_name_then_uid_no_fp() {
         let d = f02s("Defaults:alice, #1001 env_reset");
@@ -1274,8 +1261,7 @@ mod tests {
     /// token trims to `""`). A naive substring-scan impl
     /// (`binding.contains(",,") || binding.starts_with(',') ||
     /// binding.contains("\"\"")`) passes the plain `,,`/leading/quoted cases yet
-    /// is WRONG -- it misses `", ,"`, which only member-splitting detects. RED
-    /// today because the Cmnd scope is still a no-op in `check_defaults_scope`.
+    /// is WRONG -- it misses `", ,"`, which only member-splitting detects.
     #[test]
     fn f02_defaults_cmnd_scope_interior_whitespace_only_member_fires() {
         let d = f02s("Defaults!/bin/ls, ,/bin/cat env_reset");
@@ -1699,7 +1685,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #451 miss (impl-aware adversarial review, 2026-07-08): `sudoedit` and
+    // #451 miss: `sudoedit` and
     // `list` are RESERVED sudoers Cmnd-position pseudo-commands, not ordinary
     // lowercase barewords. `is_valid_cmnd_scope_member` has no reserved-
     // keyword arm, so it wrongly fires a Fatal sudo-F02 on a `Defaults!`
@@ -1786,7 +1772,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #451 round-3 adversarial MISS A (impl-aware review, 2026-07-08): a
+    // #451 adversarial MISS A: a
     // DOUBLE-QUOTED `"list"` Cmnd-scope member is a distinct visudo grammar
     // quirk, not covered by the quoted-literal case above
     // (`f02_defaults_cmnd_scope_quoted_non_path_member_fires`, `"foo"`).
@@ -1877,7 +1863,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #451 round-3 adversarial MISS B (impl-aware review, 2026-07-08): a bare
+    // #451 adversarial MISS B: a bare
     // `/` Cmnd-scope member passes the naive `starts_with('/')` arm, but
     // visudo requires a FULLY-QUALIFIED path name -- a lone `/` names the
     // root directory, not a command, and is rejected. Contrast `/.`, which
@@ -1948,7 +1934,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // #407 round-3 (tests-only): pin the scope early-return guard
+    // #407 (tests-only): pin the scope early-return guard
     // `if diags.len() > before { return; }` and the parser's quote-retention.
     // -----------------------------------------------------------------------
     //
@@ -2086,8 +2072,6 @@ mod tests {
     /// checks any word containing `/` but not starting with `/` would false-positive
     /// on `some/rel/arg`.
     ///
-    /// This test is GREEN now (stub emits nothing) and MUST STAY GREEN after the
-    /// correct implementation, which scopes the check to the command path only.
     #[test]
     fn f02_relative_arg_on_qualified_command_no_f02() {
         // Fixture: visudo -c rc=0 (accepted). The argument `some/rel/arg` is a
@@ -2287,8 +2271,6 @@ mod tests {
     ///
     /// Oracle: visudo -cf rc=1, "expected a fully-qualified path name".
     /// Stripping the `!` reveals `bin/su` which is relative. F02 must fire.
-    ///
-    /// This test is GREEN before and after the fix (the fix must preserve this).
     #[test]
     fn f02_bang_negated_relative_path_fires() {
         // Fixture: visudo -cf rc=1, "expected a fully-qualified path name".
@@ -2376,7 +2358,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Round-3 Fix 3: group-name char class completed via exhaustive grounding.
+    // Group-name char class completed via exhaustive grounding.
     //
     // Exhaustive visudo -cf probe of every printable-ASCII char CH in the middle of
     // a `%bad<CH>group` SUBJECT token (rockylinux:9, sudo 1.9.17p2, 2026-06-30):
@@ -2384,14 +2366,13 @@ mod tests {
     //   ACCEPTED (rc=0): the other 86 printable-ASCII chars AND non-ASCII (accented letters).
     // Of the 8 rejected, the parser marks `#`, `:`, `=` as Malformed -> caught by
     // sudo-F01, so they never reach F02. The 5 that reach F02 as a clean UserSpec
-    // are exactly `! ( ) > "`. Round-2 caught only `! ( )`; `>` and `"` were missed.
+    // are exactly `! ( ) > "`.
     // -----------------------------------------------------------------------
 
     /// `%bad>group ALL = ALL` -- visudo rc=1, "syntax error" (`>` in group name).
     ///
     /// Oracle: `>` is invalid in a sudoers group name (rc=1). The parser keeps a
     /// clean `UserSpec` with `users=["%bad>group"]`, so F02 Case 4 must fire.
-    /// Round-2 missed this (`>` was not in the denylist).
     #[test]
     fn f02_group_name_with_gt_fires() {
         // Fixture: visudo -cf rc=1, "syntax error" at the `>` in `%bad>group`.
@@ -2410,7 +2391,6 @@ mod tests {
     ///
     /// Oracle: `"` is invalid in a sudoers group name (rc=1). The parser keeps a
     /// clean `UserSpec` with `users=["%bad\"group"]`, so F02 Case 4 must fire.
-    /// Round-2 missed this (`"` was not in the denylist).
     #[test]
     fn f02_group_name_with_dquote_fires() {
         // Fixture: visudo -cf rc=1 at the `"` in `%bad"group`.
@@ -2504,7 +2484,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // Defect 3: has_hash_digits simplification / mutation kill tests
     //
-    // Reachability analysis (2026-06-30, refined round-3):
+    // Reachability analysis:
     //   has_hash_digits is called on:
     //     (a) individual CmndSpec command tokens (comma-split BEFORE call, so no `,`
     //         in the string at call time)
@@ -2512,8 +2492,8 @@ mod tests {
     //   The `,` preceding-char branch is DEAD CODE in both call sites and is removed.
     //   The `%` preceding-char branch is REACHABLE and NOT equivalent to whitespace:
     //   for `/bin/prog %#2` the byte immediately before `#` is `%`, so only a `%` arm
-    //   returns true (round-3 restored it after round-2 wrongly dropped it -- see the
-    //   f02_percent_hash_digits_* tests above). visudo rejects `%#digits` in both
+    //   returns true (see the f02_percent_hash_digits_* tests above). visudo rejects
+    //   `%#digits` in both
     //   command and Defaults-value positions (rc=1, grounded rockylinux:9 2026-06-30).
     // -----------------------------------------------------------------------
 
@@ -2568,12 +2548,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Round-3 Fix 1 (REGRESSION): `%#<digits>` glued in command / Defaults-value
-    // must fire F02. Round-2 dropped the `%` preceding-char arm of has_hash_digits
-    // on the (wrong) claim it was caught by the whitespace arm. It is NOT: for
+    // REGRESSION: `%#<digits>` glued in command / Defaults-value must fire F02.
+    // Dropping the `%` preceding-char arm of has_hash_digits on the (wrong) claim
+    // that the whitespace arm already covers it is incorrect: for
     // `/bin/prog %#2` the byte immediately before `#` is `%`, not whitespace, so
-    // only a `%`-preceding arm reaches the return. Parent commit 14b13d2 fired
-    // correctly; these tests restore + pin that behavior.
+    // only a `%`-preceding arm reaches the return. These tests pin that behavior.
     //
     // Grounding (rockylinux:9, sudo 1.9.17p2, 2026-06-30, visudo -cf):
     //   `alice ALL = /bin/prog %#2`   -> rc=1 (syntax error at col 24)
@@ -2619,7 +2598,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Round-3 Fix 2: kill the `has_hash_digits` `&& -> ||` mutation survivor
+    // Kill the `has_hash_digits` `&& -> ||` mutation survivor
     // (the `bytes[i] == b'#' && next_is_ascii_digit` guard). Two grounded rc=0
     // inputs distinguish `&&` from `||` where the CORRECT `&&` stays silent but
     // `||` wrongly fires:
@@ -2671,7 +2650,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Round-4 Fix: pure-GID guard over-exempts `#`-prefix group names
+    // Pure-GID guard over-exempts `#`-prefix group names
     //
     // The guard `!name.starts_with('#')` was meant to exempt the valid pure-GID
     // form `%#1000` from the denylist check. But it over-exempts ANY name that
@@ -2691,16 +2670,16 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `%#1000>x ALL = ALL` -- visudo rc=1; `>` follows the digits in a `#`-prefix
-    /// group name. The old guard `!name.starts_with('#')` exempts this and stays
-    /// silent (FALSE NEGATIVE). The fixed guard recognises `#1000>x` as NOT a pure
-    /// GID (contains a non-digit after `#`) and runs the denylist, which finds `>`.
+    /// group name. A guard of just `!name.starts_with('#')` would exempt this and
+    /// stay silent (FALSE NEGATIVE). The correct guard recognises `#1000>x` as NOT
+    /// a pure GID (contains a non-digit after `#`) and runs the denylist, which
+    /// finds `>`.
     ///
     /// Oracle: rockylinux:9, sudo 1.9.17p2, visudo -cf rc=1 "syntax error" at col 7.
     #[test]
     fn f02_hash_prefix_group_name_with_gt_fires() {
         // Fixture: visudo -cf rc=1. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
-        // RED before fix (old `!starts_with('#')` exempts `#1000>x` entirely).
-        // GREEN after fix (`is_pure_gid` is false for `#1000>x` -> denylist fires on `>`).
+        // `is_pure_gid` is false for `#1000>x` -> denylist fires on `>`.
         let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000>x ALL = ALL\n");
         let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
         assert_eq!(
@@ -2713,13 +2692,13 @@ mod tests {
 
     /// `%#1000!x ALL = ALL` -- visudo rc=1; `!` follows the digits.
     ///
-    /// Companion to the `>` case: same over-exemption in the old guard.
+    /// Companion to the `>` case: same char-class check applies to `!`.
     ///
     /// Oracle: rockylinux:9, sudo 1.9.17p2, visudo -cf rc=1 "syntax error" at col 10.
     #[test]
     fn f02_hash_prefix_group_name_with_bang_fires() {
         // Fixture: visudo -cf rc=1. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
-        // RED before fix; GREEN after fix (`is_pure_gid` false -> denylist finds `!`).
+        // `is_pure_gid` is false -> denylist finds `!`.
         let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000!x ALL = ALL\n");
         let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
         assert_eq!(
@@ -2736,11 +2715,10 @@ mod tests {
     /// for `#1000` (all-digit rest), so the denylist does NOT run. No F02.
     ///
     /// NOTE: already covered by `f02_group_gid_form_no_f02` above; this companion
-    /// test makes the Round-4 must-not-regress intent explicit.
+    /// test makes the must-not-regress intent explicit.
     #[test]
     fn f02_pure_gid_group_still_silent_after_fix() {
         // Fixture: visudo -cf rc=0. Verified: rockylinux:9, sudo 1.9.17p2, 2026-06-30.
-        // GREEN before AND after fix.
         let diags = lint("root ALL=(ALL:ALL) ALL\n%#1000 ALL = ALL\n");
         let f02_diags: Vec<_> = diags.iter().filter(|d| d.code == "sudo-F02").collect();
         assert!(
@@ -2753,7 +2731,7 @@ mod tests {
     // Issue #375: out-of-scope tail (Case-4/Case-5 completeness pass)
     //
     // Three visudo-rejected shapes that sit OUTSIDE the four documented F02
-    // positions above (deferred from #346's post-GREEN adversarial review):
+    // positions above (deferred from #346):
     //   1. Runas-position group defects: a malformed `%group`/`%#gid` token
     //      inside a `(...)` runas spec (RunasSpec.users / RunasSpec.groups),
     //      which check_user_spec's Case-4 walk never scans today (it only
@@ -2775,9 +2753,7 @@ mod tests {
     ///
     /// Oracle: `visudo -cf` rc=1, "syntax error" at the `!` (col 20). The `!` sits
     /// inside the `RUNAS_USER` token (before any `:`), so `RunasSpec.users =
-    /// ["grpbad!x"]`. `check_user_spec`'s Case-4 walk only inspects
-    /// `UserSpec.users` (the SUBJECT list before ` = `), never `CmndSpec.runas`,
-    /// so today this fires ZERO sudo-F02 diagnostics (RED).
+    /// ["grpbad!x"]`.
     #[test]
     fn f02_runas_user_position_bang_in_name_fires() {
         // Fixture: visudo -cf rc=1, "syntax error" at the `!` in `(grpbad!x)`.
@@ -2939,8 +2915,8 @@ mod tests {
         );
     }
 
-    // Post-GREEN adversarial-impl finding: the GID-tail (Rule 3) structural check
-    // fires for a SUBJECT-position `%#1000abc` (see
+    // The GID-tail (Rule 3) structural check fires for a SUBJECT-position
+    // `%#1000abc` (see
     // `f02_gid_form_digits_then_letters_fires` in Shape 3 below) but NOT for the
     // SAME token in the RUNAS-USER position -- `check_runas`'s `runas.users` loop
     // only runs the denylist (`first_invalid_char`), which finds no denylist char
@@ -2954,9 +2930,7 @@ mod tests {
     /// Oracle: `visudo -cf` rc=1, "syntax error" at `abc` (col 20). The token
     /// survives `strip_inline_comment` (the `#` is preceded by `%` and followed
     /// by a digit, so it is kept as a GID token) and reaches `check_runas` as a
-    /// clean `RunasSpec.users = ["%#1000abc"]`. RED today: the runas-user loop
-    /// only checks the denylist, and `1000abc` has no denylist char, so F02 is
-    /// silent -- the GID-tail structural check is not applied in this position.
+    /// clean `RunasSpec.users = ["%#1000abc"]`.
     #[test]
     fn f02_runas_user_gid_form_digits_then_letters_fires() {
         // Fixture: visudo -cf rc=1, "syntax error" at `abc` in `(%#1000abc)`.
@@ -2978,8 +2952,7 @@ mod tests {
     /// above at the shortest-digit-run boundary.
     ///
     /// Oracle: `visudo -cf` rc=1, "syntax error" at the `z` (col 17). `is_pure_gid`
-    /// is false for `#0z` (the rest is not all-digit), so once the GID-tail check
-    /// is applied to `runas.users` this must fire; RED today for the same reason.
+    /// is false for `#0z` (the rest is not all-digit).
     #[test]
     fn f02_runas_user_gid_form_short_digit_run_then_letter_fires() {
         // Fixture: visudo -cf rc=1, "syntax error" at `z` in `(%#0z)`.
@@ -3171,11 +3144,11 @@ mod tests {
     /// `alice ALL = (root:#abc) /bin/su` -- runas-GROUP (post-colon) letter-first
     /// `#`-GID token: NO digits at all after the `#`.
     ///
-    /// RED today: `strip_inline_comment` fails `next_is_digit` for `#abc`
-    /// (`a` is not a digit) and swallows `#abc) /bin/su` as a comment, leaving
-    /// `alice ALL = (root:` -- an unbalanced-paren remainder `RuleSteward`'s own
-    /// parser folds into a clean spec, never invoking `check_runas` on the
-    /// malformed token. Zero diagnostics for a `visudo -c`-rejected file.
+    /// The `#abc` token must not be swallowed as an inline comment. A stripper that
+    /// took it (and with it `#abc) /bin/su`) would leave `alice ALL = (root:` -- an
+    /// unbalanced-paren remainder `RuleSteward`'s own parser folds into a clean spec,
+    /// never invoking `check_runas` on the malformed token, so a `visudo -c`-rejected
+    /// file would draw zero diagnostics.
     #[test]
     fn f02_runas_group_letter_first_hash_fires() {
         // Fixture: visudo -c -f rc=1, syntax error at `#abc` (col 17).
@@ -3217,7 +3190,7 @@ mod tests {
     /// `next_is_digit` into "any non-whitespace char" globally -- would also
     /// misread ordinary inline comments as UID/GID tokens; re-asserting this
     /// specific #407 case here keeps the #424 section self-contained regression
-    /// evidence. GREEN now, must stay GREEN.
+    /// evidence.
     #[test]
     fn f02_runas_group_digit_first_hash_still_fires_after_424() {
         let diags = lint("root ALL=(ALL:ALL) ALL\nalice ALL = (root:#1000abc) /bin/su\n");
@@ -3463,13 +3436,13 @@ mod tests {
     //   Defaults:#1000 !lecture                    -> rc=0 (VALID;   #407 pure)
     // -----------------------------------------------------------------------
 
-    // --- FP core (RED against current code: currently fire, must go silent) ---
+    // --- FP core: quoted `#<digits>` false positives that must stay silent ---
 
     /// FP CORE (issue #423, issue repro 1): `Defaults passprompt="Enter #5 now"`
     /// -- a `#5` inside a DOUBLE-QUOTED string value. `visudo -c` rc=0 (VALID).
     /// The quote-blind `has_hash_digits` sees the stored value `Enter #5 now`
     /// (quotes stripped by `parse_one_default_setting`) and fires a FALSE
-    /// POSITIVE. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    /// POSITIVE. F02 must be SILENT.
     #[test]
     fn f02_issue423_quoted_hash_digits_in_passprompt_no_f02() {
         // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
@@ -3486,7 +3459,7 @@ mod tests {
     /// again"` -- the `#5` and the comma both sit inside the double quotes.
     /// `visudo -c` rc=0 (VALID; the quoted comma does not split the value). The
     /// quote-blind `has_hash_digits` sees `try #5, again` and fires a FALSE
-    /// POSITIVE. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    /// POSITIVE. F02 must be SILENT.
     #[test]
     fn f02_issue423_quoted_hash_digits_in_badpass_message_no_f02() {
         // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
@@ -3502,7 +3475,7 @@ mod tests {
     /// FP CORE (issue #423): `Defaults passprompt="#5"` -- a bare `#5` as the
     /// whole double-quoted value. `visudo -c` rc=0 (VALID). The value is stored
     /// as `#5` (quotes stripped); `has_hash_digits` fires on the start-of-string
-    /// `#5`. After the fix F02 must be SILENT. RED now (fires 1), GREEN after.
+    /// `#5`. F02 must be SILENT.
     #[test]
     fn f02_issue423_bare_quoted_hash_digits_no_f02() {
         // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
@@ -3518,9 +3491,9 @@ mod tests {
     /// FP CORE (issue #423, symmetric `%`-arm case): `Defaults passprompt="x %#2"`
     /// -- a `#2` preceded by `%` INSIDE a double-quoted string value. `visudo -c`
     /// rc=0 (VALID). The quote-blind `has_hash_digits` `%`-arm sees the stored
-    /// value `x %#2` (quotes stripped) and fires a FALSE POSITIVE. After the fix
-    /// F02 must be SILENT. RED now (fires 1), GREEN after. Mirrors the
-    /// whitespace-preceded FP cores across the independently-load-bearing `%` arm.
+    /// value `x %#2` (quotes stripped) and fires a FALSE POSITIVE. F02 must be
+    /// SILENT. Mirrors the whitespace-preceded FP cores across the
+    /// independently-load-bearing `%` arm.
     #[test]
     fn f02_issue423_quoted_pct_hash_digits_no_f02() {
         // Oracle: `visudo -c -f` rc=0 "parsed OK". Verified 2026-07-04, sudo 1.9.17p2.
@@ -3533,7 +3506,7 @@ mod tests {
         );
     }
 
-    // --- Regression guards (GREEN before AND after: the fix must not weaken) ---
+    // --- Regression guards (must not weaken) ---
 
     /// REGRESSION GUARD (#423, the sharp pairing): the UNQUOTED sibling
     /// `Defaults passprompt=Enter #5 now` is `visudo -c` rc=1 (INVALID) -- F02
@@ -3541,7 +3514,6 @@ mod tests {
     /// core above (`Enter #5 now`), so making the quoted form silent WITHOUT
     /// silencing this one is exactly what forces the AST to carry the quote
     /// distinction. A naive "skip all `#` in Defaults values" fix breaks this.
-    /// GREEN now (fires 1), must stay GREEN.
     #[test]
     fn f02_issue423_unquoted_hash_digits_in_defaults_value_still_fires() {
         // Oracle: `visudo -c -f` rc=1 ("Success" quirk position). Verified 2026-07-04.
@@ -3563,7 +3535,7 @@ mod tests {
     /// -c` REJECTS the line (rc=1). F02 must STILL fire. A fix that treats `'` (or
     /// "any quote") as a protecting delimiter would WRONGLY silence this. The
     /// value is stored WITH the single quotes (`parse_one_default_setting` only
-    /// strips a surrounding `"` pair). GREEN now (fires 1), must stay GREEN.
+    /// strips a surrounding `"` pair).
     #[test]
     fn f02_issue423_single_quoted_hash_digits_still_fires() {
         // Oracle: `visudo -c -f` rc=1 (single quote is not a delimiter). Verified 2026-07-04.
@@ -3584,7 +3556,7 @@ mod tests {
     /// `visudo -c` rc=1 (INVALID). The value reaches `has_hash_digits` as
     /// `x #1000abc`; `#1000` (a `#` + a digit run after the space) matches
     /// regardless of the `abc` tail. F02 must STILL fire. A "skip all `#` in
-    /// Defaults" fix would silence this. GREEN now (fires 1), must stay GREEN.
+    /// Defaults" fix would silence this.
     #[test]
     fn f02_issue423_unquoted_hash_digits_then_letters_still_fires() {
         // Oracle: `visudo -c -f` rc=1. Verified 2026-07-04, sudo 1.9.17p2.
@@ -3606,8 +3578,7 @@ mod tests {
     /// keeps the value verbatim (`"hi" #5`) and `has_hash_digits` fires on the
     /// whitespace-preceded `#5`. F02 must STILL fire. A coarse "the value contains
     /// a `\"` -> skip `has_hash_digits`" fix would WRONGLY silence this; only a fix
-    /// that tracks WHICH region the `#5` falls in keeps it firing. GREEN now
-    /// (fires 1), must stay GREEN.
+    /// that tracks WHICH region the `#5` falls in keeps it firing.
     #[test]
     fn f02_issue423_hash_digits_after_closing_quote_still_fires() {
         // Oracle: `visudo -c -f` rc=1 (the `#5` is outside the quoted span). Verified 2026-07-04.
@@ -3627,7 +3598,7 @@ mod tests {
     /// REGRESSION GUARD (#423): `has_hash_digits` is ALSO called on COMMAND
     /// tokens. A quote-awareness change to the Defaults-value path must not weaken
     /// the command-position check: `alice ALL = /bin/ls #2` is `visudo -c` rc=1
-    /// and must STILL fire F02. GREEN now (fires 1), must stay GREEN.
+    /// and must STILL fire F02.
     #[test]
     fn f02_issue423_command_position_hash_digits_still_fires() {
         // Oracle: `visudo -c -f` rc=1 (syntax error at `#2`). Verified 2026-06-30 / 2026-07-04.
@@ -3646,7 +3617,6 @@ mod tests {
     /// `#<digits>` GIDs stay clean. All four grounded (`visudo -c -f`, sudo
     /// 1.9.17p2, 2026-07-04): runas group `(root:#1000abc)` rc=1 /
     /// `(root:#1000)` rc=0; Defaults user-scope `:#1000abc` rc=1 / `:#1000` rc=0.
-    /// GREEN now, must stay GREEN.
     #[test]
     fn f02_issue423_407_gid_validation_unchanged() {
         // Malformed `#`-GID tails must still fire (visudo rc=1).
@@ -3674,15 +3644,15 @@ mod tests {
         );
     }
 
-    /// STRENGTHENING (issue #423, impl-aware adversarial review): a `#<digits>`
-    /// in an UNQUOTED GAP between TWO separate double-quoted regions. The value
-    /// `"a" #5 "b"` starts AND ends with `"`, so a naive clean-pair strip
+    /// STRENGTHENING (issue #423): a `#<digits>` in an UNQUOTED GAP between TWO
+    /// separate double-quoted regions. The value `"a" #5 "b"` starts AND ends
+    /// with `"`, so a naive clean-pair strip
     /// (`strip_prefix('"').and_then(strip_suffix('"'))`) wrongly treats it as one
     /// quoted region and silences F02 -- but `visudo -c` rc=1 (INVALID): a
     /// Defaults value is a single token, so anything after the first closing
     /// quote breaks the grammar. The `#5` is genuinely unquoted -> F02 must fire.
     /// Forces true region-tracking (interior must have no UNESCAPED `"`), not a
-    /// start+end-quote check. RED against the first #423 fix; GREEN after narrowing.
+    /// start+end-quote check.
     #[test]
     fn f02_issue423_unquoted_hash_between_two_quoted_regions_still_fires() {
         // Oracle: `visudo -c -f` rc=1 (INVALID). Verified 2026-07-04, sudo 1.9.17p2.
@@ -3698,8 +3668,7 @@ mod tests {
     /// an ESCAPED inner quote (`"a\" #5 b"`) IS one clean quoted region --
     /// `visudo -c` rc=0 (VALID), the `#5` is a literal inside the string. F02 must
     /// STAY SILENT. Excludes a lazy over-correction that fires on ANY interior `"`
-    /// (which would wrongly flag this valid escaped-quote value). GREEN before AND
-    /// after the fix.
+    /// (which would wrongly flag this valid escaped-quote value).
     #[test]
     fn f02_issue423_escaped_inner_quote_one_region_stays_silent() {
         // Oracle: `visudo -c -f` rc=0 (VALID; escaped inner quote). Verified
@@ -3744,9 +3713,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `Defaults passprompt="a"#5` -- a `#<digits>` glued directly to a closing
-    /// double quote, no whitespace. RED today: `strip_inline_comment` misreads
-    /// the `#5` as a real comment (its `prev_allows_uid` set omits `"`) and drops
-    /// it before the value ever reaches `has_hash_digits`, so F02 stays silent.
+    /// double quote, no whitespace.
     #[test]
     fn f02_issue424_hash_digits_glued_after_closing_quote_fires() {
         // Fixture: visudo -c -f rc=1, caret on `#5` ("Success" quirk position).
@@ -3790,7 +3757,6 @@ mod tests {
     /// `visudo -c -f` rc=0 (VALID). Blocks an over-fix that treats ANY `#` glued
     /// after a closing quote as invalid: the `next_is_digit` gate must still
     /// distinguish a real comment (`#foo`) from an invalid glued token (`#5`).
-    /// GREEN now, must stay GREEN.
     #[test]
     fn f02_issue424_hash_comment_glued_after_closing_quote_stays_silent() {
         // Fixture: visudo -c -f rc=0 "parsed OK". Verified locally: sudo/visudo

@@ -1,6 +1,6 @@
-//! Sysctl VALUE derivation for the sysctld family (lane 3c's grounding input),
-//! built on `stig_update`'s shared primitives (`cac::extract_block`,
-//! `cac::parse_rule_sysctl`, `cac::parse_var_default`, `jinja`).
+//! Sysctl VALUE derivation for the sysctld family, built on `stig_update`'s
+//! shared primitives (`cac::extract_block`, `cac::parse_rule_sysctl`,
+//! `cac::parse_var_default`, `jinja`).
 //!
 //! This is NOT a blind delegation to `stig_update::derive::derive_table`: the
 //! CIS controls files carry variable SELECTIONS (`<rule>_value=<option>`) inside

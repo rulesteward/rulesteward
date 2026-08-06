@@ -1,14 +1,9 @@
-//! SARIF 2.1.0 renderer round-trip + schema-validation tests (Feature 3e).
+//! SARIF 2.1.0 renderer round-trip + schema-validation tests.
 //!
 //! These tests assert the structure a CORRECT `output::render(Sarif, ..)`
 //! implementation must produce: a SARIF 2.1.0 log that validates against the
 //! OFFICIAL OASIS schema and carries the per-diagnostic ruleId / level /
 //! message / location fields.
-//!
-//! RED state (test-author phase): `output/sarif.rs::render` is still the stub
-//! returning `Err(RenderError::SarifNotImplemented)`, so `output::render`
-//! returns `Err` and the very first `.expect(..)` below fails. The implementer
-//! replaces the stub with a real serde-sarif serializer to turn these GREEN.
 //!
 //! SARIF 2.1.0 schema source (bundled as a test fixture, committed alongside):
 //!   <https://json.schemastore.org/sarif-2.1.0.json>

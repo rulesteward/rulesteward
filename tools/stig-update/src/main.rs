@@ -10,10 +10,8 @@
 //! Common flags: --config <stig-refs.toml>
 //!
 //! Mirrors `tools/sshd-stig-update/src/main.rs` / `tools/auditd-stig-update/src/main.rs`'s
-//! exit-code contract (0 in-sync / 1 drift / 2 any `Err`) and subcommand shape (#512,
-//! session 9h-v0_8-wave4 Lane B - the CaC-fetch-based `check`/`derive` wiring this
-//! binary previously had is replaced by the DISA zip/base_url path those two tools
-//! already use).
+//! exit-code contract (0 in-sync / 1 drift / 2 any `Err`) and subcommand shape,
+//! fetching over the same DISA zip/base_url path those two tools use.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -208,13 +206,9 @@ fn config_path(args: &[String]) -> PathBuf {
 mod tests {
     use super::*;
 
-    // Bonus hardening (post-GREEN Adversarial Testing Loop mutation-strengthening
-    // round, session 9h-v0_8-wave4 Lane B, 2026-07-23): main.rs's small pure glue
-    // functions have no dedicated tests in the sshd/auditd precedent tools either
-    // (per the coordinator dispatch: "the sshd/auditd precedent tools have no
-    // main.rs tests, these are bonus hardening, not gate items"), but they were
-    // quick to add and cheaply lock down behavior a future edit could silently
-    // break.
+    // main.rs's small pure glue functions have no dedicated tests in the
+    // sshd/auditd precedent tools; these cheaply lock down behavior a future edit
+    // could silently break.
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()

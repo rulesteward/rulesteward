@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# RED test suite for scripts/check-dac-guard.sh (#467).
+# Test suite for scripts/check-dac-guard.sh (#467).
 #
-# FROZEN INVOCATION CONTRACT for the gate script (the implementer inherits this):
+# FROZEN INVOCATION CONTRACT for the gate script:
 #
 #   scripts/check-dac-guard.sh [DIR...]
 #
@@ -36,11 +36,11 @@
 #     trivial case where no from_mode(0o000/0o555) calls exist at all).
 #
 # Reference implementation of the guard convention this gate enforces:
-#   crates/rulesteward-sysctld/tests/system.rs:753-777 (and the 7 guards
+#   crates/rulesteward-sysctld/tests/system.rs:754-778 (and the 7 guards
 #   added in #465 across crates/rulesteward-cli/{src,tests}/...).
 #
 # This test script is self-contained: it builds synthetic .rs fixtures in a
-# mktemp dir per case, invokes the (not-yet-implemented) gate against them,
+# mktemp dir per case, invokes the gate against them,
 # and asserts the exit code (and, for violation cases, that the message
 # names the convention). Run with no arguments; safe to run locally or in CI.
 
@@ -253,7 +253,7 @@ EOF
 # odd interior double-quote count), this time ahead of a CORRECTLY guarded
 # deny site using the real repo idiom: from_mode(0o000) followed several
 # lines later, in the SAME fn, by an eprintln! naming CAP_DAC_OVERRIDE
-# (mirrors crates/rulesteward-sysctld/tests/system.rs:753-777, where the
+# (mirrors crates/rulesteward-sysctld/tests/system.rs:754-778, where the
 # marker sits ~13 lines after the from_mode call in the same fn). The
 # earlier raw string must not cause this already-guarded site to be
 # false-flagged -> exit 0 (guarded, no violation).
@@ -284,7 +284,7 @@ fn case9_guarded_real_idiom() {
 EOF
 
 # ---------------------------------------------------------------------------
-# Case 10: round-2 adversarial finding 1 (fail-open). Clones case6's shape
+# Case 10: a fail-open gap marker. Clones case6's shape
 # (an unguarded deny fn followed by a textually adjacent sibling fn that
 # carries a CAP_DAC_OVERRIDE marker), but this time the marker sits in the
 # GAP between the deny fn's closing brace and the sibling fn's OWN header -
@@ -354,7 +354,7 @@ fn case10_freestanding_comment_gap_sibling() {
 EOF
 
 # ---------------------------------------------------------------------------
-# Case 11: round-2 adversarial finding 2 (nested-fn fail-closed - PINNED).
+# Case 11: nested-fn fail-closed (PINNED).
 # An outer test fn makes the deny call, then declares a nested `fn helper()
 # {}` item, then (still lexically inside the outer fn's braces, after the
 # nested item) has a comment naming CAP_DAC_OVERRIDE. The fn-header-anchored
@@ -363,12 +363,12 @@ EOF
 # the second sub-region) is never credited to the from_mode hit (in the
 # first sub-region) -> exit 1.
 #
-# RULING (orchestrator, round 3): this fail-closed behavior is PINNED as the
+# RULING: this fail-closed behavior is PINNED as the
 # contract, not a bug to fix. It can force a spurious/over-strict guard
 # requirement in the rare case of a nested fn item, but it can never hide a
 # real violation (narrowing the search region only removes credit, never
 # grants it) - the opposite failure mode from case10's fail-open gap, which
-# is why case10 must be fixed and this must not be "fixed" into matching
+# is why this must not be "fixed" into matching
 # case10's leniency. The remedy for a real guard in this shape is to place
 # the CAP_DAC_OVERRIDE marker BEFORE the nested item (in the same
 # sub-region as the from_mode call), or to use the dac-override-exempt:
@@ -389,8 +389,8 @@ fn case11_nested_fn_splits_region() {
 EOF
 
 # ---------------------------------------------------------------------------
-# Case 12: round-4 adversarial finding (fail-open, gap-marker-above-code-line
-# - PINNED). The round-3 tail-trim (case10's fix) only removes a CONTIGUOUS
+# Case 12: fail-open, gap-marker-above-code-line (PINNED). The tail-trim
+# that makes case10 pass only removes a CONTIGUOUS
 # trailing run of blank/comment/attribute lines walking backward from the
 # next fn header (or from EOF when there is no next fn). A non-comment code
 # line sitting in the gap between a deny fn's closing brace and the next
@@ -538,7 +538,7 @@ fi
 # prints nothing and still passes.
 #
 # Its two siblings (check-codes-count.sh, check-no-mnt-paths.sh) both carry a
-# `scanned=0` floor and both exit 2 here. This gate was the one that did not.
+# `scanned=0` floor and both exit 2 here.
 # rc 2 is "tool error", matching the sibling contract; rc 1 stays reserved for a
 # real convention violation.
 # ---------------------------------------------------------------------------
