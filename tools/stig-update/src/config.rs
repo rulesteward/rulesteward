@@ -1,23 +1,15 @@
 //! Parse `stig-refs.toml`: the CDN base URL + the per-product pinned DISA STIG zip.
 //! Per-product pins let each RHEL STIG be bumped independently.
 //!
-//! #512 (session 9h-v0_8-wave4 Lane B): this REPLACES the prior ComplianceAsCode
-//! ref-based shape (`products: BTreeMap<String, String>` + `exclude_rules: Vec<String>`)
-//! with the DISA zip/base_url/products shape `tools/sshd-stig-update/src/config.rs`
-//! and `tools/auditd-stig-update/src/config.rs` already use verbatim - grounded in
-//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 4b: the DISA port
-//! needs NO `exclude_rules` equivalent at all (both CaC-era exclusions collapse into
-//! "the xccdf.rs selector simply never selects it" - see that module's doc comment).
-//! `tools/cis-update` does NOT import `stig_update::config` (confirmed: only `jinja`,
-//! `cac`, `derive`, `source` are on the #512 survival list per that crate's Cargo.toml
-//! header and `grep -rn stig_update:: tools/cis-update/src`), so this shape change is
-//! safe - nothing outside this crate depends on the old CaC-ref shape.
-//!
-//! `Config::parse`'s body is intentionally `todo!()`: the barrier test-author (this
-//! lane) declares the target shape and pins the exact expected parse behavior in the
-//! test module below; the implementer fills in the body. Mirrors the sshd/auditd
-//! precedent's own historical RED state for `xccdf.rs::parse_controls` /
-//! `parse_requirements` (both were `todo!()` at their own test-author barrier).
+//! This is the DISA zip/base_url/products shape `tools/sshd-stig-update/src/config.rs`
+//! and `tools/auditd-stig-update/src/config.rs` also use verbatim - grounded in
+//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 4b: the DISA
+//! derivation needs NO `exclude_rules` equivalent at all (both CaC-era exclusions
+//! collapse into "the xccdf.rs selector simply never selects it" - see that module's
+//! doc comment). `tools/cis-update` does NOT import `stig_update::config` (only
+//! `jinja`, `cac`, `derive`, `source`, per that crate's Cargo.toml header and
+//! `grep -rn stig_update:: tools/cis-update/src`), so nothing outside this crate
+//! depends on this shape.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -105,9 +97,7 @@ mod tests {
     use super::Config;
 
     // Byte-identical sample to tools/sshd-stig-update/src/config.rs's own
-    // `SAMPLE` fixture (mirrors that tool's config shape exactly per #512's
-    // "port to DISA XCCDF" mandate - the refs-loading half of the tool is
-    // equally in scope for the port, not just the derivation core).
+    // `SAMPLE` fixture: this tool mirrors that tool's config shape exactly.
     const SAMPLE: &str = "\
 base_url = \"https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip\"
 
@@ -171,13 +161,11 @@ benchmark = \"RHEL 9 STIG V2R9\"
 
     #[test]
     fn the_real_pinned_stig_refs_toml_parses() {
-        // The real committed tools/stig-update/stig-refs.toml (DISA form, #512) must
-        // itself parse under the new shape - this is the "refs shape" acceptance test
-        // the barrier brief calls for, against the actual shipped file (not just a
-        // synthetic SAMPLE), mirroring the same real-file pin the sshd/auditd tools'
-        // own config test modules do NOT have today but which this port's grounding
-        // (grounding doc section 4b: "no exclude_rules equivalent needed") makes
-        // worth asserting directly.
+        // The real committed tools/stig-update/stig-refs.toml (DISA form) must itself
+        // parse, against the actual shipped file rather than a synthetic SAMPLE. The
+        // sshd/auditd tools' own config test modules carry no such real-file pin;
+        // this crate's grounding (grounding doc section 4b: "no exclude_rules
+        // equivalent needed") makes it worth asserting directly.
         let real = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/stig-refs.toml"))
             .expect("the real stig-refs.toml is readable");
         let c = Config::parse(&real).expect("the real committed stig-refs.toml must parse");

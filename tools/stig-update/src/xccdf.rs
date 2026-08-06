@@ -1,20 +1,18 @@
 //! The offline derivation core: parse an official DISA XCCDF benchmark into the
 //! normalized [`DerivedKey`] table for the sysctld-W02 STIG kernel-hardening
-//! baseline (#512, session 9h-v0_8-wave4 Lane B - port from ComplianceAsCode to
-//! DISA XCCDF, mirroring `tools/sshd-stig-update`/`tools/auditd-stig-update`).
+//! baseline (mirroring `tools/sshd-stig-update`/`tools/auditd-stig-update`).
 //!
 //! This is the testable heart of the tool - it takes raw XCCDF text and returns the
 //! derived baseline, with NO network or filesystem. The live fetch that hands it the
-//! XCCDF bytes lives behind the seam in [`crate::source`] (implementer's job; the
-//! existing `source.rs` is CaC-github-api-specific and needs a curl+unzip DISA-zip
-//! fetch added, mirroring `tools/sshd-stig-update/src/source.rs` /
-//! `tools/auditd-stig-update/src/source.rs`).
+//! XCCDF bytes lives behind the seam in [`crate::source`], a curl+unzip DISA-zip
+//! fetch mirroring `tools/sshd-stig-update/src/source.rs` /
+//! `tools/auditd-stig-update/src/source.rs`.
 //!
 //! # How a Rule is selected + classified (grounded in the real DISA XCCDF)
 //!
 //! Full inventory + every V-number/value cited below:
-//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` (this lane's grounding
-//! doc; not part of the repo - the load-bearing facts are restated here so this
+//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` (a grounding doc, not
+//! part of the repo - the load-bearing facts are restated here so this
 //! module doc stands on its own once that scratch file is gone).
 //!
 //! A `<Group>`/`<Rule>` is a settable-sysctl-key requirement IFF its `check-content`
@@ -39,13 +37,11 @@
 //! no `/proc/sys`-based FIPS check at all - it checks via
 //! `update-crypto-policies --show` instead) reads `/proc/sys/crypto/fips_enabled`
 //! via `cat`, never via a `sysctl <key>` command - so it is NATURALLY excluded by
-//! requirement 1 above, with no explicit exclude-list needed. This replaces the old
-//! CaC-era `stig-refs.toml` `exclude_rules = ["sysctl_crypto_fips_enabled",
-//! "sysctl_kernel_exec_shield"]` entirely: `kernel.exec-shield` is ALSO naturally
+//! requirement 1 above, with no explicit exclude-list needed. `config.rs` carries
+//! no exclude-list field, and `kernel.exec-shield` is ALSO naturally
 //! absent (zero DISA Group mentions "exec-shield"/"exec_shield" in any of the three
 //! pinned rhel8/9/10 benchmarks at all - it is a 32-bit-only kernel feature DISA
-//! does not check on RHEL 8+). The new `config.rs` shape carries no
-//! exclude-list field.
+//! does not check on RHEL 8+).
 //!
 //! **Value typing**: every value across the real corpus (96 keys across all three
 //! products, plus 3 new rhel8 keys DISA V2R8 added - see the grounding doc's diff
@@ -327,12 +323,7 @@ mod tests {
     /// overwrite it IN PLACE (to the same grounded fields) if it does - idempotent
     /// either way, unlike a bare `push`. Needed (not just `set_accepted`) for a row
     /// that is ABSENT pre-reconciliation and PRESENT post-reconciliation: a plain
-    /// `push` would duplicate the row once the implementer's `RHEL8_BASELINE`
-    /// already carries it (#512 adversarial-review BLOCKER 1, session
-    /// 9h-v0_8-wave4 Lane B, 2026-07-23 - `reconciled_rhel8`'s three `push`es were
-    /// non-idempotent: correct while `code_table(Rhel8)` was still the
-    /// un-reconciled 28-key table, but duplicating once the implementer lands the
-    /// reconciled 31-key table, since all three keys would then already be present).
+    /// `push` would duplicate the row whenever `RHEL8_BASELINE` already carries it.
     fn upsert(t: &mut Vec<DerivedKey>, key: &str, accepted: &[&str], stig_id: &str, numeric: bool) {
         if let Some(e) = t.iter_mut().find(|d| d.key == key) {
             e.accepted = accepted.iter().map(|s| (*s).to_string()).collect();
@@ -346,26 +337,21 @@ mod tests {
     // --- the golden tests: fixture-derived must equal the RECONCILED table -----
     // Built FROM the shipped `code_table` with the DISA-grounded reconciliation
     // patch applied (lane-b-grounding.md section 5), so these stay correct whether
-    // `baseline.rs` has already been updated to the reconciled values by the time
-    // this runs (patch is then a no-op) or not yet (patch supplies the delta) -
-    // RED today for BOTH reasons at once (parse_baseline is todo!(), AND
-    // baseline.rs has not yet been updated), the same "RED for TWO independent
-    // reasons" shape tools/auditd-stig-update's own xccdf.rs had at its barrier.
-    // The "no-op once baseline.rs is updated" claim REQUIRES every patch operation
-    // to be idempotent: `set_accepted` (narrow-in-place) always was; the rhel8
-    // helper's `push`es were not until they were rewritten to `upsert` above (see
-    // its doc comment) - both forms are now idempotent, so the claim holds for all
-    // three products.
+    // `baseline.rs` already carries the reconciled values (the patch is then a
+    // no-op) or not (the patch supplies the delta). That no-op property REQUIRES
+    // every patch operation to be idempotent: `set_accepted` narrows in place and
+    // `upsert` (see its doc comment above) inserts-or-overwrites, so it holds for
+    // all three products.
 
     /// RHEL8: `net.ipv4.conf.all.rp_filter` narrows from `{1,2}` to `{1}`
-    /// (V-230549/RHEL-08-040285), plus 3 new DISA V2R8 keys the shipped table
-    /// does not have yet: `net.ipv4.conf.default.rp_filter` (V-284947/
+    /// (V-230549/RHEL-08-040285), plus the 3 keys DISA V2R8 added:
+    /// `net.ipv4.conf.default.rp_filter` (V-284947/
     /// RHEL-08-040287), `net.ipv4.conf.all.log_martians` (V-284948/
     /// RHEL-08-040221), `net.ipv4.conf.default.log_martians` (V-284949/
     /// RHEL-08-040222) - all three `ENABLE`-only (`["1"]`), numeric. Uses `upsert`
-    /// (not a bare `push`) for the 3 new keys so this stays correct both before AND
-    /// after the implementer adds them to `RHEL8_BASELINE` (converges to the same
-    /// 31-row table either way, never duplicating).
+    /// (not a bare `push`) for those 3 keys so this converges to the same 31-row
+    /// table whether or not `RHEL8_BASELINE` already carries them, never
+    /// duplicating.
     fn reconciled_rhel8() -> Vec<DerivedKey> {
         let mut t = code_table(TargetVersion::Rhel8);
         set_accepted(&mut t, "net.ipv4.conf.all.rp_filter", &["1"]);
@@ -730,25 +716,22 @@ If not "1", this is a finding.</check-content></check></Rule></Group></Benchmark
         );
     }
 
-    // --- mutation-strengthening tests (post-GREEN Adversarial Testing Loop,
-    // impl commit 03960a3, session 9h-v0_8-wave4 Lane B, 2026-07-23) - the
-    // impl-aware review found no miss-case, but the coverage-blind mutation gate
-    // on this file surfaced 4 survivors. Each test below pins the specific state
-    // guard whose survivor is listed. None of these shapes are observed in the
-    // real DISA corpus (every real Rule has exactly one <version> and one
-    // check-content); they defend against a hypothetical future XCCDF reformat,
-    // the same "fail-closed / behave-correctly for the unobserved case" posture
-    // `duplicate_key_with_differing_values_fails_closed` and its siblings above
-    // already establish for this module.
+    // --- mutation-strengthening tests: each one pins a specific state guard in
+    // the element walker, named in its own comment. None of these shapes are
+    // observed in the real DISA corpus (every real Rule has exactly one <version>
+    // and one check-content); they defend against a hypothetical future XCCDF
+    // reformat, the same "fail-closed / behave-correctly for the unobserved case"
+    // posture `duplicate_key_with_differing_values_fails_closed` and its siblings
+    // above already establish for this module.
 
     #[test]
     fn only_the_first_version_element_sets_the_stig_id() {
         // Kills TWO survivors at once, both guarding the SAME "first <version>
         // wins" contract from opposite ends:
-        //   - line 147 `b"version" if cur_stig_id.is_none()` (Start): mutated to
+        //   - the `b"version" if cur_stig_id.is_none()` Start guard: mutated to
         //     `true` would re-arm capture for a SECOND <version>, so the LATER
         //     value would overwrite the first.
-        //   - line 195 `b"version" if capture == Capture::Version` (End): mutated
+        //   - the `b"version" if capture == Capture::Version` End guard: mutated
         //     to `true` would fire on ANY `</version>` close, even one reached
         //     while `capture` is `None` (as it legitimately is here, once the
         //     intervening check-content's End resets it) - corrupting
@@ -756,10 +739,9 @@ If not "1", this is a finding.</check-content></check></Rule></Group></Benchmark
         //     buffer (here: the empty string the check-content's End left behind
         //     via `mem::take`), not the second <version>'s own text.
         // A check-content is deliberately sandwiched between the two <version>
-        // elements so the buffer-tampering half of the guard-195 mutant is
+        // elements so the buffer-tampering half of that End-guard mutant is
         // exercised (without it, `text_buf` would coincidentally still hold the
-        // first version's text and the mutant would go undetected - see the
-        // adversarial-review-round test-report notes for the full trace).
+        // first version's text and the mutant would go undetected).
         let doc = r#"<Benchmark><Group id="V-10"><Rule><version>RHEL-09-999010</version>
             <check><check-content>$ sudo sysctl kernel.dmesg_restrict
 kernel.dmesg_restrict = 1
@@ -778,7 +760,7 @@ If not "1", this is a finding.</check-content></check>
     #[test]
     fn numeric_character_reference_inside_check_content_resolves_into_the_value() {
         // Kills the `Event::GeneralRef(r) => { if capture != Capture::None { ... }
-        // }` survivor (line 173, `!=` mutated to `==`): quick-xml 0.41 tokenizes a
+        // }` survivor (`!=` mutated to `==`): quick-xml 0.41 tokenizes a
         // character/entity reference as its OWN event, separate from the
         // surrounding Text events (module doc). A numeric character reference for
         // the digit '1' (`&#49;`) sits INSIDE the echo line's value, while we ARE
@@ -805,7 +787,7 @@ If not "1", this is a finding.</check-content></check></Rule></Group></Benchmark
     #[test]
     fn a_premature_check_content_close_does_not_clobber_an_already_extracted_value() {
         // Kills the `b"check-content" if capture == Capture::CheckContent`
-        // survivor (line 199, End): mutated to `true` would fire on ANY
+        // survivor (the End arm): mutated to `true` would fire on ANY
         // `</check-content>` close, even one reached while `capture` is `None`.
         // A (deliberately malformed / not real-DISA-shaped) NESTED check-content
         // forces exactly that: the INNER close legitimately captures the real

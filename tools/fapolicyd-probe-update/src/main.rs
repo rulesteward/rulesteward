@@ -13,9 +13,8 @@
 //! requires exactly one --target; reads DIR/fapolicyd<N>-{version,pattern,e07}.tsv).
 //!
 //! This file is CLI plumbing only (arg parsing, subcommand dispatch, rendering); the
-//! parse/derive/check LOGIC it calls into ([`fapolicyd_probe_update::transcript`],
-//! [`fapolicyd_probe_update::derive`]) was `todo!()`-stubbed during the
-//! RED-test-authoring pass (issue #478) and filled in by a later implementer pass.
+//! parse/derive/check LOGIC it calls into lives in
+//! [`fapolicyd_probe_update::transcript`] and [`fapolicyd_probe_update::derive`].
 //! `tests/cli.rs` pins the exit-code / output contract.
 
 use std::path::{Path, PathBuf};
@@ -237,15 +236,3 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1))
         .cloned()
 }
-
-// NOTE (RED-test-authoring pass, issue #478): the plumbing helpers above (`flag`,
-// `selected_products`, `transcript_dir_flag`, `require_single_product_for_transcript_dir`,
-// `fixture_path`) are fully implemented, not `todo!()` stubs - they are pure CLI-arg
-// parsing, outside the "parse/derive/check" domain-logic scope this pass excludes.
-// They intentionally have NO unit tests here: this session's gate requires every
-// authored test in this crate to currently FAIL (a mechanical 100%-RED barrier
-// check), and a test asserting these already-correct functions' current behavior
-// would pass today. `tests/cli.rs` exercises the full pipeline (which panics inside
-// the still-`todo!()` transcript::parse_tsv / derive::check_* core) so every
-// authored test in this crate is RED. A future implementer session is free to add
-// direct unit tests for this plumbing alongside filling in the stubs.

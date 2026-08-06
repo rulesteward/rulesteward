@@ -4,8 +4,8 @@
 //!
 //! Unlike `tools/sshd-stig-update`'s `DerivedControl` (one row per sshd_config
 //! DIRECTIVE, unique-keyword-per-Rule), one [`DerivedRule`] row is one REQUIRED
-//! RULES.D LINE, not one requirement/Group: the grounding doc (P2, session
-//! 7c-v0_6-wave3, Part B.5.8/C.5) proves a single audit key can legitimately be
+//! RULES.D LINE, not one requirement/Group: the grounding doc (P2,
+//! Part B.5.8/C.5) proves a single audit key can legitimately be
 //! shared by several DISTINCT DISA Rules (e.g. `identity` on 7 separate watch
 //! requirements in rhel9), and a single requirement can require MULTIPLE lines
 //! (an arch=b32/b64 pair, a 2x2 Cartesian product, or multiple watched paths) --
@@ -104,32 +104,16 @@ mod tests {
 
     #[test]
     fn code_table_projects_the_populated_shipped_tables() {
-        // The shipped RHEL*_REQUIRED tables are now populated (issue #474); this
-        // is a parity pin on the PROJECTION MECHANISM, not a content oracle -- the
-        // lengths mirror the frozen per-product line counts pinned by
+        // A parity pin on the PROJECTION MECHANISM, not a content oracle --
+        // the lengths mirror the frozen per-product line counts pinned by
         // `xccdf.rs`'s `rhelN_fixture_reproduces_code_table_exactly` /
-        // `rhelN_known_answer_counts` tests, and each spot-check id is one this
-        // test-author independently confirmed present in the shipped table.
+        // `rhelN_known_answer_counts` tests.
         //
-        // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): counts bumped from
-        // 61/67/75 to 62/69/77 (one new Control-shaped deepening entry on
-        // RHEL8, two each on RHEL9/RHEL10 -- see `xccdf.rs`'s known-answer
-        // tests for the full grounding). That bump already landed and is
-        // GREEN.
-        //
-        // SECOND, additive bump (also #523, additive round 2): the
-        // "--loginuid-immutable" deepening entry adds one more row each to
-        // RHEL8 (62 -> 63) and RHEL9 (69 -> 70); RHEL10 has no
-        // loginuid-immutable control and stays at 77. Mirrors the same bump
-        // already applied to `xccdf.rs`'s `rhelN_known_answer_counts` (this
-        // test's own doc comment above says its lengths track those).
-        //
-        // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+        // Two DISA facts behind the per-product spread: RHEL10 has no
+        // loginuid-immutable control at all, and DISA RHEL 9 STIG
         // V2R7 -> V2R9 rewrote 9 identity/login rules from single-line watch
         // form into dual-arch syscall form (net +9) and added V-279936
         // (cron_exec, 4 dual-arch lines replacing 2 old watch lines, net +2).
-        // RHEL9: 70 -> 81. RHEL8/RHEL10 are zero-content-drift bumps (V2R8/
-        // V1R2), unchanged at 63/77.
         let rhel8 = code_table(TargetVersion::Rhel8);
         let rhel9 = code_table(TargetVersion::Rhel9);
         let rhel10 = code_table(TargetVersion::Rhel10);

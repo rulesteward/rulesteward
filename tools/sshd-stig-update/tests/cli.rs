@@ -228,12 +228,9 @@ fn help_exits_0() {
     );
 }
 
-// --- check-pin (#550 lane-5 rework, BLOCKER 5): CLI wiring, offline --------
+// --- check-pin: CLI wiring, offline ----------------------------------------
 //
-// Phase 0 already landed the `sshd-stig-check-pin` justfile recipe running
-// `cargo run -- check-pin`; today that subcommand falls into the catch-all
-// `unknown subcommand` branch (see `unknown_subcommand_exits_2` above - the
-// SAME code path). These tests pin two things the pure `pin.rs` unit tests
+// These tests pin two things the pure `pin.rs` unit tests
 // cannot: (1) `check-pin` must be a RECOGNIZED subcommand, and (2) the
 // PROCESS must exit 0 for every `PinStatus`, including `Unavailable` -
 // `main.rs::run`'s `Result<ExitCode, String>` maps `Err` to exit 2 (see
@@ -243,13 +240,13 @@ fn help_exits_0() {
 // `u8` were correct in isolation.
 //
 // Since CI must not depend on the network (#550's central constraint), these
-// tests never invoke `check-pin` without a `--fixture`: a NEW, test-only CLI
-// flag this test file's contract requires the implementer to add, mirroring
+// tests never invoke `check-pin` without a `--fixture`: a test-only CLI
+// flag mirroring
 // `--file`'s existing "offline override" precedent for `check`/`derive`.
 // `--fixture <path>` requires exactly one `--product` (same rule as
 // `--file`) and reads a plain-text file, one line per probe IN ORDER (the
 // same order `pin::Prober::probe` is called in): `FOUND`, `NOTFOUND`, or
-// `ERR:<message>`. The implementer wires this into an in-process fake
+// `ERR:<message>`. `check-pin` wires this into an in-process fake
 // `Prober` reading those lines; no real `curl` call happens when `--fixture`
 // is given.
 
@@ -263,8 +260,7 @@ fn help_exits_0() {
 /// `check_pin_respects_product_selection` and
 /// `check_pin_reports_newer_revision_and_still_exits_0` together pin that
 /// `--product` really selects the requested pin (see the former test's own
-/// doc comment, corrected #550 lane-5 ATL L5-b, for exactly which cheat
-/// each one catches).
+/// doc comment for exactly which cheat each one catches).
 const PIN_TEST_STIG_REFS: &str = "base_url = \"https://mirror.example.test/stigs\"\n\n\
      [products.rhel9]\n\
      zip = \"U_RHEL_9_V2R9_STIG.zip\"\n\
@@ -363,13 +359,10 @@ fn check_pin_reports_newer_revision_and_still_exits_0() {
 
 #[test]
 fn check_pin_respects_product_selection() {
-    // #550 lane-5 round-2 rework, CONCERN: with only ONE product in
-    // `PIN_TEST_STIG_REFS`, a handler that ignores `--product` entirely
-    // would still pass every test above - the same shape as round-1
-    // blocker 1, moved to the config -> find_latest plumbing.
+    // With only ONE product in `PIN_TEST_STIG_REFS`, a handler that ignores
+    // `--product` entirely would still pass every test above.
     //
-    // [CORRECTED, #550 lane-5 ATL, L5-b - an earlier draft of this comment
-    // had this backwards.] This test pins the MIRROR-IMAGE cheat: a handler
+    // This test pins the MIRROR-IMAGE cheat: a handler
     // that always probes the LAST config entry (equivalently, always
     // rhel9). The "always the FIRST entry" cheat is killed by
     // `check_pin_reports_newer_revision_and_still_exits_0` instead, because
@@ -412,7 +405,7 @@ fn check_pin_respects_product_selection() {
 
 #[test]
 fn check_pin_unavailable_prober_still_exits_0_not_2() {
-    // The sharpest clause of blocker 5: `main.rs::run`'s `Result<ExitCode,
+    // The sharpest clause of the exit-0 contract: `main.rs::run`'s `Result<ExitCode,
     // String>` maps `Err` to exit 2 (see `check_missing_file_exits_2` /
     // `check_unclassifiable_rule_exits_2` above). An impl that wires
     // `PinStatus::Unavailable` through that SAME `Err` path would satisfy
@@ -446,17 +439,17 @@ fn check_pin_unavailable_prober_still_exits_0_not_2() {
     );
 }
 
-// --- workflow <-> report() literal coupling (#550 lane-5 ATL, MISS-1/MISS-2) -
+// --- workflow <-> report() literal coupling ---------------------------------
 //
 // Nothing else couples `.github/workflows/sshd-pin-staleness.yml`'s "Detect a
 // staleness hit" grep to `pin::report`'s own message text: rewording either
 // side independently would leave every test in this file green while
 // silently breaking (or permanently disabling) the staleness-detection
-// issue-opening path. MISS-1 proved this: rewording report()'s two
+// issue-opening path. Rewording report()'s two
 // actionable messages left 142/142 tests green while the workflow's grep
 // would have silently gone `hit=false` forever. Pin both directions.
 //
-// USER RULING (MISS-2): `PinStatus::Unparseable` IS actionable - report()'s
+// `PinStatus::Unparseable` IS actionable - report()'s
 // own message already tells a human to act ("check stig-refs.toml for a
 // typo"), and if DISA ever changes its filename scheme, the pin legitimately
 // becomes unparseable while `check`/`derive` keep working, silently
@@ -480,8 +473,7 @@ fn workflow_grep_literals_stay_coupled_to_report_actionable_messages() {
     // the explanatory comment block and once in the real grep. A whole-file
     // `contains` therefore stays green when a maintainer narrows the real
     // pattern and leaves the comment untouched -- which is precisely the
-    // #550 MISS-1 failure this test exists to prevent, reintroduced by the
-    // test itself (caught by the session-9j senior integration review).
+    // failure this test exists to prevent, reintroduced by the test itself.
     let grep_lines = WORKFLOW_YML
         .lines()
         .filter(|l| l.contains("grep -qE"))
@@ -553,12 +545,12 @@ fn workflow_grep_literals_stay_coupled_to_report_actionable_messages() {
     }
 }
 
-// --- check-pin Unparseable (#550 lane-5 ATL, MISS-2/MISS-4): CLI wiring ----
+// --- check-pin Unparseable: CLI wiring --------------------------------------
 
 #[test]
 fn check_pin_unparseable_pin_still_exits_0() {
-    // USER RULING (MISS-2): Unparseable IS actionable (see the coupling
-    // test above - the workflow now greps for it too), but the PROCESS must
+    // Unparseable IS actionable (see the coupling
+    // test above - the workflow greps for it too), but the PROCESS must
     // still exit 0 - the same non-blocking contract as every other
     // PinStatus. A config/typo problem is news for a human, not a build
     // failure. No probe should happen (the empty `--fixture` file would
@@ -589,7 +581,7 @@ fn check_pin_unparseable_pin_still_exits_0() {
 
 #[test]
 fn check_pin_unparseable_oversized_revision_does_not_panic_and_exits_0() {
-    // #550 lane-5 ATL MISS-4: a hand-edited stig-refs.toml pin whose minor
+    // A hand-edited stig-refs.toml pin whose minor
     // has rolled to `u32::MAX` must not crash the PROCESS (exit 101, Rust's
     // default panic code) - it must exit 0 like every other PinStatus. This
     // can only be caught at the process boundary: `pin.rs`'s own unit tests

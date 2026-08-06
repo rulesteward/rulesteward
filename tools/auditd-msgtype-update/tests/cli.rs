@@ -219,13 +219,14 @@ fn check_tampered_kernel_header_bytes_fail_closed_exits_2() {
     );
 }
 
-/// PROVENANCE fail-closed, audit-records.h half (adversarial-test review
-/// round 1, BLOCKER): the THIRD pinned file needs its own tamper test - an
+/// PROVENANCE fail-closed, audit-records.h half: the THIRD pinned file needs
+/// its own tamper test - an
 /// impl that sha-verifies `msg_typetab.h` and the kernel header but NOT
-/// `audit-records.h` passed the previous suite (the only test that mutated
-/// audit-records.h bytes was the conflict test below, which deliberately
-/// supplies a pin-matching `--config`, so the sha path was never exercised
-/// with mismatched audit-records.h bytes). The tamper is parse-invariant (an
+/// `audit-records.h` passes the rest of this suite (the only other test that
+/// mutates audit-records.h bytes is the conflict test below, which
+/// deliberately supplies a pin-matching `--config`, so the sha path is never
+/// exercised there with mismatched audit-records.h bytes). The tamper is
+/// parse-invariant (an
 /// appended block comment; the define scan only reads `#define` lines), so
 /// only the hash gate can catch it.
 #[test]
@@ -341,8 +342,8 @@ fn derive_prints_both_derived_tables() {
     }
 }
 
-/// `derive` must TRACK its input, not print a canned table (adversarial-test
-/// review round 1: a hardcoded-string derive impl survived the real-fixtures
+/// `derive` must TRACK its input, not print a canned table (a
+/// hardcoded-string derive impl satisfies the real-fixtures
 /// substring pins in `derive_prints_both_derived_tables`). Doctor
 /// `"SYSCALL"` -> `"SYSCALLX"` (the test-local pin-matching `--config` keeps
 /// the sha gate green): the listing must now carry the doctored name and NO

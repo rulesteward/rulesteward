@@ -2,15 +2,10 @@
 //! / `derive --transcript-dir`) against the committed probe fixtures and the real
 //! `crates/rulesteward-fapolicyd` shipped tables.
 //!
-//! Every test here is RED as of the RED-test-authoring pass (issue #478): the CLI
-//! plumbing (arg parsing, subcommand dispatch) is fully implemented, but every path
-//! exercised below reaches `fapolicyd_probe_update::transcript::parse_tsv` (a
-//! `todo!()` stub), so the child process panics instead of returning the asserted
-//! exit code / stdout. This mirrors `tools/sshd-probe-update/tests/cli.rs`'s offline
+//! This mirrors `tools/sshd-probe-update/tests/cli.rs`'s offline
 //! contract (0 in sync, 1 on drift, 2 on error), adapted to the 3-file-per-target
 //! `--transcript-dir` layout (see `src/main.rs`'s module doc). The docker LIVE path
-//! is not exercised here (no docker in CI, and out of this pipeline's test scope per
-//! the pipeline brief's PRE-ANSWERED decision #1/#4).
+//! is not exercised here (no docker in CI).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -176,7 +171,7 @@ fn check_rhel8_mutated_version_fixture_exits_1_and_names_the_version() {
     );
 }
 
-/// ATL finding 1b (adversary MISS 1, end-to-end leg): the same pid category flip as
+/// The same pid category flip as
 /// derive.rs's `check_e07_category_mismatch_reports_directional_drift_naming_both_categories`,
 /// driven through the built binary - `check` must exit 1 and its stdout must name
 /// the pid drift in both directions (probed Signed added, shipped Unsigned
@@ -238,15 +233,14 @@ fn derive_rhel8_real_fixtures_exits_0_and_reports_no_drift() {
 }
 
 // -----------------------------------------------------------------------------
-// ATL strengthening round: CLI-glue pins for mutation survivors in main.rs.
+// CLI-glue pins for main.rs.
 // -----------------------------------------------------------------------------
 
-/// ATL finding 3 (mutation survivor `require_single_product_for_transcript_dir ->
-/// Ok(())`, main.rs): `--transcript-dir` with the default all-three-targets
-/// selection must be REJECTED with the guard's error on stderr and exit 2. The
-/// mutant silently proceeds to read all nine committed fixtures and exits 0
-/// in-sync, so the exit-code assert alone kills it; the message assert pins WHICH
-/// error fired.
+/// `--transcript-dir` with the default all-three-targets
+/// selection must be REJECTED with the guard's error on stderr and exit 2. A
+/// `require_single_product_for_transcript_dir -> Ok(())` impl silently proceeds to
+/// read all nine committed fixtures and exits 0 in-sync, so the exit-code assert
+/// alone kills it; the message assert pins WHICH error fired.
 #[test]
 fn check_transcript_dir_without_single_target_exits_2() {
     let (code, _out, err) = run(&["check", "--transcript-dir", &fixtures_dir()]);
@@ -261,9 +255,9 @@ fn check_transcript_dir_without_single_target_exits_2() {
     );
 }
 
-/// ATL finding 4 (mutation survivor `print_help -> ()`, main.rs): the cheap pin -
 /// `--help` must exit 0 and print a non-empty usage on stderr naming both
-/// subcommands. The mutant prints nothing, dying on the content asserts.
+/// subcommands. A `print_help -> ()` impl prints nothing, dying on the content
+/// asserts.
 #[test]
 fn help_exits_0_and_prints_usage_naming_both_subcommands() {
     let (code, _out, err) = run(&["--help"]);

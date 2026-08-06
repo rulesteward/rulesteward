@@ -161,7 +161,7 @@ mod tests {
     /// assertion that makes `check` exit 0 meaningful: the shipped
     /// `MSGTYPE_NAMES` (189) / `APPARMOR_MSGTYPE_NAMES` (8) were hand-derived
     /// from these same pinned sources, verified mechanically at authoring
-    /// time (2026-07-10, session 7c P1).
+    /// time (2026-07-10).
     #[test]
     fn drift_real_fixtures_is_zero() {
         let derived = derive_real();

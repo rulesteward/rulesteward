@@ -31,8 +31,7 @@
 //! [`auditd_msgtype_update::source::verify_sha256`] guard the live fetch path
 //! uses. Without it, a `check --fixtures` PR gate would report "OK (0 drift)"
 //! on corrupted or stale fixture bytes - a fail-OPEN divorcing the gate from
-//! the pinned upstream provenance (the exact fail-open the sibling
-//! fapolicyd-attr-update's ATL round-1 adversary found).
+//! the pinned upstream provenance.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -53,9 +52,9 @@ fn main() -> ExitCode {
 }
 
 /// Dispatch `check` / `derive` / help; an unknown subcommand is an `Err`
-/// (exit 2). The implementer structures the subcommand bodies (mirroring
+/// (exit 2). The subcommand bodies mirror
 /// `tools/fapolicyd-attr-update/src/main.rs`'s `cmd_check` / `cmd_derive` /
-/// `derive_version` / `read_and_verify` split); the frozen `tests/cli.rs`
+/// `derive_version` / `read_and_verify` split; the frozen `tests/cli.rs`
 /// suite pins the behavior:
 /// * `check --fixtures` on the real committed fixtures + committed config:
 ///   exit 0, stdout carries `OK (0 drift`.

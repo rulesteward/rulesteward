@@ -149,7 +149,7 @@ pub fn runtime_only_directives(xccdf: &str) -> Vec<String> {
     let check_re = Regex::new(CHECK_CONTENT_PATTERN).unwrap();
     // DISA's runtime idiom: `sshd -T | grep -i <keyword>`. Anchored on the pipe from
     // `sshd -T`, so a bare `grep -i <kw>` elsewhere in the block (e.g. against a file)
-    // does not match this pattern. Hardened (#468 adversarial round 2) to tolerate
+    // does not match this pattern. Tolerates
     // DISA-plausible phrasing variants not yet seen in any pinned benchmark:
     // - intervening redirection between `-T` and the pipe (`-T 2>/dev/null |`), via
     //   `[^|\n]*` instead of requiring only whitespace before the pipe;
@@ -358,12 +358,12 @@ mod tests {
     /// Every value-rule KIND must be exercised by the RHEL9 fixture and classified
     /// correctly (anti-tautology: hard-coded expectations from the DISA grounding).
     ///
-    /// #549 (session 9e-wave2c pipeline P2): the `compression` assertion this test
-    /// previously carried is REMOVED (not weakened) -- DISA RHEL 9 STIG V2R9
-    /// dropped Compression (V-258002/RHEL-09-255130), so its Group was removed
-    /// from `RHEL9_FIXTURE` too and `find(&d, "compression")` would now panic
-    /// ("keyword present" expect fires). The AnyOf grammar this assertion also
-    /// exercised stays covered by `three_alternative_anyof_captures_all` below,
+    /// DISA RHEL 9 STIG V2R9
+    /// dropped Compression (V-258002/RHEL-09-255130), so its Group is absent
+    /// from `RHEL9_FIXTURE` and `find(&d, "compression")` would panic
+    /// ("keyword present" expect fires); there is no `compression` row to
+    /// assert here. The AnyOf grammar
+    /// stays covered by `three_alternative_anyof_captures_all` below,
     /// which is independent of the real fixture / shipped table.
     #[test]
     fn rhel9_all_semantics_classified() {
@@ -393,8 +393,8 @@ mod tests {
 
     /// The fixtures carry decoy non-directive Groups (crypto-policies + file-perms);
     /// the selector must EXCLUDE them (exact expected counts, no decoy keywords).
-    /// #549: RHEL9 was 20 (V2R7); V2R9 dropped Compression, leaving 19 (same
-    /// count as RHEL10, which never had it).
+    /// RHEL9 V2R9 dropped Compression, leaving 19 (same count as RHEL10,
+    /// which never had it).
     #[test]
     fn decoys_excluded_exact_counts() {
         assert_eq!(parse_controls(RHEL8_FIXTURE).unwrap().len(), 14);
@@ -455,9 +455,9 @@ mod tests {
         assert_eq!(d[0].value_rule, OwnedValueRule::ExactLower("no".into()));
     }
 
-    // --- adversarial miss-cases (impl-aware review, 2026-07-07) ---------------
+    // --- adversarial miss-cases -----------------------------------------------
 
-    /// MISS A: a fixtext that shows an illustrative/old value line before the
+    /// A fixtext that shows an illustrative/old value line before the
     /// canonical one must NOT silently derive the first value. Two DIFFERING config
     /// lines are ambiguous -> fail closed (error), so drift can never be masked.
     #[test]
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(d[0].value_rule, OwnedValueRule::ExactLower("no".into()));
     }
 
-    /// MISS B: an "or less" clause that belongs to a DIFFERENT directive (a
+    /// An "or less" clause that belongs to a DIFFERENT directive (a
     /// cross-reference in the check-content) must not demote an exact-value control.
     /// ClientAliveCountMax stays NumericExact(1) even when its check mentions
     /// "ClientAliveInterval ... 600 or less".
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(d[0].value_rule, OwnedValueRule::NumericCeiling(600));
     }
 
-    /// MISS C: a three-alternative AnyOf ("set the value to X, Y, or Z") must capture
+    /// A three-alternative AnyOf ("set the value to X, Y, or Z") must capture
     /// ALL alternatives, not collapse to a single over-strict ExactLower that would
     /// reject a compliant value.
     #[test]
@@ -534,9 +534,9 @@ mod tests {
     }
 
     // --- #507 STIG Rule id (`<version>`) capture ------------------------------
-    // 8b hand-authored the RHEL{8,9,10}_RULE_ID maps in stig.rs from the DISA
-    // XCCDF but this parser never read `<Rule><version>`, so those maps had zero
-    // drift protection. The Rule id is the canonical `ControlRef::id`; the
+    // Reading `<Rule><version>` is what gives the hand-authored
+    // RHEL{8,9,10}_RULE_ID maps in stig.rs their drift protection. The Rule id
+    // is the canonical `ControlRef::id`; the
     // Group id (already captured as `v_number`) is the DISA V-number alias.
 
     #[test]
@@ -694,24 +694,23 @@ mod tests {
         );
     }
 
-    // --- #468 adversarial round 2: DISA-plausible runtime idiom variants -------
-    // (2026-07-16, post-GREEN impl-aware adversarial review, USER DECISION: harden
-    // `runtime_only_directives`'s runtime regex to tolerate these). The regex
-    // `sshd\s+-T\s*\|\s*grep\s+-i[A-Za-z]*\s+([a-z][a-z0-9]+)` goes SILENT (returns
+    // --- #468 DISA-plausible runtime idiom variants ---------------------------
+    // A narrower regex,
+    // `sshd\s+-T\s*\|\s*grep\s+-i[A-Za-z]*\s+([a-z][a-z0-9]+)`, goes SILENT (returns
     // empty, i.e. the guard does NOT fire) on phrasing variants that appear in no
     // CURRENT pinned RHEL 8/9/10 benchmark but are DISA-plausible: the pinned RHEL9
     // fixture itself already shows DISA quoting a grep keyword and using a combined
     // flag elsewhere in the SAME document (`$ sudo grep -i Ciphers
     // /etc/crypto-policies/back-ends/opensshserver.config`, V-257989 /
     // RHEL-09-255065 - a bare grep, not the `sshd -T |` runtime idiom, but proof DISA
-    // does quote/combine grep invocations in this XCCDF family). These tests are RED
-    // against the unhardened regex; they must turn GREEN once the regex is widened.
+    // does quote/combine grep invocations in this XCCDF family). Each test below
+    // fails against that narrower regex and passes against the one in use.
 
     /// Variant 1a: the runtime keyword wrapped in double quotes
     /// (`grep -i "maxauthtries"`). DISA-plausible because DISA already quotes grep
-    /// keywords elsewhere in this XCCDF (see module note above); the unhardened regex
-    /// requires the keyword to start immediately after whitespace with no quote, so
-    /// this is currently silently skipped.
+    /// keywords elsewhere in this XCCDF (see the section note above); a regex that
+    /// requires the keyword to start immediately after whitespace with no quote
+    /// silently skips it.
     #[test]
     fn runtime_only_double_quoted_keyword_is_surfaced() {
         let doc = "<Benchmark><Group id=\"V-900001\"><Rule><version>RHEL-09-900001</version>\
@@ -765,9 +764,9 @@ mod tests {
 
     /// Variant 2: output redirection between `sshd -T` and the pipe
     /// (`sshd -T 2>/dev/null | grep -i maxauthtries`). DISA-plausible because
-    /// suppressing stderr before piping is a common shell idiom; the unhardened
-    /// regex requires the pipe immediately (only whitespace) after `-T`, so any
-    /// intervening redirection breaks the match today.
+    /// suppressing stderr before piping is a common shell idiom; a regex that
+    /// requires the pipe immediately (only whitespace) after `-T` breaks the match
+    /// on any intervening redirection.
     #[test]
     fn runtime_only_redirected_before_pipe_is_surfaced() {
         let doc = "<Benchmark><Group id=\"V-900004\"><Rule><version>RHEL-09-900004</version>\
@@ -784,8 +783,8 @@ mod tests {
 
     /// Variant 3: combined/reordered grep flags (`grep -qi maxauthtries`, `-i` NOT
     /// first). DISA-plausible because `-q`/`-i` combine in either order in real shell
-    /// usage; the unhardened regex requires the literal substring `-i` to start
-    /// immediately after `grep\s+`, so a leading `-q` breaks the match today.
+    /// usage; a regex that requires the literal substring `-i` to start
+    /// immediately after `grep\s+` breaks the match on a leading `-q`.
     #[test]
     fn runtime_only_combined_flag_order_is_surfaced() {
         let doc = "<Benchmark><Group id=\"V-900005\"><Rule><version>RHEL-09-900005</version>\

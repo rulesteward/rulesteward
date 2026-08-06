@@ -12,9 +12,7 @@ use crate::registry::{Shipped, ShippedControl};
 
 /// The live anchor pairs `check` asserts inside the derived sudoers family:
 /// (control id, mapped rule). Uniform across rhel8 v4.0.0 / rhel9 v2.0.0 /
-/// rhel10 v1.0.1 at the pinned ref (grounded 2026-07-18). The ids sudo-W04
-/// currently ships (1.3.2/1.3.3) are the OLDER benchmark generation - lane #526
-/// absorbs that renumber; the gate pins the pinned-CaC truth.
+/// rhel10 v1.0.1 at the pinned ref (grounded 2026-07-18).
 pub const ANCHORS: [(&str, &str); 2] = [
     ("5.2.2", "sudo_add_use_pty"),
     ("5.2.3", "sudo_custom_logfile"),

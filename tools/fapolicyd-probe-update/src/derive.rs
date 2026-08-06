@@ -726,24 +726,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ATL strengthening round (post-GREEN): pins for check_e07's MISMATCH and
-    // UNKNOWN-ATTR arms, which the impl-aware adversary (MISS 1 / MISS 2) and the
-    // clean mutation run (survivor: `replace match guard shipped_cat == *probed_cat
-    // with true`) independently flagged as unprotected. The gidflip test above
+    // Pins for check_e07's MISMATCH and UNKNOWN-ATTR arms. The gidflip test above
     // deliberately accepts EITHER an error or drift, so it never forces the
     // mismatch arm itself; these two do.
     // -----------------------------------------------------------------------
 
-    /// ATL finding 1 (adversary MISS 1 + the derive.rs match-guard mutation
-    /// survivor): a fixture whose pid rows flip to the rhel9+ shape (`pid_int` ->
+    /// A fixture whose pid rows flip to the rhel9+ shape (`pid_int` ->
     /// reject, `pid_signed_negfirst` -> accept) makes `derive_e07` classify `pid` as
     /// `Signed` while the shipped `type_category_for("pid", Rhel8)` says `Unsigned`
     /// (attrs.rs lines 157-167) - a CATEGORY MISMATCH, which must land in the
     /// mismatch arm as directional drift: probed category in `added`, shipped
     /// category in `removed`. A `guard -> true` mutant swallows the mismatch into
     /// the in-sync arm (empty drift); a swapped added/removed corruption reverses
-    /// the direction. Both die on the directional asserts below. Repro verified by
-    /// the adversary against the real impl under /var/tmp/7b-atl-p2/.
+    /// the direction. Both die on the directional asserts below.
     #[test]
     fn check_e07_category_mismatch_reports_directional_drift_naming_both_categories() {
         let mutated = RHEL8_E07
@@ -778,14 +773,13 @@ mod tests {
         );
     }
 
-    /// ATL finding 2 (adversary MISS 2): an attribute the probe covers but the
+    /// An attribute the probe covers but the
     /// shipped table does not know (`type_category_for` -> `None`, attrs.rs lines
     /// 157-177 falling through to `type_category`'s `None` arm) must surface as
     /// drift flagged "unknown to the shipped table" - the arm that catches a future
     /// fapolicyd adding a brand-new attribute. Appends two synthetic `foobar` rows
-    /// (int accept / str reject -> classifies `Unsigned`, mirroring
-    /// /var/tmp/7b-atl-p2/unk/) to the otherwise in-sync rhel8 fixture so the ONLY
-    /// drift is the unknown attr.
+    /// (int accept / str reject -> classifies `Unsigned`) to the otherwise in-sync
+    /// rhel8 fixture so the ONLY drift is the unknown attr.
     #[test]
     fn check_e07_unknown_attr_reports_drift_flagged_unknown_to_the_shipped_table() {
         let mutated = format!(

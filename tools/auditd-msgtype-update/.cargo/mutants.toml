@@ -11,9 +11,8 @@
 # gate (it is the provenance guard), so the narrower name-level exclude_re is
 # used instead of excluding the file.
 #
-# `parse.rs:150:36` `comma + 1` -> `comma * 1` in `parse_s_row` (session 7c,
-# ATL round 1, #476): a genuine EQUIVALENT mutant, proved rather than merely
-# unobserved. `comma` is `inner.find(',')`, so `inner[comma]` is by
+# `comma + 1` -> `comma * 1` in `parse_s_row` (#476): a genuine EQUIVALENT
+# mutant, proved rather than merely unobserved. `comma` is `inner.find(',')`, so `inner[comma]` is by
 # construction ALWAYS the comma character itself, never `"`. `comma * 1`
 # (== `comma`) only widens the `after_comma` slice to additionally include
 # that one leading comma byte versus the correct `comma + 1`; searching for

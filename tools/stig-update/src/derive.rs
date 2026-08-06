@@ -2,15 +2,14 @@
 //! baseline table. The network fetch is injected (a closure) so this core is tested
 //! offline with in-memory fixtures.
 //!
-//! `code_table` (added #512, session 9h-v0_8-wave4 Lane B) is the "shipped table"
-//! side of the drift diff, mirroring `tools/sshd-stig-update/src/derive.rs::code_table`
-//! and `tools/auditd-stig-update/src/derive.rs::code_table` exactly: a pure,
+//! `code_table` is the "shipped table" side of the drift diff, mirroring
+//! `tools/sshd-stig-update/src/derive.rs::code_table` and
+//! `tools/auditd-stig-update/src/derive.rs::code_table` exactly: a pure,
 //! zero-design-decision projection of `rulesteward_sysctld::stig_baseline(target)`
 //! into this crate's comparison shape. It carries no XCCDF-derivation intelligence
-//! (that lives in `crate::xccdf::parse_baseline`, the actual #512 port target) - it
-//! is relocated here from `main.rs`'s own private helper of the same shape purely so
-//! `xccdf.rs`'s test module (the barrier golden tests) can reference the shipped
-//! table without depending on `main.rs`.
+//! (that lives in `crate::xccdf::parse_baseline`) - it lives here rather than in
+//! `main.rs` so `xccdf.rs`'s test module (the golden tests) can reference the
+//! shipped table without depending on `main.rs`.
 
 use crate::cac;
 use crate::jinja::{self, ProductFacts};
@@ -178,8 +177,7 @@ mod tests {
     /// `rulesteward_sysctld::stig_baseline` directly, and normalize_set is applied so
     /// a code-table entry compares equal to a re-sorted XCCDF-derived entry). This is
     /// a parity pin on the PROJECTION MECHANISM, not a content oracle for the
-    /// grounded VALUES - see `crate::xccdf`'s golden tests for those (#512, session
-    /// 9h-v0_8-wave4 Lane B grounding).
+    /// grounded VALUES - see `crate::xccdf`'s golden tests for those.
     #[test]
     fn code_table_projects_the_shipped_table() {
         let r9 = code_table(TargetVersion::Rhel9);

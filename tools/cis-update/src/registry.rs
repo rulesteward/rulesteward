@@ -1,11 +1,10 @@
 //! The shipped-table registry: which (family, product) CIS tables the backend
 //! crates actually ship, projected into the drift-comparison shape.
 //!
-//! All four Wave-3 families (sshd #525, sudoers #526, sysctld #527, auditd
-//! #528) are ARMED: each family mod projects distinct control ids off its
-//! crate's `pub cis_baseline`-style accessor via a path-dep. `Pending` is
-//! reserved for backends without a CIS lane yet (fapolicyd / selinux, filed
-//! only after this wave per the #518 verdict shape); `check` reports a Pending
+//! All four families (sshd #525, sudoers #526, sysctld #527, auditd #528) are
+//! ARMED: each family mod projects distinct control ids off its crate's
+//! `pub cis_baseline`-style accessor via a path-dep. `Pending` is reserved for
+//! backends with no CIS table (fapolicyd / selinux); `check` reports a Pending
 //! slot as an explicit per-family SKIPPED line - never a vacuous OK.
 
 use crate::family::Family;
@@ -21,7 +20,7 @@ pub struct ShippedControl {
 /// A (family, product) shipped-table slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shipped {
-    /// No lane has landed this family's CIS table yet; `lane_issue` is the
+    /// This family ships no CIS table on this product; `lane_issue` is the
     /// tracking issue the skip line points at.
     Pending { lane_issue: u32 },
     /// The family's shipped table via its crate's accessor.
@@ -148,7 +147,7 @@ mod tests {
 
     #[test]
     fn sudoers_slots_ship_their_five_controls_on_every_product() {
-        // Lane 3b (#526) landed: the sudoers family projects off
+        // The sudoers family projects off
         // rulesteward_sudoers::lints::cis::cis_baseline on all three products.
         for product in ["rhel8", "rhel9", "rhel10"] {
             let Shipped::Table(rows) = shipped(Family::Sudoers, product).unwrap() else {
@@ -165,7 +164,7 @@ mod tests {
 
     #[test]
     fn sshd_slots_ship_fifteen_distinct_ids_with_the_product_specific_banner_id() {
-        // Lane 3a (#525): 16 rule-mapping rows, 15 distinct control ids (the
+        // 16 rule-mapping rows, 15 distinct control ids (the
         // ClientAlive control maps two directives under one id). The banner id
         // is the 3-way product differentiator (grounded in
         // derive-rhel{8,9,10}-sshd.txt at the pin).
@@ -186,7 +185,7 @@ mod tests {
 
     #[test]
     fn sysctld_slots_ship_distinct_control_ids_with_the_ip_forward_divergence() {
-        // Lane 3c (#527): per-KEY rows project to distinct control ids
+        // Per-KEY rows project to distinct control ids
         // (rhel8 33/33, rhel9 25 key rows -> 13 distinct ids, rhel10 33/33).
         // net.ipv4.ip_forward is the grounded per-product id divergence:
         // 3.3.1.1 on rhel8/rhel10 but 3.3.1 on rhel9.
@@ -207,7 +206,7 @@ mod tests {
 
     #[test]
     fn auditd_slots_ship_per_product_distinct_control_ids() {
-        // Lane 3d (#528): one row per rule mapping (66/68/75) -> distinct
+        // One row per rule mapping (66/68/75) -> distinct
         // control ids 25/24/40; the per-product counts differing kills a
         // shared-superset projection. max_log_file's 6.3.2.1 is a grounded
         // all-products anchor.

@@ -14,7 +14,7 @@
 //! Common flags: --config <stig-refs.toml>
 //!
 //! Mirrors `tools/auditd-stig-update`'s exit-code contract EXACTLY (0 in-sync
-//! / 1 drift / 2 any `Err`): see `tests/cli.rs` for the frozen proof.
+//! / 1 drift / 2 any `Err`): see `tests/cli.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

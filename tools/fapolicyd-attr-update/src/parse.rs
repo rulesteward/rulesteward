@@ -100,7 +100,7 @@ pub fn extract_table_names(src: &str, table_name: &str) -> Result<Vec<String>, S
         format!("no `{table_name}[]` declaration found in source (expected `static const nv_t {table_name}[] = {{ ... }};`)")
     })?;
 
-    // Comments are NOT delimiters (ATL round-3 miss #3): a lone `{` or `}`
+    // Comments are NOT delimiters: a lone `{` or `}`
     // inside a `//` / `/* */` comment must not close or unbalance the brace
     // matching, and a quoted word inside a comment must not become a name. So
     // the whole post-declaration region is comment-stripped ONCE up front, and
@@ -183,7 +183,7 @@ fn find_matching_close(src: &str, open: usize) -> Option<usize> {
 
 /// Remove `//` line comments and `/* ... */` block comments from the
 /// post-declaration region BEFORE any brace matching or quoted-string scan
-/// (ATL round-3 miss #3: comments are not delimiters), so a lone brace inside
+/// (comments are not delimiters), so a lone brace inside
 /// a comment never truncates/unbalances the table and a quoted word inside a
 /// comment (a proposed-but-unmerged row, a deprecation TODO, an inline aside)
 /// never becomes a derived attribute name. Byte-level, consistent with
@@ -602,13 +602,11 @@ static const nv_t table1[] = {
         assert!(!err.is_empty(), "error message must not be empty");
     }
 
-    /// ATL round-1 adversary miss #2 (orchestrator ruled: harden the parser): a
-    /// quoted word inside a `//` or `/* */` COMMENT within the table body must
-    /// NOT become a derived attribute name. Reproduced by the impl-aware
-    /// adversary (artifact /var/tmp/7b-atl-p3/adir/): appending
-    /// `// TODO(upstream): add "cgroup" object attribute in a future release`
-    /// inside the table's braces produced a phantom 19th name and a false-drift
-    /// exit 1. The comment styles below mirror the real fixtures' own
+    /// A quoted word inside a `//` or `/* */` COMMENT within the table body must
+    /// NOT become a derived attribute name. A comment-blind extractor turns an
+    /// appended `// TODO(upstream): add "cgroup" object attribute in a future
+    /// release` inside the table's braces into a phantom 19th name and a
+    /// false-drift exit 1. The comment styles below mirror the real fixtures' own
     /// conventions - `tests/fixtures/1.4.5/object-attr.c` uses both `//` line
     /// comments (line 27 `// For NULL`, line 58) and `/* */` block comments
     /// (lines 51) in this same file family; upstream C permits either inside an
@@ -638,10 +636,7 @@ static const nv_t table[] = {
     /// contains `table2[]`) precedes the real `table2[]` declaration, extraction
     /// must skip the prefixed decoy and return the real table's rows. A
     /// boundary check gutted by mutation (accepting any match, or matching the
-    /// decoy) yields the decoy's names instead. (ATL round-1 mutation survivors
-    /// in find_declaration, parse.rs lines 133-138: the +/==/||/! boundary
-    /// arithmetic all survived because no fixture exercised a prefixed
-    /// identifier.)
+    /// decoy) yields the decoy's names instead.
     #[test]
     fn extract_table_names_skips_prefixed_identifier_declaration() {
         let src = "\
@@ -680,19 +675,18 @@ static const nv_t xtable2[] = {
         assert!(!err.is_empty(), "error message must not be empty");
     }
 
-    /// ATL round-3 adversary miss #3 (repro /var/tmp/7b-atl-p3/p2f/): the brace
-    /// matcher must not treat a lone `}` inside a `//` line comment as the
-    /// table's closing brace. Comments are NOT delimiters - a correct
-    /// comment-aware extraction returns ALL rows. Today the brace scan runs
-    /// BEFORE comment stripping, so the comment's `}` closes the slice early
-    /// and the trailing rows (`path`, `mode` below) are SILENTLY dropped with
-    /// exit 0 - the worst failure shape for a drift gate. NOTE: the round-2
-    /// phantom-comment test used a block comment with BALANCED braces
-    /// (`/* { CGROUP, "cgroup" }, */`), which is exactly what let this slip:
-    /// balanced braces keep the depth count intact, so only comment-stripping
-    /// was exercised, never the matcher's comment-blindness. This test is
-    /// impl-agnostic about the fix (strip comments before matching, or make
-    /// the matcher comment-aware).
+    /// The brace matcher must not treat a lone `}` inside a `//` line comment
+    /// as the table's closing brace. Comments are NOT delimiters - a correct
+    /// comment-aware extraction returns ALL rows. A brace scan that ran BEFORE
+    /// comment stripping would let the comment's `}` close the slice early, so
+    /// the trailing rows (`path`, `mode` below) are SILENTLY dropped with
+    /// exit 0 - the worst failure shape for a drift gate. NOTE: a
+    /// phantom-comment test using a block comment with BALANCED braces
+    /// (`/* { CGROUP, "cgroup" }, */`) does not reach this: balanced braces
+    /// keep the depth count intact, so only comment-stripping is exercised,
+    /// never the matcher's comment-blindness. This test is impl-agnostic
+    /// about the fix (strip comments before matching, or make the matcher
+    /// comment-aware).
     #[test]
     fn table_rows_survive_a_lone_close_brace_in_a_line_comment() {
         let src = "\
@@ -711,11 +705,10 @@ static const nv_t table[] = {
         );
     }
 
-    /// The mirror of the lone-`}` miss: a lone `{` inside a `//` line comment
-    /// must not inflate the brace depth (today it over-extends the scan past
-    /// the real `};` and errors "unbalanced"; the ruled contract is that
-    /// comments are not delimiters, so ALL rows parse). Same impl-agnostic
-    /// framing as the test above.
+    /// The mirror of the lone-`}` case: a lone `{` inside a `//` line comment
+    /// must not inflate the brace depth (a comment-blind scan over-extends past
+    /// the real `};` and errors "unbalanced"; comments are not delimiters, so
+    /// ALL rows parse). Same impl-agnostic framing as the test above.
     #[test]
     fn table_rows_survive_a_lone_open_brace_in_a_line_comment() {
         let src = "\
@@ -733,10 +726,9 @@ static const nv_t table[] = {
         );
     }
 
-    /// ATL round-3 clean-run survivor battery for `strip_comments`'s scanning
-    /// arithmetic (14 survivors at parse.rs 188/191/192/197/199/201/202/203:
-    /// guard `==`/`&&` inversions, `+`/`+=` arithmetic, and `<` vs `<=`
-    /// advance bounds). Each row pins a specific guard or advance with an
+    /// Scanning-arithmetic battery for `strip_comments` (guard `==`/`&&`
+    /// inversions, `+`/`+=` arithmetic, and `<` vs `<=` advance bounds).
+    /// Each row pins a specific guard or advance with an
     /// EXACT expected output, so an off-by-one or inverted guard diverges on
     /// at least one row (several also diverge by panicking on an out-of-bounds
     /// index or usize underflow):
@@ -795,12 +787,11 @@ static const nv_t table[] = {
         }
     }
 
-    /// ATL round-3 clean-run survivor (parse.rs:104:21 `decl + open_rel`
-    /// mutated to `-`): the brace-scan start offset must be ANCHORED at the
+    /// The brace-scan start offset must be ANCHORED at the
     /// declaration. A quoted decoy sits BEFORE the declaration and the real
-    /// `{` sits far to the right of `table2[]` (a long space run), so a
-    /// miscomputed `decl - open_rel` start lands back inside the decoy line
-    /// and the extraction would include `"decoy"`.
+    /// `{` sits far to the right of `table2[]` (a long space run), so a start
+    /// offset computed from anything but `decl` lands back inside the decoy
+    /// line and the extraction would include `"decoy"`.
     #[test]
     fn extraction_excludes_quoted_decoy_before_the_declaration() {
         let src = "\
@@ -817,8 +808,8 @@ static const nv_t table2[] =                                        {
         );
     }
 
-    /// ATL round-3 clean-run survivor (parse.rs:111:45 `open + 1` slice start
-    /// mutated to `open - 1`): the extracted body must start strictly AFTER
+    /// Against an `open + 1` slice start mutated to `open - 1`: the extracted
+    /// body must start strictly AFTER
     /// the opening brace. The decoy's closing quote is the byte IMMEDIATELY
     /// before `{`, so an `open - 1` slice start begins ON that quote and the
     /// quote pairing shifts by one (the junk between the decoy's closing
@@ -839,8 +830,7 @@ static const nv_t table2[] =                                        {
         );
     }
 
-    /// ATL round-3 clean-run survivor (parse.rs:268:30 `&&` -> `||`, and one
-    /// side of 266:63 `==` -> `!=`): when NEITHER the canonical (`filehash`)
+    /// When NEITHER the canonical (`filehash`)
     /// nor the alias (`sha256hash`) is present, the exception must not fire.
     /// An `||`-mutated trigger (canonical-present OR alias-absent) and a
     /// `!=`-mutated canonical match (any-name-differs) BOTH spuriously push
@@ -855,7 +845,7 @@ static const nv_t table2[] =                                        {
         );
     }
 
-    /// The discriminating mirror for parse.rs:266:63 `==` -> `!=`: on a table
+    /// The discriminating mirror for a `==` -> `!=` canonical match: on a table
     /// whose ONLY row is the canonical name, an inverted match (`any(n !=
     /// canonical)`) sees no other name and reports the canonical ABSENT,
     /// silently skipping the required alias push. (The existing 1.3.2/1.4.5
