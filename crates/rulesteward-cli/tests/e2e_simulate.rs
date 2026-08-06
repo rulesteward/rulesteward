@@ -3,11 +3,6 @@
 //! Exercises the whole pipeline: argv -> clap parse -> `simulate::run()` ->
 //! render -> exit code. Tests are black-box via `assert_cmd`.
 //!
-//! ## TDD state: RED
-//!
-//! `simulate::run()` is a `todo!()` stub (panics at runtime, exit 101).
-//! Every test below WILL FAIL until the implementer fills the body.
-//!
 //! ## JSON schema frozen here
 //!
 //! `--format json` output must match this envelope (see also `simulate_oracle.rs`):
@@ -486,7 +481,7 @@ fn json_result_has_stable_schema_keys() {
     let json = parse_json("json_result_has_stable_schema_keys", &out);
     let result = &json["results"][0];
 
-    // These keys are frozen by this test file; the implementer must use these exact names.
+    // These keys are frozen by this test file: these exact names, no others.
     assert!(
         result.get("verdict").is_some(),
         "result must have 'verdict' key"
@@ -652,7 +647,7 @@ fn json_pattern_rule_above_match_produces_possible_verdict() {
 // ---------------------------------------------------------------------------
 
 /// Placeholder strings must not leak into JSON output.
-/// Catches: `<source>`, `TODO`, `panic`, `dbg!` leaking from stub or impl.
+/// Catches: `<source>`, `TODO`, `panic`, `dbg!` leaking into the output.
 #[test]
 fn json_output_has_no_placeholder_leakage() {
     let (_rules_dir, rules_path) = write_rules_dir("allow perm=open all : all\n");
@@ -1310,17 +1305,17 @@ fn workload_fifo_fails_fast_not_hang() {
     );
 }
 
-/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// #583 (blocker 2): a FIFO-only special-file
 /// guard is not enough. `/dev/null` (a character device) never hangs under a
 /// raw `std::fs::read_to_string` - it reads back an instant empty string -
-/// so TODAY `simulate --workload /dev/null` silently succeeds with a
+/// so an unguarded `simulate --workload /dev/null` silently succeeds with a
 /// CONFIDENT, FABRICATED "0 queries, 0 decisive, 0 possible, 0 no-match"
 /// clean summary (measured live 2026-07-24: exit 0), the same silent-wrong-
 /// answer class the `report --file /dev/null` case pins. A
 /// `if is_fifo(path) { reject } else { raw read }` implementation passes the
-/// FIFO test above yet still lets this exact case through. After the fix
-/// (routing through the shared `rulesteward_core::fsread::read_to_string`),
-/// `/dev/null` must be a tool failure instead.
+/// FIFO test above yet still lets this exact case through. Routing through
+/// the shared `rulesteward_core::fsread::read_to_string` makes `/dev/null` a
+/// tool failure instead.
 #[test]
 fn workload_dev_null_is_a_tool_failure_not_a_fabricated_empty_summary() {
     let (_rules_dir_guard, rules_path) = write_rules_dir("deny_audit perm=open all : all\n");
@@ -1352,7 +1347,7 @@ fn workload_dev_null_is_a_tool_failure_not_a_fabricated_empty_summary() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// Stream support.
 // `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
 // `--workload` is a stream-shaped input operators legitimately pipe in
 // (mirroring the literal `"-"` stdin marker just above it in `simulate::run`,

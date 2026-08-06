@@ -46,14 +46,14 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// `span.start <= span.end` implies the converted span is also ordered - that
 /// is a theorem, not a clamp applied after the fact.
 ///
-/// This matters because the previous implementation converted each endpoint
-/// independently via `source.get(..b)` and fell back to the raw BYTE value
-/// whenever an endpoint was not a char boundary (issue #595). A span whose
-/// `start` was mid-character and whose `end` was boundary-aligned then kept a
-/// large byte value on one side and shrank to a small char count on the
-/// other, inverting the span. `ariadne::Label::new` asserts
-/// `span.start() <= span.end()` and aborts the process when that happens, so
-/// the operator saw a hard panic instead of a diagnostic.
+/// This matters because converting each endpoint independently via
+/// `source.get(..b)`, falling back to the raw BYTE value whenever an endpoint
+/// is not a char boundary (issue #595), INVERTS spans: a span whose `start` is
+/// mid-character and whose `end` is boundary-aligned keeps a large byte value
+/// on one side and shrinks to a small char count on the other.
+/// `ariadne::Label::new` asserts `span.start() <= span.end()` and aborts the
+/// process when that happens, so the operator sees a hard panic instead of a
+/// diagnostic.
 ///
 /// `to_char(b)`, for `b` at or past `source.len()`, is `source.chars().count()`
 /// by definition (saturation) - `b.min(source.len())` folds that case into the
@@ -65,14 +65,14 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// past a mid-character `b`, since a UTF-8 scalar is at most 4 bytes): `q` is
 /// `b` itself when `b` is already a boundary, or the start of the NEXT scalar
 /// when `b` lands mid-character. This is the same total, monotone, round-up
-/// mapping the previous walk computed one char at a time - see
+/// mapping a per-char walk computes one char at a time - see
 /// `mid_character_offset_rounds_up_to_the_next_char_boundary` below for the
 /// byte-by-byte derivation of WHY a boundary-scan-then-prefix-count agrees
 /// with "count char starts strictly below `b`" at every offset, including
 /// mid-character ones.
 ///
-/// This replaces `source.char_indices().take_while(|(i, _)| *i < b).count()`
-/// (#595 perf follow-up), which fully DECODED every scalar below `b` - each
+/// This avoids `source.char_indices().take_while(|(i, _)| *i < b).count()`
+/// (#595 perf follow-up), which fully DECODES every scalar below `b` - each
 /// step assembling a `char`'s scalar value from 1-4 bytes - to answer a
 /// question that only needs to know where chars START, not what they decode
 /// to. `str::chars().count()` has a dedicated fast path in the standard
@@ -133,10 +133,10 @@ fn color_enabled() -> bool {
 ///
 /// `source_cache` holds one lazily-built `ariadne::Source` per `source_id`,
 /// populated on first use via the `HashMap` entry API (#559). Building a
-/// `Source` line-indexes the whole source text, so the pre-cache code (which
-/// called `Source::from(source_text)` inside this function, once per
-/// diagnostic) cost O(diagnostics x `source_length`) when many diagnostics
-/// anchored to one large file. `render` (below) owns `source_cache` for the
+/// `Source` line-indexes the whole source text, so an uncached implementation
+/// (one calling `Source::from(source_text)` inside this function, once per
+/// diagnostic) costs O(diagnostics x `source_length`) when many diagnostics
+/// anchor to one large file. `render` (below) owns `source_cache` for the
 /// lifetime of one call and passes it in by mutable reference, so it is
 /// shared across every diagnostic in that call but never persists beyond
 /// it, and it is populated only for `source_id`s a diagnostic actually
@@ -395,7 +395,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Regression harness for the per-`source_id` `ariadne::Source` cache
-    // (#559). Every pre-existing `render(...)` test in this file passes
+    // (#559). Every other `render(...)` test in this file passes
     // exactly ONE diagnostic, so none of them exercise a cache at all - a
     // cache keyed wrongly (or not keyed by `source_id` at all, e.g. a
     // naive "hoist `Source::from` out of the loop entirely" refactor that
@@ -405,9 +405,9 @@ mod tests {
     // gap: they pin the exact rendered bytes for (a) multiple diagnostics
     // sharing one `source_id`, and (b) multiple diagnostics against
     // DIFFERENT `source_id`s in the same `render()` call, interleaved so
-    // that input order also has to be preserved. Both are expected to
-    // PASS against today's pre-cache code (it is correct, just O(n * len)
-    // slow) - they are a regression harness, not a RED test, EXCEPT that
+    // that input order also has to be preserved. Both PASS against any
+    // correct implementation, cached or not (an uncached one is correct,
+    // just O(n * len) slow) - they are a regression harness, EXCEPT that
     // (b) is precisely the case a naive whole-call hoist would break.
     // -----------------------------------------------------------------
 
@@ -631,7 +631,6 @@ mod tests {
 
     #[test]
     fn human_render_mixed_plain_and_ariadne_groups_plain_first_regardless_of_input_order() {
-        // BLOCKER: plain-vs-ariadne interleaving was previously unpinned.
         // `render()` collects ALL plain lines into one buffer and ALL
         // ariadne snippets into a separate buffer, then always emits
         // plain-buffer-then-ariadne-buffer (human.rs ~142-154) - REGARDLESS
@@ -683,7 +682,7 @@ mod tests {
 
     #[test]
     fn human_render_distinct_source_ids_with_identical_text_render_independently() {
-        // CONCERN: a cache keyed by SOURCE TEXT rather than `source_id`
+        // A cache keyed by SOURCE TEXT rather than `source_id`
         // (e.g. a `HashMap<String, (Id, Source)>` deduplicating by
         // content) is byte-correct only when ids never collide.
         // `ariadne::Cache for (Id, Source)` errors on an id mismatch
@@ -745,18 +744,16 @@ mod tests {
 
     #[test]
     fn human_render_diagnostic_count_on_one_source_scales_sublinearly() {
-        // #559 perf regression harness (this is the RED case against
-        // TODAY's code - it is expected to FAIL until a per-source_id
-        // cache lands). `render()` rebuilds `ariadne::Source` PER
-        // DIAGNOSTIC today (human.rs ~90), so N diagnostics against the
+        // #559 perf regression harness. An implementation that rebuilds
+        // `ariadne::Source` PER DIAGNOSTIC makes N diagnostics against the
         // SAME source_id cost roughly N x the per-`Source::from` build
-        // time. A per-source_id cache should cost close to 1x regardless
-        // of N. Measured in the debug profile (what `cargo test` runs):
+        // time; the per-source_id cache costs close to 1x regardless of N.
+        // Measured in the debug profile (what `cargo test` runs):
         // `Source::from` ~21.5ms @ 50KB. This is a RATIO check - never an
         // absolute wall-clock threshold - specifically so it cannot flake
-        // on a loaded CI box: today the ratio is ~24x; a per-source_id
-        // cache brings it to ~1-2x. The 6x cutoff leaves generous margin
-        // above the cached case while still well below the uncached one.
+        // on a loaded CI box: uncached the ratio is ~24x, cached ~1-2x.
+        // The 6x cutoff leaves generous margin above the cached case while
+        // still well below the uncached one.
         let (source, spans) = synthetic_source_with_spans(50_000, 24);
         let mut sources = BTreeMap::new();
         sources.insert("scaling.rules".to_string(), source);
@@ -812,13 +809,13 @@ mod tests {
         // (only one source_id is used there) yet still be a real
         // regression on a directory-mode lint run, where `sources` holds
         // one entry PER SCANNED FILE regardless of how many carry
-        // findings (commands/fapolicyd/lint.rs:139 inserts every staged
+        // findings (commands/fapolicyd/lint.rs:138 inserts every staged
         // file). The right invariant: render() cost should track how many
         // DISTINCT source_ids actually have a diagnostic pointed at them,
-        // not how many entries `sources` holds. Today's pre-cache code
-        // already passes this (it never looks at unused map entries), so
-        // this is a GREEN-BY-DESIGN regression guard, not a RED test - its
-        // job is to fail a plausible wrong "fix", not today's code.
+        // not how many entries `sources` holds. The current code passes
+        // this (it never looks at unused map entries), so this is a
+        // GREEN-BY-DESIGN regression guard - its job is to fail a
+        // plausible wrong "fix", not the current code.
         let (used_source, spans) = synthetic_source_with_spans(50_000, 1);
 
         let mut small_map = BTreeMap::new();
@@ -883,35 +880,25 @@ mod tests {
         // sits, so this harness isolates the conversion's own
         // offset-dependent cost from render()'s constant overhead.
         //
-        // This test was written (953917b, #595) against a DIFFERENT,
-        // EARLIER body: `source.char_indices().take_while(|(i, _)| *i <
-        // b).count()`, a per-char scalar decode loop with no vectorized
-        // fast path, which fully re-assembled every UTF-8 scalar below
-        // the offset. That body shipped in 132aa23 and was replaced in
-        // 9871215 by the boundary-scan-plus-`chars().count()` body
-        // described above (see `byte_span_to_char_span`'s outer doc
-        // comment for why `chars().count()` is cheaper - it forwards to a
-        // chunked, non-continuation-byte count already compiled into a
-        // pre-optimized std, unlike a hand-written loop written IN this
-        // crate, which stays unoptimized at this crate's own opt-level).
-        // This harness now guards against a REGRESSION back to that
-        // older, decode-heavy shape rather than pinning a defect in
-        // today's code.
+        // The shape this harness guards against is a decode-heavy body:
+        // `source.char_indices().take_while(|(i, _)| *i < b).count()`, a
+        // per-char scalar decode loop with no vectorized fast path, which
+        // fully re-assembles every UTF-8 scalar below the offset. It is
+        // semantically identical to the boundary-scan-plus-`chars().count()`
+        // body described above (both are total, monotone mappings that agree
+        // on every char boundary, and every offset in this ASCII source IS a
+        // char boundary) and only decode-cost worse. See
+        // `byte_span_to_char_span`'s outer doc comment for why
+        // `chars().count()` is cheaper: it forwards to a chunked,
+        // non-continuation-byte count already compiled into a pre-optimized
+        // std, unlike a hand-written loop written IN this crate, which stays
+        // unoptimized at this crate's own opt-level.
         //
-        // Observed against the OLD `char_indices().take_while(...).count()`
-        // body (953917b, single-environment measurement): tail/head ratio
-        // ~6.9x-13.5x. Observed against the semantically identical
-        // `chars().count()`-based replacement (both are total, monotone
-        // mappings that agree on every char boundary, and every offset in
-        // this ASCII source IS a char boundary - just decode-cost
-        // cheaper): ~1.0x-1.6x.
-        //
-        // Remeasured more thoroughly since, on the development host in
-        // the debug profile (what `just test` and CI run), 2026-07-31:
-        // the OLD body (a stale build) ran 7.70x-26.34x tail/head over 30
-        // iterations - a clean FAIL of the 4x gate below. The CURRENT
-        // body ran 0.62x-1.95x over 75 iterations across three load
-        // regimes: idle (max 1.89x), 48-way CPU oversubscription (max
+        // Measured on the development host in the debug profile (what
+        // `just test` and CI run): the decode-heavy body runs 7.70x-26.34x
+        // tail/head over 30 iterations - a clean FAIL of the 4x gate below.
+        // The current body runs 0.62x-1.95x over 75 iterations across three
+        // load regimes: idle (max 1.89x), 48-way CPU oversubscription (max
         // 1.95x), and pinned to 2 CPUs against 8 competing spinners (max
         // 1.44x).
         //
@@ -926,12 +913,8 @@ mod tests {
         // The 4x gate is intentionally STRICTER than the two sibling
         // scaling tests above, which both use 6x (see
         // `human_render_diagnostic_count_on_one_source_scales_sublinearly`'s
-        // RATIO-check rationale). No documented reason was found for 4x
-        // specifically over 6x beyond 953917b's own note that "the 4x
-        // gate sits with wide margin on both sides" of the measured
-        // fast/slow ranges; the 2026-07-31 remeasurement above confirms
-        // that margin holds, and if anything is larger than originally
-        // observed.
+        // RATIO-check rationale): the 4x gate sits with wide margin on both
+        // sides of the measured fast/slow ranges above.
         let (source, spans) = synthetic_source_with_spans(50_000, 24);
         let mut sources = BTreeMap::new();
         sources.insert("scaling.rules".to_string(), source);
@@ -1272,10 +1255,8 @@ mod tests {
         assert_eq!(cspan.end, char_end, "char end must match");
     }
 
-    /// The caret-column pin (session 9m lane 4, issue #595): assert the RENDERED
-    /// column against a value derived BY HAND from the source layout.
-    ///
-    /// GREEN before and after the #595 fix, deliberately.
+    /// The caret-column pin (issue #595): assert the RENDERED column against a
+    /// value derived BY HAND from the source layout.
     ///
     /// Be precise about what this test does and does not discriminate. The
     /// obvious overstatement - "this is what a monotone-but-wrong replacement
@@ -1304,10 +1285,10 @@ mod tests {
     ///   moved. (The sibling e2e in `tests/e2e_sysctl_lint.rs` is where the same
     ///   confusion does move a visible column, to `:2:10`.)
     /// - **a boundary-offset off-by-one.** Any variant that shifts every
-    ///   boundary offset up by one - the pre-`450b16e` body admitted one by
-    ///   widening its `take_while` predicate to `*i <= b`, and the current
-    ///   boundary walk would admit one by counting the prefix past `q` rather
-    ///   than up to it - renders column 23 instead of 22. Such a variant stays
+    ///   boundary offset up by one - widening a `take_while` predicate to
+    ///   `*i <= b` admits one, and the current boundary walk would admit one
+    ///   by counting the prefix past `q` rather than up to it - renders
+    ///   column 23 instead of 22. Such a variant stays
     ///   total and monotone, so it is invisible to every ordering, totality and
     ///   saturation property. This is the one that needs the exact column.
     /// - **a snippet that silently fails to render at all.**
@@ -1381,10 +1362,9 @@ mod tests {
     // -----------------------------------------------------------------
     // Layer-2 property tests for `byte_span_to_char_span`.
     //
-    // Properties 1-3 predate issue #595 and are ASCII-only by construction;
-    // properties 4-6 (added by session 9m lane 4) are the multibyte ones that
-    // pin the defect. Do not narrow 4-6 back to boundary-aligned or in-bounds
-    // offsets: that restriction IS the bug.
+    // Properties 1-3 are ASCII-only by construction; properties 4-6 (#595)
+    // are the multibyte ones that pin the defect. Do not narrow 4-6 to
+    // boundary-aligned or in-bounds offsets: that restriction IS the bug.
     //
     // Properties:
     // 1. For ASCII-only source, the char span equals the byte span (identity).
@@ -1452,10 +1432,10 @@ mod tests {
         /// specially when computing `body_start_in_file`
         /// (`rulesteward-fapolicyd/src/parser/mod.rs:73-79`).
         ///
-        /// Round 2 (issue #595): every source this generator produced used to
-        /// end in `\n` unconditionally, so `byte_span_to_char_span`'s
-        /// boundary scan always found a non-continuation byte (the newline)
-        /// before reaching `source.len()`, and no case here ever drove that
+        /// `trailing_newline` (issue #595): a generator that ended every
+        /// source in `\n` unconditionally would let `byte_span_to_char_span`'s
+        /// boundary scan always find a non-continuation byte (the newline)
+        /// before reaching `source.len()`, so no case here would drive that
         /// scan all the way to the end of the source. `trailing_newline`
         /// closes that gap: when false and the last line's own last scalar
         /// is multibyte, the source's final byte is itself a continuation
@@ -1490,8 +1470,8 @@ mod tests {
         proptest! {
             // `failure_persistence: None`: a failing property here would
             // otherwise write `crates/rulesteward-cli/proptest-regressions/`,
-            // a path that is not gitignored and sits outside this lane's owned
-            // set, so it could be neither committed nor ignored cleanly. Nothing
+            // a path that is not gitignored, so it could be neither
+            // committed nor ignored cleanly. Nothing
             // is lost - the shrunk input is in the panic message, and the
             // interesting offsets are pinned explicitly by the unit test below
             // rather than left to a saved seed.
@@ -1794,7 +1774,7 @@ mod tests {
                 );
             }
 
-            // The FINAL-SCALAR case (round 2, issue #595): a source that does
+            // The FINAL-SCALAR case (issue #595): a source that does
             // NOT end in `\n` and whose LAST scalar is multibyte.
             //
             // Every table above ends its source with a 1-byte `\n`, which is
@@ -1807,17 +1787,11 @@ mod tests {
             // byte, so converting an offset inside the final scalar forces
             // the scan to walk to `source.len()` before it finds a boundary.
             //
-            // This table was added (d4154fe, #595) against an EARLIER body
-            // that scanned by indexing `bytes[q]` directly and stopped on a
-            // `q < len` guard; under a `q <= len` mutant that body panicked
-            // here with an index-out-of-bounds ("the len is 6 but the index
-            // is 6"), because `q` reached `len` while the guard still
-            // admitted one more index. `450b16e` replaced that scan with
-            // `source.is_char_boundary(q)`, which is total for every `q` up
-            // to and including `source.len()` - so the panic shape this
-            // table was written to reach can no longer occur by
-            // construction, and its remaining job is coverage of the
-            // end-of-source arm, not a guard against that specific mutant.
+            // The scan uses `source.is_char_boundary(q)` (#595), which is
+            // total for every `q` up to and including `source.len()`, so an
+            // index-out-of-bounds at the end of the source cannot occur by
+            // construction. This table's job is coverage of the
+            // end-of-source arm.
             //
             // Byte layout of `"ab\u{1F600}"`, derived by hand: two 1-byte
             // ASCII chars, then a 4-byte emoji, with NOTHING after it.

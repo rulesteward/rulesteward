@@ -37,7 +37,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
         return EXIT_TOOL_FAILURE;
     }
     // Each backend's parse-failure code maps to exit 5 (spec section 12.4 uses
-    // one numbering across modules; D3, session 6a).
+    // one numbering across modules; D3).
     if diags.iter().any(|d| is_parse_error_code(d.code.as_ref())) {
         return EXIT_RULE_PARSE_ERROR;
     }
@@ -57,7 +57,7 @@ pub fn compute(diags: &[Diagnostic], tool_err: bool) -> i32 {
 ///
 /// The set is `fapd-F01`, `au-F01`, `sshd-F01`, `sysctld-F01`, and `sudo-F01`.
 /// These all map to [`EXIT_RULE_PARSE_ERROR`] (spec section 12.4 uses one
-/// numbering across modules; D3, session 6a). This is the single source of truth
+/// numbering across modules; D3). This is the single source of truth
 /// for the F01 set, shared by [`compute`] (the exit-code precedence) and
 /// `crate::profile::apply_profile` (the `--profile` parse-error exemption: a file
 /// that FAILED to parse was never checked, so its F01 must never be dropped as
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn au_f01_returns_five() {
-        // D3 (session 6a): the auditd backend's parse-failure code au-F01 maps
+        // D3: the auditd backend's parse-failure code au-F01 maps
         // to the same EXIT_RULE_PARSE_ERROR as fapd-F01 (spec section 12.4:
         // "auditd uses the same numbering"). Without the mapping, au-F01 is
         // merely Fatal and would fall through to EXIT_ERRORS (2).

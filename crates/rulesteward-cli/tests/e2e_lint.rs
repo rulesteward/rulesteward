@@ -73,16 +73,9 @@ fn lint_json_format_emits_versioned_envelope() {
         .stdout(predicate::str::contains("\"diagnostics\""));
 }
 
-/// Feature 3e: SARIF rendering now SUCCEEDS. A clean file linted with
-/// `--format sarif` must exit 0 and emit a SARIF 2.1.0 log on stdout that
-/// parses as JSON and declares `"version": "2.1.0"`. No internal placeholder
-/// strings may leak into the output.
-///
-/// RED state: the stub still returns `Err(SarifNotImplemented)`, which the CLI
-/// maps to exit 3 (and prints "sarif format not yet implemented"), so the
-/// `.code(0)` and `"version": "2.1.0"` assertions fail until the renderer lands.
-/// The retired `lint_sarif_format_exits_three_with_not_implemented_error` test
-/// (which pinned the OLD stub behavior) is intentionally removed by this change.
+/// A clean file linted with `--format sarif` must exit 0 and emit a SARIF
+/// 2.1.0 log on stdout that parses as JSON and declares `"version": "2.1.0"`.
+/// No internal placeholder strings may leak into the output.
 #[test]
 fn lint_sarif_format_clean_file_exits_zero_with_sarif_json() {
     let f = write_tmp("allow uid=0 : all\n");
@@ -112,15 +105,13 @@ fn lint_sarif_format_clean_file_exits_zero_with_sarif_json() {
     }
 }
 
-/// Feature 3e: result-level SARIF rendering through the full CLI pipeline.
+/// Result-level SARIF rendering through the full CLI pipeline.
 /// The clean-file SARIF test above pins only the top-level log shape (empty
 /// `results`); this one fires a KNOWN code so a wrong impl that emits SARIF
 /// with no per-result `ruleId`/`level` (or the wrong level mapping) fails.
 ///
 /// `"allow uid=0 : all # bad comment\n"` triggers `fapd-W03` (Warning), whose
-/// mapped SARIF level is `"warning"` (exit 1). RED state: the stub returns
-/// `Err(SarifNotImplemented)`, so the `.code(1)` + `"ruleId"`/`"warning"`
-/// assertions fail until the renderer lands. The structural unit test in
+/// mapped SARIF level is `"warning"` (exit 1). The structural unit test in
 /// `tests/sarif_render.rs` carries the full six-arm level discrimination; this
 /// e2e check confirms one mapped result survives the real argv -> render path.
 #[test]
@@ -161,10 +152,8 @@ fn unknown_subcommand_exits_three_not_two() {
 
 #[test]
 fn lint_nonexistent_dir_emits_error_prefix_on_stderr() {
-    // Phase B locks the "error: " stderr prefix that main.rs's report()
-    // helper attaches when an anyhow::Error bubbles out of a command body.
-    // Pre-Phase B this would fail: the bare eprintln!() in run_lint
-    // wrote the message without any prefix.
+    // Locks the "error: " stderr prefix that main.rs's report() helper
+    // attaches when an anyhow::Error bubbles out of a command body.
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "/definitely/not/a/real/dir/zzz"])
@@ -174,12 +163,12 @@ fn lint_nonexistent_dir_emits_error_prefix_on_stderr() {
         .stderr(predicate::str::contains("not a directory"));
 }
 
-// --- ariadne renderer tests (Task 4) ---
+// --- ariadne renderer tests ---
 
 /// When a diagnostic has `source_id` set (fapd-E01 from AST lints), the human
 /// renderer should produce ariadne-style rich output containing the source
-/// line text AND a box-drawing underline (`-`, U+2500). The earlier draft of
-/// this test asserted a caret `^`, but ariadne 0.6 uses Unicode box-drawing
+/// line text AND a box-drawing underline (`-`, U+2500).
+/// ariadne 0.6 uses Unicode box-drawing
 /// chars, not ASCII carets.
 ///
 /// Also asserts that the ariadne bracket line shows the real source file path
@@ -330,11 +319,6 @@ fn lint_fires_e03_with_exit_two_and_code_in_stdout() {
     // so this is a certain violation regardless of mode. fapd-E03 fires (not
     // fapd-W09), exit code is 2. fapd-E04 does not fire (key is `exe`, not
     // `trust`/`pattern`).
-    //
-    // RETARGETED (B.4.3): previously used `allow uid=0 : exe=%undef\n` with no
-    // local definition, which in single-file `--file` mode will correctly become
-    // fapd-W09 (exit 1) after the implement phase. The within-file forward-ref
-    // fixture stays fapd-E03 in all modes because the definition is visible.
     let f = write_tmp("allow uid=0 : exe=%fwd\n%fwd=foo\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -365,8 +349,8 @@ fn lint_fires_e05_with_exit_two_and_code_in_stdout() {
     // `%mymacro=123,99999999999999999999` is an integer-typed set (first value
     // numeric) whose second value exceeds i64 - a non-portable integer fapolicyd
     // 1.3.2/1.4.5 reject. fapd-E05 (overflow-only policy) fires; no rule, so
-    // nothing else applies. (Type-mix sets like `1,2,foo` no longer fire E05 -
-    // see the overflow-only redesign.)
+    // nothing else applies. (E05 is overflow-only: a type-mix set like
+    // `1,2,foo` does not fire it.)
     let f = write_tmp("%mymacro=123,99999999999999999999\n");
     Command::cargo_bin("rulesteward")
         .expect("binary")
@@ -513,12 +497,7 @@ fn lint_single_file_mode_skips_cross_file_c01() {
         .stdout(predicate::str::contains("[fapd-C01]").not());
 }
 
-// --- trustdb e2e tests (Tasks 6+7: --against-trustdb and --report-orphans) ---
-//
-// These tests are intentionally RED until the production wiring lands.
-// RED mode: the current stub in run_lint() returns EXIT_NO_OP (9) for any
-// --against-trustdb invocation; these tests assert the CORRECT exit codes
-// and output that the real impl must produce.
+// --- trustdb e2e tests: --against-trustdb and --report-orphans ---
 
 /// Build a real LMDB trust.db fixture in `dir` containing `keys` as path entries.
 ///
@@ -1042,7 +1021,7 @@ fn sarif_pass_suppressed_when_any_file_fails_to_parse() {
 }
 
 /// Passing a nonexistent directory as --against-trustdb must fail with exit 3
-/// (`EXIT_TOOL_FAILURE`). The stub currently exits 9; this test is RED.
+/// (`EXIT_TOOL_FAILURE`).
 #[test]
 fn against_trustdb_missing_db_exits_tool_failure() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1057,13 +1036,13 @@ fn against_trustdb_missing_db_exits_tool_failure() {
         ])
         .arg(&rules_d)
         .assert()
-        // EXIT_TOOL_FAILURE = 3. The stub exits 9 -> RED.
+        // EXIT_TOOL_FAILURE = 3.
         .code(3);
 }
 
 /// W06 fires when a rule's path= value is NOT a key in the trust DB.
 /// The fixture DB does not contain /nonexistent/rs-trap/x, so fapd-W06 must
-/// appear in stdout, and exit must be 1 (Warning). The stub exits 9 -> RED.
+/// appear in stdout, and exit must be 1 (Warning).
 #[test]
 fn against_trustdb_w06_fires_for_unlisted_path() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1084,14 +1063,14 @@ fn against_trustdb_w06_fires_for_unlisted_path() {
         .arg(&db_dir)
         .arg(&rules_d)
         .assert()
-        // EXIT_WARNINGS = 1, fapd-W06 present. Stub exits 9 -> RED.
+        // EXIT_WARNINGS = 1, fapd-W06 present.
         .code(1)
         .stdout(predicate::str::contains("[fapd-W06]"));
 }
 
 /// W06 is CLEAN when the rule's path= value IS a key in the trust DB.
 /// A rule pointing at /usr/bin/ls, a DB containing /usr/bin/ls -> no fapd-W06.
-/// Exit must be 0 and stdout must NOT contain [fapd-W06]. Stub exits 9 -> RED.
+/// Exit must be 0 and stdout must NOT contain [fapd-W06].
 #[test]
 fn against_trustdb_w06_clean_for_listed_path() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1113,15 +1092,14 @@ fn against_trustdb_w06_clean_for_listed_path() {
         .arg(&db_dir)
         .arg(&rules_d)
         .assert()
-        // Exit 0 (no warnings) and absolutely no fapd-W06. Stub exits 9 -> RED.
+        // Exit 0 (no warnings) and absolutely no fapd-W06.
         .code(0)
         .stdout(predicate::str::contains("[fapd-W06]").not());
 }
 
 /// X01 fires (as Extra / advisory) when --report-orphans is passed and the DB
 /// contains keys that no rule references. Exit must be 0 (Extra does NOT raise
-/// the exit code). Stub exits 9 and the --report-orphans flag does not exist
-/// yet -> RED at compile time for the flag + runtime wrong exit.
+/// the exit code).
 #[test]
 fn report_orphans_x01_fires_and_exit_is_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1140,12 +1118,10 @@ fn report_orphans_x01_fires_and_exit_is_zero() {
         .expect("binary")
         .args(["fapolicyd", "lint", "--against-trustdb"])
         .arg(&db_dir)
-        // --report-orphans does not exist yet (field not added) -> compile/parse error -> RED.
         .arg("--report-orphans")
         .arg(&rules_d)
         .assert()
         // EXIT_CLEAN = 0 (Extra severity never raises exit code).
-        // Stub exits 9. Also --report-orphans is an unknown flag -> RED.
         .code(0)
         .stdout(predicate::str::contains("[fapd-X01]"));
 }
@@ -1154,10 +1130,6 @@ fn report_orphans_x01_fires_and_exit_is_zero() {
 /// exit with an error code that differs from a plain lint result. The CLI
 /// should warn on stderr that the flag has no effect, then behave as a plain
 /// lint. A clean rules.d -> exit 0.
-///
-/// This test is RED because --report-orphans does not exist yet (unknown flag
-/// -> clap exits 3, not 0). After the flag is added and the warning is wired,
-/// the exit will be 0 for a clean input.
 #[test]
 fn report_orphans_without_against_trustdb_warns_and_does_not_crash() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1170,24 +1142,17 @@ fn report_orphans_without_against_trustdb_warns_and_does_not_crash() {
         .arg(&rules_d)
         .assert()
         // Plain lint of a clean file -> exit 0.
-        // Currently RED: --report-orphans is unknown -> clap exits 3.
         .code(0);
 }
 
-// --- B.4 - Cross-file E03 and single-file W09 e2e tests ---
-//
-// These tests are RED until the CLI two-phase loop and single-file-mode
-// downgrade land in the implement phase.
+// --- Cross-file E03 and single-file W09 e2e tests ---
 
-/// B.4.1 - Directory mode with a backward cross-file macro reference must NOT
+/// Directory mode with a backward cross-file macro reference must NOT
 /// fire fapd-E03 and must NOT fire fapd-W09.
 ///
 /// Fixture: `10-languages.rules` defines `%languages`; `70-trusted-lang.rules`
 /// references it. In directory mode with the two-phase loop, the definition
 /// from `10-` is in scope for `70-` via the `earlier_macros` accumulator.
-///
-/// RED now: the CLI does not yet run the two-phase loop, so `70-trusted-lang.rules`
-/// sees an empty earlier set and fires fapd-E03.
 #[test]
 fn lint_directory_cross_file_macro_no_e03() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1211,18 +1176,14 @@ fn lint_directory_cross_file_macro_no_e03() {
         .assert()
         // A backward cross-file macro reference must be clean: no fapd-E03 and
         // no fapd-W09. Exit 0.
-        // RED until two-phase CLI loop lands.
         .code(0)
         .stdout(predicate::str::contains("[fapd-E03]").not())
         .stdout(predicate::str::contains("[fapd-W09]").not());
 }
 
-/// B.4.2 - Single-file `--file` mode with a macro reference to an undefined
-/// macro must emit fapd-W09 (Warning, exit 1), NOT fapd-E03.
-///
-/// RED now: the CLI passes `single_file=false` (the default) for both directory
-/// and single-file mode; after the implement phase, `--file` sets `single_file=true`
-/// and `e03` emits fapd-W09 instead of fapd-E03 for the undefined case.
+/// Single-file `--file` mode with a macro reference to an undefined
+/// macro must emit fapd-W09 (Warning, exit 1), NOT fapd-E03: `--file` sets
+/// `single_file=true`, and `e03` then emits fapd-W09 for the undefined case.
 #[test]
 fn lint_single_file_undefined_macro_is_w09_exit_one() {
     let f = write_tmp("allow uid=0 : path=%missingmacro\n");
@@ -1232,21 +1193,15 @@ fn lint_single_file_undefined_macro_is_w09_exit_one() {
         .arg(f.path())
         .assert()
         // exit 1: Warning severity (fapd-W09), not Error (fapd-E03).
-        // RED until the single-file mode downgrade lands.
         .code(1)
         .stdout(predicate::str::contains("[fapd-W09]"))
         .stdout(predicate::str::contains("[fapd-E03]").not());
 }
 
-// --- B.4.4 - GAP 3 (adversarial-reviewer finding): directory mode with a macro
-// undefined in EVERY file must be a hard fapd-E03 (Error, exit 2), NOT
-// downgraded to fapd-W09. Kills a wrong CLI that passes single_file=true in
-// directory mode, which would produce W09 (exit 1) instead of E03 (exit 2).
-//
-// This test is GREEN against the current frozen foundation (which always emits
-// fapd-E03 regardless of mode). It is a regression pin: the implement phase
-// must keep it green. A wrong impl that sets single_file=true in directory mode
-// would downgrade to W09 and break this test.
+// --- Directory mode with a macro undefined in EVERY file must be a hard
+// fapd-E03 (Error, exit 2), NOT downgraded to fapd-W09. Kills a wrong CLI that
+// passes single_file=true in directory mode, which would produce W09 (exit 1)
+// instead of E03 (exit 2).
 
 #[test]
 fn lint_directory_undefined_macro_is_e03_exit_two() {
@@ -1264,33 +1219,23 @@ fn lint_directory_undefined_macro_is_e03_exit_two() {
         .stdout(predicate::str::contains("[fapd-W09]").not());
 }
 
-// --- CLEAN-4c: exit-code 4 for LMDB/trust-DB open error vs exit-code 3 for
-// not-a-directory (CLEAN-4c barrier tests). ---
+// --- Exit-code 4 for LMDB/trust-DB open error vs exit-code 3 for
+// not-a-directory. ---
 //
-// Background: `run_lint` passes `--against-trustdb <PATH>` directly to
-// `open_trustdb_readonly`. Post-CLEAN-4c the implementer will add a `is_dir()`
-// pre-check: if PATH is not a directory -> exit 3 (stays EXIT_TOOL_FAILURE);
-// if PATH IS a directory but heed/LMDB fails to open it -> exit 4
-// (new EXIT_LMDB_ERROR). Today BOTH arms still exit 3, so:
-//   - `against_trustdb_lmdb_open_error_exits_4` is RED (expects 4, gets 3).
-//   - `against_trustdb_not_a_directory_exits_3` is GREEN today (expects 3,
-//     gets 3 via the heed error path); it becomes a preservation guard after
-//     impl adds the is_dir() check that separates the two arms.
+// `run_lint` applies an `is_dir()` pre-check to `--against-trustdb <PATH>`
+// before handing it to `open_trustdb_readonly`: if PATH is not a directory ->
+// exit 3 (EXIT_TOOL_FAILURE); if PATH IS a directory but heed/LMDB fails to
+// open it -> exit 4 (EXIT_LMDB_ERROR).
 
-/// CLEAN-4c RED test: `--against-trustdb` pointing at an EXISTING DIRECTORY
-/// that contains no valid LMDB env (empty temp dir, no `data.mdb`) triggers a
-/// genuine heed/LMDB open error. Post-CLEAN-4c this must exit 4
-/// (`EXIT_LMDB_ERROR`). Currently exits 3 (`EXIT_TOOL_FAILURE`) because the
-/// two failure arms are not yet distinguished.
+/// `--against-trustdb` pointing at an EXISTING DIRECTORY that contains no valid
+/// LMDB env (empty temp dir, no `data.mdb`) triggers a genuine heed/LMDB open
+/// error and must exit 4 (`EXIT_LMDB_ERROR`).
 ///
 /// Fixture grounding: `open_trustdb_readonly` on an empty dir returns
 /// `Err(TrustDbError::Open(_) | TrustDbError::Missing(_))` (confirmed by the
 /// `missing_db_is_error_not_panic` test in trustdb.rs). An empty directory is
 /// the canonical fixture for a heed-error arm because `is_dir()` returns true
-/// (so the future `is_dir()` check passes) but LMDB has nothing to open.
-///
-/// Asserts the literal value 4, not a not-yet-existing `EXIT_LMDB_ERROR`
-/// constant, so the test compiles today.
+/// (so the `is_dir()` check passes) but LMDB has nothing to open.
 #[test]
 fn against_trustdb_lmdb_open_error_exits_4() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1304,19 +1249,14 @@ fn against_trustdb_lmdb_open_error_exits_4() {
         .arg(&empty_db_dir)
         .arg(&rules_d)
         .assert()
-        // EXIT_LMDB_ERROR = 4 (post-CLEAN-4c). Currently exits 3 -> RED.
+        // EXIT_LMDB_ERROR = 4.
         .code(4);
 }
 
-/// CLEAN-4c preservation guard: `--against-trustdb` pointing at a REGULAR FILE
-/// (not a directory) must continue to exit 3 (`EXIT_TOOL_FAILURE`) after
-/// CLEAN-4c wires the `is_dir()` pre-check. A regular file fails `is_dir()` -> the
-/// "not a directory" arm fires -> exit 3.
-///
-/// This test is GREEN today (currently exits 3 via the heed error path because
-/// no `is_dir()` check exists yet). After the implementer adds the `is_dir()` check
-/// it will remain GREEN via the new `is_dir()` -> exit 3 arm. Documents the
-/// preservation contract: "not a directory" stays 3, not 4.
+/// Preservation guard: `--against-trustdb` pointing at a REGULAR FILE (not a
+/// directory) must exit 3 (`EXIT_TOOL_FAILURE`). A regular file fails
+/// `is_dir()` -> the "not a directory" arm fires -> exit 3. The contract this
+/// pins: "not a directory" stays 3, not 4.
 #[test]
 fn against_trustdb_not_a_directory_exits_3() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1330,8 +1270,7 @@ fn against_trustdb_not_a_directory_exits_3() {
         .arg(&regular_file)
         .arg(&rules_d)
         .assert()
-        // EXIT_TOOL_FAILURE = 3. GREEN today (heed error path); preserved after
-        // is_dir() check lands as the "not a directory" arm.
+        // EXIT_TOOL_FAILURE = 3 via the "not a directory" arm.
         .code(3);
 }
 
@@ -1341,8 +1280,8 @@ fn against_trustdb_not_a_directory_exits_3() {
 /// deny-all must fire `[fapd-W13]` (exit 1); the mirror-image clean ruleset
 /// (last rule IS a deny-all family match) must stay exit 0 with no
 /// `[fapd-W13]`. Combined into one test (the firing case runs first) so a
-/// not-yet-wired `run_lint_resolved` (w13 is never called today) fails
-/// immediately rather than the clean half passing vacuously on its own.
+/// `run_lint_resolved` that never calls `w13` fails immediately rather than
+/// the clean half passing vacuously on its own.
 #[test]
 fn lint_target_rhel9_w13_fires_on_trailing_allow_clean_on_trailing_deny_all() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1382,8 +1321,8 @@ fn lint_target_rhel9_w13_fires_on_trailing_allow_clean_on_trailing_deny_all() {
     // fapd-W13 requires an explicit --target: the SAME non-compliant ruleset
     // as the firing case above must NOT fire it when --target is omitted.
     // Bundled into this test (rather than standalone) because on its own it
-    // is indistinguishable from the pre-#519 (nothing ever fires fapd-W13)
-    // behavior and would pass vacuously.
+    // is indistinguishable from an impl where nothing ever fires fapd-W13,
+    // and would pass vacuously.
     let no_target_dir = tempfile::tempdir().expect("tempdir");
     let no_target_rules_d = no_target_dir.path().join("rules.d");
     std::fs::create_dir(&no_target_rules_d).expect("mkdir");
@@ -1420,8 +1359,7 @@ fn lint_conf_permissive_one_fires_w14_exits_one_absent_conf_never_fires_it() {
 
     // Without --conf on the same fixture: never fires. Bundled into this test
     // (rather than standalone) because on its own it is indistinguishable
-    // from the pre-#519 (--conf does nothing) behavior and would pass
-    // vacuously.
+    // from an impl where `--conf` does nothing, and would pass vacuously.
     Command::cargo_bin("rulesteward")
         .expect("binary")
         .args(["fapolicyd", "lint", "--file"])
@@ -1471,14 +1409,14 @@ fn lint_profile_stig_on_w13_firing_ruleset_is_non_empty() {
     );
 }
 
-// --- 9e-p1: fapd-E01 attribute-SIDE check (issue #545, CRITICAL fail-open) ---
+// --- fapd-E01 attribute-SIDE check (issue #545, CRITICAL fail-open) ---
 
 /// #545: fapd-E01 must validate attribute SIDE, not just NAME, in the modern
 /// colon grammar. `mode=` is `OBJECT_ONLY` (attrs.rs); placed on the SUBJECT
 /// side it is syntactically well-formed but the real daemon rejects it and
 /// exits(1) (grounded: fapolicyd 1.3.2 and 1.4.5 both emit "Field type (mode)
 /// is unknown in line 2" + "Subject is missing", audit lane report
-/// 2026-07-17 Finding F1). Today `RuleSteward` exits 0 with zero diagnostics.
+/// 2026-07-17 Finding F1).
 ///
 /// Fires regardless of `--target` since `AttrSide` is version-invariant
 /// (unlike fapd-E06's version-DIVERGENT checks, which are gated on an

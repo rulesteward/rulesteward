@@ -5,7 +5,7 @@
 //!
 //! Grounded in the `tools/cis-update` `derive` output for the `sshd` family at
 //! the ComplianceAsCode pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`:
-//! `derive-rhel{8,9,10}-sshd.txt` (session `9f-v0_8-wave3-cis` grounding). Every
+//! `derive-rhel{8,9,10}-sshd.txt`. Every
 //! product carries the SAME shape -- 15 controls, 16 rule mappings, 2 variable
 //! selections -- but DIFFERENT control ids per product (CIS Benchmark v4.0.0 /
 //! v2.0.0 / v1.0.1 for RHEL 8 / 9 / 10 respectively renumber the same rule).
@@ -18,8 +18,8 @@
 //! `ClientAliveCountMax` (rule `sshd_set_keepalive`). The `MaxAuthTries` control
 //! also has a `sshd_max_auth_tries_value=4` variable SELECTION alongside its
 //! `sshd_set_max_auth_tries` rule; the selection is excluded here (selections are
-//! the benchmark's explicit value choice, not a rule, and this lane attaches no
-//! new value-comparison lint). 15 distinct control ids result from those 16 rows.
+//! the benchmark's explicit value choice, not a rule, and no value-comparison
+//! lint consumes them). 15 distinct control ids result from those 16 rows.
 //!
 //! # Scope: attachment happens only at EXISTING attach sites
 //!
@@ -38,8 +38,8 @@
 //! `sshd_disable_forwarding`, `sshd_set_login_grace_time`, `sshd_set_max_auth_tries`,
 //! `sshd_set_max_sessions`, `sshd_set_maxstartups`) have NO existing sshd lint
 //! emitting a diagnostic for their directive(s) -- the `sshd-` code taxonomy is
-//! FROZEN (`catalog.rs`, epic #149) and adding a new pass is out of this lane's
-//! scope, so [`cis_control_ref`] returns `None` for them on every target.
+//! FROZEN (`catalog.rs`, epic #149) and no new pass is added for them, so
+//! [`cis_control_ref`] returns `None` for them on every target.
 //!
 //! # License discipline
 //!
@@ -352,8 +352,8 @@ const RHEL10_CIS: &[CisControl] = &[
 ///
 /// Excludes the two `name=option` variable SELECTIONS (`sshd_idle_timeout_value=
 /// 5_minutes`, `sshd_max_auth_tries_value=4`): those are the benchmark's explicit
-/// value choice for an existing rule, not a rule of their own, and this lane adds
-/// no new value-comparison lint that would consume them.
+/// value choice for an existing rule, not a rule of their own, and no
+/// value-comparison lint consumes them.
 #[must_use]
 pub fn cis_baseline(target: TargetVersion) -> &'static [CisControl] {
     match target {
@@ -588,14 +588,13 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)] // data-driven: 10 keywords x 3 targets, inline
     fn cis_control_ref_pins_every_stig_cis_overlap_keyword_on_every_applicable_target() {
-        // Adversarial-review closeout (barrier round 2, #524/#525): the completeness
-        // loop over in `stig.rs` only asserted counts + non-empty id/name, so a
-        // swapped or misaligned CIS id/title (e.g. a gssapiauthentication<->
-        // permitemptypasswords swap, or id `5.1.99`) passed the whole suite. This
-        // test pins the EXACT id + title for all ten STIG/CIS overlap keywords on
-        // every target where STIG (and therefore W01/W02) has an attach site for
-        // them, transcribed verbatim from `derive-rhel{8,9,10}-sshd.txt` (pin
-        // `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`) -- never from recall.
+        // The completeness loop in `stig.rs` asserts only counts + non-empty
+        // id/name, which a swapped or misaligned CIS id/title (e.g. a
+        // gssapiauthentication<->permitemptypasswords swap, or id `5.1.99`) would
+        // pass. This test pins the EXACT id + title for all ten STIG/CIS overlap
+        // keywords on every target where STIG (and therefore W01/W02) has an attach
+        // site for them, transcribed verbatim from `derive-rhel{8,9,10}-sshd.txt`
+        // (pin `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`) -- never from recall.
         //
         // `None` in a target slot means STIG does not require the keyword on that
         // target (RHEL8 never requires ignorerhosts/loglevel/usepam -- see
@@ -735,8 +734,8 @@ mod tests {
         // These six are real CIS controls (present in `cis_baseline`), but no sshd
         // lint currently emits ANY diagnostic for maxauthtries/logingracetime/
         // maxsessions/maxstartups/disableforwarding/the access-control directives
-        // -- the sshd- taxonomy is FROZEN (catalog.rs) and this lane adds no new
-        // pass. `cis_control_ref` must return `None` on every target: there is no
+        // -- the sshd- taxonomy is FROZEN (catalog.rs) and no new pass is added.
+        // `cis_control_ref` must return `None` on every target: there is no
         // finding to attach to.
         for kw in [
             "maxauthtries",
@@ -759,19 +758,19 @@ mod tests {
         }
     }
 
-    // --- strengthen round 2 (adversarial re-review, #524/#525): the table itself
+    // --- The `cis_baseline` table itself (#524/#525) ------------------------
     // -----------------------------------------------------------------------
-    // Round 1 pinned only 4 of the 16 `cis_baseline` rows (via
-    // `cis_baseline_matches_grounding_for_permitrootlogin`,
+    // The keyword-level tests above pin only 4 of the 16 `cis_baseline` rows
+    // (`cis_baseline_matches_grounding_for_permitrootlogin`,
     // `cis_baseline_matches_grounding_for_banner_three_way`, and
     // `cis_baseline_multi_directive_control_covers_both_clientalive_rules`, which
-    // together pin permitrootlogin/banner/idle-timeout/keepalive). The SIX rows
+    // together pin permitrootlogin/banner/idle-timeout/keepalive), and the SIX rows
     // with no CIS `ControlRef` attach site at all (`sshd_limit_user_access`,
     // `sshd_disable_forwarding`, `sshd_set_login_grace_time`,
     // `sshd_set_max_auth_tries`, `sshd_set_max_sessions`, `sshd_set_maxstartups`)
-    // appeared NOWHERE in the suite, so a transcription error in the table for
-    // any of them passed every existing assertion. The tests below close that
-    // gap with a data-driven known-answer test over ALL 16 rows, a structural
+    // are reachable from nowhere else, so a transcription error in the table for
+    // any of them would pass every keyword-level assertion. The tests below close
+    // that gap with a data-driven known-answer test over ALL 16 rows, a structural
     // floor mirroring `stig.rs`'s `provenance_covers_required_set_exactly` +
     // `v_numbers_are_well_formed_and_unique`, and a cross-bind between
     // `cis_baseline` and `cis_control_ref` for every STIG/CIS overlap row.
@@ -857,8 +856,8 @@ mod tests {
         // Includes the six rows with no CIS `ControlRef` attach site
         // (sshd_limit_user_access, sshd_disable_forwarding,
         // sshd_set_login_grace_time, sshd_set_max_auth_tries,
-        // sshd_set_max_sessions, sshd_set_maxstartups), which round 1 never
-        // pinned anywhere.
+        // sshd_set_max_sessions, sshd_set_maxstartups), which no keyword-level
+        // test reaches.
         const ACCESS_TITLE: &str = "Ensure sshd access is configured (Automated)";
         const BANNER_TITLE: &str = "Ensure sshd Banner is configured (Automated)";
         const CLIENTALIVE_TITLE: &str =

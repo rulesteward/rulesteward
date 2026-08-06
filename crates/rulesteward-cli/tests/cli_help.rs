@@ -41,10 +41,8 @@ fn root_help_lists_completions_subcommand() {
 
 #[test]
 fn all_fapolicyd_subcommands_visible_in_help() {
-    // No hidden no-op stubs remain: migrate shipped in #187, so every fapolicyd
-    // subcommand is visible in --help. explain/triage/cost (v0.2 round 1),
-    // simulate/report (round 2), doctor (#76/#77/#78), container-check (#175),
-    // migrate (#187).
+    // Every fapolicyd subcommand is visible in --help; no hidden no-op stubs
+    // remain.
     let bin = || Command::cargo_bin("rulesteward").expect("binary built");
 
     bin()
@@ -53,24 +51,24 @@ fn all_fapolicyd_subcommands_visible_in_help() {
         .success()
         .stdout(predicate::str::contains("lint"))
         .stdout(predicate::str::contains("trustdb"))
-        .stdout(predicate::str::contains("explain")) // now visible
-        .stdout(predicate::str::contains("simulate")) // now visible (round 2)
-        .stdout(predicate::str::contains("report")) // now visible (round 2)
-        .stdout(predicate::str::contains("doctor")) // now visible (#76/#77/#78)
-        .stdout(predicate::str::contains("container-check")) // now visible (#175)
-        .stdout(predicate::str::contains("migrate")); // now visible (#187)
+        .stdout(predicate::str::contains("explain"))
+        .stdout(predicate::str::contains("simulate"))
+        .stdout(predicate::str::contains("report"))
+        .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("container-check"))
+        .stdout(predicate::str::contains("migrate"));
 
     bin()
         .args(["selinux", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("triage")); // now visible
+        .stdout(predicate::str::contains("triage"));
 
     bin()
         .args(["auditd", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("cost")); // now visible
+        .stdout(predicate::str::contains("cost"));
 }
 
 #[test]
@@ -123,9 +121,9 @@ fn auditd_cost_help_lists_flags() {
 
 #[test]
 fn auditd_cost_help_documents_measured_byte_size() {
-    // #307: --from-log now measures the per-event SIZE (real on-disk bytes) in
+    // #307: --from-log measures the per-event SIZE (real on-disk bytes) in
     // addition to the per-key event RATE, so --help must say the size is measured
-    // and must NO LONGER carry the old #271-B "under-counts" bias caveat.
+    // and must not carry an "under-counts" bias caveat.
     Command::cargo_bin("rulesteward")
         .expect("binary built")
         .args(["auditd", "cost", "--help"])
@@ -163,11 +161,9 @@ fn completions_help_lists_supported_shells() {
 
 #[test]
 fn sudoers_lint_help_cites_renumbered_cis_ids() {
-    // #526 (adversarial-impl-reviewer miss, lane-3b-sudoers): the sudo-W04
-    // long-help doc comment still cited the STALE CIS ids "1.3.2" / "1.3.3"
-    // (an older CIS benchmark generation's numbering) even though #526 locked
-    // the renumber to "5.2.2" (use_pty) / "5.2.3" (I/O logging) post-A0, and
-    // `rulesteward-sudoers::lints::cis` / `lints::stig` already emit the
+    // #526: the sudo-W04 CIS ids are "5.2.2" (use_pty) / "5.2.3" (I/O
+    // logging); "1.3.2" / "1.3.3" are an older CIS benchmark generation's
+    // numbering. `rulesteward-sudoers::lints::cis` / `lints::stig` emit the
     // renumbered ids in every live sudo-W04 `Diagnostic` (verified by running
     // `rulesteward sudoers lint` on a `Defaults !use_pty` fixture: the
     // findings say "CIS Benchmark 5.2.2" / "CIS Benchmark 5.2.3", never
@@ -186,42 +182,38 @@ fn sudoers_lint_help_cites_renumbered_cis_ids() {
 
 #[test]
 fn sysctl_lint_help_system_enumeration_includes_w04() {
-    // #576 (adversarial-impl-reviewer miss, lane-7-sysctld-system-cis): lane 7
-    // wired the sysctld-W04 CIS baseline into `--system` mode's merged-set
-    // rerun (`rulesteward_sysctld::system::lint_system` reruns
-    // F01/W01/W02/W04), but the operator-facing `sysctl lint --help` still
-    // enumerated only F01/W01/W02 in TWO places: the `Lint` subcommand's long
-    // doc comment (cli/mod.rs) and the `--system` flag's own help
-    // (cli/args/sysctl.rs) -- telling an operator that `--system` is
-    // W02-only, the exact false belief #576 existed to kill. Both sites must
-    // name W04.
+    // #576: `--system` mode's merged-set rerun covers the sysctld-W04 CIS
+    // baseline (`rulesteward_sysctld::system::lint_system` reruns
+    // F01/W01/W02/W04), so the operator-facing `sysctl lint --help` must name
+    // W04 in BOTH places it enumerates the passes: the `Lint` subcommand's
+    // long doc comment (cli/mod.rs) and the `--system` flag's own help
+    // (cli/args/sysctl.rs). Help enumerating only F01/W01/W02 tells an
+    // operator that `--system` is W02-only.
     //
-    // The negative assertions target the longer STALE phrase (not just
-    // "F01/W01/W02"), because the fixed text "F01/W01/W02/W04" contains
+    // The negative assertions target the longer phrase (not just
+    // "F01/W01/W02"), because the correct text "F01/W01/W02/W04" contains
     // "F01/W01/W02" as a substring -- a naive negative assertion on the short
-    // form would be unsatisfiable after the fix.
+    // form would be unsatisfiable.
     Command::cargo_bin("rulesteward")
         .expect("binary built")
         .args(["sysctl", "lint", "--help"])
         .assert()
         .success()
-        // cli/mod.rs long-about site: "reruns F01/W01/W02 over the merged set"
-        // must become "reruns F01/W01/W02/W04 over the merged set".
+        // cli/mod.rs long-about site: "reruns F01/W01/W02/W04 over the merged
+        // set", never the W04-less form.
         .stdout(predicate::str::contains("F01/W01/W02/W04"))
         .stdout(predicate::str::contains("reruns F01/W01/W02 over").not())
         // cli/args/sysctl.rs `--system` flag-help site: "pass to
-        // F01/W01/W02." must become "pass to F01/W01/W02/W04.".
+        // F01/W01/W02/W04.", never the W04-less form.
         .stdout(predicate::str::contains("pass to F01/W01/W02/W04."))
         .stdout(predicate::str::contains("pass to F01/W01/W02.").not());
 }
 
 #[test]
 fn sshd_lint_help_lists_all_codes_including_w07() {
-    // #414: sshd-W07 (#302) was added after this help block was written, which
-    // still claimed "All 12 sshd- codes" and omitted W07 from the enumeration.
-    // The help must state the real count and list every catalog code; W07 is the
-    // one that drifted. Guards against a new sshd- code landing without updating
-    // the operator-facing `sshd lint --help`.
+    // #414: the help must state the real sshd- code count and list every
+    // catalog code, W07 (#302) included. Guards against a new sshd- code
+    // landing without updating the operator-facing `sshd lint --help`.
     Command::cargo_bin("rulesteward")
         .expect("binary built")
         .args(["sshd", "lint", "--help"])
@@ -233,14 +225,12 @@ fn sshd_lint_help_lists_all_codes_including_w07() {
 
 #[test]
 fn sysctl_lint_help_target_names_both_baselines_not_just_stig() {
-    // #576 (spec-review finding, lane-7-sysctld-system-cis): the `--target`
-    // flag help described only the STIG baseline ("Target RHEL release for the
-    // STIG hardening baseline ... Enables the version-aware `sysctld-W02`
-    // check ... With no `--target`, W02 does not run ... only sysctld-F01 /
-    // sysctld-W01"). `--target` in fact gates BOTH W02 and the CIS baseline
-    // W04, in all three modes, so the help understated what an operator gives
-    // up by omitting the flag. Predates this lane (#527 added W04), but it is
-    // the exact false belief #576 exists to kill, in a file this lane edits.
+    // #576: `--target` gates BOTH the STIG baseline W02 and the CIS baseline
+    // W04, in all three modes, so the flag help must not describe only the
+    // STIG baseline ("Target RHEL release for the STIG hardening baseline ...
+    // Enables the version-aware `sysctld-W02` check ... With no `--target`,
+    // W02 does not run ... only sysctld-F01 / sysctld-W01") - that understates
+    // what an operator gives up by omitting the flag.
     //
     // clap HARD-WRAPS help text at the terminal width, so this normalises runs
     // of whitespace to single spaces before matching. A phrase assertion

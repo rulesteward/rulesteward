@@ -319,7 +319,6 @@ mod tests {
 
     /// A row built from a weak (MD5 32-hex) trust entry must carry the weak algo,
     /// surfaced in both human and JSON output; a strong (SHA256) row carries none.
-    /// RED: the stub `From` sets `weak: None` and `render_list` does not annotate.
     #[test]
     fn list_annotates_weak_md5_entry_human_and_json() {
         use rulesteward_fapolicyd::{TrustEntry, TrustSource};

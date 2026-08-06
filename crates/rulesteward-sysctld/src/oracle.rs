@@ -1,5 +1,4 @@
-//! Differential-oracle adapter for the `sysctld` backend (session 9k-1 Lane B,
-//! #499, issue #593).
+//! Differential-oracle adapter for the `sysctld` backend (#499, issue #593).
 //!
 //! This module is the product side of the Tier-1 replay test described in
 //! `CONTRIBUTING.md` "Differential oracle contract". It lets
@@ -15,10 +14,7 @@
 //! are the logic whose being wrong would make the differential report success
 //! while checking nothing. Keeping them here subjects them to `just ci`
 //! clippy, the coverage floor and the mutation gate; a `tests/`-only or
-//! feature-gated home would silently drop all three. Before this extraction
-//! `.cargo/mutants.toml`'s pre-registered glob for this file matched no file
-//! at all, which reports "0 mutants" - indistinguishable from "every mutant
-//! caught" - the exact vacuity this session exists to close.
+//! feature-gated home would silently drop all three.
 //!
 //! # The materializer equivalence guard
 //!
@@ -52,9 +48,9 @@
 //! `.cargo/mutants.toml`'s `examine_globs` allowlist names this exact file
 //! path (`crates/rulesteward-sysctld/src/oracle.rs`). Splitting it into a
 //! directory (`oracle/mod.rs` plus submodules) makes that glob match NOTHING,
-//! silently reinstating the exact vacuity this extraction was built to
-//! close: a `cargo mutants` summary reads "0 mutants examined" identically to
-//! "every mutant caught". If this file ever genuinely needs splitting, update
+//! which is silently vacuous: a `cargo mutants` summary reads "0 mutants
+//! examined" identically to "every mutant caught". If this file ever
+//! genuinely needs splitting, update
 //! the `mutants.toml` glob in the SAME commit and confirm `total_mutants > 0`
 //! for the new path afterward - never trust the exit code alone.
 

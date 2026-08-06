@@ -1,9 +1,8 @@
-//! Crate-level lint tests for `rulesteward-sysctld` v1 (issue #150), authored at
-//! the test-author barrier BEFORE the F01/W01 impl. These call the frozen public
-//! entry `parser::lint_str(source, path)` directly and are RED against the Phase-0
-//! stub (which returns an empty `Vec`): only a correct tokenizer + W01 pass turns
-//! them green. Mirrors how `rulesteward-sshd` / `rulesteward-auditd` structure
-//! their lint integration tests.
+//! Crate-level lint tests for `rulesteward-sysctld` v1 (issue #150). These call
+//! the frozen public entry `parser::lint_str(source, path)` directly and are RED
+//! against the Phase-0 stub (which returns an empty `Vec`): only a correct
+//! tokenizer + W01 pass turns them green. Mirrors how `rulesteward-sshd` /
+//! `rulesteward-auditd` structure their lint integration tests.
 //!
 //! # Ground truth (sysctl.d(5) / sysctl.conf(5), re-verified 2026-06-27)
 //! * "Empty lines and lines whose first non-whitespace character is '#' or ';' are
@@ -279,7 +278,7 @@ fn w01_fires_across_separator_normalized_different_values() {
 }
 
 // ===========================================================================
-// FINDING 1 (real bug): asymmetric key-separator normalization.
+// FINDING 1: asymmetric key-separator normalization.
 //
 // sysctl.d(5) (man7.org/linux/man-pages/man5/sysctl.d.5.html, verified
 // 2026-06-27): "Note that either "/" or "." may be used as separators within
@@ -289,7 +288,7 @@ fn w01_fires_across_separator_normalized_different_values() {
 // "net.ipv4.conf.enp3s0/200.forwarding" AND "net/ipv4/conf/enp3s0.200/forwarding"
 // refer to "/proc/sys/net/ipv4/conf/enp3s0.200/forwarding".
 //
-// The consequence the impl gets wrong: the rule is ASYMMETRIC, so a DOT-first
+// The consequence: the rule is ASYMMETRIC, so a DOT-first
 // key cannot carry a literal dot inside a path component. Canonicalizing each
 // form to its /proc/sys path:
 //   * SLASH-first `net/ipv4/conf/enp3s0.200/forwarding`: slashes are the
@@ -298,17 +297,17 @@ fn w01_fires_across_separator_normalized_different_values() {
 //   * DOT-first `net.ipv4.conf.enp3s0.200.forwarding`: dots and slashes are
 //     interchanged, so EVERY dot becomes a path separator ->
 //     path .../conf/enp3s0/200/forwarding (components "enp3s0" then "200").
-// These are DIFFERENT /proc/sys keys. The impl's blanket `/`->`.` collapses
-// both to `net.ipv4.conf.enp3s0.200.forwarding`, so it treats them as the same
-// key and (with different values) raises a FALSE sysctld-W01.
+// These are DIFFERENT /proc/sys keys. A blanket `/`->`.` normalization collapses
+// both to `net.ipv4.conf.enp3s0.200.forwarding`, treating them as the same
+// key and (with different values) raising a FALSE sysctld-W01.
 // ===========================================================================
 
 #[test]
 fn w01_does_not_fire_on_asymmetric_distinct_keys() {
-    // FINDING 1a (RED today, the bug): the slash-first VLAN form and the dot-first
+    // FINDING 1a: the slash-first VLAN form and the dot-first
     // form are DISTINCT /proc/sys keys (see the canonicalization above), so even
-    // with different values there is NO conflict. The impl's symmetric `/`->`.`
-    // normalization wrongly collapses them and fires one W01.
+    // with different values there is NO conflict. A symmetric `/`->`.`
+    // normalization would wrongly collapse them and fire one W01.
     let source =
         "net/ipv4/conf/enp3s0.200/forwarding = 1\nnet.ipv4.conf.enp3s0.200.forwarding = 0\n";
     let diags = lint(source);
@@ -323,7 +322,7 @@ fn w01_does_not_fire_on_asymmetric_distinct_keys() {
 
 #[test]
 fn w01_fires_on_two_slash_first_vlan_forms_same_key() {
-    // FINDING 1b (control, should be green): two SLASH-first forms of the SAME VLAN
+    // FINDING 1b (control): two SLASH-first forms of the SAME VLAN
     // key with DIFFERENT values ARE a real conflict. The dot inside `enp3s0.200`
     // stays a literal interface-name dot for both forms, so both canonicalize to
     // the identical key `net/ipv4/conf/enp3s0.200/rp_filter` -> exactly one W01.
@@ -341,15 +340,15 @@ fn w01_fires_on_two_slash_first_vlan_forms_same_key() {
 
 #[test]
 fn w01_easy_separator_case_still_holds_after_fix() {
-    // FINDING 1c (regression guard): the EASY equivalence must survive the fix.
+    // FINDING 1c (regression guard): the EASY equivalence must still hold.
     // `net.ipv4.ip_forward` (dot-first, no path-component dots) and
     // `net/ipv4/ip_forward` (slash-first) BOTH canonicalize to the same key
     // (.../net/ipv4/ip_forward), matching the man page's
     // `kernel.domainname == kernel/domainname` equivalence. So:
     //   * same value  -> no W01,
     //   * diff value  -> exactly one W01.
-    // This pins that the FINDING-1 fix does not over-correct into treating these
-    // simple equivalent forms as distinct keys.
+    // This pins that the asymmetric canonicalization does not over-correct into
+    // treating these simple equivalent forms as distinct keys.
     assert!(
         w01s(&lint("net.ipv4.ip_forward=1\nnet/ipv4/ip_forward=1\n")).is_empty(),
         "easy equivalent forms with the same value must not conflict"
@@ -366,18 +365,18 @@ fn w01_easy_separator_case_still_holds_after_fix() {
 // ===========================================================================
 // FINDING 2 (degenerate output): an empty key with the ignore-error dash.
 //
-// `= 1` (a bare empty key) is correctly sysctld-F01. But `- = 1` and `-=1`
-// (the ignore-error `-` prefix followed by an EMPTY key) currently slip past
-// the empty-key check (the `-` is stripped only during key normalization, so
-// the raw key is non-empty `-` at the malformed gate) and produce a degenerate
-// sysctld-W01 with an EMPTY key name. Decided behavior: an empty key is
+// `= 1` (a bare empty key) is correctly sysctld-F01. `- = 1` and `-=1` (the
+// ignore-error `-` prefix followed by an EMPTY key) are too: an empty key is
 // malformed REGARDLESS of a leading `-`, so `- = 1` and `-=1` are sysctld-F01
 // (consistent with `= 1`) and must NEVER produce a W01 with an empty key.
+// Stripping the `-` only during key normalization - leaving the raw key
+// non-empty `-` at the malformed gate - slips both past the empty-key check
+// and produces a degenerate sysctld-W01 with an EMPTY key name instead.
 // ===========================================================================
 
 #[test]
 fn f01_fires_on_dash_then_empty_key_spaced() {
-    // FINDING 2a (RED today): `- = 1` is an empty key after the ignore-error dash ->
+    // FINDING 2a: `- = 1` is an empty key after the ignore-error dash ->
     // exactly one F01, and NOT a W01.
     let diags = lint("- = 1\n");
     let f = f01s(&diags);
@@ -395,7 +394,7 @@ fn f01_fires_on_dash_then_empty_key_spaced() {
 
 #[test]
 fn f01_fires_on_dash_then_empty_key_unspaced() {
-    // FINDING 2b (RED today): `-=1` (no spaces) is likewise an empty key -> one F01.
+    // FINDING 2b: `-=1` (no spaces) is likewise an empty key -> one F01.
     let diags = lint("-=1\n");
     let f = f01s(&diags);
     assert_eq!(
@@ -412,7 +411,7 @@ fn f01_fires_on_dash_then_empty_key_unspaced() {
 
 #[test]
 fn dash_empty_key_never_produces_empty_key_w01() {
-    // FINDING 2c (RED today): two `- = ...` lines must each be F01 and must NOT
+    // FINDING 2c: two `- = ...` lines must each be F01 and must NOT
     // form a degenerate empty-key W01 conflict. Also assert no diagnostic carries
     // an empty key in its message: the W01 message wraps the key in backticks as
     // `last-wins conflict: `<key>` here...`, so an empty key would surface the
@@ -444,7 +443,7 @@ fn dash_empty_key_never_produces_empty_key_w01() {
 fn valid_ignore_error_assignment_stays_valid_with_empty_key_rule() {
     // FINDING 2 regression guard: a VALID `-key = value` (non-empty key after the
     // dash) must remain a valid assignment - NO F01 - even though `- = value` is
-    // now F01. Pins that the empty-key rule keys off the post-dash key being
+    // F01. Pins that the empty-key rule keys off the post-dash key being
     // empty, not off the presence of the dash.
     let diags = lint("-kernel.dmesg_restrict = 1\n");
     assert!(
@@ -678,7 +677,7 @@ fn lint_dir_a_non_utf8_dropin_yields_a_file_level_f01_but_the_rest_of_the_dir_st
 
 // ===========================================================================
 // issue #337: F01/W01 carry the REAL byte span of the offending line (not the
-// degenerate 0..0 that mis-anchored the ariadne snippet at line 1). These pin
+// degenerate 0..0, which mis-anchors the ariadne snippet at line 1). These pin
 // the exact byte range for a known fixture, killing mutants that revert the span
 // to 0..0 or swap its endpoints. Per-package (in-crate) so the parser mutation
 // gate kills them without the CLI e2e tests.
@@ -703,7 +702,7 @@ fn f01_carries_the_real_byte_span_of_the_malformed_line() {
 
 #[test]
 fn f01_byte_span_counts_bytes_not_chars_with_multibyte_before_the_line() {
-    // issue #337 (strengthening, per the spec + idiomatic reviewers): the running
+    // issue #337: the running
     // offset accumulates BYTE lengths (`raw_line.len()`), not char counts, so a
     // multibyte UTF-8 char on an EARLIER line shifts the offending line's span by the
     // extra byte(s). ariadne's renderer converts the byte span to a char span, so the

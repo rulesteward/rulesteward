@@ -11,23 +11,22 @@
 //! that excluded impl block, so they stay in scope for the mutation gate.
 //! Each takes an explicit `path: &Path` argument (mirroring the SHAPE of
 //! `doctor::probe::read_fapolicyd_mode_from`, PR #133/#173) so it can be
-//! unit-tested against a tempfile - see the `tests` module below (mutation
-//! round 1, session 9d lane 2b). Unlike that precedent, there is no separate
-//! 0-arg hardcoded-path wrapper: `LiveSelinuxProbe::faillock_dir` (inside the
-//! already-excluded impl block above) passes `Path::new(FAILLOCK_CONF)` /
-//! `Path::new(PASSWORD_AUTH)` directly at its one call site. A thin wrapper
-//! was tried first and reintroduced two mutation survivors (the wrapper's
-//! own `None`/`Some(Default::default())` constant-replacement, never
-//! observed by any test since nothing calls a 0-arg wrapper directly) that
-//! could only be silenced via a new `.cargo/mutants.toml` `exclude_re` entry -
-//! out of scope for this lane. Inlining the hardcoded path removes that
-//! mutation surface entirely instead of asking for a new exclusion.
+//! unit-tested against a tempfile - see the `tests` module below. Unlike
+//! that precedent, there is no separate 0-arg hardcoded-path wrapper:
+//! `LiveSelinuxProbe::faillock_dir` (inside the already-excluded impl block
+//! above) passes `Path::new(FAILLOCK_CONF)` / `Path::new(PASSWORD_AUTH)`
+//! directly at its one call site. A thin wrapper was tried and reintroduced
+//! two mutation survivors (the wrapper's own
+//! `None`/`Some(Default::default())` constant-replacement, never observed by
+//! any test since nothing calls a 0-arg wrapper directly) that could only be
+//! silenced via a new `.cargo/mutants.toml` `exclude_re` entry. Inlining the
+//! hardcoded path removes that mutation surface entirely instead of asking
+//! for a new exclusion.
 //!
-//! `pam_faillock_is_configured` (review round 1, session 9d lane 2b) is a
-//! third pure free function of the same shape: it gates `faillock_dir` on
-//! the REAL "`pam_faillock` module is not configured for use" NA condition
-//! (RHEL-09-431020's check-content, G6.3) instead of the message-only claim
-//! the Skip detail used to make without checking it.
+//! `pam_faillock_is_configured` is a third pure free function of the same
+//! shape: it gates `faillock_dir` on the REAL "`pam_faillock` module is not
+//! configured for use" NA condition (RHEL-09-431020's check-content, G6.3)
+//! rather than on a message-only claim made without checking it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -230,10 +229,9 @@ fn pam_faillock_is_configured(pam_path: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Direct unit tests for the faillock locator helpers (mutation round 1,
-// session 9d lane 2b; orchestrator-authorized exception to the "no probe.rs
-// impl changes" scope note - see commit message). `read_faillock_conf_dir_from`/
-// `read_password_auth_dir_from` are pure-parsing free functions OUTSIDE the
+// Direct unit tests for the faillock locator helpers.
+// `read_faillock_conf_dir_from`/`read_password_auth_dir_from` are
+// pure-parsing free functions OUTSIDE the
 // mutation-excluded `impl SelinuxProbe for LiveSelinuxProbe` block (project
 // precedent: "private fns need direct tests", #373); each takes an explicit
 // `path: &Path` argument (SHAPE mirrors `doctor::probe::

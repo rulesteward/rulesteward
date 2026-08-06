@@ -1,4 +1,4 @@
-//! Data-driven `sysctld` differential-oracle corpus (session 9k-1 Lane B, #499).
+//! Data-driven `sysctld` differential-oracle corpus (#499).
 //!
 //! Tier-1 replay half of the sysctld differential (see CONTRIBUTING.md
 //! "Differential oracle contract"). Reads the committed corpus of
@@ -52,15 +52,15 @@
 //!
 //! # XFAIL policy
 //!
-//! [`XFAIL`] is currently EMPTY. Its sole entry, `slot-symlink-misdirected-593`
-//! (issue #593), is FIXED (`RuleSteward` session 9m lane 2): `enumerate()` now
+//! [`XFAIL`] is EMPTY: no scenario currently diverges from the real oracle.
+//! `slot-symlink-misdirected-593` (issue #593) agrees because `enumerate()`
 //! gates the 99-slot content-skip on `slot_symlink_ok`, so a symlink at the
 //! `99-sysctl.conf` slot that resolves to anything OTHER than
 //! `/etc/sysctl.conf` is followed and parsed like any ordinary drop-in instead
 //! of being silently dropped. The scenario keeps its own special-case arm
 //! below (see that arm for why it cannot use the generic `rulesteward_verdict`
-//! comparison): its post-fix value is compliant on both baselines, so the
-//! honest post-fix observation is the ABSENCE of a `sysctld-W02`/`W04` finding.
+//! comparison): its value is compliant on both baselines, so the honest
+//! observation is the ABSENCE of a `sysctld-W02`/`W04` finding.
 //! The oracle's own `Some("2")` is pinned alongside it too, but that pin only
 //! guards against CORPUS corruption (a flipped or emptied `=== APPLY-DEBUG ===`
 //! transcript section) - it reads the recorded transcript and never touches
@@ -90,7 +90,7 @@ const SENTINEL: &str = "RS-DIFF-SYSCTLD";
 
 /// Floor on the number of enumerated scenario directories. Raise this
 /// deliberately, in the same commit that grows the corpus. Currently every
-/// scenario in every one of the five categories described in the session task
+/// scenario in every one of the five categories
 /// (6 precedence, 5 slot-symlink, 4 key-grammar, 3 baseline-vendor-inventory,
 /// 4 degenerate) - see each scenario's own `scenario.meta` `comment:` field for
 /// its grounding.
@@ -107,9 +107,7 @@ const XFAIL: &[(&str, u32)] = &[];
 // scenario.meta: a flat `key: value` line format, hand-parsed.
 //
 // No serde_json dependency: rulesteward-sysctld does not otherwise depend on
-// it, and per the session task's own claims discipline a new Cargo.toml +
-// Cargo.lock edit is contended surface shared with the other two 9k-1 lanes.
-// tree.plan alone (this file's TSV format) already carries everything BOTH
+// it. tree.plan alone (this file's TSV format) already carries everything BOTH
 // sides need to parse, so scenario.meta only needs a handful of flat scalar
 // fields - a two-line grep+trim reader is the right tool for that shape, not
 // a general-purpose parser. See PROVENANCE.md "Why no serde_json".
@@ -198,7 +196,7 @@ impl ScenarioMeta {
 
 fn corpus_root() -> PathBuf {
     // The banner is emitted by `resolve_and_announce_corpus_root` itself, for every resolution
-    // in the process rather than only the ones a lane remembered to announce.
+    // in the process rather than only the ones a caller remembered to announce.
     let (root, _mode) = resolve_and_announce_corpus_root(
         SENTINEL,
         "RS_ORACLE_CORPUS_SYSCTLD",
@@ -337,12 +335,12 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
 
             // Per-version control (below): read the banner ONLY from the
             // scenario the control names, keyed by SCENARIO id, not by image.
-            // Keying by image previously let the LAST scenario alphabetically
-            // to use a given image silently win that image's entry - every
+            // Keying by image would let the LAST scenario alphabetically to
+            // use a given image silently win that image's entry, and every
             // scenario sharing an image happens to capture the identical real
-            // banner, so the bug was invisible until a reviewer corrupted the
-            // baseline scenarios' OWN transcripts specifically and the control
-            // still passed (it was never reading those transcripts at all).
+            // banner, so such a bug is invisible from the control's own result:
+            // it would pass while never reading the baseline scenarios' own
+            // transcripts at all.
             if meta.id.starts_with("baseline-vendor-inventory-")
                 && let Some(idx) = transcript.find("=== VERSION ===")
             {
@@ -487,24 +485,24 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
                 continue;
             }
 
-            // slot-symlink-misdirected-593 (#593, FIXED in RuleSteward session 9m
-            // lane 2): the 99-slot symlink targets a real file OTHER than
+            // slot-symlink-misdirected-593 (#593): the 99-slot symlink
+            // targets a real file OTHER than
             // ../sysctl.conf (etc/rs9k1-hidden.conf, outside the sysctl.d search
             // dirs so it is never independently enumerated). The real oracle
             // never special-cases the 99-sysctl.conf filename: it just follows the
             // symlink and parses it like any other drop-in, landing on a value (2)
             // that is COMPLIANT under both the STIG (baseline.rs VALUE_2,
             // RHEL-09-213070) and CIS (cis.rs 1.5.1 VALUE_2) baselines for this
-            // key. So post-fix RuleSteward emits NO sysctld-W02/W04 for it at all
+            // key. So RuleSteward emits NO sysctld-W02/W04 for it at all
             // - `rulesteward_verdict` would PANIC (its fail-closed guard fires
             // when no such diagnostic names the key) before ever reaching a value
             // to compare. The honest acceptance criterion for a FALSE-POSITIVE fix
             // is the ABSENCE of a finding, so assert that directly instead of
             // routing through `rulesteward_verdict`.
             //
-            // Two SEPARATE assertions guard two SEPARATE vacuity classes (an
-            // earlier version of this comment wrongly conflated them - corrected
-            // in rework): the oracle-side `Some("2")` pin below guards against
+            // Two SEPARATE assertions guard two SEPARATE vacuity classes, and
+            // must not be conflated: the oracle-side `Some("2")` pin below
+            // guards against
             // CORPUS corruption (a flipped or emptied `=== APPLY-DEBUG ===`
             // transcript section) - it reads only the recorded transcript and
             // never touches `lint_system`, so it CANNOT detect a broken product.
@@ -591,7 +589,7 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
     // "all three transcripts are secretly the same file" (CONTRIBUTING: "add a
     // control pinning a known version divergence"). Keyed by scenario id (not
     // image), and read only from those three scenarios' own transcripts above -
-    // see that collection site for why keying by image was wrong.
+    // see that collection site for why keying by image would be wrong.
     let banners: Vec<(&String, &String)> = version_banners.iter().collect();
     // Fewer than 3 banners means the per-version divergence control below
     // cannot even run (a missing or malformed baseline-vendor-inventory-
@@ -641,7 +639,7 @@ fn sysctld_corpus_oracle_matches_the_recorded_verdicts() {
 // Unit tests pinning the extraction logic itself against synthetic input, so
 // the mutation gate has something to bite on beyond the corpus's own values
 // (adversarial test-first: a test is only worth writing if a wrong
-// implementation fails it). The functions under test now live in
+// implementation fails it). The functions under test live in
 // `rulesteward_sysctld::oracle`; `rulesteward_verdict` stays local to this
 // file (imported via `super::` below), since it is specific to this test's
 // own W02/W04 diagnostic-text comparison rather than the reusable adapter.
@@ -839,8 +837,8 @@ mod extraction_unit_tests {
 
     #[test]
     fn parse_tree_plan_skips_blank_and_comment_lines_in_both_sections() {
-        // Adversarial-sweep finding: `parse_tree_plan`'s blank-line/comment-line
-        // skip used `line.is_empty() || line.starts_with('#')`; a mutant
+        // `parse_tree_plan`'s blank-line/comment-line
+        // skip uses `line.is_empty() || line.starts_with('#')`; a mutant
         // replacing `||` with `&&` survived because no test exercised a
         // tree.plan with a blank or `#`-comment line in EITHER section. Under
         // that mutant the guard can never be true (a line cannot be both empty

@@ -82,8 +82,8 @@ const WEAK_KEX_EXACT: &[&str] = &[
 /// gss- name under `KexAlgorithms` is rejected by sshd outright, rc 255 --
 /// overnight audit 2026-07-17, lane1-sshd.md F-02), so this denylist is
 /// scoped to `GSSAPIKexAlgorithms` only (see `weak_exact_list`), not
-/// `KexAlgorithms`. `gss-group14-sha1-` was previously omitted despite being
-/// a real SHA-1 gss-KEX shipped in rocky8's DEFAULT `gssapikexalgorithms`.
+/// `KexAlgorithms`. `gss-group14-sha1-` is a real SHA-1 gss-KEX shipped in
+/// rocky8's DEFAULT `gssapikexalgorithms`.
 const WEAK_KEX_GSS_PREFIXES: &[&str] = &["gss-gex-sha1-", "gss-group1-sha1-", "gss-group14-sha1-"];
 
 /// Weak `HostKeyAlgorithms`, `PubkeyAcceptedAlgorithms`, and
@@ -713,10 +713,10 @@ mod w06_tests {
 
     #[test]
     fn hostbasedacceptedalgorithms_plus_ssh_rsa_fires_w06() {
-        // `+ssh-rsa` on HostbasedAcceptedAlgorithms (signature family). Only
-        // HostKeyAlgorithms was previously pinned for W06; this pins the other
-        // signature families so a mutant narrowing weak_exact_list's match arm
-        // to drop hostbasedacceptedalgorithms dies.
+        // `+ssh-rsa` on HostbasedAcceptedAlgorithms (signature family). Beyond
+        // HostKeyAlgorithms, this pins the other signature families so a mutant
+        // narrowing weak_exact_list's match arm to drop
+        // hostbasedacceptedalgorithms dies.
         let diags = run("HostbasedAcceptedAlgorithms +ssh-rsa\n");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, "sshd-W06");
@@ -774,14 +774,13 @@ mod w06_tests {
 
     #[test]
     fn kex_caret_gss_group1_sha1_does_not_fire_w06_after_gss_rewire() {
-        // #548 RE-GROUNDED (was `kex_caret_gss_group1_sha1_fires_w06`, which
-        // asserted this fired under KexAlgorithms). gss- names are daemon-
+        // #548 RE-GROUNDED. gss- names are daemon-
         // INVALID under KexAlgorithms regardless of a leading operator
         // (lane1-sshd.md F-02: `KexAlgorithms gss-<name>` -> sshd -t exit 255
-        // on rocky8/rocky9). The gss- SHA-1 denylist now applies only to
+        // on rocky8/rocky9). The gss- SHA-1 denylist applies only to
         // GSSAPIKexAlgorithms (see
         // `gssapikexalgorithms_caret_group14_sha1_fires_w06` below). W06 must
-        // no longer fire for a gss- token under KexAlgorithms.
+        // NOT fire for a gss- token under KexAlgorithms.
         assert!(
             run("KexAlgorithms ^gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
             "gss- names are daemon-invalid under KexAlgorithms; W06 must not \
@@ -800,7 +799,7 @@ mod w06_tests {
 
     #[test]
     fn gssapikexalgorithms_caret_group14_sha1_fires_w06() {
-        // `^gss-group14-sha1-<oid>` prepends the previously-omitted weak gss-
+        // `^gss-group14-sha1-<oid>` prepends the weak gss-
         // SHA-1 KEX prefix (see
         // `gssapikexalgorithms_group14_sha1_fires_w03_previously_omitted_prefix`)
         // under GSSAPIKexAlgorithms, the directive where gss- names are
@@ -1065,10 +1064,9 @@ mod w06_tests {
         // inline comment; sshd strips it and processes `+aes128-cbc`, reintroducing a
         // weak CBC cipher (rc=0, OpenSSH 9.9p1 / 10.2p1). RuleSteward's tokenizer does
         // NOT strip inline comments, so this tokenizes to args=["+aes128-cbc","#",
-        // "legacy"] (3 args) and the W06 `args.len() != 1` guard currently suppresses
-        // it -- a FALSE NEGATIVE on a valid reintroduction line. W06 must fire and
-        // name the `+` operator + aes128-cbc. RED until the shared comment-strip
-        // helper lands. (Contrast `spaced_operator_does_not_fire_w06` /
+        // "legacy"] (3 args); `algo_list_value` strips the whitespace-delimited `#`
+        // comment before W06's single-arg check, so W06 must fire and name the `+`
+        // operator + aes128-cbc. (Contrast `spaced_operator_does_not_fire_w06` /
         // `operator_with_extra_arg_does_not_fire_w06`: those have NO `#` and are real
         // sshd rc-255 rejects that must STAY suppressed.)
         let diags = run("Ciphers +aes128-cbc # legacy\n");
@@ -1495,13 +1493,13 @@ mod w03_tests {
         // `sshd -T` on OpenSSH 10.2p1 errors "keyword Ciphers extra arguments at
         // end of line" (rc 255) -- so the config never loads and RuleSteward must
         // NOT report a weak cipher on it. `algo_list_value` returns `None` for any
-        // genuine multi-arg value. (#377/#348 follow-up: this was a W03 false
-        // positive; regression guard for the dropped comma-continuation arm.)
+        // genuine multi-arg value. (#377/#348: regression guard against a
+        // comma-continuation concat arm, which would make this a W03 false positive.)
         assert!(
             run("Ciphers aes128-cbc ,aes256-ctr\n").is_empty(),
             "space-before-comma multi-arg (sshd rejects the line) must not fire W03"
         );
-        // The quoted single-arg form IS valid to sshd and still fires: the fix
+        // The quoted single-arg form IS valid to sshd and still fires: the guard
         // suppresses only the genuine multi-arg case, not the valid glued list.
         assert_eq!(
             run("Ciphers \"aes128-cbc\",aes256-ctr\n").len(),
@@ -1533,8 +1531,8 @@ mod w03_tests {
         // first arg; the space ends it before the comma-run). Real sshd REJECTS the
         // line (rc 255 "keyword Ciphers extra arguments at end of line", OpenSSH
         // 10.2p1), so the config never loads and must not be linted. algo_list_value's
-        // multi-arg arm returns None. Pins the fix for the pre-#377 comma-continuation
-        // concat arm, which glued the two args and fired a false W03 on the weak head.
+        // multi-arg arm returns None. A comma-continuation concat arm (#377) would
+        // glue the two args and fire a false W03 on the weak head.
         assert!(
             run("Ciphers \"aes128-cbc\" ,aes256-ctr\n").is_empty(),
             "quoted value + space + comma-run (sshd rc255) must not fire W03"
@@ -1546,10 +1544,10 @@ mod w03_tests {
         // #388 (security false negative). sshd's keyword tokenizer (strdelim) strips
         // a BALANCED double-quote span from the keyword, so the directive is
         // recognized and LOADED. Real sshd -T (OpenSSH 10.2p1): `"Ciphers" aes128-cbc`
-        // -> rc 0, `ciphers aes128-cbc` (the weak CBC cipher is applied). Before the
-        // fix `read_keyword` kept the quotes, the keyword classified as unknown
-        // (sshd-E01), and W03 never fired -- the weak cipher was invisible to the
-        // operator. After the fix the keyword resolves to `Ciphers` and W03 fires.
+        // -> rc 0, `ciphers aes128-cbc` (the weak CBC cipher is applied). A
+        // `read_keyword` that kept the quotes would classify the keyword as unknown
+        // (sshd-E01) and W03 would never fire -- the weak cipher invisible to the
+        // operator. The keyword resolves to `Ciphers` and W03 fires.
         let diags = run("\"Ciphers\" aes128-cbc\n");
         assert_eq!(
             diags.len(),
@@ -1919,17 +1917,16 @@ mod w03_tests {
 
     #[test]
     fn kex_gss_group1_sha1_does_not_fire_w03_after_gss_rewire() {
-        // #548 RE-GROUNDED (was `kex_gss_group1_sha1_fires_w03`, which asserted
-        // this fired under KexAlgorithms). gss- algorithm names are daemon-
+        // #548 RE-GROUNDED. gss- algorithm names are daemon-
         // INVALID under KexAlgorithms: overnight audit lane1-sshd.md F-02
         // differential, `KexAlgorithms gss-gex-sha1-<oid>` -> `sudo sshd -t`
         // "assemble_algorithms: kex_algorithms: invalid argument", exit 255 on
         // rocky8 (the whole line is rejected, never loaded). The gss- SHA-1
-        // denylist now applies ONLY to `GSSAPIKexAlgorithms` (see
+        // denylist applies ONLY to `GSSAPIKexAlgorithms` (see
         // `gssapikexalgorithms_plain_list_fires_w03_for_each_weak_gss_kex`
         // below, where gss- names are the daemon-valid, actually-checked form).
-        // A gss- name under KexAlgorithms must no longer produce the weak-gss
-        // W03 finding post-rewire.
+        // A gss- name under KexAlgorithms must NOT produce the weak-gss
+        // W03 finding.
         assert!(
             run("KexAlgorithms gss-group1-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
             "gss- names are daemon-invalid under KexAlgorithms; W03 must not \
@@ -1939,7 +1936,7 @@ mod w03_tests {
 
     #[test]
     fn kex_gss_gex_sha1_does_not_fire_w03_after_gss_rewire() {
-        // #548 RE-GROUNDED (was `kex_gss_gex_sha1_fires_w03`). Same grounding
+        // #548 RE-GROUNDED. Same grounding
         // as `kex_gss_group1_sha1_does_not_fire_w03_after_gss_rewire` above.
         assert!(
             run("KexAlgorithms gss-gex-sha1-toWS3vcntCHlLKZy4KYiSg==\n").is_empty(),
@@ -1957,8 +1954,8 @@ mod w03_tests {
     // `sudo sshd -t` exit 0 on BOTH rocky8 and rocky9 (the daemon accepts the
     // weak SHA-1 gss-KEX). rocky8's DEFAULT `gssapikexalgorithms` (`sshd -T`)
     // includes both `gss-group14-sha1-` and `gss-gex-sha1-`, so both ship
-    // enabled by default on RHEL 8. `gss-group14-sha1-` was previously OMITTED
-    // from `WEAK_KEX_GSS_PREFIXES` despite being real and daemon-default-weak.
+    // enabled by default on RHEL 8, so `gss-group14-sha1-` belongs in
+    // `WEAK_KEX_GSS_PREFIXES`: it is real and daemon-default-weak.
 
     #[test]
     fn gssapikexalgorithms_plain_list_fires_w03_for_each_weak_gss_kex() {
@@ -1984,9 +1981,9 @@ mod w03_tests {
 
     #[test]
     fn gssapikexalgorithms_group14_sha1_fires_w03_previously_omitted_prefix() {
-        // gss-group14-sha1- was omitted from WEAK_KEX_GSS_PREFIXES pre-#548
-        // despite being a real SHA-1 gss-KEX shipped in rocky8's DEFAULT
-        // gssapikexalgorithms (lane1-sshd.md F-02). Must fire once added.
+        // gss-group14-sha1- is a real SHA-1 gss-KEX shipped in rocky8's DEFAULT
+        // gssapikexalgorithms (lane1-sshd.md F-02), so it is in
+        // WEAK_KEX_GSS_PREFIXES and must fire.
         let diags = run("GSSAPIKexAlgorithms gss-group14-sha1-toWS3vcntCHlLKZy4KYiSg==\n");
         assert_eq!(diags.len(), 1, "got {diags:?}");
         assert_eq!(diags[0].code, "sshd-W03");
@@ -2366,8 +2363,7 @@ mod w03_tests {
         // comma-separated token with no internal whitespace (see
         // `comma_separated_list_splits_correctly` and
         // `ciphers_mixed_flags_only_weak_tokens` for the valid single-arg form).
-        // RED today (the unguarded lint wrongly fires on `aes128-cbc`); GREEN
-        // once `w03_directive` adds the `args.len() != 1` guard.
+        // `w03_directive`'s `args.len() != 1` guard is what suppresses this line.
         assert!(
             run("Ciphers aes256-ctr, aes128-cbc, chacha20-poly1305@openssh.com\n").is_empty(),
             "spaces around commas => multiple args => sshd rejects rc 255 => W03 must not fire"
@@ -2381,12 +2377,11 @@ mod w03_tests {
     // or `Ciphers aes128-cbc foo`) is a FATAL sshd parse error (rc 255 on
     // rocky9 / OpenSSH 9.9p1) -- "Bad SSH2 cipher spec" / "extra arguments at
     // end of line". The daemon never loads such a line, so W03 must not flag it.
-    // W06 already enforces this via `args.len() != 1`; W03 is missing that guard
-    // (issue #325). These tests are RED until `w03_directive` adds the same check.
+    // W06 and W03 both enforce this via `args.len() != 1` (issue #325).
     //
-    // Regression guard (GREEN, already passes): `ciphers_mixed_flags_only_weak_tokens`
+    // Regression guard: `ciphers_mixed_flags_only_weak_tokens`
     // covers `Ciphers aes256-ctr,aes128-cbc\n` -- a valid single-arg comma-list
-    // that MUST still fire W03. The guard below confirms the future fix does not
+    // that MUST still fire W03. The guard below confirms the check does not
     // over-suppress that case; no duplicate is needed here.
 
     #[test]
@@ -2441,11 +2436,10 @@ mod w03_tests {
     // sshd treats a WHITESPACE-delimited `#` as an end-of-line comment and loads
     // the directive normally (verified rc=0 with the weak value taking effect on
     // OpenSSH 9.9p1 and 10.2p1). RuleSteward's tokenizer does NOT strip inline
-    // comments (parser.rs: "There are no inline comments"; `tokenize_line("Banner
-    // x#y")` keeps `x#y` as one token), so a commented line tokenizes to >1 arg
-    // and the `args.len() != 1` multi-arg guard wrongly suppresses W03 on a VALID,
-    // sshd-loading weak-cipher line. These must-fire tests are RED until the impl
-    // adds a comment-strip helper (shared by W03 and W06). Contrast the genuinely
+    // comments (`tokenize_line("Banner x#y")` keeps `x#y` as one token), so a
+    // commented line tokenizes to >1 arg; `algo_list_value` (shared by W03 and
+    // W06) strips the comment before the `args.len() != 1` multi-arg guard, so a
+    // VALID, sshd-loading weak-cipher line still fires. Contrast the genuinely
     // malformed multi-arg guard tests above (no `#`): those are real sshd rc-255
     // rejects and must STAY suppressed.
 
@@ -2475,8 +2469,9 @@ mod w03_tests {
         // `Ciphers aes128-cbc #legacy` -- no space between `#` and the comment word,
         // but there IS a space BEFORE the `#`, so `#legacy` is a separate token and
         // sshd treats it as a comment, loading aes128-cbc (rc=0, OpenSSH 9.9p1 /
-        // 10.2p1). The tokenizer yields args=["aes128-cbc","#legacy"] (2 args), so
-        // the multi-arg guard currently suppresses W03 (false negative). Must fire.
+        // 10.2p1). The tokenizer yields args=["aes128-cbc","#legacy"] (2 args);
+        // `algo_list_value` drops the `#legacy` token before the multi-arg guard,
+        // so W03 must fire.
         let diags = run("Ciphers aes128-cbc #legacy\n");
         assert_eq!(
             diags.len(),
@@ -2644,18 +2639,18 @@ mod w03_tests {
     //   - `Ciphers "aes128-cbc"#x`  -> "Bad SSH2 cipher spec 'aes128-cbc#x'" (rc 255)
     //   - `Ciphers "aes128-cbc" #x` -> ciphers aes128-cbc (rc 0, loads aes128-cbc)
     //
-    // Since #348, read_arg uses the quote-concatenation model: it scans the entire
+    // The tokenizer uses the quote-concatenation model (#348): it scans the entire
     // whitespace-delimited token, stripping every `"` and concatenating the runs.
     // This means `"aes128-cbc"#x` (glued `#`) becomes the single invalid token
     // `aes128-cbc#x`; algo_list_value sees the `#` embedded in the value and
     // returns None, so W03 correctly does NOT fire (sshd rejects the line at rc 255).
-    // The spaced form `"aes128-cbc" #x` still produces two tokens: `aes128-cbc`
+    // The spaced form `"aes128-cbc" #x` produces two tokens: `aes128-cbc`
     // (the space ends the token) and `#x` (a separate token) -- glued vs. spaced
-    // ARE now distinguishable at the tokenizer level.
+    // are distinguishable at the tokenizer level.
     //
     // Note: this is distinct from the `+"aes128-cbc"#x` case (W06), where the `+`
     // forces bareword mode and the `#` IS already embedded in the single-arg bareword
-    // token after quote-strip -- that case was never a limitation of the old parser.
+    // token after quote-strip.
     // See glued_hash_after_closing_quote_plus_prefix_does_not_fire_w06 in w06_tests.
 
     #[test]
@@ -2665,7 +2660,6 @@ mod w03_tests {
         // (not two args). algo_list_value sees `#` in the value and returns None;
         // W03 must NOT fire because sshd rejects the line ("Bad SSH2 cipher spec
         // 'aes128-cbc#x'", rc 255, verified OpenSSH 10.2p1 `sshd -T`).
-        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         assert!(
             run("Ciphers \"aes128-cbc\"#x\n").is_empty(),
             "glued `#` after closing quote (no prefix): sshd rc 255 => W03 must not fire"
@@ -2678,9 +2672,8 @@ mod w03_tests {
     // With the concatenation model (#348, stripping `"` and concatenating runs
     // within one whitespace-delimited token), these forms that sshd loads as
     // `aes128-cbc` reach algo_list_value as a single clean arg and W03 fires.
-    // They were RED before #348; the old read_arg stopped at the first closing
-    // `"`, producing multiple args that algo_list_value rejected as ambiguous
-    // (None -> no W03 -> false negative). Now GREEN under the fix.
+    // A tokenizer stopping at the first closing `"` would produce multiple args
+    // that algo_list_value rejects as ambiguous (None -> no W03 -> false negative).
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2689,7 +2682,6 @@ mod w03_tests {
         // run `aes128-cbc`. Under the concatenation model the parser yields one
         // arg `aes128-cbc`; W03 must fire on the weak cipher.
         // Grounding: sshd -T loads aes128-cbc (rc 0, verified OpenSSH 10.2p1).
-        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         let diags = run("Ciphers \"\"aes128-cbc\n");
         assert_eq!(
             diags.len(),
@@ -2711,7 +2703,6 @@ mod w03_tests {
         // sshd strips both quote pairs and concatenates to `aes128-cbc` (rc 0,
         // verified OpenSSH 10.2p1). Under the concatenation model the parser
         // yields one arg `aes128-cbc`; W03 must fire on the weak cipher.
-        // Was RED until #348 landed the quote-concatenation model in read_arg; now GREEN.
         let diags = run("Ciphers \"aes128\"\"-cbc\"\n");
         assert_eq!(
             diags.len(),
@@ -2749,15 +2740,14 @@ mod w03_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Regression: single-quoted algo value fires W03 (issue #374, fixed)
+    // Regression: single-quoted algo value fires W03 (issue #374)
     //
     // sshd accepts `Ciphers 'aes128-cbc'` (single-quote quoting): the daemon
     // strips the single quotes and loads aes128-cbc (grounding: sshd -T
-    // OpenSSH 10.2p1, rc 0). Since #374 the tokenizer strips single-quote spans
-    // at tokenization (faithful argv_split), so `algo_list_value` receives
-    // args=["aes128-cbc"] and W03 fires. This guards against a regression of the
-    // former false negative: single quotes used to bypass the weak-cipher lint
-    // because only double-quotes were stripped, leaving literal `'` chars that
+    // OpenSSH 10.2p1, rc 0). The tokenizer strips single-quote spans at
+    // tokenization (#374, faithful argv_split), so `algo_list_value` receives
+    // args=["aes128-cbc"] and W03 fires. This guards against a false negative in
+    // which only double-quotes are stripped, leaving literal `'` chars that
     // sshd would never see.
     // -----------------------------------------------------------------------
 
@@ -2765,9 +2755,9 @@ mod w03_tests {
     fn single_quoted_weak_cipher_fires_w03() {
         // `Ciphers 'aes128-cbc'` -- single-quote quoting around a weak CBC cipher.
         // sshd strips the single quotes and loads aes128-cbc (rc 0, grounding:
-        // sshd -T OpenSSH 10.2p1). W03 must fire on aes128-cbc (the #374 fix:
-        // the tokenizer now strips single-quote spans, so the lint sees the
-        // bare weak algorithm).
+        // sshd -T OpenSSH 10.2p1). W03 must fire on aes128-cbc (#374: the
+        // tokenizer strips single-quote spans, so the lint sees the bare weak
+        // algorithm).
         let diags = run("Ciphers 'aes128-cbc'\n");
         assert_eq!(
             diags.len(),

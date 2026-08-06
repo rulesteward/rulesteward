@@ -8,11 +8,6 @@
 //! Oracle source: `/mnt/side-projects/fapolicyd-simulate-corpus/canonical/`
 //! Vendored timestamp: 20260603T065853Z
 //!
-//! ## State: GREEN
-//!
-//! `simulate::run()` is fully implemented; all 81 scenarios below pass against
-//! the vendored real-fapolicyd ground truth.
-//!
 //! ## JSON schema frozen by this file
 //!
 //! The oracle loop calls `--format json` and asserts these top-level fields:
@@ -34,9 +29,9 @@
 //! }
 //! ```
 //!
-//! ## Workload schema (frozen by new adversarial scenarios, session 5a follow-up)
+//! ## Workload schema
 //!
-//! The JSON workload object now supports separate per-side trust overrides:
+//! The JSON workload object supports separate per-side trust overrides:
 //!
 //! ```json
 //! {
@@ -53,7 +48,6 @@
 //!   trust independently. These override `trust` for their respective side.
 //! - `trust`: symmetric shorthand - when present and the corresponding
 //!   `subjTrust` / `objTrust` is absent, sets both sides to the same value.
-//!   This is the existing behavior (backwards-compatible).
 //! - All three are optional; absent means `Trust::Unknown` for that side.
 //!
 //! - `verdict` = 3-state: `"Decisive"` (no unevaluable rule above the match),
@@ -149,8 +143,6 @@ fn assert_scenario(class: &str, id: &str) {
         .output()
         .unwrap_or_else(|e| panic!("failed to run binary for {class}/{id}: {e}"));
 
-    // In RED state (todo!() stub) the binary exits 101 (panic). Every assertion
-    // below will fail. That is the correct TDD state.
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // --- Envelope assertions ---
@@ -459,7 +451,6 @@ fn execdirs_systemdirs_macro_expansion() {
 /// `crates/rulesteward-fapolicyd/src/evaluate.rs`; the corpus scenarios below cover
 /// only `exe=untrusted`.
 ///
-/// Re-vendored from NFS in this feature (the two scenarios dropped in session 5a).
 /// Oracle source: real fapolicyd 1.4.5 (el9/el10) `dec=` capture, in each
 /// scenario's NFS `manifest.json`/`validation.log`. The vendored `expected.json`
 /// reflects the modern (fapolicyd >= 1.4.x) macro semantics:
@@ -473,15 +464,14 @@ fn execdirs_systemdirs_macro_expansion() {
 ///   falls through to rule 2 `allow` -> `decision=allow, matchedRule=2`. Oracle
 ///   `dec_line`: `rule=2 dec=allow ... : ... trust=0`.
 ///
-/// RED until #126: the frozen `evaluate()` `"exe" =>` arm calls
-/// `exact_string_match`, so `exe=untrusted` is compared as the literal string
-/// `"untrusted"` against the exe path. For the match scenario that yields
-/// `NoMatch` -> fallthrough to rule 2 allow (WRONG: oracle says deny rule 1).
-/// (The trusted scenario passes for the WRONG reason today - exact-string
-/// `NoMatch` -> fallthrough to rule 2 allow happens to coincide with the oracle;
-/// the focused `exe_*_macro_*` unit tests inline in
-/// `crates/rulesteward-fapolicyd/src/evaluate.rs` pin the macro semantics
-/// directly so a wrong impl cannot satisfy both.)
+/// A literal-compare `"exe" =>` arm (`exact_string_match`) would compare
+/// `exe=untrusted` as the literal string `"untrusted"` against the exe path.
+/// For the match scenario that yields `NoMatch` -> fallthrough to rule 2 allow
+/// (WRONG: oracle says deny rule 1). (The trusted scenario would pass for the
+/// WRONG reason under that impl - exact-string `NoMatch` -> fallthrough to rule
+/// 2 allow happens to coincide with the oracle; the focused `exe_*_macro_*`
+/// unit tests inline in `crates/rulesteward-fapolicyd/src/evaluate.rs` pin the
+/// macro semantics directly so a wrong impl cannot satisfy both.)
 ///
 /// NOTE (documented for the impl's `--help`): the macro is fapolicyd >= 1.4.x
 /// only; on 1.3.2 it is INERT (the el8 oracle shows rule 1 NOT firing even for
@@ -526,15 +516,15 @@ fn trust_subject_vs_object_distinct() {
 /// files is `deny_audit perm=open trust=1 : trust=0`. An impl that collapses a
 /// single `trust` workload field onto BOTH sides of the evaluation cannot fire this
 /// rule (setting `trust=true` gives `subj_trust=Yes, obj_trust=Yes`; the object side
-/// then fails `trust=0` and the rule is skipped). The fix requires separate
-/// `subjTrust` / `objTrust` workload fields so the two sides can be set
-/// independently. (Bug found by impl-aware adversarial review, session 5a follow-up.)
+/// then fails `trust=0` and the rule is skipped). Separate `subjTrust` /
+/// `objTrust` workload fields are what let the two sides be set independently.
 ///
-/// The frozen `evaluate()` DOES evaluate them independently:
+/// `evaluate()` DOES evaluate them independently:
 /// - `eval_subject_field("trust", ...)` reads `facts.subj_trust`
 /// - `eval_object_field("trust", ...)` reads `facts.obj_trust`
 ///
-/// This is a `simulate` command bug, NOT an `evaluate()` bug.
+/// so what this scenario pins is `simulate`'s workload parsing, not
+/// `evaluate()`.
 ///
 /// Expected (derived from `evaluate()` with `subj_trust=Yes, obj_trust=No`):
 /// `decision=deny, full_decision_keyword=deny_audit, rule_number=1,`
@@ -550,9 +540,9 @@ fn both_sided_trust_killing_scenario() {
 /// `resolved_exe` is the canonical executable identity fapolicyd uses.
 ///
 /// This pins the `resolved_exe`-over-`exe` preference in `parse_json_object`
-/// (simulate.rs lines 116-121). Previously, no corpus scenario distinguished
-/// `exe` from `resolved_exe` - a wrong impl that ignored `resolved_exe` would
-/// always pass the existing corpus.
+/// (simulate.rs lines 116-121). Without a scenario that distinguishes `exe`
+/// from `resolved_exe`, a wrong impl ignoring `resolved_exe` would pass the
+/// rest of the corpus.
 ///
 /// Expected (derived from `evaluate()` with `exe=/usr/bin/coreutils`):
 /// `decision=deny, full_decision_keyword=deny_audit, rule_number=1,`

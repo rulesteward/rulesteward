@@ -5,9 +5,9 @@
 #![allow(clippy::doc_markdown)]
 //!
 //! # Grounding (DISA XCCDF, fetched 2026-06-14; live VMs 2026-06-15;
-//! # RE-GROUNDED 2026-07-17 for RHEL 9 V2R9 -- issues #549/#547, session
-//! # 9e-wave2c pipeline P2. DISA RHEL 9 STIG V2R9 (confirmed 2026-07-17 via
-//! # U_RHEL_9_V2R9_STIG.zip; lane3-tooling.md T1) dropped the Compression
+//! # RE-GROUNDED 2026-07-17 for RHEL 9 V2R9 -- issues #549/#547.
+//! # DISA RHEL 9 STIG V2R9 (confirmed 2026-07-17 via
+//! # U_RHEL_9_V2R9_STIG.zip) dropped the Compression
 //! # control (V-258002 / RHEL-09-255130): zero matches for "V-258002" in the
 //! # V2R9 XCCDF, and the sole "compression" hit is an unrelated gzip
 //! # fix-text example. Compression is no longer STIG-required OR

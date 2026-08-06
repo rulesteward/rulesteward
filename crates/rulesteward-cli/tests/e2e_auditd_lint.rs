@@ -1,9 +1,7 @@
-//! e2e: `rulesteward auditd lint` via the real binary (#193, session 6a).
+//! e2e: `rulesteward auditd lint` via the real binary (#193).
 //!
 //! These freeze the output contract end to end: envelope shape, exit codes, and
-//! human render across the live P1/P2/P3 semantic passes. (They were landed
-//! `#[ignore]`d during Phase 0 while the pass bodies were `todo!()` stubs; the
-//! integration gate enabled them once all passes merged.)
+//! human render across the P1/P2/P3 semantic passes.
 
 use assert_cmd::Command;
 use boon::{Compiler, Schemas};
@@ -23,7 +21,7 @@ fn lint_cmd() -> Command {
 }
 
 // ---------------------------------------------------------------------------
-// Live from Phase 0: paths that never reach the semantic-pass stubs.
+// Paths that never reach the semantic passes.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -323,11 +321,8 @@ fn t11_apparmor_flag_folds_msgtype_names() {
 
 // ---------------------------------------------------------------------------
 // issue #474: --target wiring for the version-aware au-W06 STIG baseline.
-// The shipped RHEL*_REQUIRED tables are empty placeholders (test-author
-// state; the implementer populates them via `tools/auditd-stig-update
-// derive`), so these tests pin the FLAG WIRING (exit code, no crash, no
-// au-W06 leaking without --target) rather than a real "au-W06 fires" case -
-// that content-level proof lives in
+// These tests pin the FLAG WIRING (exit code, no crash, no au-W06 leaking
+// without --target); the content-level proof of the matcher itself lives in
 // crates/rulesteward-auditd/tests/test_lints_stig_required.rs, which
 // exercises the real matcher against a test-local injected baseline.
 // ---------------------------------------------------------------------------
@@ -343,47 +338,25 @@ fn help_lists_the_target_flag() {
 
 #[test]
 fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
-    // The shipped RHEL9_REQUIRED table is now populated (issue #474): this
-    // fixture satisfies only one of its required lines
-    // (`-w /etc/passwd -p wa -k identity`, RHEL-09-654240), so --target rhel9
-    // surfaces every other one as au-W06 warnings (exit 1) - the same
-    // FLAG-WIRING proof as before (the flag reaches the real matcher), just
-    // with the outcome the populated table actually produces.
+    // The shipped RHEL9_REQUIRED table (issue #474) carries 81 required rows,
+    // so --target rhel9 surfaces every row this fixture does not satisfy as an
+    // au-W06 warning (exit 1). That doubles as the FLAG-WIRING proof: the flag
+    // reaches the real matcher.
     //
-    // UPDATED (#523, session 9b-v0_8-wave2 lane 2e): the shipped table grows
-    // from 67 to 69 rows (two new Control-shaped deepening entries, neither
-    // satisfied by this fixture), so 68 (not 66) of the 69 required lines are
-    // now missing. That bump already landed and is GREEN.
-    //
-    // SECOND, additive bump (also #523, additive round 2): the
-    // "--loginuid-immutable" deepening entry grows the shipped table from 69
-    // to 70 rows (also unsatisfied by this fixture), so 69 (not 68) of the
-    // 70 required lines are now missing.
-    //
-    // THIRD bump (#549, session 9e-wave2c pipeline P2): DISA RHEL 9 STIG
+    // DISA RHEL 9 STIG
     // V2R9 rewrote RHEL-09-654240 (V-258222) from the single-line watch form
-    // this fixture carries into a dual-arch syscall form; a Watch-shaped
-    // candidate never satisfies a Syscall-shaped requirement (`rules_match`'s
-    // `_ => false` arm), so the fixture no longer satisfies ANY of the 81
-    // required rows -- all 81 now fire, including RHEL-09-654240 itself.
-    // (This bump landed and went GREEN as commit 0bcbcf0.)
+    // this fixture carries into a dual-arch syscall form.
     //
-    // FOURTH bump, RE-DECIDED (USER RULING via AskUserQuestion, 2026-07-17,
-    // "watch<->syscall EQUIVALENCE" -- full grounding in
-    // crates/rulesteward-auditd/tests/test_lints_stig_required.rs's section
-    // doc comment above `w06_real_entrypoint_watch_equivalent_satisfies_
-    // v258222_passwd`): au-W06's matcher must treat a path-watch requirement
-    // as satisfied by EITHER kernel-equivalent form. V-258222's two dual-arch
-    // syscall rows (b32 + b64) are a pure path-watch shape, so this fixture's
-    // classic `-w /etc/passwd -p wa -k identity` line becomes a
-    // kernel-equivalent form of BOTH rows again -- dropping the missing
-    // count from 81 back to 79 (81 minus the 2 V-258222 rows the fixture's
-    // watch now satisfies; every OTHER required row has a distinct path, so
-    // nothing else in the table is affected).
+    // RULING: au-W06's matcher treats a path-watch requirement as satisfied by
+    // EITHER kernel-equivalent form, both directions, all targets.
+    // Rationale + evidence: #549
     //
-    // RED today: the current matcher's `rules_match` still treats
-    // Watch-vs-Syscall as an unconditional mismatch (`_ => false`), so it
-    // still reports all 81, including RHEL-09-654240.
+    // V-258222's two dual-arch syscall rows (b32 + b64) are a pure path-watch
+    // shape, so this fixture's classic `-w /etc/passwd -p wa -k identity` line
+    // is a kernel-equivalent form of BOTH rows -- putting the missing count at
+    // 79 (81 minus the 2 V-258222 rows the fixture's watch satisfies; every
+    // OTHER required row has a distinct path, so nothing else in the table is
+    // affected).
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -412,10 +385,9 @@ fn target_rhel9_flag_accepted_and_warns_against_the_populated_table() {
             .all(|d| d["code"] == serde_json::json!("au-W06")),
         "every finding must be au-W06: {out}"
     );
-    // Can-satisfy discriminator (restores the reviewer's Item-4 finding,
-    // re-decided for the equivalence ruling): RHEL-09-654240 (V-258222,
-    // /etc/passwd) must NOT be reported missing -- the fixture's classic
-    // watch satisfies it via the equivalence ruling.
+    // Can-satisfy discriminator: RHEL-09-654240 (V-258222, /etc/passwd) must
+    // NOT be reported missing -- the fixture's classic watch satisfies it via
+    // the equivalence ruling.
     assert!(
         diags.iter().all(|d| !d["message"]
             .as_str()
@@ -455,11 +427,9 @@ fn no_target_emits_no_au_w06() {
 }
 
 // ---------------------------------------------------------------------------
-// #511 (v0.8 Wave 4): SARIF output for the 5 `HumanJsonFormat` lint verbs
-// (findings-only). RED today: `AuditdLintArgs.format` is `HumanJsonFormat`
-// (human|json only), so clap rejects `--format sarif` at parse time. The
-// planned impl switches `AuditdLintArgs.format` to `OutputFormat` and routes
-// the new Sarif arm through `output::emit_lint`.
+// #511: SARIF output for the lint verbs (findings-only).
+// `AuditdLintArgs.format` is `OutputFormat` (human|json|sarif) and the Sarif
+// arm routes through `output::emit_lint`.
 // ---------------------------------------------------------------------------
 
 /// Validate a SARIF JSON string against the bundled OASIS SARIF 2.1.0 schema.
@@ -564,9 +534,7 @@ fn sarif_format_clean_ruleset_is_schema_valid_with_zero_results() {
 }
 
 /// `--sarif-include-pass` must stay fapolicyd-ONLY (locked scope): clap must
-/// still reject it as an unrecognized flag on `auditd lint`. GREEN today
-/// (clap already rejects the unknown flag) and must stay green after the
-/// impl.
+/// reject it as an unrecognized flag on `auditd lint`.
 #[test]
 fn sarif_include_pass_is_rejected_for_auditd_lint() {
     let dir = tempfile::tempdir().unwrap();

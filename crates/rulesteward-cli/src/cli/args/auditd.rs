@@ -43,7 +43,7 @@ pub struct CostArgs {
     pub format: HumanJsonCsvFormat,
 }
 
-/// Arguments for `rulesteward auditd lint` (#193, session 6a).
+/// Arguments for `rulesteward auditd lint` (#193).
 #[derive(Debug, Parser)]
 pub struct AuditdLintArgs {
     /// The audit rules to lint: a rules.d/ directory (analyzed in augenrules

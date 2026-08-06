@@ -26,9 +26,8 @@ const DEFAULT_RULES_D: &str = "/etc/fapolicyd/rules.d/";
 
 /// Typed errors from [`resolve_targets`].
 ///
-/// Previously `resolve_targets` returned `anyhow::Result<...>`. Switching to a
-/// typed error lets callers pattern-match on the exact failure mode rather than
-/// parsing error strings.
+/// A typed error (rather than `anyhow::Result<...>`) lets callers pattern-match
+/// on the exact failure mode rather than parsing error strings.
 #[derive(Debug, Error)]
 pub enum ResolveError {
     /// The supplied path (or the default) is not a directory.
@@ -251,7 +250,7 @@ fn run_lint_resolved(
 /// otherwise-good lint target combined with a bad `--against-trustdb` would
 /// revert `--format json`/`--format sarif` to zero stdout bytes, silently
 /// re-breaking the guarantee `resolve_targets_or_fail` establishes for the
-/// target-path case (adversarial-review miss 2, session 9j lane 3).
+/// target-path case.
 fn open_trustdb_arg(path: Option<&Path>, format: OutputFormat) -> Result<Option<TrustDb>, i32> {
     let Some(p) = path else {
         return Ok(None);
@@ -279,18 +278,18 @@ fn open_trustdb_arg(path: Option<&Path>, format: OutputFormat) -> Result<Option<
 /// failure. Mirrors [`open_trustdb_arg`]'s exit-code-as-`Err` convention.
 ///
 /// A `resolve_targets` failure (the positional directory-scan mode's target
-/// isn't a directory, or its parent can't be read) used to propagate via `?`
+/// isn't a directory, or its parent can't be read) must NOT propagate via `?`
 /// straight to `main.rs`'s `report()`, which prints the error but returns
-/// BEFORE `output::render` ever runs -- so `--format json`/`--format sarif`
-/// saw zero bytes on stdout (the same #561 gap the other four backends were
-/// fixed for). Handle it here instead: print the same diagnostic, emit the
-/// (empty) envelope, and hand the caller `EXIT_TOOL_FAILURE` to return
-/// directly, mirroring every other backend's path-error shape. fapolicyd is
+/// BEFORE `output::render` ever runs -- `--format json`/`--format sarif`
+/// would then see zero bytes on stdout (the #561 gap). Handle it here
+/// instead: print the same diagnostic, emit the (empty) envelope, and hand
+/// the caller `EXIT_TOOL_FAILURE` to return directly, mirroring every other
+/// backend's path-error shape. fapolicyd is
 /// NOT an `emit_lint` caller for its normal render path (it calls the
 /// three-variant `render` directly, for the real `--sarif-include-pass`
 /// attestation) -- but for an EMPTY diagnostics set with `pass: None`, the
 /// shared path-error helper produces byte-identical output to `render`,
-/// including the existing, ruled-kept `kind: "lint"` (not `"fapolicyd-lint"`).
+/// including the deliberate `kind: "lint"` (not `"fapolicyd-lint"`).
 fn resolve_targets_or_fail(args: &LintArgs) -> Result<(Vec<PathBuf>, Option<Diagnostic>), i32> {
     resolve_targets(args).map_err(|e| {
         eprintln!("error: {e}");
@@ -588,7 +587,6 @@ mod tests {
     }
 
     /// Typed error: a non-directory path must yield `ResolveError::NotADirectory`.
-    /// RED: will fail until `resolve_targets` returns `Result<_, ResolveError>`.
     #[test]
     fn resolve_targets_not_a_directory_yields_typed_error_variant() {
         let f = tempfile::NamedTempFile::new().expect("tempfile");

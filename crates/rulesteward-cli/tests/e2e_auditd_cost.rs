@@ -196,11 +196,12 @@ fn auditd_cost_json_measured_total_stays_collapsed() {
     );
     assert_eq!(v["schemaVersion"], 1, "schemaVersion must stay 1");
 
-    // #307: the per-event SIZE is now MEASURED from the log, not the flat 1200.
+    // #307: the per-event SIZE is MEASURED from the log, not the flat 1200.
     // The fixture's 3 events are short single-record SYSCALLs (no companions), so
     // bytes["exec"] == the whole file (every line is a key-bearing distinct serial,
     // and on-disk bytes = sum of line.len()+1 = file size for a clean log). The
-    // reported bytesPerEvent is round(total_bytes / events), well below the old 1200.
+    // reported bytesPerEvent is round(total_bytes / events), well below the
+    // assumed-mode 1200.
     let total_bytes = std::fs::metadata(&log).expect("stat log").len() as f64;
     let expected_bpe = (total_bytes / 3.0).round() as u64;
     assert_eq!(
@@ -318,7 +319,7 @@ fn auditd_cost_human_measured_header_names_measured_size() {
         .success();
     let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8");
 
-    // #307: the header now names the MEASURED average byte size (the real event
+    // #307: the header names the MEASURED average byte size (the real event
     // size), not the flat ~1200 assumption. The single short synthetic event is one
     // key-bearing serial, so bytes["exec"] == the file size and the average == that.
     let file_size = std::fs::metadata(&log).expect("stat log").len();
@@ -336,8 +337,8 @@ fn auditd_cost_human_measured_header_names_measured_size() {
         !out.contains("B/event band"),
         "measured header must NOT advertise the assumed byte band; got:\n{out}"
     );
-    // #307: the CONFIDENCE line must now state the per-event SIZE is MEASURED from
-    // the log, and must NOT keep the old "still assumed" caveat (#271-B).
+    // #307: the CONFIDENCE line must state the per-event SIZE is MEASURED from
+    // the log, and must NOT carry a "still assumed" caveat (#271-B).
     assert!(
         out.contains("SIZE measured"),
         "measured CONFIDENCE must note the per-event size is measured; got:\n{out}"
@@ -348,7 +349,7 @@ fn auditd_cost_human_measured_header_names_measured_size() {
     );
 }
 
-/// #307 strengthening (post-GREEN adversarial loop): when the ruleset's key matches
+/// #307: when the ruleset's key matches
 /// NO measured events, the additive event total is 0, so the measured average
 /// bytes/event is undefined and falls back to the locked 1200 scalar; the cost is 0
 /// regardless. Guards the `total_additive_events > 0.0` fallback branch.
@@ -399,7 +400,7 @@ fn auditd_cost_json_measured_zero_event_key_falls_back_to_scalar() {
     );
 }
 
-/// #307 strengthening (post-GREEN adversarial loop): a SUPPRESSIVE rule (never /
+/// #307: a SUPPRESSIVE rule (never /
 /// exclude) must contribute ZERO bytes to the measured total, even when its key
 /// matches events in the log. Guards the `Direction::Additive` filter on the summed
 /// measured bytes -- without it, a never rule's key bytes would inflate the dollar
@@ -469,7 +470,7 @@ fn auditd_cost_json_measured_suppressive_rule_adds_zero_bytes() {
     );
 }
 
-/// #307 strengthening (post-GREEN adversarial loop): two ADDITIVE rules sharing one
+/// #307: two ADDITIVE rules sharing one
 /// key both look up that key's measured bytes, so the byte total SUMS the bucket
 /// once per rule -- the locked per-key-sums model, identical to how the event count
 /// already double-counts a shared key. The per-event average is unchanged; the
@@ -553,7 +554,7 @@ fn auditd_cost_unparseable_rules_exits_five() {
         .stderr(predicates::str::contains("parse error"));
 }
 
-/// `--recommend` is a documented no-op today (#85 Option 2 deferred): it
+/// `--recommend` is a documented no-op (#85 Option 2 deferred): it
 /// prints a `[NOT YET IMPLEMENTED]` notice to stderr but still exits 0 with
 /// the normal cost report on stdout.
 #[test]
@@ -657,17 +658,17 @@ fn auditd_cost_from_log_fifo_fails_fast_not_hang() {
     );
 }
 
-/// #583 adversarial-review follow-up (blocker 2): a FIFO-only special-file
+/// #583 (blocker 2): a FIFO-only special-file
 /// guard is not enough. `/dev/null` (a character device) never hangs under a
 /// raw `std::fs::read_to_string` - it reads back an instant empty string -
-/// so TODAY `auditd cost --from-log /dev/null` silently succeeds and prints a
-/// CONFIDENT, FABRICATED "MEASURED" cost report (measured live 2026-07-24:
-/// exit 0, "CONFIDENCE: rates are MEASURED from --from-log", all-zero
-/// events/GB), the same silent-wrong-answer class the `report --file
+/// so an unguarded `auditd cost --from-log /dev/null` silently succeeds and
+/// prints a CONFIDENT, FABRICATED "MEASURED" cost report (measured live
+/// 2026-07-24: exit 0, "CONFIDENCE: rates are MEASURED from --from-log",
+/// all-zero events/GB), the same silent-wrong-answer class the `report --file
 /// /dev/null` and `simulate --workload /dev/null` cases pin. A
 /// `if is_fifo(path) { reject } else { raw read }` implementation passes the
-/// FIFO test above yet still lets this exact case through. After the fix,
-/// `/dev/null` must be a tool failure instead.
+/// FIFO test above yet still lets this exact case through; `/dev/null` must
+/// be a tool failure instead.
 #[test]
 fn auditd_cost_from_log_dev_null_is_a_tool_failure_not_a_fabricated_measured_report() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -700,7 +701,7 @@ fn auditd_cost_from_log_dev_null_is_a_tool_failure_not_a_fabricated_measured_rep
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 1 (session 9j lane 3): restored stream support.
+// Stream support.
 // `read_to_string` rejects EVERY FIFO, even one with a live writer -- but
 // `--from-log` is a stream-shaped input operators legitimately pipe in.
 // `read_stream_to_string` accepts a FIFO with a live writer; this test pins

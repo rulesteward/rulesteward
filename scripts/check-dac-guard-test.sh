@@ -36,7 +36,7 @@
 #     trivial case where no from_mode(0o000/0o555) calls exist at all).
 #
 # Reference implementation of the guard convention this gate enforces:
-#   crates/rulesteward-sysctld/tests/system.rs:753-777 (and the 7 guards
+#   crates/rulesteward-sysctld/tests/system.rs:754-778 (and the 7 guards
 #   added in #465 across crates/rulesteward-cli/{src,tests}/...).
 #
 # This test script is self-contained: it builds synthetic .rs fixtures in a
@@ -253,7 +253,7 @@ EOF
 # odd interior double-quote count), this time ahead of a CORRECTLY guarded
 # deny site using the real repo idiom: from_mode(0o000) followed several
 # lines later, in the SAME fn, by an eprintln! naming CAP_DAC_OVERRIDE
-# (mirrors crates/rulesteward-sysctld/tests/system.rs:753-777, where the
+# (mirrors crates/rulesteward-sysctld/tests/system.rs:754-778, where the
 # marker sits ~13 lines after the from_mode call in the same fn). The
 # earlier raw string must not cause this already-guarded site to be
 # false-flagged -> exit 0 (guarded, no violation).

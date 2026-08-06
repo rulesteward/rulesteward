@@ -94,9 +94,9 @@ fn assert_byte_identical_sarif(out: &std::process::Output) {
 }
 
 // ---------------------------------------------------------------------------
-// GREEN today: the four backends #561 already fixed, plus fapolicyd's
-// already-working `--file` mode. These are the safety net proving the
-// shared-helper extraction does not perturb the SARIF branch either.
+// The four #561 backends, plus fapolicyd's `--file` mode. These are the
+// safety net proving the shared-helper extraction does not perturb the SARIF
+// branch either.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -123,9 +123,9 @@ fn auditd_lint_missing_path_sarif_is_byte_identical() {
     assert_byte_identical_sarif(&out);
 }
 
-/// fapolicyd's ALREADY-WORKING `--file` single-file mode (distinct from the
-/// positional dir-scan mode pinned RED below) - its per-file-tolerant loop
-/// always falls through to the shared render call regardless of read errors.
+/// fapolicyd's `--file` single-file mode (distinct from the positional
+/// dir-scan mode pinned below) - its per-file-tolerant loop always falls
+/// through to the shared render call regardless of read errors.
 #[test]
 fn fapolicyd_lint_file_missing_sarif_is_byte_identical() {
     let out = run_missing_path_sarif(&["fapolicyd", "lint", "--file", "/nonexistent/583/x.rules"]);
@@ -133,12 +133,12 @@ fn fapolicyd_lint_file_missing_sarif_is_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
-// RED today: the two #583 half B sarif gaps.
+// The two #583 half B sarif gaps.
 // ---------------------------------------------------------------------------
 
-/// `selinux lint`'s path-error arm has NO envelope call at all under any
-/// format - `--format sarif` on a bad path is zero bytes today, same as
-/// `--format json` (`path_error_json.rs::selinux_lint_missing_path_emits_json_envelope`).
+/// `selinux lint`'s path-error arm must emit the envelope under `--format
+/// sarif`, not zero bytes - the SARIF counterpart of
+/// `path_error_json.rs::selinux_lint_missing_path_emits_json_envelope`.
 #[test]
 fn selinux_lint_missing_path_sarif_is_byte_identical() {
     let out = run_missing_path_sarif(&["selinux", "lint", "/nonexistent/583/selinux-config"]);
@@ -158,8 +158,8 @@ fn fapolicyd_lint_missing_dir_sarif_is_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 2 (session 9j lane 3): `open_trustdb_arg`
-// (`commands/fapolicyd/lint.rs:85`) runs BEFORE `resolve_targets_or_fail`
+// `open_trustdb_arg`
+// (`commands/fapolicyd/lint.rs:84`) runs BEFORE `resolve_targets_or_fail`
 // (`:90`), so a bad `--against-trustdb` on an otherwise-good lint target must
 // ALSO emit the SARIF envelope -- the SARIF counterpart of
 // `path_error_json.rs`'s equivalent new tests.
@@ -207,7 +207,7 @@ fn fapolicyd_lint_against_trustdb_not_a_directory_sarif_is_byte_identical() {
 
 /// Combination case: BOTH the positional rules.d target AND
 /// `--against-trustdb` are bad. `open_trustdb_arg` runs FIRST
-/// (`commands/fapolicyd/lint.rs:85`, before `resolve_targets_or_fail` at
+/// (`commands/fapolicyd/lint.rs:84`, before `resolve_targets_or_fail` at
 /// `:90`), so its own envelope call fires and `resolve_targets_or_fail`'s is
 /// never reached -- proving stacking two bad inputs never silently drops
 /// back to zero stdout bytes under SARIF either.

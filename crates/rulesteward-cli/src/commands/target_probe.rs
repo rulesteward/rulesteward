@@ -195,8 +195,7 @@ pub(crate) fn resolve_target(
 }
 
 /// Doctor-verb target resolution, shared by every backend's doctor command
-/// (fapolicyd; selinux #520, first wired in session 9d lane 2b; sshd #536
-/// next).
+/// (fapolicyd; selinux #520).
 ///
 /// Differs from [`resolve_target`] in exactly one place: an OMITTED `--target`
 /// defaults to `auto` because doctor always examines the host it runs on
@@ -246,21 +245,18 @@ mod tests {
 
     #[test]
     fn version_id_with_trailing_space_still_strips_quotes_control() {
-        // GREEN regression pin (rulesteward-cli issue #582, adversarial
-        // review round 2, BLOCKER 4): this file is not owned by the #582
-        // lane, but its behavior CHANGES through the shared
-        // `commands::conf::conf_value` helper that lane's fix touches. A
-        // fix shaped as "just stop trimming the value's trailing edge"
-        // (rather than "keep trimming ASCII space, only stop trimming CR")
-        // would leave a trailing space after the closing quote here;
-        // `strip_quotes`'s `bytes[len-1] == bytes[0]` check would then see
-        // a space (not the closing quote) as the last byte, quotes would
-        // NOT be stripped, and `version_id` would become
-        // `Some("\"9.4\" ")` instead of `Some("9.4")` -- silently breaking
-        // RHEL target auto-detection, which cascades into every `ControlRef`
-        // attachment across the whole compliance surface. That fix has since
-        // landed (`conf_value` trims ASCII space only); this test was GREEN
-        // before it and stays GREEN after, which is the point.
+        // GREEN regression pin (rulesteward-cli issue #582): this file's
+        // behavior depends on the shared `commands::conf::conf_value`
+        // helper, which trims ASCII space only. A change shaped as "just
+        // stop trimming the value's trailing edge" (rather than "keep
+        // trimming ASCII space, only stop trimming CR") would leave a
+        // trailing space after the closing quote here; `strip_quotes`'s
+        // `bytes[len-1] == bytes[0]` check would then see a space (not the
+        // closing quote) as the last byte, quotes would NOT be stripped,
+        // and `version_id` would become `Some("\"9.4\" ")` instead of
+        // `Some("9.4")` -- silently breaking RHEL target auto-detection,
+        // which cascades into every `ControlRef` attachment across the whole
+        // compliance surface.
         let os = parse_os_release("VERSION_ID=\"9.4\" \n");
         assert_eq!(
             os.version_id.as_deref(),

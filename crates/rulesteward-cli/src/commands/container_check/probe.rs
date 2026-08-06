@@ -390,17 +390,12 @@ mod tests {
 
     #[test]
     fn parse_conf_detects_mark_enabled_with_trailing_space_control() {
-        // GREEN regression pin (rulesteward-cli issue #582, adversarial
-        // review round 2, BLOCKER 4): this file is not owned by the #582
-        // lane, but its behavior CHANGES through the shared
-        // `commands::conf::conf_value` helper that lane's fix touches. That
-        // fix must switch `conf_value` off a full Unicode `.trim()` (to
-        // preserve a CRLF file's trailing '\r') without also dropping the
-        // trailing-ASCII-space trim this exact-string `== Some("1")`
-        // compare depends on -- a hand-edited conf with one trailing space
-        // must not silently flip `allow_filesystem_mark` to `false`. That fix
-        // has since landed (`conf_value` now trims ASCII space only); this
-        // test was GREEN before it and stays GREEN after, which is the point.
+        // Regression pin (issue #582): this file's behavior flows through the
+        // shared `commands::conf::conf_value` helper. `conf_value` trims
+        // ASCII space only, never a full Unicode `.trim()` (which would also
+        // eat a CRLF file's trailing '\r'); a hand-edited conf with one
+        // trailing space must not silently flip `allow_filesystem_mark` to
+        // `false`.
         let c = parse_effective_conf("allow_filesystem_mark = 1 \n", true);
         assert!(
             c.allow_filesystem_mark,
@@ -410,15 +405,15 @@ mod tests {
         );
     }
 
-    /// MISS 3 (#582, empirically verified live on fapolicyd8/9/10):
+    /// #582 (empirically verified live on fapolicyd8/9/10):
     /// `allow_filesystem_mark = 1 \r\n` (a CRLF-edited conf with a real
     /// ASCII space before the '\r') is a conf the real daemon LOADS FINE,
     /// enabling the mark -- the daemon's tokenizer binds the value to the
     /// FIRST ASCII-space-delimited token, `"1"`; the stray `"\r"` is a
-    /// discarded extra token. `conf_value`'s CR-preserving fix leaves the
-    /// raw value `"1 \r"`; the old EXACT-string `== Some("1")` compare
-    /// missed this and reported `false`, silently suppressing the container-
-    /// check HIGH finding that overlay mediation can be bypassed.
+    /// discarded extra token. `conf_value` preserves that CR, so the raw
+    /// value is `"1 \r"`; an EXACT-string `== Some("1")` compare against the
+    /// raw value reports `false`, silently suppressing the container-check
+    /// HIGH finding that overlay mediation can be bypassed.
     #[test]
     fn parse_conf_detects_mark_enabled_with_crlf_and_trailing_space_control() {
         let c = parse_effective_conf("allow_filesystem_mark = 1 \r\n", true);
@@ -441,7 +436,7 @@ mod tests {
     fn parse_conf_last_duplicate_wins() {
         // fapolicyd resolves duplicate keys last-wins (daemon-config.c overwrites
         // on each match); a later override must win so container-check reports the
-        // same effective conf the daemon actually loads (issue #192 finding).
+        // same effective conf the daemon actually loads (issue #192).
         let c = parse_effective_conf(
             "allow_filesystem_mark = 0\nallow_filesystem_mark = 1\n",
             true,

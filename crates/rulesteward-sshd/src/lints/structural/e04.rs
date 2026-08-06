@@ -400,7 +400,7 @@ mod e04_tests {
         // rc 255). The tolerant parser yields a single criterion whose value is the
         // empty string (`{keyword:"all", values:[""]}`); the NON-empty value marks
         // it as NOT the valueless `all`, so it stays conditional and E04 still fires
-        // on the Match-illegal `Ciphers` directive. (issue #336 adversarial finding)
+        // on the Match-illegal `Ciphers` directive. (issue #336)
         let diags = run("Match all=\n    Ciphers aes256-ctr\n");
         assert_eq!(
             diags.len(),
@@ -479,12 +479,9 @@ mod e04_tests {
     #[test]
     fn unknown_keyword_in_match_does_not_fire_e04() {
         // ZZBogus is not recognized by any supported sshd version (is_known_any ->
-        // false). It is NOT in E04_MATCH_PERMITTED either, so without the fix e04()
-        // fires sshd-E04 for it (double-fire with sshd-E01). After the fix, e04()
-        // must return EMPTY for this config because the unknown keyword is E01's
-        // sole responsibility.
-        //
-        // RED before fix: e04() currently emits sshd-E04 -> len() == 1, not 0.
+        // false). It is NOT in E04_MATCH_PERMITTED either. e04() must return EMPTY
+        // for this config because the unknown keyword is E01's sole
+        // responsibility; also emitting sshd-E04 would double-fire with sshd-E01.
         let diags = run("Match User bob\n    ZZBogus yes\n");
         assert!(
             diags.is_empty(),
@@ -503,8 +500,7 @@ mod e04_tests {
         // `["zzbogus", "foobarbaz", ...].contains(...)`) is NOT a valid implementation
         // and would mis-handle any other unknown keyword an operator writes.
         //
-        // After the fix, e04() must return EMPTY for every one of these configs.
-        // RED before fix: e04() emits sshd-E04 for each unknown -> len() == 1.
+        // e04() must return EMPTY for every one of these configs.
         let unknown_tokens = [
             "FooBarBaz",
             "NotAKeyword",
@@ -531,8 +527,6 @@ mod e04_tests {
         // Tested against distinct out-of-the-other-fixture tokens to defeat both a
         // single-literal AND an N-element hardcoded skip-list (the impl must do a real
         // is_known_any lookup, which generalizes to any unknown keyword).
-        //
-        // RED before fix: the dispatcher emits both sshd-E01 AND sshd-E04 for each.
         let unknown_tokens = ["ZorbleQuux", "FloopDingle", "Wibble"];
         for kw in unknown_tokens {
             let src = format!("Match User bob\n    {kw} yes\n");
@@ -620,10 +614,8 @@ mod e04_tests {
     fn unknown_keyword_in_match_fires_e01_not_e04_via_full_dispatcher() {
         // Full dispatcher test: with both e01() and e04() running, the combined
         // output for an unknown keyword inside a Match block must contain exactly
-        // one diagnostic, code sshd-E01, and must NOT contain sshd-E04.
-        //
-        // RED before fix: currently the dispatcher emits both sshd-E01 (correct)
-        // AND sshd-E04 (wrong double-fire), so the `no E04` assertion below fails.
+        // one diagnostic, code sshd-E01, and must NOT contain sshd-E04. A
+        // double-fire of sshd-E01 plus sshd-E04 fails the `no E04` assertion below.
         let src = "Match User bob\n    ZZBogus yes\n";
         let blocks =
             crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
@@ -644,15 +636,13 @@ mod e04_tests {
         );
     }
 
-    // ----- regression guard (must stay GREEN before and after the fix) -----
+    // ----- regression guard -----
 
     #[test]
     fn known_keyword_not_match_permitted_still_fires_e04() {
         // Ciphers IS recognized by all sshd versions (is_known_any -> true) but is
-        // NOT in E04_MATCH_PERMITTED. After the fix, e04() may only skip UNKNOWN
-        // keywords; a known-but-not-permitted keyword must still fire sshd-E04.
-        //
-        // GREEN before fix (existing behaviour); must remain GREEN after fix.
+        // NOT in E04_MATCH_PERMITTED. e04() may only skip UNKNOWN keywords; a
+        // known-but-not-permitted keyword must still fire sshd-E04.
         let diags = run("Match User bob\n    Ciphers aes256-ctr\n");
         assert_eq!(
             diags.len(),
@@ -745,8 +735,7 @@ mod e04_tests {
         //   Source: depth-sshd-sets.md FINDING 1, servconf.c keyword table -
         //   { "ignorerhosts", sIgnoreRhosts, SSHCFG_GLOBAL } at V_8_0_P1 vs
         //   { ..., SSHCFG_ALL } at V_9_9_P1.
-        // FINDING 1 originally mis-dismissed this ("ignorerhosts unknown to reg8" is
-        // FALSE - it IS in RHEL8_BASE, so the is_known gate does not skip it).
+        // `ignorerhosts` IS in RHEL8_BASE, so the is_known gate does not skip it.
         let src = "Match User bob\n    IgnoreRhosts yes\n";
 
         // rhel8 (8.0p1): SSHCFG_GLOBAL -> fires exactly one E04.
@@ -845,9 +834,9 @@ mod e04_tests {
         // 9.9p1, so the daemon honors it inside a Match block on every supported
         // version. It is in RHEL8_BASE (known on every target), so the is_known gate
         // does NOT skip it; it must therefore live in E04_PERMITTED_BASE and NEVER
-        // fire E04 inside a Match block - at no-target or under any --target. Before
-        // the fix it was absent from both E04 permitted sets, so it false-positived
-        // (exit 2) on a config the daemon accepts AND honors.
+        // fire E04 inside a Match block - at no-target or under any --target. Absent
+        // from both E04 permitted sets it would false-positive (exit 2) on a config
+        // the daemon accepts AND honors.
         //   Source: depth-sshd-sets.md FINDING 1 (GSSAPIEnableK5Users SSHCFG_ALL on
         //   8.0p1 and 9.9p1) + issue #356 live differential, 2026-06-29: `sshd -t`
         //   rc=0; `sshd -T -C user=alice` -> yes, user=bob -> no (Match-scoped and
@@ -978,9 +967,9 @@ mod e04_tests {
         }
     }
 
-    // ----- target-aware skip oracle tests (the miss-case from the adversarial review) -----
+    // ----- target-aware skip oracle tests -----
     //
-    // The no-target fix above uses `registry::is_known_any` (the RHEL10 union) to
+    // The no-target path uses `registry::is_known_any` (the RHEL10 union) to
     // decide whether a keyword inside a Match block belongs to E01. That is correct
     // for the no-target case (where e01() also uses the union), but WRONG when a
     // `--target` is set: with `--target rhel8`, `RequiredRSASize` is NOT recognized
@@ -994,10 +983,10 @@ mod e04_tests {
     // On Rocky 9.8 (OpenSSH 9.9p1): "Value too small" (accepted, exit 0).
     // See rulesteward-docs/sshd-stig-version-grounding.md section 8.
     //
-    // The fix must change e04()'s skip oracle from `is_known_any` to a
-    // context-aware check: `is_known(keyword, target)` when a target is set, and
-    // `is_known_any(keyword)` only when no target. A wrong impl that always uses
-    // `is_known_any` passes the no-target tests above but FAILS these target tests.
+    // e04()'s skip oracle is therefore context-aware: `is_known(keyword, target)`
+    // when a target is set, and `is_known_any(keyword)` only when no target. A wrong
+    // impl that always uses `is_known_any` passes the no-target tests above but
+    // FAILS these target tests.
 
     #[test]
     fn version_rejected_keyword_in_match_with_target_routes_only_to_e01() {
@@ -1008,11 +997,10 @@ mod e04_tests {
         //   - sshd-E04 must NOT fire (daemon does not silently ignore it; it rejects
         //     it entirely, so "silently ignored at runtime" is factually wrong).
         //
-        // RED before fix: e04() uses is_known_any, which returns true for
-        // RequiredRSASize (known via the RHEL10 superset), so e04() emits sshd-E04
-        // even under --target rhel8 -> double-fire.
-        // Correct: e04() should use is_known(kw, target) when a target is set; that
-        // returns false for RequiredRSASize + Rhel8, so e04() skips it.
+        // `is_known_any` alone returns true for RequiredRSASize (known via the
+        // RHEL10 superset) and would double-fire even under --target rhel8. e04()
+        // uses is_known(kw, target) when a target is set; that returns false for
+        // RequiredRSASize + Rhel8, so e04() skips it.
         let src = "Match User bob\n    RequiredRSASize 2048\n";
         let diags = run_with_target(src, TargetVersion::Rhel8);
         assert!(
@@ -1029,13 +1017,11 @@ mod e04_tests {
         // with `--target rhel8` on `RequiredRSASize` inside a Match block must yield
         // EXACTLY sshd-E01 and ZERO sshd-E04.
         //
-        // This is the primary killing test: it verifies the double-fire the
-        // adversarial reviewer observed: `target=rhel8, Match User bob,
-        // RequiredRSASize 2048 -> codes = ["sshd-E01", "sshd-E04"]`.
-        // Correct: codes = ["sshd-E01"] only.
-        //
-        // RED before fix: dispatcher emits both sshd-E01 (correct) and sshd-E04
-        // (wrong double-fire, because e04 uses is_known_any not is_known(kw, Rhel8)).
+        // This is the primary killing test for the double-fire shape
+        // `target=rhel8, Match User bob, RequiredRSASize 2048 ->
+        // codes = ["sshd-E01", "sshd-E04"]`, which an e04 using is_known_any
+        // instead of is_known(kw, Rhel8) produces. Correct: codes =
+        // ["sshd-E01"] only.
         let src = "Match User bob\n    RequiredRSASize 2048\n";
         let blocks =
             crate::parser::parse_config_str_located(src, Path::new("/etc/ssh/sshd_config"))
@@ -1068,7 +1054,7 @@ mod e04_tests {
         // belong exclusively to sshd-E01. e04() must not emit sshd-E04 for any of them.
         //
         // This pins the general rule, not just the RequiredRSASize boundary case:
-        // the fix must use is_known(kw, target) for EVERY keyword when a target is set.
+        // e04() uses is_known(kw, target) for EVERY keyword when a target is set.
         // A hardcoded skip-list of "requiredrsasize" would pass the single keyword test
         // but fail this parametrized sweep.
         //
@@ -1083,8 +1069,8 @@ mod e04_tests {
         //  unusedconnectiontimeout are in both ADDED_RHEL9 AND E04_MATCH_PERMITTED, so
         //  they never reach the E04 emission path and are not listed here.)
         //
-        // RED before fix: e04() uses is_known_any -> true for every ADDED_RHEL9 keyword
-        // -> emits sshd-E04 for each of the non-permitted ones with --target rhel8.
+        // An e04 using is_known_any -> true for every ADDED_RHEL9 keyword would emit
+        // sshd-E04 for each of the non-permitted ones with --target rhel8.
         let rhel9_only_non_permitted = [
             "CanonicalMatchUser",
             "GSSAPIIndicators",

@@ -1,5 +1,5 @@
 //! Crate-level tests for `sysctld-W02` (the version-aware STIG kernel-hardening
-//! baseline, issue #335), authored at the test-author barrier BEFORE the W02 impl.
+//! baseline, issue #335).
 //! They call the frozen public entries `parser::lint_str_with_target` /
 //! `parser::lint_dir_with_target` directly and are RED against the empty-table stub
 //! (which emits no W02): only the grounded tables + the missing/insecure logic turn
@@ -9,27 +9,18 @@
 //! Every key + accepted value asserted here was originally transcribed from
 //! `rulesteward-docs/sysctld-stig-baseline-grounding.md`, grounded against
 //! ComplianceAsCode/content at the pinned commit
-//! `519b5fe8ce338cfa25d53065bcb3759aafe8d36d` and gated by the
-//! source-adversarial-reviewer.
+//! `519b5fe8ce338cfa25d53065bcb3759aafe8d36d`.
 //!
-//! **UPDATED #512 (session 9h-v0_8-wave4 Lane B, 2026-07-20, PRE-AUTHORIZED
-//! DISA-reconciliation)**: `kernel.kptr_restrict` and `net.ipv4.conf.all.rp_filter`
-//! are RECONCILED from the CaC-derived `{1,2}`-on-some-targets shape below to
-//! ENABLE-ONLY (`1`) on EVERY target - DISA's own XCCDF check-content requires
+//! **#512 (DISA reconciliation)**: `kernel.kptr_restrict` and
+//! `net.ipv4.conf.all.rp_filter`
+//! are ENABLE-ONLY (`1`) on EVERY target - DISA's own XCCDF check-content requires
 //! exactly `1` for both keys on rhel8/rhel9/rhel10 (grounding doc
-//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 4a/5); the `{1,2}`
-//! shipped acceptance traced to `ComplianceAsCode`'s own jinja branching, not to
-//! DISA's literal text. rhel8 also gains 3 new DISA V2R8 keys (see
-//! `w02_rhel8_requires_the_three_disa_v2r8_keys_after_reconciliation` below). The
-//! CaC-era divergences this doc comment used to describe (superseded, kept here
-//! only for history):
-//! * ~~`kernel.kptr_restrict`: rhel8 accepts ONLY `1`; rhel9/rhel10 accept `1` OR `2`~~
-//!   -> now `1` on every target.
-//! * ~~`net.ipv4.conf.all.rp_filter`: rhel8/rhel10 accept `1` OR `2`; rhel9 accepts
-//!   ONLY `1`~~ -> now `1` on every target.
+//! `/mnt/side-projects/9h-v0_8-wave4/lane-b-grounding.md` section 4a/5); a `{1,2}`
+//! acceptance traces to `ComplianceAsCode`'s own jinja branching, not to
+//! DISA's literal text. rhel8 also carries 3 DISA V2R8 keys (see
+//! `w02_rhel8_requires_the_three_disa_v2r8_keys_after_reconciliation` below).
 //! * `user.max_user_namespaces`: required on rhel8/rhel9; ABSENT from rhel10's
-//!   baseline - UNCHANGED by the #512 reconciliation, still the one real
-//!   presence-divergence.
+//!   baseline - the one real presence-divergence.
 
 use std::path::Path;
 
@@ -181,21 +172,17 @@ fn w02_silent_when_target_is_none() {
 // ---------------------------------------------------------------------------
 // Set-valued acceptance + per-target divergence
 //
-// #512 (session 9h-v0_8-wave4 Lane B, DISA-XCCDF reconciliation, PRE-AUTHORIZED
-// 2026-07-20): DISA's own XCCDF check-content for `kernel.kptr_restrict`
+// #512 (DISA-XCCDF reconciliation): DISA's own XCCDF check-content for
+// `kernel.kptr_restrict`
 // (V-257800/RHEL-09-213025 rhel9, V-281308/RHEL-10-701060 rhel10) and
 // `net.ipv4.conf.all.rp_filter` (V-230549/RHEL-08-040285 rhel8,
 // V-281345/RHEL-10-800130 rhel10) requires EXACTLY `1` on every product for
-// both keys - never `1 OR 2`. The shipped `{1,2}` acceptance traced to
+// both keys - never `1 OR 2`. A `{1,2}` acceptance traces to
 // ComplianceAsCode's own jinja branching (grounding doc section 4a), not to
-// DISA's literal text. This REMOVES (not weakens) the two tests below that
-// pinned the now-superseded CaC-derived acceptance
-// (`w02_kptr_restrict_accepts_both_1_and_2_on_rhel9`,
-// `w02_rp_filter_value_2_insecure_on_rhel9_but_clean_on_rhel8`) and replaces
-// them with the DISA-reconciled behavior: kptr_restrict AND rp_filter.all are
-// BOTH now ENABLE-only (value `2` is insecure) on EVERY target, so the
-// per-target VALUE divergence for these two keys disappears entirely (only
-// `user.max_user_namespaces`'s PRESENCE divergence remains, below).
+// DISA's literal text. So kptr_restrict AND rp_filter.all are
+// BOTH ENABLE-only (value `2` is insecure) on EVERY target, and there is no
+// per-target VALUE divergence for these two keys (only
+// `user.max_user_namespaces`'s PRESENCE divergence, below).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -247,13 +234,11 @@ fn w02_rp_filter_all_only_accepts_1_on_every_target() {
 
 #[test]
 fn w02_rhel8_requires_the_three_disa_v2r8_keys_after_reconciliation() {
-    // #512: DISA STIG V2R8 added 3 rhel8 keys the shipped table did not have
-    // before this reconciliation - net.ipv4.conf.default.rp_filter
+    // #512: DISA STIG V2R8 requires 3 rhel8 keys -
+    // net.ipv4.conf.default.rp_filter
     // (RHEL-08-040287), net.ipv4.conf.all.log_martians (RHEL-08-040221),
     // net.ipv4.conf.default.log_martians (RHEL-08-040222), all ENABLE-only.
-    // An unset config must now fire W02 for all three on rhel8 (it would NOT
-    // have, pre-reconciliation, since these keys were absent from
-    // RHEL8_BASELINE entirely).
+    // An unset config must fire W02 for all three on rhel8.
     let diags = lint("vm.swappiness = 10\n", TargetVersion::Rhel8);
     for key in [
         "net.ipv4.conf.default.rp_filter",
@@ -386,7 +371,7 @@ fn w02_dir_mode_anchors_missing_at_dir_and_insecure_at_the_dropin() {
 }
 
 // ---------------------------------------------------------------------------
-// Strengthening (adversarial-impl-reviewer): int-typed values are compared by
+// Int-typed values are compared by
 // their kernel EFFECTIVE value, not by raw string. The kernel parses an int
 // sysctl with base-0 radix (`strtoul_lenient(p, &p, 0, val)` in kernel/sysctl.c
 // `proc_get_long`, verified), so `0x1` / `01` are the SAME effective value as `1`;
@@ -397,7 +382,7 @@ fn w02_dir_mode_anchors_missing_at_dir_and_insecure_at_the_dropin() {
 #[test]
 fn w02_accepts_hex_and_leading_zero_forms_of_a_compliant_int() {
     // 0x1 == 1 and 01 == 1 under the kernel's base-0 parse: a key required to be 1
-    // is satisfied by either form (RED today: exact-string compare over-flags them).
+    // is satisfied by either form (an exact-string compare over-flags them).
     for src in [
         "kernel.dmesg_restrict = 0x1\n",
         "kernel.dmesg_restrict = 01\n",
@@ -407,16 +392,13 @@ fn w02_accepts_hex_and_leading_zero_forms_of_a_compliant_int() {
             "the kernel-equivalent radix form of the compliant value must not fire W02: {src:?}"
         );
     }
-    // 0x1 == 1 is accepted for kptr_restrict on rhel9 BOTH before and after the
-    // #512 DISA reconciliation (rhel9 kptr_restrict narrows from {1,2} to {1} -
+    // 0x1 == 1 is accepted for kptr_restrict on rhel9 (rhel9 kptr_restrict is
+    // ENABLE-only -
     // see `kptr_restrict_and_rp_filter_all_are_enable_only_on_every_target` in
-    // `src/lints/baseline.rs` - so 1 stays accepted either way, unlike 2). This
+    // `src/lints/baseline.rs` - so 1 is accepted, unlike 2). This
     // demonstrates the SAME hex-radix normalization the two `dmesg_restrict`
     // cases above cover, on a second key/table, without depending on a value
-    // (`2`) whose acceptance the reconciliation changes (#512 adversarial-review
-    // BLOCKER 2, session 9h-v0_8-wave4 Lane B, 2026-07-23: the prior `0x2`
-    // example asserted ACCEPTED and would flip RED the moment the implementer
-    // applies the reconciled table, forcing an edit to this frozen test).
+    // (`2`) that the DISA-reconciled table rejects (#512).
     assert!(
         w02_for(
             &lint("kernel.kptr_restrict = 0x1\n", TargetVersion::Rhel9),
@@ -429,15 +411,11 @@ fn w02_accepts_hex_and_leading_zero_forms_of_a_compliant_int() {
 
 #[test]
 fn w02_kptr_restrict_hex_0x2_fires_after_disa_reconciliation() {
-    // STRENGTHENING (#512 adversarial-review BLOCKER 2 follow-up, session
-    // 9h-v0_8-wave4 Lane B, 2026-07-23): 0x2 == 2 was accepted for rhel9
-    // kernel.kptr_restrict under the CaC-derived {1,2} set; the DISA-reconciled
+    // #512: the DISA-reconciled rhel9 `kernel.kptr_restrict` accepted
     // set is {1} only (V-257800/RHEL-09-213025 - see the grounding doc section
-    // 4a/5), so a radix-normalized 2 must now FIRE W02 too, not just a decimal
+    // 4a/5), so a radix-normalized 2 must FIRE W02 too, not just a decimal
     // 2 (already pinned by
-    // `w02_kptr_restrict_only_accepts_1_on_every_target` in this file). RED
-    // today (same reason as that test - RHEL9_BASELINE has not yet been
-    // reconciled); intended-RED, listed alongside it.
+    // `w02_kptr_restrict_only_accepts_1_on_every_target` in this file).
     let diags = lint("kernel.kptr_restrict = 0x2\n", TargetVersion::Rhel9);
     let found = w02_for(&diags, "kernel.kptr_restrict");
     assert_eq!(

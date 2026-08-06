@@ -36,7 +36,7 @@
 
 pub mod catalog;
 pub mod lints;
-// Differential-oracle adapter (session 9k-1 Lane B). Not a product feature: it
+// Differential-oracle adapter. Not a product feature: it
 // is the product side of `tests/sysctld_corpus_oracle.rs`, which checks this
 // crate's tree-materializer, inventory recomputation and transcript classifier
 // against what the real `systemd-sysctl` daemon did. It lives in `src/` so

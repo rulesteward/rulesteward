@@ -1,7 +1,7 @@
-//! Crate-level RED tests for the sysctld CIS baseline TABLE (issue #527, Wave-3
-//! CIS), authored at the test-author barrier BEFORE the impl. They call the frozen
-//! public accessor `rulesteward_sysctld::cis_baseline` and are RED against its
-//! `todo!()` scaffold: only the grounded per-product tables turn them green.
+//! Crate-level tests for the sysctld CIS baseline TABLE (issue #527). They call
+//! the frozen public accessor `rulesteward_sysctld::cis_baseline` and are RED
+//! against its `todo!()` scaffold: only the grounded per-product tables turn
+//! them green.
 //! Mirrors how `tests/baseline.rs` structures the STIG `stig_baseline` tests.
 //!
 //! # Ground truth
@@ -26,8 +26,8 @@
 //! This file has TWO halves:
 //! * The TABLE tests (below) pin the public `cis_baseline` accessor + per-product
 //!   `CisControl` rows.
-//! * The EMIT tests (second half of this file) pin the resolved design (user DECISION,
-//!   Option B): a standalone version-aware CIS baseline pass wired into
+//! * The EMIT tests (second half of this file) pin the design: a standalone
+//!   version-aware CIS baseline pass wired into
 //!   `parser::lint_str_with_target` / `lint_dir_with_target` (exactly like the STIG
 //!   W02 wiring) that emits the NEW lint code `sysctld-W04` - one finding per
 //!   CIS-required key that is unset or set outside the benchmark-accepted set - each
@@ -36,20 +36,19 @@
 //!   under a `--target` product; no target => no W04. The STIG `sysctld-W02`
 //!   semantics are UNTOUCHED - W02 and W04 coexist as distinct codes/frameworks.
 //!   These emit tests drive the public pipeline (not a crate-private fn), so they
-//!   pin both the emit logic AND the in-crate wiring; they are RED until the
-//!   implementer adds the pass + wires it. (Scope: single-file + single-directory
-//!   modes, mirroring `tests/baseline.rs`.)
+//!   pin both the emit logic AND the in-crate wiring. (Scope: single-file +
+//!   single-directory modes, mirroring `tests/baseline.rs`.)
 //!
-//! # `--system` wiring (issue #576, user RULING 2026-07-24)
-//! The cross-directory `--system` scan (`system::lint_system`) reruns
-//! `sysctld-F01`/`W01`/`W02` over its precedence-merged effective set but, as of
-//! Wave-3 CIS (#527), did NOT also run the `sysctld-W04` CIS pass over that same
-//! merged set - the more realistic mode (the one reflecting a real host's ACTUAL
-//! configuration) was the less thorough one. The RULING: wire it, mirroring the
-//! existing `W02` wiring exactly (same `merged` list, same `effective_values`
-//! winner-takes-it lookup, same fixed `prefix.join("etc/sysctl.d")` anchor for a
-//! MISSING key). See the "SYSTEM MODE" test section at the end of this file for
-//! the RED tests plus the studied W02 attribution precedent they pin.
+//! # `--system` wiring (issue #576)
+//! RULING: the cross-directory `--system` scan (`system::lint_system`) reruns
+//! `sysctld-F01`/`W01`/`W02` AND the `sysctld-W04` CIS pass over its
+//! precedence-merged effective set, mirroring the existing `W02` wiring exactly
+//! (same `merged` list, same `effective_values` winner-takes-it lookup, same
+//! fixed `prefix.join("etc/sysctl.d")` anchor for a MISSING key). The
+//! `--system` mode reflects a real host's ACTUAL configuration, so it must not
+//! be the less thorough one.
+//! Rationale + evidence: #576. See the "SYSTEM MODE" test section at the end of
+//! this file for the tests plus the studied W02 attribution precedent they pin.
 
 use std::path::Path;
 
@@ -278,8 +277,7 @@ fn cis_baseline_entries_are_wellformed_unique_and_numeric_per_product() {
 }
 
 // ===========================================================================
-// EMIT tests (sysctld-W04): the version-aware CIS baseline pass (user DECISION,
-// Option B). RED until the implementer adds the pass + wires it into
+// EMIT tests (sysctld-W04): the version-aware CIS baseline pass, wired into
 // parser::lint_str_with_target / lint_dir_with_target (exactly like STIG W02).
 // They drive the public pipeline and filter to `code == "sysctld-W04"`, so they
 // pin BOTH the emit logic and the wiring. Ground truth: the merged
@@ -675,12 +673,10 @@ fn w04_dir_mode_anchors_missing_at_dir_and_insecure_at_the_dropin() {
 }
 
 // ===========================================================================
-// SYSTEM MODE (issue #576, user RULING 2026-07-24): `sysctl lint --system`
+// SYSTEM MODE (issue #576): `sysctl lint --system`
 // must ALSO run the `sysctld-W04` CIS baseline over its precedence-merged
 // effective set, mirroring how `system::lint_system` already wires the STIG
-// `sysctld-W02` pass. RED until the implementer adds
-// `diags.extend(w04_baseline(&merged, t, &prefix.join("etc/sysctl.d")))`
-// alongside the existing `w02_baseline` call in `system.rs`.
+// `sysctld-W02` pass.
 //
 // # The studied W02 attribution precedent (`crates/rulesteward-sysctld/src/system.rs`)
 // `lint_system` (around line 526) does:
@@ -740,11 +736,11 @@ fn system_w04s(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Core RED test: --system emits W04 over the merged effective set, gated
+// 1. Core test: --system emits W04 over the merged effective set, gated
 //    positively/negatively by --target (mirrors `w04_runs_only_under_a_target`
 //    above, ported to `lint_system`, so a vacuous "no W04" cannot be confused
-//    with "the pass never ran"). ALL THREE products are pinned (adversarial-
-//    review BLOCKER: an impl that hardcodes/defaults to
+//    with "the pass never ran"). ALL THREE products are pinned (an impl that
+//    hardcodes/defaults to
 //    `TargetVersion::Rhel9` internally - discarding the resolved `t` argument
 //    `lint_system` passes through - would satisfy a rhel9-only assertion here
 //    while silently reporting 25 for rhel8/rhel10, where the grounded answer
@@ -828,7 +824,7 @@ fn system_w04_precedence_low_dir_noncompliant_high_dir_compliant_does_not_fire()
          (1) is noncompliant in isolation (the naive per-file-union failure \
          mode this test kills); got: {diags:?}"
     );
-    // Positive control (adversarial-review CONCERN): an unrelated unset CIS key
+    // Positive control: an unrelated unset CIS key
     // must still fire, so "no W04 for ip_forward" here is not indistinguishable
     // from "the pass never ran at all".
     assert!(
@@ -889,14 +885,14 @@ fn system_w04_precedence_low_dir_compliant_high_dir_noncompliant_fires_once_at_t
     );
     // The span alone doesn't prove a snippet renders: `Diagnostic::new` leaves
     // `source_id: None` even with the right span; only `anchored`/
-    // `with_source_id` set it (adversarial-review CONCERN).
+    // `with_source_id` set it.
     assert!(
         hit.source_id.is_some(),
         "a present-but-out-of-set W04 sets source_id, the actual ariadne \
          snippet path: {hit:?}"
     );
-    // The insecure branch's ControlRef, unpinned before this (adversarial-review
-    // CONCERN: test 6 below pins the missing branch only).
+    // The insecure branch's ControlRef; test 6 below pins the missing branch
+    // only.
     assert_eq!(
         hit.controls.len(),
         1,
@@ -1044,14 +1040,14 @@ fn system_w04_and_w02_coexist_with_distinct_frameworks() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Same-basename SAME-KEY overwrite ordering. CORRECTED SCOPE (adversarial-
-//    review BLOCKER): this fixture sets the SAME key in both files with the
+// 6. Same-basename SAME-KEY overwrite ordering. SCOPE: this fixture sets the
+//    SAME key in both files with the
 //    survivor compliant, so ordering ALONE - not masking-awareness - rescues
 //    an impl that walks all five directories with NO same-basename masking at
 //    all: appending the higher-precedence etc/ assignment LAST after
 //    usr/lib's (masked or not) still makes it win via plain
 //    last-occurrence-wins, and even anchors a diagnostic AT the masked path
-//    without failing this test. This test is kept as a same-key overwrite
+//    without failing this test. This test is a same-key overwrite
 //    regression guard; the REAL masking-awareness pin - where a masking-blind
 //    impl fires the WRONG finding (present-insecure instead of missing) at the
 //    WRONG anchor (the masked file instead of the fixed directory reference) -
@@ -1099,7 +1095,7 @@ fn system_w04_masked_dropin_never_contributes_to_the_effective_value() {
         "the masked usr/lib/sysctl.d/50-x.conf must be entirely invisible - \
          never the anchor of any diagnostic; got: {diags:?}"
     );
-    // Positive control (adversarial-review CONCERN): an unrelated unset CIS key
+    // Positive control: an unrelated unset CIS key
     // must still fire, so "no W04 for ip_forward" here is not indistinguishable
     // from "the pass never ran at all".
     assert!(
@@ -1112,7 +1108,7 @@ fn system_w04_masked_dropin_never_contributes_to_the_effective_value() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. The `/etc/sysctl.conf` tier (adversarial-review BLOCKER): tests 1-6 above
+// 7. The `/etc/sysctl.conf` tier: tests 1-6 above
 //    all either omit `etc/sysctl.conf` or use a comment-only body, so
 //    `etc_conf_asgns` is EMPTY and `merged == surviving_asgns` identically in
 //    every one of them - none exercise the dead-last tier at all. `system.rs`
@@ -1195,8 +1191,7 @@ fn system_w04_etc_sysctl_conf_alone_satisfies_the_baseline() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Masking with a DIFFERENT key per file (adversarial-review BLOCKER,
-//    supersedes test 6's overclaimed comment above): the masked file sets a
+// 8. Masking with a DIFFERENT key per file: the masked file sets a
 //    key the surviving same-basename file does NOT set at all, so the key's
 //    canonical identity is entirely ABSENT from the merged set - not merely
 //    outvoted. A masking-BLIND impl (walks the five search directories without
@@ -1266,8 +1261,8 @@ fn system_w04_masked_dropin_setting_a_different_key_never_leaks_as_a_present_fin
 }
 
 // ---------------------------------------------------------------------------
-// 9. Directory precedence vs. basename order DISAGREE (adversarial-review
-//    BLOCKER): tests 2/3 above chose fixtures where the higher-precedence
+// 9. Directory precedence vs. basename order DISAGREE: tests 2/3 above chose
+//    fixtures where the higher-precedence
 //    directory ALSO wins the global basename merge, so nothing in them can
 //    tell "highest-precedence directory always wins" (the naive sysctl.d(5)
 //    misreading) apart from "the real global lexicographic merge"
@@ -1332,7 +1327,7 @@ fn system_w04_lower_precedence_directory_wins_on_a_later_basename_the_w03a_shape
 
 // ---------------------------------------------------------------------------
 // 10. The resolved --target product's accepted set is actually used, not a
-//     hardcoded default (adversarial-review BLOCKER, value-divergence half):
+//     hardcoded default (the value-divergence half):
 //     mirrors the single-file `w04_set_valued_acceptance_diverges_rhel8_rhel9`
 //     emit test above, ported to `--system`. `net.ipv4.conf.all.rp_filter`
 //     accepts the SET {1,2} on rhel8/rhel10 but ONLY {1} on rhel9. An impl
@@ -1371,8 +1366,8 @@ fn system_w04_uses_the_resolved_target_product_not_a_hardcoded_default() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Full regression scope (adversarial-review CONCERN: test 5's coexistence
-//     check alone only shows W02 "still appears" for one key). One fixture
+// 11. Full regression scope (test 5's coexistence check alone only shows W02
+//     "still appears" for one key). One fixture
 //     produces all four --system-only/base codes at once (F01, a plain W01, a
 //     W03-a, and a W03-b), built from keys in NEITHER the rhel9 STIG nor CIS
 //     tables so the target-gated W02/W04 passes can only ADD their own
@@ -1380,7 +1375,7 @@ fn system_w04_uses_the_resolved_target_product_not_a_hardcoded_default() {
 //     target=Some(Rhel9); `Diagnostic` derives `PartialEq`/`Eq`, so the
 //     non-W02/non-W04 diagnostic sequence is asserted BYTE-IDENTICAL - the
 //     strong version of "existing --system F01/W01/W02/W03 output is
-//     unperturbed" the concern asked for.
+//     unperturbed".
 // ---------------------------------------------------------------------------
 
 #[test]

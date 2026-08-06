@@ -21,57 +21,53 @@
 //! JSON envelope to stdout, because `commands/fapolicyd/lint.rs`'s per-file
 //! read loop never early-returns on an IO error -- it sets a `tool_err` flag
 //! and falls through to the shared `output::render` call regardless. The
-//! four backends below currently (bug #561) `eprintln!` + `return
-//! EXIT_TOOL_FAILURE` BEFORE ever calling `output::emit_lint`, so stdout is
-//! empty under `--format json` on a missing path (confirmed live, same
-//! date): `sshd lint`, `sysctl lint`, and `sudoers lint` each print only to
-//! stderr with empty stdout; `serde_json::from_str("")` fails to parse.
+//! defect #561 named (confirmed live, same date) was the opposite shape: a
+//! backend that does `eprintln!` + `return EXIT_TOOL_FAILURE` BEFORE ever
+//! calling `output::emit_lint` leaves stdout empty under `--format json` on a
+//! missing path, so `serde_json::from_str("")` fails to parse.
 //!
-//! The fix mirrors the fapolicyd shape exactly: each backend's OWN envelope
-//! `kind` (`sshd-lint` / `sysctl-lint` / `sudoers-lint` / `auditd-lint`,
+//! Each of the four backends below mirrors the fapolicyd shape exactly: its
+//! OWN envelope `kind` (`sshd-lint` / `sysctl-lint` / `sudoers-lint` / `auditd-lint`,
 //! `schemaVersion` 1 -- see `output/json.rs`'s known-kind registry) with an
 //! EMPTY `diagnostics` array (no file was ever read, so there is nothing to
 //! report -- matching fapolicyd's own `[]` on this exact path, not a
 //! synthesized path-error diagnostic).
 //!
-//! Human format is UNCHANGED by this fix and is NOT re-pinned here: each
-//! backend's PRE-EXISTING `missing_path_exits_tool_failure` (sshd.rs,
-//! sysctl.rs, sudoers.rs) / `lint_missing_target_exits_tool_failure`
-//! (auditd.rs) unit test already covers the human-format exit-3 behavior in
-//! its own `commands::<backend>` module and must stay green through this fix
-//! -- adding a duplicate e2e assertion here would just be a second copy of an
-//! already-passing (not RED) pin.
+//! Human format is NOT re-pinned here: each backend's
+//! `missing_path_exits_tool_failure` (sshd.rs, sysctl.rs, sudoers.rs) /
+//! `lint_missing_target_exits_tool_failure` (auditd.rs) unit test already
+//! covers the human-format exit-3 behavior in its own `commands::<backend>`
+//! module -- a duplicate e2e assertion here would just be a second copy of it.
 //!
-//! # Extension (session 9j lane 3, #583 half B / #561 follow-up, 2026-07-24)
+//! # Extension (#583 half B / #561 follow-up)
 //!
-//! The #561 fix above landed for exactly FOUR backends: sshd/sysctl/sudoers/
-//! auditd. Two more gaps in the SAME contract were found and are closed here:
+//! Beyond those four backends, two further call sites are held to the SAME
+//! contract here:
 //!
-//! - `selinux lint`: `commands/selinux/lint.rs`'s path-error arm does
-//!   `eprintln!(...); return EXIT_TOOL_FAILURE;` with NO envelope call at
-//!   all (not even a private `emit_path_error_envelope` of its own) - so
-//!   `--format json` on a bad path emits ZERO bytes of stdout (confirmed
-//!   live against the real binary). Unlike the four backends above, selinux
-//!   never had this fixed; it is not a "fifth backend that already works".
+//! - `selinux lint`: its path-error arm (`commands/selinux/lint.rs`) must
+//!   emit the envelope. An arm that did `eprintln!(...); return
+//!   EXIT_TOOL_FAILURE;` with NO envelope call at all would make
+//!   `--format json` on a bad path emit ZERO bytes of stdout.
 //! - `fapolicyd lint <missing-dir>` (the POSITIONAL directory-scan mode,
 //!   distinct from `--file <missing-file>` single-file mode): `resolve_targets`
-//!   early-returns `Err("<dir>: not a directory")` BEFORE `output::render`
+//!   early-returns `Err("<dir>: not a directory")` before `output::render`
 //!   (fapolicyd is NOT an `emit_lint` caller - see `output/mod.rs`'s own
-//!   comment - it calls the three-variant `render` directly) is ever
-//!   reached, so this ALSO emits zero bytes of stdout under
-//!   `--format json` (confirmed live) - even though `--file` mode already
-//!   works today (its per-file-tolerant loop always falls through to the
-//!   shared render call regardless of read errors, as the fapolicyd model
-//!   above describes; that path is UNCHANGED and not re-pinned here since it
-//!   already passes). Per the operator ruling: pin the OBSERVABLE contract
-//!   (bytes on stdout, exit code, envelope shape) and let the implementer
-//!   choose the fix shape, since fapolicyd's per-file-tolerant architecture
-//!   differs from every other backend's fail-fast one.
+//!   comment - it calls the three-variant `render` directly) is reached, so
+//!   this arm needs its own envelope emission to avoid zero bytes of stdout
+//!   under `--format json`. `--file` mode is a separate path (its
+//!   per-file-tolerant loop always falls through to the shared render call
+//!   regardless of read errors, as the fapolicyd model above describes) and is
+//!   not re-pinned here.
+//!
+//!   RULING: pin the OBSERVABLE contract (bytes on stdout, exit code,
+//!   envelope shape), not the fix shape, since fapolicyd's per-file-tolerant
+//!   architecture differs from every other backend's fail-fast one.
+//!   Rationale + evidence: #583
 //!
 //! `fapolicyd lint`'s envelope `kind` is `"lint"`, NOT `"fapolicyd-lint"` -
 //! this is an EXISTING, RULED-KEPT inconsistency (renaming it would be a
-//! breaking JSON-schema change belonging to a schemaVersion bump, not this
-//! hardening wave), so `fapolicyd_lint_missing_dir_emits_json_envelope` below
+//! breaking JSON-schema change belonging to a schemaVersion bump), so
+//! `fapolicyd_lint_missing_dir_emits_json_envelope` below
 //! pins `"lint"` deliberately, not as an oversight.
 
 use std::time::Duration;
@@ -161,21 +157,21 @@ fn auditd_lint_missing_path_emits_json_envelope() {
     assert_path_error_envelope(&out, "auditd-lint");
 }
 
-/// #583 half B: `selinux lint` had NO path-error envelope at all (not a
-/// private helper like the four above, not the fapolicyd fallthrough model
-/// below) - `--format json` on a bad path is zero bytes today.
+/// #583 half B: `selinux lint`'s path-error envelope. Without one (it has no
+/// private helper like the four above, and does not use the fapolicyd
+/// fallthrough model below) `--format json` on a bad path is zero bytes.
 #[test]
 fn selinux_lint_missing_path_emits_json_envelope() {
     let out = run_missing_path_json("selinux", "/nonexistent/583/selinux-config");
     assert_path_error_envelope(&out, "selinux-lint");
 }
 
-/// #583 half B (operator-ruled scope expansion): `fapolicyd lint`'s
+/// #583 half B: `fapolicyd lint`'s
 /// POSITIONAL directory-scan mode (no `--file`) hits `resolve_targets`'
 /// `Err("<dir>: not a directory")` early-return before `output::render`
-/// (fapolicyd is NOT an `emit_lint` caller) is ever reached, so this is
-/// ALSO zero bytes today - distinct from
-/// `--file <missing-file>` single-file mode, which already emits the
+/// (fapolicyd is NOT an `emit_lint` caller) is reached, so without its own
+/// envelope emission this arm is zero bytes - distinct from
+/// `--file <missing-file>` single-file mode, which emits the
 /// envelope (per this file's "ground truth: the fapolicyd model" section
 /// above) because its per-file-tolerant loop always falls through to the
 /// shared render call. `expected_kind` is deliberately `"lint"` (not
@@ -187,12 +183,12 @@ fn fapolicyd_lint_missing_dir_emits_json_envelope() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-review miss 2 (session 9j lane 3): `open_trustdb_arg`
-// (`commands/fapolicyd/lint.rs:85`) runs BEFORE `resolve_targets_or_fail`
+// `open_trustdb_arg`
+// (`commands/fapolicyd/lint.rs:84`) runs BEFORE `resolve_targets_or_fail`
 // (`:90`), so a bad `--against-trustdb` on an otherwise-good lint target must
-// ALSO emit the envelope -- the exact #561 gap `fapolicyd_lint_missing_dir_
-// emits_json_envelope` above already fixed for the target-path case, but
-// which the `--against-trustdb` arm had not been.
+// ALSO emit the envelope -- the same #561 gap
+// `fapolicyd_lint_missing_dir_emits_json_envelope` above pins for the
+// target-path case.
 // ---------------------------------------------------------------------------
 
 /// Like `assert_path_error_envelope` above, but for an exit code OTHER than
@@ -259,7 +255,7 @@ fn fapolicyd_lint_against_trustdb_not_a_directory_emits_json_envelope() {
 
 /// Combination case: BOTH the positional rules.d target AND
 /// `--against-trustdb` are bad. `open_trustdb_arg` runs FIRST
-/// (`commands/fapolicyd/lint.rs:85`, before `resolve_targets_or_fail` at
+/// (`commands/fapolicyd/lint.rs:84`, before `resolve_targets_or_fail` at
 /// `:90`), so its own envelope call fires and `resolve_targets_or_fail`'s is
 /// never reached -- proving the fix does not depend on the target path also
 /// being valid, and that stacking two bad inputs never silently drops back to

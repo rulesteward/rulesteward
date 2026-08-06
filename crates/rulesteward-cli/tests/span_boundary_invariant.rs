@@ -1,4 +1,4 @@
-//! Cross-backend span-boundary invariant (issue #595, session 9m lane 4).
+//! Cross-backend span-boundary invariant (issue #595).
 //!
 //! Every `Diagnostic` any backend emits eventually reaches the DEFAULT human
 //! renderer, which converts the diagnostic's BYTE span into the CHARACTER span
@@ -147,21 +147,20 @@ fn multibyte_piece() -> impl Strategy<Value = String> {
 /// but for auditd a leading BOM REMOVES the source from the `Ok` arm entirely: it
 /// is a parse error, not a tolerated prefix. auditd's clean `Ok` arm gets its
 /// non-ASCII coverage from a multibyte entry inside its `VALID_LINES` instead.
-/// Round 2 (issue #595): `trailing_newline` makes the closing `\n` after the
-/// LAST line optional. Every source this generator produced used to end in
-/// `\n` unconditionally, which is also true of every `VALID_LINES` entry above -
-/// none of them is itself multibyte at its very last byte - so no case here
-/// ever drove a backend's whole-line span arithmetic over a source whose
+/// `trailing_newline` (issue #595) makes the closing `\n` after the LAST line
+/// optional. A source that always ends in `\n` - which is what every
+/// `VALID_LINES` entry above is, none of them multibyte at its very last byte -
+/// never drives a backend's whole-line span arithmetic over a source whose
 /// final byte is a UTF-8 continuation byte. That shape forces `human.rs`'s
 /// `byte_span_to_char_span` to walk its boundary scan all the way to
-/// `source.len()` before finding one - the end-of-source case an earlier,
-/// hand-rolled version of that scan mishandled (see `human.rs`'s
-/// `multibyte_source`, widened the same way in the same commit, for that
-/// scan's own coverage of this shape). It is also a shape a real config
-/// file legitimately has (a file with no trailing newline). This does not
-/// change what is ASSERTED - `check_span` and the anti-vacuity counters are
-/// unchanged - only the range of sources the six backends are driven with,
-/// additionally exercising every backend's LAST-LINE span arithmetic.
+/// `source.len()` before finding one, which is the end-of-source case a
+/// hand-rolled boundary scan mishandles (see `human.rs`'s
+/// `multibyte_source` for that scan's own coverage of this shape). It is also
+/// a shape a real config file legitimately has (a file with no trailing
+/// newline). It does not change what is ASSERTED - `check_span` and the
+/// anti-vacuity counters are unaffected - only the range of sources the six
+/// backends are driven with, additionally exercising every backend's
+/// LAST-LINE span arithmetic.
 fn backend_source(
     keywords: &'static [&'static str],
     valid_lines: &'static [&'static str],
@@ -294,9 +293,9 @@ fn run_backend(
     let per_arm_multibyte: Vec<Cell<usize>> = arms.iter().map(|_| Cell::new(0usize)).collect();
     // `failure_persistence: None` because the default `SourceParallel` policy
     // cannot resolve a source file from a hand-driven `TestRunner` (it warns on
-    // every run) and would otherwise scatter regression files outside this
-    // lane's owned paths. The shrunk failing input is in the panic message, so
-    // nothing diagnostic is lost.
+    // every run) and would otherwise scatter regression files across the tree.
+    // The shrunk failing input is in the panic message, so nothing diagnostic
+    // is lost.
     let mut runner = TestRunner::new(ProptestConfig {
         cases: CASES,
         failure_persistence: None,
