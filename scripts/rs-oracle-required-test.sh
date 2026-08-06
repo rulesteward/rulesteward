@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# RED test suite for scripts/rs-oracle-required.sh (session 9k-1).
+# Test suite for scripts/rs-oracle-required.sh.
 #
-# FROZEN INVOCATION CONTRACT for the predicate script (the implementer inherits
-# this; do not widen it without updating this file in the same commit):
+# FROZEN INVOCATION CONTRACT for the predicate script (do not widen it without
+# updating this file in the same commit):
 #
 #   scripts/rs-oracle-required.sh <ORACLE>
 #
@@ -55,9 +55,8 @@
 # The final case synthesizes the known-bad fail-OPEN implementation (the
 # `[ "$v" = "1" ]` comparison) and runs the SAME case table against it, then
 # asserts the table REJECTS it. An instrument that cannot fail has not been
-# shown to measure anything, and this file is itself an instrument. Per the
-# session rule: one positive control on known-bad input before any green from
-# it is trusted.
+# shown to measure anything, and this file is itself an instrument. The rule:
+# one positive control on known-bad input before any green from it is trusted.
 
 set -uo pipefail
 
@@ -115,11 +114,11 @@ run_case() {
 #
 # Fields are '|'-separated, NOT tab-separated. Tab is IFS *whitespace*, so bash
 # collapses a run of consecutive tabs into a single delimiter and an empty
-# middle field silently shifts every later field left by one. That bug was
-# written here first: the empty-envspec case sent the oracle name into the
-# envspec slot, where `env` tried to execute it as a command (rc 126). A
-# non-whitespace delimiter preserves empty fields, which is the property this
-# table needs. Do not "simplify" back to tabs.
+# middle field silently shifts every later field left by one. Under tabs, the
+# empty-envspec case sends the oracle name into the envspec slot, where `env`
+# tries to execute it as a command (rc 126). A non-whitespace delimiter
+# preserves empty fields, which is the property this table needs. Do not
+# "simplify" back to tabs.
 CASES='both_unset|1||AUDITCTL
 global_1|0|RS_ORACLE_REQUIRED=1|AUDITCTL
 global_0|1|RS_ORACLE_REQUIRED=0|AUDITCTL

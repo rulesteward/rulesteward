@@ -61,10 +61,6 @@ jobs:
   # reruns the tests so a `check` failure will also fail coverage, but we
   # accept the parallel-burn on red pushes in exchange for ~8-10 min faster
   # wall-clock on green pushes (the common case).
-  #
-  # (Corrected in #665: this comment previously said `musl-build` depends on
-  # `check`. The edge runs the other way - `check` needs `musl-build` - and has
-  # since the rocky-suite merge documented at that job's own header.)
   fmt-clippy:
     name: fmt + clippy (ubuntu)
     runs-on: ubuntu-latest
@@ -124,17 +120,16 @@ jobs:
         run: bash scripts/check-codes-count.sh
 
       # (#572) No-mnt guard: no repo-invoked command may reference a path
-      # outside the repo. The wave3 fapolicyd corpus lived at an absolute /mnt
-      # path, was destroyed in the 2026-07-13 NFS rebuild, and
-      # `just diff-fapolicyd` then exited 0 with a skip message on every run -
-      # reporting success while checking nothing. The gate refuses to report
-      # clean if it scanned zero files, so it cannot fail the same way. Cheap
-      # static check (bash + grep, no cargo build), so it lives here in the
-      # lint tier alongside fmt/clippy/dac-guard/codes-guard.
+      # outside the repo. An out-of-repo path that disappears turns a gate into
+      # a skip message that exits 0 on every run, reporting success while
+      # checking nothing. The gate refuses to report clean if it scanned zero
+      # files, so it cannot fail the same way. Cheap static check (bash + grep,
+      # no cargo build), so it lives here in the lint tier alongside
+      # fmt/clippy/dac-guard/codes-guard.
       - name: No-mnt guard (out-of-repo dependency paths)
         run: bash scripts/check-no-mnt-paths.sh
 
-      # (session 9k-1) Capture-write guard: every Tier-2 capture script
+      # Capture-write guard: every Tier-2 capture script
       # (crates/*/tests/corpus/*/capture_*.sh) must route every write through
       # rs_checked / rs_checked_write (scripts/rs-capture-guard.sh) instead of
       # a bare cp/mv/install/mkdir/rmdir/ln/truncate/tee/dd, an unwrapped
@@ -142,10 +137,10 @@ jobs:
       # redirect - the class of bug that let a Tier-2 capture continue past
       # `cp: Disk quota exceeded` and exit 0 having written a truncated
       # corpus. Cheap static check (bash + awk, no cargo build), so it lives
-      # here in the lint tier alongside the other guards. All three lanes
-      # (auditd/sysctld/sudoers) have merged their capture_*.sh files as of
-      # the 9k-1 integration commit, so the gate's own EXPECTED_CAPTURE_SCRIPTS
-      # floor is 3 - see scripts/check-capture-writes.sh's header.
+      # here in the lint tier alongside the other guards. The auditd, sysctld
+      # and sudoers corpora each ship a capture_*.sh, so the gate's own
+      # EXPECTED_CAPTURE_SCRIPTS floor is 3 - see
+      # scripts/check-capture-writes.sh's header.
       - name: Capture-write guard (bare writes in Tier-2 capture scripts)
         run: bash scripts/check-capture-writes.sh
 
@@ -154,37 +149,27 @@ jobs:
   # project's contract exists to prevent - a gate that reports clean having
   # scanned nothing is indistinguishable downstream from a real pass.
   #
-  # This job REPLACES four hand-typed `bash` self-test steps that used to live
-  # in fmt-clippy. Those four ran; the other SIX did not run in any CI job at
-  # all, including check-corpus-growth-test.sh and the extended
-  # check-doc-citations-test.sh. Worse, `scripts/check-corpus-growth.sh` itself
-  # was invoked by no workflow, so the gate that exists to make non-accumulating
-  # ATL evidence impossible to ship silently could not fail anyone's PR - a
-  # local convention wearing the costume of an enforced one, which is the same
-  # shape as #572.
-  #
-  # `just instrument-test` rather than ten `bash` steps, deliberately. The
-  # recipe carries two anti-vacuity assertions that exist nowhere else: every
-  # non-test script in scripts/ must appear in its loop (`guards` count) and the
-  # loop must actually have run (`ran` count). Hand-typed steps leave both
-  # unrun in CI, so the step list can drift out of sync with scripts/ again -
-  # precisely the gap that let six self-tests go unrun. The cost is that a
-  # failure names the instrument in the log rather than in the step title;
-  # the recipe prints `instrument-test: <name>-test rc=<n>` per suite, so the
-  # name is still one grep away.
+  # `just instrument-test` rather than one hand-typed `bash` step per suite,
+  # deliberately. The recipe carries two anti-vacuity assertions that exist
+  # nowhere else: every non-test script in scripts/ must appear in its loop
+  # (`guards` count) and the loop must actually have run (`ran` count).
+  # Hand-typed steps leave both unrun in CI, so the step list drifts out of
+  # sync with scripts/ and a self-test can go unrun indefinitely - a local
+  # convention wearing the costume of an enforced one, the same shape as #572.
+  # The cost is that a failure names the instrument in the log rather than in
+  # the step title; the recipe prints `instrument-test: <name>-test rc=<n>` per
+  # suite, so the name is still one grep away.
   #
   # No toolchain, no build deps, no rust-cache: `instrument-test` is pure bash
   # (cargo and docker are stubbed inside the suites) and `corpus-growth-guard`
   # is pure git. Only `just` itself has to be installed.
   #
   # The six jobs that gate on `fmt-clippy` gate on this one too, deliberately.
-  # While the four self-tests lived INSIDE fmt-clippy, a failing instrument
-  # turned that job red and every dependent job was skipped. Moving them to an
-  # independent job would have quietly traded that blast radius away - a net
-  # REDUCTION in enforcement inside a change whose whole purpose is to increase
-  # it. Since this job is pure bash and finishes in about a minute against
-  # fmt-clippy's vendored-libsepol clippy build, adding it to those `needs:`
-  # lists restores the short-circuit at no measurable wall-clock cost.
+  # A failing instrument must skip every dependent job; an independent job that
+  # nothing `needs:` would quietly trade that blast radius away, a net REDUCTION
+  # in enforcement. This job is pure bash and finishes in about a minute against
+  # fmt-clippy's vendored-libsepol clippy build, so the extra `needs:` edge
+  # costs no measurable wall-clock time.
   instruments:
     name: instrument self-tests + corpus-growth guard (#665)
     runs-on: ubuntu-latest
@@ -244,19 +229,18 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: just corpus-growth-guard "$PR_BASE_SHA"
 
-  # rocky-suite: per-Rocky test + musl smoke in a single container.
-  # Previously two jobs (`check` + `musl-smoke`) shared the rocky 8/9/10
-  # matrix, the dnf bootstrap, the bash shell override, and the
-  # actions/checkout call. Merging eliminates 3 of the 6 matrix container
-  # starts per CI run and shortens the critical path (the smoke add-on is
+  # rocky-suite: per-Rocky test + musl smoke in a single container. ONE job
+  # rather than a separate `check` + `musl-smoke` pair sharing the rocky 8/9/10
+  # matrix, the dnf bootstrap, the bash shell override and the
+  # actions/checkout call: it saves 3 of the 6 matrix container starts per CI
+  # run and shortens the critical path (the smoke add-on is
   # `./binary --help + grep`, dwarfed by the ~33 s dnf bootstrap and ~28 s
   # rust-cache restore already happening for the test step).
   #
-  # Tradeoff vs. the prior shape: `musl-build` no longer waits on Rocky
-  # tests, so a red push wastes ~38 s of musl-build compute that the prior
-  # `needs: check` short-circuit would have saved. This is a small cost
-  # in exchange for the wall-clock and CI-minutes win on the (common)
-  # green path.
+  # Tradeoff: `musl-build` does not wait on the Rocky tests, so a red push
+  # wastes ~38 s of musl-build compute that a `needs: check` short-circuit
+  # would save. This is a small cost in exchange for the wall-clock and
+  # CI-minutes win on the (common) green path.
   check:
     name: ${{ matrix.label }} - test + musl smoke
     runs-on: ubuntu-latest
@@ -370,15 +354,13 @@ jobs:
         # deps would add a few more unneeded RPMs.
         #
         # `checkpolicy` provides /usr/bin/checkmodule, the compile oracle for
-        # crates/rulesteward-selinux/tests/te_emit_checkmodule.rs. Before #572's
-        # session those six tests skipped on EVERY CI run (checkpolicy was
-        # installed nowhere in this repo) while the module doc claimed they
-        # executed. With it present the matrix also gives a free el8/el9/el10
-        # checkmodule version differential: 2.9 / 3.6 / 3.10.
+        # crates/rulesteward-selinux/tests/te_emit_checkmodule.rs; without it
+        # those six tests skip on EVERY CI run. With it present the matrix also
+        # gives a free el8/el9/el10 checkmodule version differential:
+        # 2.9 / 3.6 / 3.10.
         #
-        # Session 9k-1 (auditd / sysctld / sudoers differential oracles) landed
-        # WITHOUT adding `audit`, `systemd-udev` or `sudo` here, and that is the
-        # settled posture rather than an omission. Those packages are needed only
+        # `audit`, `systemd-udev` and `sudo` are deliberately NOT in this list.
+        # Those packages are needed only
         # by the LIVE capture tier, which runs docker-only in the three scheduled
         # `*-oracle-drift.yml` workflows against the `rs-oracle{8,9,10}` images
         # (built from tools/oracle-images/). PR CI runs only the Tier-1 replay
@@ -417,18 +399,16 @@ jobs:
         # RS_REQUIRE_CHECKMODULE=1: the bootstrap above installs checkpolicy, so
         # te_emit_checkmodule.rs must NOT skip in these nine containers. Without
         # it a missing binary would silently turn six compile-oracle anchors into
-        # no-ops, which is exactly the state this repo was in until 2026-07-25.
+        # no-ops.
         env:
           RS_REQUIRE_CHECKMODULE: "1"
         run: cargo test --workspace --locked
-      # release-build step dropped: musl-build covers the release profile;
+      # No separate release-build step: musl-build covers the release profile;
       # RuleSteward has no FFI / cfg-gated release-only paths that would surface a glibc-release-only bug.
 
-      # Smoke section: the steps below were previously a separate `musl-smoke`
-      # matrix job. Merged here so each Rocky container does test+smoke in one
-      # provisioning cycle (the dnf bootstrap above already covers the
-      # `bash + ca-certificates` superset that musl-smoke used to install
-      # separately).
+      # Smoke section: each Rocky container does test+smoke in one provisioning
+      # cycle, so the dnf bootstrap above already covers the smoke step's
+      # `bash + ca-certificates` needs.
       - name: Download static musl binary from musl-build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

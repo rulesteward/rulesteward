@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# RED test suite for scripts/check-codes-count.sh (#586).
+# Test suite for scripts/check-codes-count.sh (#586).
 #
-# FROZEN INVOCATION CONTRACT for the gate script (the implementer inherits
-# this; it is authored here, before the real implementation exists, in the
-# same test-first spirit as scripts/check-dac-guard-test.sh for #467).
-# Strengthened after adversarial-test review (9j lane 4, round 2): the
-# review built four fake guards that each passed the original harness
-# 10/10 while doing the wrong thing, and showed a CORRECT implementation
-# would fail 4 of the original frozen assertions. Every "STRENGTHENED"
-# marker below is a direct response to that review; nothing here weakens
-# a prior assertion.
+# FROZEN INVOCATION CONTRACT for the gate script:
 #
 #   scripts/check-codes-count.sh [REPO_ROOT]
 #
@@ -24,14 +16,13 @@
 #   A scanned file that does not exist under REPO_ROOT contributes zero
 #   mentions and is NOT itself an error (keeps the contract testable
 #   against minimal synthetic fixtures that only need a README.md).
-#   STRENGTHENED: case_cli_mod_rs_scanned_independently below proves
-#   cli/mod.rs is actually opened and checked on its own (a fixture with
-#   ONLY a wrong mention in cli/mod.rs, no README.md at all, must still
-#   fail) - the original harness never exercised this file at all, so a
-#   `FILES=("README.md")` fake passed it 10/10.
+#   case_cli_mod_rs_scanned_independently below proves cli/mod.rs is
+#   actually opened and checked on its own (a fixture with ONLY a wrong
+#   mention in cli/mod.rs, no README.md at all, must still fail); without
+#   it a `FILES=("README.md")` implementation passes the whole suite.
 #
-#   OUT OF SCOPE (verified, deliberately NOT scanned), and NOW ENFORCED
-#   BY A TEST (case_exclusions_are_honored), not just documented:
+#   OUT OF SCOPE (deliberately NOT scanned), and ENFORCED BY A TEST
+#   (case_exclusions_are_honored), not just documented:
 #     - CHANGELOG.md - release notes are point-in-time historical claims
 #       ("sudoers shipped with 8 `sudo-` codes in 0.3.0"), correct for the
 #       release they describe even after the catalog has since grown.
@@ -44,8 +35,6 @@
 #       comment style. That file's own live assertion
 #       (`.stdout(predicate::str::contains("13 sshd-"))`) already checks
 #       the current count independently of this gate.
-#   Both exclusions were confirmed correct by two independent reviews (test
-#   authoring + adversarial review), not assumed.
 #
 #   Six backends, each with a code-prefix, a catalog source file (relative
 #   to REPO_ROOT), and a display name used by mention shape (c) below:
@@ -60,12 +49,12 @@
 #     se-        crates/rulesteward-selinux/src/lints/catalog.rs        SELinux
 #
 #   KNOWN LIMITATION (flagged, not fixed here): this table is hardcoded,
-#   so a 7th backend added by a future wave would be silently invisible to
+#   so a 7th backend added later would be silently invisible to
 #   this gate unless the table (and the gate) are updated - the same
 #   "prose rots and nothing notices" failure class #586 exists to close.
 #   Deriving the backend set from a glob (crates/rulesteward-*/src/**/
 #   catalog.rs) would close this permanently but is a bigger contract
-#   change than this lane's scope; case_all_six_prefixes_all_three_shapes
+#   change; case_all_six_prefixes_all_three_shapes
 #   below is the mechanical floor - it proves all SIX current catalogs are
 #   actually read and compared (not just a hardcoded subset), which is the
 #   strongest guarantee available without that redesign.
@@ -88,11 +77,10 @@
 #         "### fapolicyd (`fapd-`, 28 codes)"
 #     (c) `<N> <display-name> codes` - "28 fapolicyd codes"
 #   Each mention's stated N must equal that backend's catalog length.
-#   STRENGTHENED: case_all_six_prefixes_all_three_shapes exercises all SIX
-#   prefixes and all THREE shapes as seeded VIOLATIONS in one fixture - the
-#   original harness only ever exercised shape (b) with `sysctld-`, so a
-#   `PREFIXES=(au- sudo- sysctld-)` or "heading-shape-only" fake passed it
-#   10/10.
+#   case_all_six_prefixes_all_three_shapes exercises all SIX prefixes and
+#   all THREE shapes as seeded VIOLATIONS in one fixture. Exercising only
+#   shape (b) with `sysctld-` would let a `PREFIXES=(au- sudo- sysctld-)`
+#   or "heading-shape-only" implementation pass the whole suite.
 #
 #   VIOLATION reporting: each unmatched mention is reported on one line as
 #   exactly:
@@ -113,14 +101,14 @@
 #   (N = decimal count, "(s)" is a literal non-inflected suffix so the
 #   string is grep-able regardless of N) so tooling (and this test
 #   harness) can assert N mechanically rather than trusting a bare exit
-#   code. STRENGTHENED: every assertion against this line now checks an
-#   EXACT N (case2 = exactly 1, case3 = exactly 0,
-#   case_multi_mention_exact_count = exactly 4) - the original harness
-#   only ever asserted N > 0, so a fake that printed a hardcoded
-#   "scanned 14" (or any other positive number) whenever it detected the
-#   real tree passed 10/10 without reading a single catalog file.
+#   code. Every assertion against this line checks an EXACT N (case2 =
+#   exactly 1, case3 = exactly 0, case_multi_mention_exact_count =
+#   exactly 4). Asserting only N > 0 would let an implementation that
+#   printed a hardcoded "scanned 14" (or any other positive number)
+#   whenever it detected the real tree pass without reading a single
+#   catalog file.
 #
-#   UNRECOGNIZED-MENTION rule (#586 round-4 hardening): a line in a scanned
+#   UNRECOGNIZED-MENTION rule (#586): a line in a scanned
 #   file that references one of the six backends (by prefix or display name,
 #   word-bounded so e.g. "parse-error" cannot false-trigger `se-`) AND
 #   contains the word "codes" (case-insensitive) AND a digit, but was not
@@ -137,15 +125,15 @@
 #   (N = this backend's share of the shape-based `scanned` total across both
 #   files).
 #
-#   PER-BACKEND COVERAGE FLOOR (#586 round-5 hardening): the gate itself
+#   PER-BACKEND COVERAGE FLOOR (#586): the gate itself
 #   enforces N >= 1 for every backend, but ONLY when all six catalog files
 #   are present under REPO_ROOT (a full six-backend tree; a narrow synthetic
 #   fixture staging a subset of catalogs is not asserting anything about the
 #   backends it never staged). This closes the gap the UNRECOGNIZED-MENTION
 #   rule cannot: a backend whose every mention is reworded into prose naming
 #   it by NEITHER its prefix NOR its display name carries no signal for that
-#   rule either, and previously eroded to zero mentions with no violation at
-#   all - see case_per_backend_floor_all_mentions_reworded_away below, which
+#   rule either, and would otherwise erode to zero mentions with no violation
+#   at all - see case_per_backend_floor_all_mentions_reworded_away below, which
 #   reproduces exactly this against the real repo tree. Reported as:
 #       per-backend coverage floor violated: `<prefix>` has 0 live "codes" mention(s) across README.md and crates/rulesteward-cli/src/cli/mod.rs (expected >= 1)
 #   (no `<file>:<line>:` prefix - syntactically distinct from a count
@@ -163,36 +151,20 @@
 # both numbers, reports an exact scanned-mentions count, or (for the
 # exclusion case) does NOT name an out-of-scope file.
 #
-# STRENGTHENED (real-tree handling, replacing the original
-# case4_real_tree_catches_known_live_bugs): the plan assigns README.md
-# exclusively to this lane and wires `codes-guard` into `just ci` in the
-# SAME commit the implementer adds the real script, so the implementer
-# MUST also fix README.md's three then-live mismatches (at authoring time:
-# README.md:127 "9 au- codes" vs actual 11, README.md:139 "8 sudo- codes" vs
-# actual 9, README.md:286 "(`sysctld-`, 4 codes)" vs actual 5 - all three
-# have since been fixed and now read 11/9/5 respectively) or `just ci` goes
-# red. A frozen test that requires those exact lines to remain
-# BROKEN would force the implementer to edit a frozen test the moment they
-# do their job correctly - there is no repo state where both `just ci` and
-# that old assertion are green. Two durable replacements, neither of which
-# hardcodes a live line number, a live "wrong" value, or a live mention
-# count (all computed at test-run time from whatever the tree currently
-# contains, so they hold before AND after this lane's own fix commit):
+# REAL-TREE HANDLING. Neither real-tree case below hardcodes a live line
+# number, a live "wrong" value, or a live mention count: all are computed
+# at test-run time from whatever the tree currently contains, so they hold
+# as README.md and the catalogs grow.
 #   - case_real_catalogs_seeded_drift: copies the REAL README.md and all
 #     six REAL catalog files into a scratch dir, then APPENDS one new,
 #     deliberately-wrong mention (real fapd- catalog length + 1000, so it
 #     is wrong regardless of any future catalog growth) - proves the gate
 #     works at real-repo scale without depending on the live tree's
-#     current bug/fixed state.
+#     current state.
 #   - case_real_tree_pristine_eventually_clean: runs the gate against the
 #     REAL repo tree, unmodified, with no arguments (mirrors
 #     check-dac-guard-test.sh:513-527's case7_real_tree exactly) and
-#     asserts exit 0. This WAS RED at authoring time (the three live
-#     mismatches above existed then) and turned GREEN in the same commit
-#     that implemented the gate and fixed README.md - that was the correct,
-#     durable, TDD-red-then-green state for a lane whose own job included
-#     the fix; the tree is clean now, so this case is a durable regression
-#     guard, not a still-open TODO.
+#     asserts exit 0: a regression guard against future drift.
 #
 # Run with no arguments; safe to run locally or in CI.
 
@@ -252,8 +224,8 @@ assert_output_contains() {
 }
 
 # assert_output_not_contains NAME PATTERN DESC
-# STRENGTHENED (Blocker 5): the exclusion-enforcement counterpart to
-# assert_output_contains - requires TMPROOT/NAME.out to NOT contain PATTERN.
+# The exclusion-enforcement counterpart to assert_output_contains - requires
+# TMPROOT/NAME.out to NOT contain PATTERN.
 assert_output_not_contains() {
     local name="$1" pattern="$2" desc="$3"
     local out="${TMPROOT}/${name}.out"
@@ -265,10 +237,9 @@ assert_output_not_contains() {
 }
 
 # assert_scanned_count_exact NAME EXPECTED
-# STRENGTHENED (Blocker 3): replaces the original assert_scanned_count_positive
-# (which only checked N > 0, so a hardcoded "scanned 14" fake passed it).
 # Requires the "scanned N \"codes\" mention(s)" summary line to report
-# EXACTLY EXPECTED.
+# EXACTLY EXPECTED. A weaker N > 0 check is satisfied by an implementation
+# that prints a hardcoded "scanned 14".
 assert_scanned_count_exact() {
     local name="$1" expected="$2"
     local out="${TMPROOT}/${name}.out"
@@ -366,11 +337,11 @@ EOF
 }
 
 # A 9-entry synthetic sudo- catalog and a 13-entry synthetic sshd- catalog,
-# used only by case_exclusions_are_honored. STRENGTHENED (round-3 BLOCKER):
-# without these, the exclusion fixture's out-of-scope CHANGELOG.md/cli_help.rs
+# used only by case_exclusions_are_honored. Without these, the exclusion
+# fixture's out-of-scope CHANGELOG.md/cli_help.rs
 # mentions (which reference sudo-/sshd-) have no catalog to be evaluated
 # against at all, so NO implementation - correct or over-scanning - can
-# tell them apart; the assertions were vacuous. These lengths deliberately
+# tell them apart and the assertions are vacuous. These lengths deliberately
 # DIFFER from the stated values in those two out-of-scope mentions (9 != 8,
 # 13 != 12), so an over-scanner that reads them WOULD find and report a
 # mismatch, making the not-contains assertions meaningful.
@@ -500,9 +471,9 @@ EOF
 
 # ---------------------------------------------------------------------------
 # Case 1: a seeded WRONG count (heading shape (b), stated 5, actual 3) ->
-# exit 1, naming the fixture README's file:line (line 5). STRENGTHENED
-# (CONCERN): also asserts the violation message reports BOTH the stated
-# and the actual catalog-length numbers, not just a bare file:line.
+# exit 1, naming the fixture README's file:line (line 5). Also asserts the
+# violation message reports BOTH the stated and the actual catalog-length
+# numbers, not just a bare file:line.
 # ---------------------------------------------------------------------------
 c1="case1_seeded_wrong_count"
 synthetic_sysctld_catalog | write_fixture "${c1}/crates/rulesteward-sysctld/src/catalog.rs"
@@ -524,8 +495,8 @@ assert_output_contains "${c1}" "stated 5, catalog length 3 for \`sysctld-\`" \
 
 # ---------------------------------------------------------------------------
 # Case 2: the SAME fixture with the CORRECT count (stated 3, actual 3) ->
-# exit 0. STRENGTHENED (Blocker 3): the scanned-mentions count must be
-# EXACTLY 1 (this fixture has exactly one mention), not merely > 0.
+# exit 0. The scanned-mentions count must be EXACTLY 1 (this fixture has
+# exactly one mention), not merely > 0.
 # ---------------------------------------------------------------------------
 c2="case2_correct_count"
 synthetic_sysctld_catalog | write_fixture "${c2}/crates/rulesteward-sysctld/src/catalog.rs"
@@ -545,10 +516,9 @@ assert_scanned_count_exact "${c2}" 1
 # ---------------------------------------------------------------------------
 # Case 3: ANTI-VACUITY. A fixture repo whose README.md contains ZERO "N
 # codes" mentions (plain prose only, no catalog needed since nothing refers
-# to one) -> exit 1, NOT 0. STRENGTHENED (Blocker 6): also asserts the
-# summary line reports EXACTLY "scanned 0" - the original case only checked
-# the exit code, which the always-fail stub (or any guard failing for an
-# unrelated reason) satisfies vacuously.
+# to one) -> exit 1, NOT 0. Also asserts the summary line reports EXACTLY
+# "scanned 0": checking only the exit code is satisfied vacuously by an
+# always-fail stub, or by any guard failing for an unrelated reason.
 # ---------------------------------------------------------------------------
 c3="case3_zero_mentions_is_a_failure"
 write_fixture "${c3}/README.md" <<'EOF'
@@ -562,12 +532,10 @@ assert_output_contains "${c3}" 'scanned 0 "codes" mention(s)' \
     "the summary line correctly reports zero mentions scanned (anti-vacuity)"
 
 # ---------------------------------------------------------------------------
-# Case: cli/mod.rs is scanned INDEPENDENTLY of README.md. STRENGTHENED
-# (Blocker 2): the original harness never put a mention in cli/mod.rs at
-# all, so a `FILES=("README.md")` fake (a real implementation with exactly
-# one line wrong) passed it 10/10. This fixture has NO README.md at all -
-# only a synthetic clap doc-comment file with a wrong mention - and must
-# still be caught.
+# Case: cli/mod.rs is scanned INDEPENDENTLY of README.md. This fixture has
+# NO README.md at all - only a synthetic clap doc-comment file with a wrong
+# mention - and must still be caught, so a `FILES=("README.md")`
+# implementation (a real one with exactly one line wrong) cannot pass.
 # ---------------------------------------------------------------------------
 c_cli="case_cli_mod_rs_scanned_independently"
 synthetic_sysctld_catalog | write_fixture "${c_cli}/crates/rulesteward-sysctld/src/catalog.rs"
@@ -586,14 +554,12 @@ assert_output_contains "${c_cli}" "stated 5, catalog length 3 for \`sysctld-\`" 
 
 # ---------------------------------------------------------------------------
 # Case: ALL SIX prefixes, ALL THREE mention shapes, each seeded WRONG.
-# STRENGTHENED (Blocker 4): the original harness only ever exercised shape
-# (b) with `sysctld-`, and case4 covered `au-`/`sudo-` only because those
-# happened to be broken in the live tree right now. This fixture uses the
+# This fixture uses the
 # REAL catalog files (so it also mechanically proves all six are actually
-# read - the CONCERN 2 minimum bar) and computes each "wrong" value as
+# read) and computes each "wrong" value as
 # (real length + 1), so it stays correct even if a catalog grows later.
-# STRENGTHENED (round-3 CONCERN): the sysctld-/sshd- rows are swapped to
-# shape (c)/(b) respectively (previously (b)/(c)) so shape (c) is exercised
+# The sysctld-/sshd- rows use
+# shape (c)/(b) respectively so shape (c) is exercised
 # with `sysctl.d` - the ONE display name containing a regex metacharacter
 # (the `.`). Unescaped, `sysctl.d` would also match `sysctlXd`; the live
 # shape-(c) mention at README.md:352 is currently CORRECT, so the pristine
@@ -605,10 +571,9 @@ assert_output_contains "${c_cli}" "stated 5, catalog length 3 for \`sysctld-\`" 
 #   sudo-     shape (a): "<N> sudo- codes"
 #   sysctld-  shape (c): "<N> sysctl.d codes"
 #   se-       shape (c): "<N> SELinux codes"
-# Also STRENGTHENED (round-3 CONCERN): assertions now check the FULL
-# canonical violation message (file:line + both numbers + prefix), not a
-# bare file:line - an impl that names the right line for the WRONG prefix
-# no longer passes.
+# Assertions check the FULL canonical violation message (file:line + both
+# numbers + prefix), not a bare file:line, so an impl that names the right
+# line for the WRONG prefix does not pass.
 # ---------------------------------------------------------------------------
 c_matrix="case_all_six_prefixes_all_three_shapes"
 matrix_dir="${TMPROOT}/${c_matrix}"
@@ -661,10 +626,9 @@ assert_output_contains "${c_matrix}" "README.md:13: stated ${m_wrong_se}, catalo
 
 # ---------------------------------------------------------------------------
 # Case: exact scanned-mentions count on a MULTI-mention fixture (4 mentions,
-# 2 backends, all correct). STRENGTHENED (Blocker 3, second requirement):
-# case2 alone (1 mention) could not distinguish "always report 1" from
-# "count correctly"; this fixture requires an exact count that is neither 0
-# nor 1.
+# 2 backends, all correct). case2 alone (1 mention) cannot distinguish
+# "always report 1" from "count correctly"; this fixture requires an exact
+# count that is neither 0 nor 1.
 # ---------------------------------------------------------------------------
 c_multi="case_multi_mention_exact_count"
 synthetic_sysctld_catalog | write_fixture "${c_multi}/crates/rulesteward-sysctld/src/catalog.rs"
@@ -686,21 +650,21 @@ assert_scanned_count_exact "${c_multi}" 4
 
 # ---------------------------------------------------------------------------
 # Case: documented exclusions are ENFORCED, not just documented.
-# STRENGTHENED (Blocker 5): a CHANGELOG.md carrying a stale-but-historically
+# A CHANGELOG.md carrying a stale-but-historically
 # -correct mention, and an out-of-scope .rs file (mirroring
 # crates/rulesteward-cli/tests/cli_help.rs) carrying a `//` comment mention
 # - both deliberately WRONG relative to what a naive broad scan would infer
 # - must NOT be flagged, and the one real in-scope mention (correct) means
 # the gate must exit 0.
 #
-# STRENGTHENED (round-3 BLOCKER): the fixture now ALSO ships a 9-entry
+# The fixture ALSO ships a 9-entry
 # synthetic sudo- catalog and a 13-entry synthetic sshd- catalog (the
 # backends the two out-of-scope mentions reference), with lengths that
 # DIFFER from those mentions' stated values (8 != 9, 12 != 13). Without
-# these, an over-scanning implementation had nothing to compare the
-# out-of-scope mentions against and could never flag them - the two
-# assert_output_not_contains checks passed identically for a correct
-# implementation AND an over-scanner, making them vacuous. Do NOT call
+# these, an over-scanning implementation has nothing to compare the
+# out-of-scope mentions against and can never flag them - the two
+# assert_output_not_contains checks would then pass identically for a
+# correct implementation AND an over-scanner, making them vacuous. Do NOT call
 # stage_real_catalogs here: it would overwrite the synthetic 3-entry
 # sysctld- catalog with the real 5-entry one and break the one in-scope
 # mention's correctness.
@@ -747,12 +711,12 @@ assert_output_not_contains "${c_excl}" "cli_help.rs" \
 # ---------------------------------------------------------------------------
 # Case: REAL catalogs (all six, copied verbatim) + the REAL README.md
 # (copied verbatim) + one seeded, deliberately-wrong mention APPENDED to
-# the copy. STRENGTHENED (Blocker 1, part A): proves the gate works at
+# the copy. Proves the gate works at
 # real-repo scale via a scratch COPY, without asserting anything about the
-# live tree's current (soon to be fixed by this lane) bug state. The wrong
+# live tree's current state. The wrong
 # value and the asserted line number are both computed at test-run time
 # from whatever the real fapd- catalog/README currently contain, so this
-# holds before and after this lane's own README.md fix commit.
+# holds as README.md changes.
 # ---------------------------------------------------------------------------
 c_seed="case_real_catalogs_seeded_drift"
 seed_dir="${TMPROOT}/${c_seed}"
@@ -769,7 +733,7 @@ seed_wrong_fapd=$((seed_real_fapd + 1000))
 } >>"${seed_dir}/README.md"
 
 seed_line="$(grep -n 'fapd-seeded-drift-probe' "${seed_dir}/README.md" | head -1 | cut -d: -f1)"
-# STRENGTHENED (round-3 CONCERN): guard against a latent self-satisfying
+# Guard against a latent self-satisfying
 # path - if seed_line ever resolved empty (e.g. the `cp`/append above
 # silently changed shape), an unguarded "README.md:${seed_line}" pattern
 # would degrade to the substring "README.md:" and be satisfied by ANY
@@ -788,11 +752,11 @@ assert_output_contains "${c_seed}" "stated ${seed_wrong_fapd}, catalog length ${
     "message reports both numbers for the seeded real-scale mismatch"
 
 # ---------------------------------------------------------------------------
-# ROUND-4 HARDENING (adversarial finding on #586): the anti-vacuity floor
+# THE UNRECOGNIZED-MENTION RULE (#586): the anti-vacuity floor
 # above is `scanned == 0`, so a mention rewritten into ANY phrasing outside
 # the three precise shapes simply stops being scanned - `scanned` drops,
 # `violation_count` stays 0, exit 0. Coverage erosion one mention at a time
-# is silent. These cases freeze a new UNRECOGNIZED-MENTION rule: a line that
+# is silent. These cases freeze the UNRECOGNIZED-MENTION rule: a line that
 # references a known backend (by prefix or display name) and says "codes"
 # (case-insensitive) and has a digit, but matches none of shapes (a)/(b)/(c),
 # is ITSELF a violation.
@@ -856,7 +820,7 @@ assert_output_contains "${c_unrec_case}" "README.md:3: unrecognized \"codes\" me
     "flags the case-variant ('Codes') fapolicyd mention as unrecognized, naming its file:line and prefix"
 
 # ---------------------------------------------------------------------------
-# ROUND-4 HARDENING, second finding: `catalog_length` must count OCCURRENCES
+# `catalog_length` must count OCCURRENCES
 # of the literal substring `code: "<prefix>`, not LINES. A catalog with two
 # entries crammed onto one line (needs `#[rustfmt::skip]` to survive
 # `cargo fmt` in real code, hence synthetic-only here) must report catalog
@@ -881,14 +845,10 @@ assert_scanned_count_exact "${c_occ}" 1
 
 # ---------------------------------------------------------------------------
 # Case: the REAL repo tree, invoked with NO arguments (default CWD), from
-# the repo root, unmodified. STRENGTHENED (Blocker 1, part B; replaces the
-# original case4's hardcoded-live-line assertions): mirrors
+# the repo root, unmodified. Mirrors
 # check-dac-guard-test.sh's case7_real_tree exactly - durable, asserts only
-# exit 0, no live content dependency. This WAS RED at authoring time
-# (README.md:127/139/286 were still wrong) and turned GREEN in the same
-# commit that implemented the gate and fixed README.md, per the plan; the
-# tree is clean now, so this case is a durable regression guard against
-# future drift, not a still-open TODO.
+# exit 0, no live content dependency: a regression guard against future
+# drift.
 # ---------------------------------------------------------------------------
 case_pristine_out="${TMPROOT}/case_real_tree_pristine.out"
 case_pristine_rc=0
@@ -901,22 +861,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# ROUND-4 HARDENING: a per-backend real-tree coverage floor. Reuses the
+# A per-backend real-tree coverage floor. Reuses the
 # output already captured above (the real tree, invoked with no arguments)
 # rather than re-running the gate. For EACH of the six backends, the real
 # tree must carry at least one live "codes" mention - this is the mechanical
-# floor that kills every seeded row in the adversarial finding's table
-# individually (each seeded scenario replaces ALL of one backend's mentions,
-# dropping that backend's count to 0) WITHOUT hardcoding the current
+# floor that catches a rewrite replacing ALL of one backend's mentions
+# (dropping that backend's count to 0) WITHOUT hardcoding the current
 # aggregate total (14) or any single backend's exact count, both of which
 # drift as the docs legitimately grow.
 #
 # NOTE: this loop only asserts that the REAL tree, as it stands, already
 # satisfies the floor - it does not prove the gate would REJECT a tree that
-# didn't. That enforcement gap (found on NEEDS_REWORK review: the floor was
-# printed but never asserted anywhere `just ci`/CI actually runs) is what
-# round-5 below closes, inside the gate itself; see
-# case_per_backend_floor_all_mentions_reworded_away.
+# didn't. The gate itself closes that gap - the floor is asserted inside the
+# gate, not merely printed; see
+# case_per_backend_floor_all_mentions_reworded_away below.
 # ---------------------------------------------------------------------------
 for floor_prefix in fapd- au- sshd- sudo- sysctld- se-; do
     floor_n="$(grep -oE "per-backend mentions: \`${floor_prefix}\` = [0-9]+" "${case_pristine_out}" 2>/dev/null | grep -oE '[0-9]+$' | head -1 || true)"
@@ -928,10 +886,9 @@ for floor_prefix in fapd- au- sshd- sudo- sysctld- se-; do
 done
 
 # ---------------------------------------------------------------------------
-# ROUND-5 HARDENING (adversarial finding on #586 NEEDS_REWORK review): the
-# per-backend floor loop above only proves the REAL tree currently satisfies
-# the floor - it never proves the GATE itself would reject a tree that
-# didn't. The review demonstrated, live against this repo, that rewording
+# The per-backend floor loop above only proves the REAL tree currently
+# satisfies the floor - it never proves the GATE itself would reject a tree
+# that didn't. Demonstrated live against this repo: rewording
 # all three real sshd- mentions into prose naming neither the `sshd-`
 # prefix nor the `sshd_config` display name (invisible to the
 # UNRECOGNIZED-MENTION rule too, since that rule keys off the same two
@@ -939,7 +896,7 @@ done
 # = 0`, with exit STILL 0 - an entire backend's documentation silently
 # erased behind a green gate. This case reproduces that exact scenario
 # against a scratch copy of the real repo tree (all six real catalogs +
-# real README.md + real cli/mod.rs) and requires the gate now exit 1,
+# real README.md + real cli/mod.rs) and requires the gate to exit 1,
 # reporting the dedicated per-backend-floor message for `sshd-` - distinct
 # from a count-mismatch or unrecognized-mention violation, so an operator
 # can tell which failure class actually fired.
@@ -993,12 +950,11 @@ assert_output_not_contains "${c_floor}" "unrecognized \"codes\" mention for \`ss
 
 # ---------------------------------------------------------------------------
 # Case: the per-backend coverage floor STILL applies to the backends that ARE
-# present when a DIFFERENT backend's catalog is absent. Regression pin for the
-# session-9j senior integration review finding: an earlier revision gated the
-# whole floor loop on a single repo-wide ALL_CATALOGS_PRESENT boolean, so ONE
-# catalog going missing (a backend normalizing `src/lints/catalog.rs` to
+# present when a DIFFERENT backend's catalog is absent. Regression pin: gating
+# the whole floor loop on a single repo-wide ALL_CATALOGS_PRESENT boolean lets
+# ONE catalog going missing (a backend normalizing `src/lints/catalog.rs` to
 # `src/catalog.rs` - the shape sysctld already uses - or simply being renamed)
-# silently disarmed the floor for ALL SIX backends at once. A second backend's
+# silently disarm the floor for ALL SIX backends at once. A second backend's
 # mentions could then be reworded away entirely with the gate still green.
 #
 # Fully synthetic on purpose: it asserts nothing about the real README's
@@ -1007,7 +963,7 @@ assert_output_not_contains "${c_floor}" "unrecognized \"codes\" mention for \`ss
 # Discriminating by construction - `sudo-`'s catalog is PRESENT with zero
 # mentions (floor must fire) while `se-`'s catalog is ABSENT with zero
 # mentions (floor must stay silent, since a missing catalog is deliberately
-# not an error). The old global-flag implementation exits 0 here; the
+# not an error). A global-flag implementation exits 0 here; the
 # per-backend implementation exits 1 naming `sudo-` and only `sudo-`.
 # ---------------------------------------------------------------------------
 c_partial="case_per_backend_floor_survives_a_missing_sibling_catalog"

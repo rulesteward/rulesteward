@@ -10,8 +10,7 @@
 #
 # The suite ends with a positive control that seeds the single most dangerous bug
 # back into a COPY of the driver (removing the sentinel guard) and asserts that a
-# NAMED case catches it. Without that, this file could pass while testing nothing,
-# which is the exact failure class the whole session exists to eliminate.
+# NAMED case catches it. Without that, this file could pass while testing nothing.
 #
 # Usage: bash scripts/rs-oracle-diff-test.sh
 # Exit:  0 all cases pass, 1 a case failed, 2 the suite could not run.

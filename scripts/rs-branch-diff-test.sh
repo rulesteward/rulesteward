@@ -15,18 +15,17 @@
 # those, this file could pass while testing nothing.
 #
 # SOME, not "each": the driver has substantially more `die 2` sites than there are
-# controls, and they are not all controlled. Saying "each" invited the next person
-# to skip adding a control for a new guard because the comment claimed one already
-# existed. No exact count is quoted for EITHER number, deliberately - the first
-# version of this comment said the driver had "28" die sites in the very commit
-# that made it 34, it was 38 two commits later, and the control count has since
-# been "six" and "NINE" in a file whose own rule forbids quoting counts. Count
-# them today with `grep -c 'die 2 '` and `grep -cE '^run_positive_control '`.
+# controls, and they are not all controlled. Saying "each" would invite the next
+# person to skip adding a control for a new guard, on the strength of a comment
+# claiming one already exists. No exact count is quoted for EITHER number,
+# deliberately: both drift with almost every commit, and a stale figure quoted as
+# current is its own defect class. Count them today with `grep -c 'die 2 '` and
+# `grep -cE '^run_positive_control '`.
 #
-# A control proves a guard is WITNESSED, which a case NAME does not. Round 3 found
-# a guard whose only named case exited earlier and never reached it: neutering the
-# guard left every case passing. If you add a guard, add a control, and check the
-# control fails when the guard is gone.
+# A control proves a guard is WITNESSED, which a case NAME does not: a guard whose
+# only named case exits earlier never reaches it, and neutering that guard leaves
+# every case passing. If you add a guard, add a control, and check the control
+# fails when the guard is gone.
 #
 # Usage: bash scripts/rs-branch-diff-test.sh
 # Exit:  0 all cases pass, 1 a case failed, 2 the suite could not run.
@@ -133,11 +132,11 @@ make_sandbox() {
         : >"${box}/crates/rulesteward-auditd/tests/corpus/auditd-oracle/scenario-a.tsv"
     fi
 
-    # A PRE-EXISTING cache directory, which is the driver's common path (the ATL
-    # runs it every round against one fork point) and had zero coverage: every
-    # sandbox got a fresh TMPDIR, so the reuse branch was never taken. Built here
-    # WITHOUT going through the stub `git worktree add`, which is exactly the
-    # state that made the creation path's failure unobservable.
+    # A PRE-EXISTING cache directory, which is the driver's common path: it is run
+    # every round against one fork point. Without this, every sandbox gets a fresh
+    # TMPDIR and the reuse branch is never taken. Built here WITHOUT going through
+    # the stub `git worktree add`, which is exactly the state that makes the
+    # creation path's failure unobservable.
     if [ "${STUB_PRECREATE_WT:-0}" = "1" ]; then
         local wt="${box}/tmp/rs-branch-diff/aaaaaaaabbbbbbbbccccccccdddddddd00000000"
         mkdir -p "${wt}/crates/rulesteward-auditd/tests/corpus/auditd-oracle"
@@ -149,28 +148,21 @@ make_sandbox() {
     # docker genuinely absent; no case here needs a missing tool, so that is a
     # property of the design rather than something exercised.)
     local tool resolved
-    # `head` was missing until round 7, so the driver's `| head -N` pipes - two of
-    # them then ("the cached worktree is dirty, here are the first 10 lines" and
-    # the committed-mode banner dump), three since round 8 added the ignored-path
-    # dump - failed with `command not found` inside EVERY
-    # case and nothing noticed: the suite asserts an rc and one substring of the
-    # `die` message, never that the transcript arrived. Same shape as the
-    # multi-operand `tail` defect found in the same round.
-    # `tr` was missing too, found by the check above on its first run: the
-    # `cargo said: $(tail -3 ... | tr '\n' ' ')` diagnostic that round 3 added
-    # specifically to stop stderr being discarded produced an EMPTY tail inside
-    # the sandbox, and `json_phase_failure` passed regardless because it asserts
+    # EVERY ENTRY IS LOAD-BEARING, and an omission fails in the direction that
+    # looks like a pass. Without `head`, the driver's `| head -N` pipes fail with
+    # `command not found` inside EVERY case and nothing notices: the suite asserts
+    # an rc and one substring of the `die` message, never that the transcript
+    # arrived. Without `tr`, the `cargo said: $(tail -3 ... | tr '\n' ' ')`
+    # diagnostic that stops stderr being discarded produces an EMPTY tail inside
+    # the sandbox, and `json_phase_failure` passes regardless because it asserts
     # only the substring BEFORE that interpolation. The driver is fine in
-    # production, where `tr` is on PATH; the CASE was vacuous for the half it
+    # production, where `tr` is on PATH; the CASE is vacuous for the half it
     # exists to pin.
-    # `awk` and `wc` joined the list in round 12, for the content check that
-    # replaced the knob-by-knob `status` patching. They are the only two the list
-    # GAINED: that check also uses `tail` and `head` in its refusal paths, which
-    # were already here. An earlier version of this comment said they were "the
-    # only two binaries that check needs", which is false - the block invokes four.
-    # Keeping this list short is still the point of it - every entry is a binary
-    # that has to exist wherever the driver runs, and this check has already caught
-    # `tr`, `head`, and a multi-operand `tail` that printed nothing.
+    # `awk` and `wc` are here for the content check, which also uses `tail` and
+    # `head` in its refusal paths.
+    # Keeping this list short is the point of it - every entry is a binary that has
+    # to exist wherever the driver runs, and this check has already caught `tr`,
+    # `head`, and a multi-operand `tail` that printed nothing.
     for tool in mktemp mkdir rm tail head tr grep cut env bash dirname cat cp awk wc; do
         resolved="$(command -v "${tool}")" || {
             echo "SUITE ERROR: required tool '${tool}' not found" >&2
@@ -208,20 +200,13 @@ done
 exit "${rc}"
 STUB
 
-    # Stub git. The five subcommands the driver uses: `rev-parse`, `status`,
-    # `ls-files`, `diff` and `worktree`.
+    # Stub git. The subcommands the driver uses: `rev-parse`, `status`,
+    # `ls-files`, `hash-object`, `diff` and `worktree`.
     #
-    # This read "the two subcommands" from the first commit, where it was true
-    # (`rev-parse` and `worktree add`). Round 1 added `status` and round 2 added
-    # `diff`, and the sentence stayed. It was false for nine commits and survived a
-    # dedicated doc-truth pass plus six review rounds, because a count phrased as
-    # prose scans as boilerplate rather than as a claim.
-    #
-    # Round 9 repaired it to "four". Round 10's `ls-files` guard made that false in
-    # the very next commit, which is the useful half of the story: the count is not
-    # hard to get right, it is hard to keep right, because the thing that falsifies
-    # it is always a feature somewhere else. The sweep for this line now happens
-    # BEFORE a subcommand is added rather than a round after.
+    # LISTED, NOT COUNTED. A count phrased as prose scans as boilerplate rather
+    # than as a claim, so it rots quietly: it is not hard to get right, it is hard
+    # to keep right, because the thing that falsifies it is always a feature
+    # somewhere else. A list has to be extended by the same edit that adds an arm.
     #
     # `worktree add` materialises a base tree carrying its own committed corpus,
     # so that R1 (base binary against the BASE corpus) has something real to read.
@@ -270,9 +255,9 @@ if [ "${1-}" = "rev-parse" ]; then
     fi
     rc="${STUB_GIT_REVPARSE_RC:-0}"
     [ "${rc}" -ne 0 ] && { echo "fatal: stub rev-parse failure" >&2; exit "${rc}"; }
-    # Retained for a driver that resolves HEAD; the current one does NOT (round 3
-    # dropped the `rev-parse HEAD^{commit}` call when the nothing-to-vary guard
-    # became a one-ref `git diff`), and no case sets STUB_HEAD_SHA. Kept because
+    # Retained for a driver that resolves HEAD; the current one does NOT (the
+    # nothing-to-vary guard is a one-ref `git diff`, so there is no
+    # `rev-parse HEAD^{commit}` call), and no case sets STUB_HEAD_SHA. Kept because
     # the arm costs nothing and a future caller would otherwise be mis-answered.
     case "${3-}" in
     'HEAD^{commit}') echo "${STUB_HEAD_SHA:-$HEAD_DEFAULT}" ;;
@@ -284,36 +269,26 @@ fi
 if [ "${1-}" = "status" ]; then
     # Does the caller want untracked files suppressed?
     #
-    # The driver no longer passes `-uno` ANYWHERE: round 3 replaced the
-    # nothing-to-vary `status --porcelain -uno` scan with a one-ref `git diff`,
-    # which reads tracked content by construction. Its TWO `status` calls are both
+    # The driver does not pass `-uno` ANYWHERE. Its nothing-to-vary guard is a
+    # one-ref `git diff`, which reads tracked content by construction, so no
+    # untracked handling arises there. Its TWO `status` calls are both
     # on the cached worktree: `status --porcelain -unormal`, and
     # `status --porcelain --ignored -unormal -- <CORPUS_SUBPATH>`. Both deliberately
     # omit `-uno` and pin `-unormal`, because the corpus is enumerated from the
     # filesystem and an untracked or ignored scenario dir IS part of the base's
     # replay input.
     #
-    # This said "its only `status` call" until round 9. Round 8 added the second
-    # call, and the paragraph that falsified this sentence is the one beginning
-    # "`--ignored` is the SECOND question the driver asks of this command", added
-    # in that same commit and sitting below it ever since without touching it.
-    # A maintainer reading here first believes the `status` branch below serves a
-    # single driver call site, which is the exact misreading that made
-    # `STUB_GIT_STATUS_IGNORED_RC` necessary.
+    # TWO driver call sites reach the `status` branch below, not one. Reading it as
+    # serving a single call site is the misreading that makes
+    # `STUB_GIT_STATUS_IGNORED_RC` look unnecessary; the paragraph beginning
+    # "`--ignored` is the SECOND question the driver asks of this command" sits
+    # below and says why the second one needs its own rc knob.
     #
-    # Round 9's repair of that sentence pointed at "a paragraph explaining why the
-    # second one needs its own rc knob" by counting lines to it, and landed on the
-    # "SECOND question" text instead. So a commit whose whole thesis was that
-    # positional references rot introduced a positional reference in the prose
-    # explaining why.
-    #
-    # Round 10's repair of THAT then quoted two offsets, and one of them was
-    # measured in the wrong tree - the anchor sentence did not yet exist in the
-    # commit the number came from. Both offsets are gone rather than corrected,
-    # because they carry no load: the paragraph names both referents already, and
-    # an offset is the only part of a reference that can rot. Verifying a pointer
-    # has two halves - does a target exist there, and is it the one you named -
-    # and a line count checks neither unless you also check the anchor.
+    # That referent is NAMED rather than pointed at with a line offset,
+    # deliberately. An offset is the only part of a reference that can rot, and
+    # verifying a pointer has two halves - does a target exist there, and is it the
+    # one you named - neither of which a line count checks unless you also check
+    # the anchor.
     #
     # So every `status` reaching this stub arrives with `-C`, and the `else` arm
     # below is currently unreachable. Both are kept so a future caller that does
@@ -321,22 +296,22 @@ if [ "${1-}" = "status" ]; then
     # modelled rather than silently mis-answered.
     uno=0
     for a in "$@"; do case "${a}" in -uno|--untracked-files=no) uno=1 ;; esac; done
-    # `--ignored` is the SECOND question the driver asks of this command, and the
-    # stub could not express its answer at all until round 8.
+    # `--ignored` is the SECOND question the driver asks of this command, and this
+    # stub has to be able to express its answer.
     #
     # Real `git status --porcelain` OMITS ignored paths (git-status(1): `--ignored`
     # is what "show ignored files as well" takes), while the lanes enumerate the
     # corpus with `read_dir`, which ignores nothing. So a scenario directory whose
     # name `.gitignore` matches is replay input AND invisible - and with only
-    # STUB_WT_DIRTY and STUB_WT_UNTRACKED there was no way to state "a file is
+    # STUB_WT_DIRTY and STUB_WT_UNTRACKED there is no way to state "a file is
     # present that `git status` does not report", which is precisely the bug.
     # A stub that cannot state the bug cannot catch it.
     ign=0
     for a in "$@"; do case "${a}" in --ignored|--ignored=*) ign=1 ;; esac; done
-    # `status.showUntrackedFiles=no`, modelled. Until round 9 the stub could only
-    # express what the driver ASKED, never what the developer's git CONFIG did to
-    # the answer - and that config is unversioned, reaches every cached worktree
-    # through the common dir, and silently turns BOTH cleanliness guards off.
+    # `status.showUntrackedFiles=no`, modelled. The stub has to express not only
+    # what the driver ASKED but what the developer's git CONFIG does to the answer
+    # - that config is unversioned, reaches every cached worktree through the
+    # common dir, and silently turns BOTH cleanliness guards off.
     #
     # Measured on git 2.55.0: under that config `--porcelain` loses its `??` rows
     # and `--porcelain --ignored` returns ZERO BYTES, losing `!!` as well, because
@@ -376,18 +351,18 @@ if [ "${1-}" = "status" ]; then
         # Untracked-only: visible to a bare `status --porcelain`, invisible to -uno.
         [ -n "${STUB_TREE_UNTRACKED:-}" ] && [ "${uno}" -eq 0 ] && echo "?? .serena/"
     fi
-    # A FAILING `git status`, which this arm could not express until round 6. A
-    # mutation probe showed the driver's rc guard on this command survived all 68
-    # cases when removed, and removing it yields `OK` at rc 0: a failing status
-    # writes nothing to stdout, so the driver's `-n "${wt_dirty}"` test reads
-    # "could not check" as "checked, and clean". The reachable trigger is a corrupt
-    # index in the long-lived cached worktree (`git status` refreshes and writes
-    # the index; `rev-parse --verify HEAD` reads refs only, so the earlier guard
-    # passes). Measured on git 2.55.0: a corrupt index gives rc 128 with EMPTY
-    # stdout and `fatal: .../index: index file smaller than expected`, which is
-    # exactly this knob's shape. NOT a stale `index.lock`, which an earlier
-    # version of this comment also claimed: status takes that lock non-blocking
-    # and simply skips writing, returning rc 0 and empty output.
+    # A FAILING `git status`, which this arm has to be able to express. A
+    # mutation probe showed the driver's rc guard on this command surviving the
+    # whole case table when removed, and removing it yields `OK` at rc 0: a
+    # failing status writes nothing to stdout, so the driver's `-n "${wt_dirty}"`
+    # test reads "could not check" as "checked, and clean". The reachable trigger
+    # is a corrupt index in the long-lived cached worktree (`git status` refreshes
+    # and writes the index; `rev-parse --verify HEAD` reads refs only, so the
+    # earlier guard passes). Measured on git 2.55.0: a corrupt index gives rc 128
+    # with EMPTY stdout and `fatal: .../index: index file smaller than expected`,
+    # which is exactly this knob's shape. NOT a stale `index.lock`: status takes
+    # that lock non-blocking and simply skips writing, returning rc 0 and empty
+    # output.
     # A stub that cannot state the bug cannot catch it.
     #
     # The `--ignored` call gets its OWN rc knob rather than sharing this one. Both
@@ -403,17 +378,16 @@ if [ "${1-}" = "status" ]; then
 fi
 
 if [ "${1-}" = "ls-files" ]; then
-    # THE THIRD MEMBER OF THE SUPPRESSED-ROW SET, and the stub could not state it
-    # until round 10. Round 8 taught this stub to hide the `!!` row, round 9 the
-    # `??` row; this is the ` M` row - a TRACKED file that is modified and that
-    # `git status` does not report, because the index says stop looking at it.
+    # THE THIRD MEMBER OF THE SUPPRESSED-ROW SET. The `status` arm above hides the
+    # `!!` row and the `??` row; this is the ` M` row - a TRACKED file that is
+    # modified and that `git status` does not report, because the index says stop
+    # looking at it.
     #
     # It needs its own arm rather than another `status` knob, because the driver
     # asks a different COMMAND: `status` reports what git can see, and no answer
     # from it can describe what git has been told not to look at. Modelling the
-    # blindness inside the `status` arm would have made the two indistinguishable,
-    # which is the mistake round 3's `diff` arm records ("a stub that cannot state
-    # the bug cannot catch it").
+    # blindness inside the `status` arm would make the two indistinguishable, and
+    # a stub that cannot state the bug cannot catch it.
     #
     # `-v` prefixes each path with its index flag. `H` is the normal cached entry;
     # any LOWERCASE letter is assume-unchanged (what `core.ignoreStat` burns in at
@@ -421,14 +395,13 @@ if [ "${1-}" = "ls-files" ]; then
     # sets). Both suppress identically, so both get a case - a remedy aimed at one
     # cause would leave the other open, which is why the driver reads the FLAGS
     # rather than guarding any single mechanism.
-    # THIS ARM READS ITS ARGUMENTS, and until round 11 it did not - which made
-    # the `-v` flag and the call's SCOPE both unwitnessable. Seeding `-v` -> `-t`
-    # left all 87 cases green while re-opening the `core.ignoreStat` half the
-    # guard exists for; so did scoping the call to the corpus, because the
-    # suppressed entry below sits outside it. The `status` arm scans `"$@"` in
-    # three places for exactly this reason and round 9 gave its two flags two
-    # controls under that rule; round 10 shipped a flag with the same property
-    # and gave it none. A guard has a QUESTION and a VERDICT, and controls that
+    # THIS ARM READS ITS ARGUMENTS, which is what makes the `-v` flag and the
+    # call's SCOPE witnessable at all. An arm that ignored them leaves seeding
+    # `-v` -> `-t` green across the whole case table while re-opening the
+    # `core.ignoreStat` half the guard exists for; so does scoping the call to the
+    # corpus, because the suppressed entry below sits outside it. The `status` arm
+    # scans `"$@"` in three places for exactly this reason, and each of its flags
+    # gets its own control. A guard has a QUESTION and a VERDICT, and controls that
     # attack only the verdict leave the question free to drift.
     lsv=0
     scoped=0
@@ -511,7 +484,7 @@ if [ "${1-}" = "hash-object" ]; then
     # `paste` them, and the driver says so itself ("not joined with `paste`/`comm`,
     # deliberately"). `paste` appears in no executable position in either script
     # and is deliberately absent from the sandbox allowlist above, so a maintainer
-    # restoring the join this comment used to describe would be stopped by it.
+    # restoring that join would be stopped by it.
     # Three knobs, because the three ways this comparison can go wrong are
     # genuinely different:
     #
@@ -559,11 +532,10 @@ if [ "${1-}" = "diff" ]; then
     #   `git diff --quiet <base> <head> -- <paths>` TWO refs: commit vs commit
     #
     # The driver builds the WORKING TREE, so only the one-ref question is the one
-    # it is entitled to act on. The previous version of this stub discarded its ref
-    # arguments entirely and answered both forms from a single variable, which made
-    # the distinction INEXPRESSIBLE in the suite - and that is why a guard asking
-    # the wrong pair survived four repairs and three review rounds with every case
-    # green. A stub that cannot state the bug cannot catch it.
+    # it is entitled to act on. A stub that discarded its ref arguments and
+    # answered both forms from a single variable would make the distinction
+    # INEXPRESSIBLE in the suite, and a guard asking the wrong pair then passes
+    # every case in this file. A stub that cannot state the bug cannot catch it.
     refs=0
     for a in "$@"; do
         case "${a}" in
@@ -572,10 +544,10 @@ if [ "${1-}" = "diff" ]; then
         *) refs=$((refs + 1)) ;;
         esac
     done
-    # A git that could not ANSWER, which is neither 0 nor 1 and which this arm
-    # could not express until round 6. The driver's `*)` catch-all was therefore
-    # dead code from the suite's point of view, and a mutation probe confirmed it:
-    # gutting the catch-all survived all 68 cases and yields `OK` at rc 0.
+    # A git that could not ANSWER, which is neither 0 nor 1 and which this arm has
+    # to be able to express. Without it the driver's `*)` catch-all is dead code
+    # from the suite's point of view: a mutation probe found that gutting the
+    # catch-all survived the whole case table and yields `OK` at rc 0.
     #
     # The existing `nothing-to-vary-guard-removed` control does NOT cover it, and
     # that is the part worth remembering: it seeds `false` over the whole `git
@@ -599,7 +571,7 @@ if [ "${1-}" = "worktree" ]; then
         # A LOCKED registration is exactly what prune must NOT remove - that is
         # what locking is for - so a locked-but-missing worktree survives this and
         # the plain `add` below still fails. Modelling prune as "always heals
-        # everything" is what hid the interaction between the two.
+        # everything" would hide the interaction between the two.
         exit "${STUB_GIT_PRUNE_RC:-0}"
         ;;
     lock)
@@ -690,10 +662,9 @@ fi
 # `#[ignore]`d announces NOTHING - measured on rustc 1.97.0: complete per-test
 # table, `0 passed; 0 failed; N ignored`, rc 0, and zero bytes on stderr.
 #
-# This stub announced unconditionally until round 7, which let cases pin
-# transcripts the real system cannot emit: an all-parked run that still produced a
-# banner. One of those cases was a `must_catch` for round 5's control, so that
-# control was witnessing a fiction.
+# A stub that announced unconditionally would let cases pin transcripts the real
+# system cannot emit: an all-parked run that still produced a banner. A
+# `must_catch` resting on such a case witnesses a fiction.
 any_ran=0
 for entry in ${tests}; do
     case "${entry##*:}" in
@@ -751,17 +722,17 @@ for entry in ${tests}; do
         # REASONED form. `#[ignore = "reason"]` renders as `ignored, <reason>`,
         # measured on rustc 1.97.0, and that is the form the repo actually uses:
         # every `#[ignore]` attribute under `crates/` carries a reason, and
-        # `boundary_substrate.rs` documents the convention. The driver's
-        # `$`-anchored regex rejected it for two rounds while every case in this
-        # file used the bare form, so round 3's whole SILENCED feature was
-        # witnessed only on a rendering the repo does not produce.
+        # `boundary_substrate.rs` documents the convention. A suite whose every
+        # case used the bare form would witness the SILENCED feature only on a
+        # rendering the repo does not produce, while the driver's `$`-anchored
+        # regex rejected the real one.
         # STUB_IGNORE_REASON exists because the REASON TEXT is load-bearing, which
-        # is not obvious and cost a round to learn. The driver derived "did a test
-        # body run" from `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`, whose `.+` is
-        # greedy and unanchored in the middle, so a reason containing " ... ok"
-        # satisfied it and an all-parked lane was refused at rc 2 instead of the
-        # rc 1 SILENCED three specifications promise. Hardcoding one benign reason
-        # made that inexpressible.
+        # is not obvious. A driver deriving "did a test body run" from
+        # `grep -qE '^test .+ \.\.\. (ok|FAILED)$'` has a `.+` that is greedy and
+        # unanchored in the middle, so a reason containing " ... ok" satisfies it
+        # and an all-parked lane is refused at rc 2 instead of the rc 1 SILENCED
+        # three specifications promise. Hardcoding one benign reason makes that
+        # inexpressible.
         ignoredr) echo "test ${name} ... ignored, ${STUB_IGNORE_REASON:-flaky under NFS}" ;;
         *) echo "test ${name} ... ${verdict}" ;;
         esac
@@ -853,16 +824,16 @@ run_case() {
     # THE DRIVER'S OWN TOOLING MUST NOT BE BROKEN, checked on every case rather
     # than asserted anywhere in particular.
     #
-    # Round 7 found two defects of the same shape, both invisible to 74 cases:
+    # Two defects of the same shape are invisible to every case otherwise:
     # `tail -30 "${err}" "${out}"` is rejected outright by GNU coreutils when
-    # given two FILE operands ("option used in invalid context"), and the sandbox
-    # never provided `head`, so the driver's two `| head -N` pipes failed with
-    # `command not found`. In BOTH cases the driver printed its verdict with an
-    # EMPTY transcript, and every case still passed - because a case asserts an rc
+    # given two FILE operands ("option used in invalid context"), and a sandbox
+    # that does not provide `head` makes the driver's `| head -N` pipes fail with
+    # `command not found`. In BOTH cases the driver prints its verdict with an
+    # EMPTY transcript, and every case still passes - because a case asserts an rc
     # and one substring of the `die` message, never that the evidence arrived.
     #
-    # This check is its own positive control: it fires on the pre-round-7 driver
-    # and is silent on the current one, which is why it is worth more than a case
+    # This check is its own positive control: it fires on a driver carrying either
+    # defect and is silent on this one, which is why it is worth more than a case
     # per site. A tool that could not run must never look like a tool that ran and
     # found nothing.
     case "${out}" in
@@ -946,22 +917,21 @@ run_all_cases() {
 
     # THE SAME RUN, asserting the evidence SURVIVES it.
     #
-    # A round-8 mutation probe found `finish`'s retention branch entirely
-    # unwitnessed: reverting it to `if [ "${rc}" -eq 0 ]` - the defect this branch
-    # ALREADY SHIPPED ONCE, which discarded the DISCRIMINATED run's logs - left 74
-    # of 74 cases green, and so did deleting the evidence on every rc.
+    # Without this case `finish`'s retention branch is unwitnessed: a mutation
+    # probe found that narrowing it to `if [ "${rc}" -eq 0 ]`, which discards the
+    # DISCRIMINATED run's logs, left every case green, and so did deleting the
+    # evidence on every rc.
     #
     # It has to be THIS shape. On rc 1 and rc 2 both the correct code and the
-    # reverted defect retain, so only a run that is rc 0 AND discriminated can tell
+    # narrowed defect retain, so only a run that is rc 0 AND discriminated can tell
     # them apart, and that is exactly the run whose R2 stderr is the artifact the
-    # documented per-round ATL use wants. A case asserting the rc alone is blind to
-    # it: the verdict was never wrong, only the record of how it was reached.
+    # documented per-round use wants. A case asserting the rc alone is blind to it:
+    # the verdict is never wrong, only the record of how it was reached.
     #
-    # Recorded because the standing ruling reads "a case per guard whose absence
-    # produces a false clean", and this one does not - it produces evidence LOSS
-    # with a true verdict. The operator ruled that harm in scope; A (`worktree
-    # prune`, whose verdict stays true when removed) and C (`cargo said:`, still
-    # vacuous) stay accepted residue.
+    # RULING: the standing rule reads "a case per guard whose absence produces a
+    # false clean", and this one does not - it produces evidence LOSS with a true
+    # verdict. That harm is in scope. `worktree prune` (whose verdict stays true
+    # when removed) and `cargo said:` (still vacuous) stay accepted residue.
     run_case discriminated_run_retains_its_evidence 0 "evidence retained in" \
         "STUB_R1_TESTS=${ALL_OK}" \
         "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
@@ -1009,29 +979,17 @@ run_all_cases() {
     # still prints a complete result line for it. The guard has to hold on any
     # transcript of that shape, whatever else ran alongside it.
     #
-    # This used to add "and every lane resolves inside a `#[test]` body, so a bad
-    # corpus root fails every test: exactly `0 passed; N failed`". That inference
-    # was false for three of the four lanes. auditd (15 tests, 2 `#[cfg(test)]`
-    # mods), sysctld (18) and sudoers (27) all carry corpus-INDEPENDENT tests that
-    # pass regardless of the root, measured at `13 passed; 2 failed`,
-    # `17 passed; 1 failed` and `22 passed; 5 failed`. Only selinux gives
-    # `0 passed`. The summary SHAPE was never what made the case legitimate, so the
-    # claim is gone rather than narrowed to the single lane where it happens to
-    # hold - any such sentence is pinned to today's test composition and would go
-    # silently false when that changes, with nothing to flag it.
-    #
-    # Round 10 wrote the narrowed version anyway, as "selinux, the one lane with no
-    # unit-test module", and that was false on its own terms: `sudoers_corpus_oracle.rs`
-    # has no `#[cfg(test)]` mod either - no `mod` declaration of any kind - and it
-    # gives `22 passed`. The determinant is whether EVERY test in the target
-    # resolves the corpus, not whether the file has a unit-test module. Which is
-    # the same lesson twice: a cause stated for a measurement is a second claim,
-    # and it needs its own check.
-    #
-    # The hole is younger than the guard. The pre-round-8 derivation was a row
-    # regex, which matched `test x ... FAILED` structurally and so had no conjunct
-    # to lose; round 8's summary tally is better in every other way and shipped
-    # this one unpinned.
+    # Do NOT add "and every lane resolves inside a `#[test]` body, so a bad corpus
+    # root fails every test: exactly `0 passed; N failed`". That inference is false
+    # for three of the four lanes: auditd, sysctld and sudoers all carry
+    # corpus-INDEPENDENT tests that pass regardless of the root, and only selinux
+    # gives `0 passed`. The determinant is whether EVERY test in the target
+    # resolves the corpus, not whether the file has a unit-test module
+    # (`sudoers_corpus_oracle.rs` has no `mod` declaration of any kind and still
+    # passes most of its tests). The summary SHAPE is not what makes this case
+    # legitimate, and any such sentence is pinned to today's test composition and
+    # would go silently false when that changes, with nothing to flag it. A cause
+    # stated for a measurement is a second claim, and it needs its own check.
     run_case no_banner_on_an_all_failed_run 2 "did not read the corpus it was handed" \
         STUB_NO_BANNER=2 \
         "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:FAILED"
@@ -1039,10 +997,10 @@ run_all_cases() {
     # never that nothing read a different one. A binary resolving the corpus
     # correctly in one place and from a compiled-in CARGO_MANIFEST_DIR in another
     # satisfies it completely, and the comparison quietly becomes part
-    # self-comparison. `rulesteward-selinux`'s `policy_corpus::archive_path` was
-    # that exact shape until this branch, and the instrument could not see it -
-    # it was found by reading the code. Now every resolution announces, so the
-    # second read announces committed mode and the negative half catches it.
+    # self-comparison. `rulesteward-selinux`'s `policy_corpus::archive_path` had
+    # that exact shape, and the instrument could not see it - it was found by
+    # reading the code. Every resolution now announces, so the second read
+    # announces committed mode and the negative half catches it.
     run_case second_committed_read_is_refused 2 "ALSO resolved a corpus in committed mode" \
         STUB_SECOND_COMMITTED_READ=2
 
@@ -1053,18 +1011,17 @@ run_all_cases() {
     # with failing_run_may_lack_a_count below, these two pin the exact boundary:
     # the count is required where, and only where, its absence is unfalsifiable.
     run_case missing_count_line 2 "for a green run" STUB_NO_COUNT=3
-    # THE SAME GATE, ASKED OF R1 AND OF A GREEN R2. `STUB_NO_COUNT` was only ever
-    # set to 3, or to 2 alongside a FAILING R2 (`failing_run_may_lack_a_count`,
-    # which asserts the gate must NOT fire), so the gate's application to the other
-    # two runs was unwitnessed: a run-scope conjunct could be added to it and the
-    # whole suite would stay green.
+    # THE SAME GATE, ASKED OF R1 AND OF A GREEN R2. With `STUB_NO_COUNT` set only
+    # to 3, or to 2 alongside a FAILING R2 (`failing_run_may_lack_a_count`, which
+    # asserts the gate must NOT fire), the gate's application to the other two runs
+    # is unwitnessed: a run-scope conjunct could be added to it and the whole suite
+    # would stay green.
     #
-    # The shipped driver already refuses both, so these are pure witness and cost
-    # the implementer nothing. They are here because round 9's worst finding was
-    # exactly this shape - a guard present, correct, and under-specified, which a
-    # mutation sweep is structurally blind to because there is no wrong branch to
-    # flip. `run_positive_control count_seen_gate_scoped_to_r3` below is what makes
-    # them load-bearing rather than decorative.
+    # The driver already refuses both, so these are pure witness. They pin a guard
+    # that is present, correct, and under-specified, which a mutation sweep is
+    # structurally blind to because there is no wrong branch to flip.
+    # `run_positive_control count_seen_gate_scoped_to_r3` below is what makes them
+    # load-bearing rather than decorative.
     run_case r1_green_without_a_count 2 "for a green run" STUB_NO_COUNT=1
     run_case r2_green_without_a_count 2 "for a green run" STUB_NO_COUNT=2
     run_case unparseable_count 2 "unparseable scenario count" \
@@ -1158,13 +1115,12 @@ run_all_cases() {
     run_case head_only_test_that_fails 1 "have no baseline verdict and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED"
 
-    # The same shape with R3 red BEFORE it announces. RENAMED for what it actually
+    # The same shape with R3 red BEFORE it announces. NAMED for what it actually
     # pins: a real failure above must be reported AS ITSELF and must not be
     # converted into "no announcements". It reaches `finish 1` on the head-only
     # gate and never gets near the final count gate, so it is NOT that gate's
-    # witness - the name it used to carry said otherwise, and a mutant run proved
-    # the claim false by neutering `SCEN[3] -eq 0` and watching every case still
-    # pass. A case named after a guard it cannot reach is worse than no case: it
+    # witness - a mutant run neutering `SCEN[3] -eq 0` left every case still
+    # passing. A case named after a guard it cannot reach is worse than no case: it
     # is what tells the next person the guard is already covered.
     run_case head_only_failure_beats_the_count_check 1 "have no baseline verdict and are" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:FAILED" STUB_NO_COUNT=3
@@ -1195,12 +1151,11 @@ run_all_cases() {
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ignored"
-    # ...UNLESS it is red at HEAD. The first version of that arm excluded on R1
-    # alone and never read R3, so a test parked at the base that the branch
-    # un-parks and leaves red printed `FAILED` in the R3HEAD column and `OK` on
-    # the verdict line, from one run, at rc 0 while libtest exited 101. That is
-    # ONLY_HEAD_FAILING's case by a quieter route. The repo has this exact history
-    # (`e2e_auditd_lint.rs`, parked during Phase 0 while its bodies were `todo!()`).
+    # ...UNLESS it is red at HEAD. An arm excluding on R1 alone and never reading
+    # R3 lets a test parked at the base that the branch un-parks and leaves red
+    # print `FAILED` in the R3HEAD column and `OK` on the verdict line, from one
+    # run, at rc 0 while libtest exited 101. That is ONLY_HEAD_FAILING's case by a
+    # quieter route.
     run_case base_ignored_but_failing_at_head 1 "have no baseline verdict and are" \
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:ignored" \
@@ -1229,48 +1184,44 @@ run_all_cases() {
     # instance of the thing that gate exists to fail, not a diagnostic dead end.
     run_case every_row_silenced_at_head 1 "ran at base" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
-    # THE SAME LANE, with a reason string that used to change the answer.
+    # THE SAME LANE, with a reason string that can change the answer.
     #
-    # The all-parked carve-out derived "did a test body run" from a second pass over
-    # the per-test ROWS, `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`. `.+` is greedy
-    # and unanchored in the middle, so a reason containing " ... ok" matched:
+    # An all-parked carve-out deriving "did a test body run" from a second pass over
+    # the per-test ROWS, `grep -qE '^test .+ \.\.\. (ok|FAILED)$'`, has a `.+` that
+    # is greedy and unanchored in the middle, so a reason containing " ... ok"
+    # matches:
     #
     #   test replay_alpha ... ignored, blocked on #677 ... ok       <- MATCHED
     #
-    # The carve-out then did not fire, the sentinel guard did, and an all-parked
-    # lane came back rc 2 ("its exit code and per-test table therefore mean
-    # nothing") about a table that is complete and meaningful. Same shape as the
-    # `$`-anchor lockout an earlier round routed: a second, weaker parse of
-    # something the driver reads correctly elsewhere. It now reads libtest's own
-    # `0 passed; 0 failed` tally, which cannot express that ambiguity.
+    # The carve-out then does not fire, the sentinel guard does, and an all-parked
+    # lane comes back rc 2 ("its exit code and per-test table therefore mean
+    # nothing") about a table that is complete and meaningful: a second, weaker
+    # parse of something the driver reads correctly elsewhere. The driver reads
+    # libtest's own `0 passed; 0 failed` tally instead, which cannot express that
+    # ambiguity.
     #
     # Zero in-tree reachability today - no `#[ignore]` reason under `crates/`
     # contains " ... " - so this pins a latent contradiction, not a live break.
     run_case every_row_silenced_with_a_dotted_reason 1 "ran at base" \
         "STUB_R3_TESTS=replay_alpha:ignoredr replay_beta:ignoredr" \
         "STUB_IGNORE_REASON=blocked on #677 ... ok"
-    # The substring is ARM-UNIQUE and THEN discriminating, in that order. Round 6
-    # changed this from an arm-unique phrase to bare bucket counts so that this
-    # case and `base_ignored_with_renamed_rows` would differ from EACH OTHER - and
-    # succeeded, while silently destroying what mattered more: those counts are
-    # rendered identically by the fall-through arm three lines below, so gutting
-    # the base-ignored arm left both cases green. Two round-7 reviewers found it.
-    # Optimising for the distinction you are thinking about can destroy one you
-    # are not.
+    # The substring is ARM-UNIQUE and THEN discriminating, in that order. Bare
+    # bucket counts do distinguish this case from `base_ignored_with_renamed_rows`,
+    # but they are rendered identically by the fall-through arm three lines below,
+    # so gutting the base-ignored arm would leave both cases green. Optimising for
+    # the distinction you are thinking about can destroy one you are not.
     run_case every_row_ignored_at_base 2 "so have no baseline verdict, alongside 0 base-only" \
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_beta:ignored"
 
     # --- a branch defect must not be reported as a tool error -----------------
-    # Exactly two rc-1 buckets skip COMPARABLE: SILENCED and ONLY_HEAD_FAILING.
-    # Round 4 taught the zero-comparable gate to stand down for the first and not
-    # the second, while WIDENING the second by adding the un-parked-and-red arm.
-    # A branch defect then came back as rc 2, "these two builds cannot be
-    # compared", which routes the operator to change their base ref rather than fix
-    # the red test - and the per-test table naming it was never printed, because
-    # every `die 2` in that gate precedes the report block. All three round-5
-    # reviewers found this independently. Both routes into the bucket are pinned.
+    # Exactly two rc-1 buckets skip COMPARABLE: SILENCED and ONLY_HEAD_FAILING. A
+    # zero-comparable gate that stands down for the first and not the second
+    # reports a branch defect as rc 2, "these two builds cannot be compared", which
+    # routes the operator to change their base ref rather than fix the red test -
+    # and the per-test table naming it is never printed, because every `die 2` in
+    # that gate precedes the report block. Both routes into the bucket are pinned.
     run_case unparked_failing_with_no_comparable_row 1 "have no baseline verdict and are" \
         "STUB_R1_TESTS=replay_alpha:ignored replay_beta:ignored" \
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ignored" \
@@ -1284,9 +1235,9 @@ run_all_cases() {
     # The guard's own comment names the false clean it prevents: a name present in
     # R1 but absent from R2 is read as CLEAN via the `${R2[...]-}` default. A
     # mutation probe showed BOTH halves of it (cardinality and containment)
-    # survived all 64 cases, so the guard was documented, correct, and unwitnessed.
-    # The stub can express it - STUB_R1_TESTS and STUB_R2_TESTS are independent -
-    # and no case did.
+    # survived the whole case table, leaving the guard documented, correct, and
+    # unwitnessed. The stub can express it: STUB_R1_TESTS and STUB_R2_TESTS are
+    # independent, and these two cases use that.
     # Equal SIZE, different KEYS: caught only by the containment half.
     run_case r2_reports_a_different_test_set 2 "must report the same test set" \
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:ok" \
@@ -1303,25 +1254,24 @@ run_all_cases() {
         "STUB_R3_TESTS=replay_alpha:ok"
 
     # --- "git could not say" must never become an answer ----------------------
-    # Both guards below were CORRECT in the driver and structurally unwitnessable:
-    # a round-6 mutation probe over 20 single-guard mutants found exactly two that
-    # survive all 68 cases AND fail OPEN when removed, i.e. yield `OK` at rc 0.
-    # These are those two. The other eight survivors fail closed and deliberately
-    # get no case, because a case per unwitnessed guard is not the goal - a case
-    # per guard whose absence produces a false clean is.
+    # Both guards below are CORRECT in the driver and structurally unwitnessable
+    # without these cases: a mutation probe over 20 single-guard mutants found
+    # exactly two that survive the whole case table AND fail OPEN when removed,
+    # i.e. yield `OK` at rc 0. These are those two. The other eight survivors fail
+    # closed and deliberately get no case, because a case per unwitnessed guard is
+    # not the goal - a case per guard whose absence produces a false clean is.
     run_case wt_status_cannot_answer 2 "refusing to treat 'git could not say'" \
         STUB_PRECREATE_WT=1 STUB_GIT_STATUS_RC=128
     run_case tree_diff_cannot_answer 2 "refusing to assume they differ" \
         STUB_GIT_DIFF_RC=128
 
     # --- a zero-comparable diagnostic must name every bucket it holds ---------
-    # Round 4 split this gate into three messages BECAUSE one was refuted by its
-    # own counts, gave the third arm every bucket, and wrote "every bucket is
-    # named, so the reader is never handed a count that contradicts the sentence
-    # around it" - then did not apply that rule to the two arms the same repair
-    # created. Both fire here with base-only and HEAD-only rows unnamed, and the
-    # second one used to end "that is a property of <base>, not of this branch"
-    # when the branch's own rename is what emptied the comparable set.
+    # The gate has three messages, and the rule "every bucket is named, so the
+    # reader is never handed a count that contradicts the sentence around it"
+    # applies to all three, not just the fall-through arm. Both arms exercised here
+    # fire with base-only and HEAD-only rows present, so each must name them; and
+    # neither may end with "that is a property of <base>, not of this branch" when
+    # the branch's own rename is what emptied the comparable set.
     run_case unattributable_with_renamed_rows 2 "UNATTRIBUTABLE (the base was already red" \
         "STUB_R1_TESTS=replay_alpha:FAILED replay_beta:ok" \
         "STUB_R2_TESTS=replay_alpha:FAILED replay_beta:ok" \
@@ -1331,13 +1281,11 @@ run_all_cases() {
         "STUB_R2_TESTS=replay_alpha:ignored replay_beta:ok" \
         "STUB_R3_TESTS=replay_alpha:ignored replay_gamma:ok"
 
-    # --- absent-at-HEAD wins over the R1 column, which the table now says -----
-    # The classification loop tests `R3` absence FIRST, so a row that was FAILED or
+    # --- absent-at-HEAD wins over the R1 column, which the table says ---------
+    # The classification loop tests `R3` absence FIRST, so a row that is FAILED or
     # #[ignore]d at the base and is gone at HEAD is base-only, NOT unattributable
-    # and NOT ignored-at-base. Round 5 asserted the table was EXHAUSTIVE without
-    # re-deriving it, which turned that gap into a provable falsehood; three
-    # round-6 reviewers found it. These two pin the precedence so the table cannot
-    # drift back.
+    # and NOT ignored-at-base. These two pin the precedence so the table cannot
+    # drift.
     run_case failed_at_base_and_removed_at_head 0 "base-only (removed at HEAD)" \
         "STUB_R1_TESTS=replay_alpha:ok replay_beta:FAILED" \
         "STUB_R2_TESTS=replay_alpha:ok replay_beta:FAILED" \
@@ -1348,11 +1296,10 @@ run_all_cases() {
         "STUB_R3_TESTS=replay_alpha:ok"
 
     # --- a test ADDED already parked gets its own label, at rc 0 ---------------
-    # It previously got the byte-identical verdict to a passing addition, so the
-    # column asserted the same thing about a test that ran and one that did not.
-    # rc 0 rather than rc 1 by operator ruling: adding a parked pin for a
-    # known-open bug is this repo's documented convention (#669/#677), unlike
-    # silencing a test that WAS running.
+    # A label shared with a passing addition would assert the same thing about a
+    # test that ran and one that did not. RULING: rc 0 rather than rc 1, because
+    # adding a parked pin for a known-open bug is this repo's documented convention
+    # (#669/#677), unlike silencing a test that WAS running.
     run_case head_only_test_that_is_parked 0 "HEAD-only and PARKED" \
         "STUB_R3_TESTS=replay_alpha:ok replay_beta:ok replay_gamma:ignored"
 
@@ -1405,20 +1352,19 @@ run_all_cases() {
     # COMMITS, a pair the driver never builds. Cases 1 and 4 are cells where the
     # two answers AGREE and any implementation passes them; cases 2 and 3 are the
     # cells where they DISAGREE, so a driver consulting the wrong one fails exactly
-    # one of them. Only those two cells discriminate, and neither existed until
-    # round 3 - which is how a guard pointed at the wrong operand survived four
-    # repairs and three review rounds with every case green.
+    # one of them. Only those two cells discriminate; without them a guard pointed
+    # at the wrong operand passes every case in this file.
 
     # 1. Both agree the sources are the same. Refuse.
     run_case worktree_matches_base_is_refused 2 "there is nothing to vary" \
         STUB_WORKTREE_MATCHES_BASE=1 STUB_TREES_IDENTICAL=1
-    # 2. DISAGREE: the commits differ, the working tree does not. This is the live
-    # defect round 3 found, and it is this instrument's own documented use case:
-    # `git checkout <base> -- crates/` is how an operator asks "would my new corpus
-    # really have caught the old code?", and an in-flight `git stash` has the same
-    # shape. Both leave the tree byte-identical to the base while the two COMMITS
-    # still differ, so the two-ref guard stood down and the driver compared a tree
-    # with itself, printing OK at rc 0.
+    # 2. DISAGREE: the commits differ, the working tree does not. This is this
+    # instrument's own documented use case: `git checkout <base> -- crates/` is how
+    # an operator asks "would my new corpus really have caught the old code?", and
+    # an in-flight `git stash` has the same shape. Both leave the tree
+    # byte-identical to the base while the two COMMITS still differ, so a two-ref
+    # guard stands down and the driver compares a tree with itself, printing OK at
+    # rc 0.
     run_case reverted_worktree_refused_though_commits_differ 2 "there is nothing to vary" \
         STUB_WORKTREE_MATCHES_BASE=1
     # 3. DISAGREE the other way: two commits carrying identical sources are NOT a
@@ -1439,14 +1385,14 @@ run_all_cases() {
     # named regression marker for the `?? .serena/` incident: it will start
     # discriminating again only if the guard ever reverts to a `status`-based
     # form. Calling it a witness would be the exact defect this file's header
-    # warns about, committed in the same diff that restates the rule.
+    # warns about.
     run_case untracked_only_is_still_refused 2 "there is nothing to vary" \
         STUB_WORKTREE_MATCHES_BASE=1 STUB_TREE_UNTRACKED=1
 
     # --- the cached base worktree must BE the base ---------------------------
-    # Directory existence was the whole reuse predicate, while the report kept
-    # printing `base=<sha>`. All three of these were rc 0 before the cache
-    # validation landed.
+    # Directory existence alone is not a sufficient reuse predicate: without the
+    # cache validation the report keeps printing `base=<sha>` and all three of
+    # these inputs come back rc 0.
     run_case cached_worktree_at_wrong_sha 2 "not the requested base" \
         STUB_PRECREATE_WT=1 STUB_WT_SHA=deadbeefdeadbeefdeadbeefdeadbeef00000000
     run_case cached_worktree_is_dirty 2 "has uncommitted changes" \
@@ -1512,7 +1458,7 @@ run_all_cases() {
     # single-cause remedy would split; the driver's guard is deliberately agnostic
     # about HOW either bit was set, and both cases pin that.
     #
-    # It is NOT agnostic about which BITS it reads, and round 10 said it was.
+    # It is NOT agnostic about which BITS it reads.
     # `ls-files` exposes assume-unchanged under `-v` and fsmonitor-clean under
     # `-f`; there are three suppression bits, not two. The third is handled by the
     # `-c core.fsmonitor=` pin on the status call, witnessed separately by
@@ -1560,12 +1506,10 @@ run_all_cases() {
     # control caught it.
     run_case wt_hash_object_answered_short 2 "the comparison would be meaningless" \
         STUB_PRECREATE_WT=1 STUB_HASH_SHORT=1
-    # NON-BLOB INDEX ENTRIES, refused rather than hashed or skipped. Both defects
-    # this closes were shipped by the check's own first version: it SKIPPED
-    # gitlinks (and claimed the count guard would catch them, which dropping them
-    # from both lists is precisely what prevents), and it never considered
-    # symlinks at all, so a tracked symlink would have made the check `die 2` on a
-    # pristine tree on every run.
+    # NON-BLOB INDEX ENTRIES, refused rather than hashed or skipped. SKIPPING
+    # gitlinks drops them from both lists, which is precisely what stops the count
+    # guard catching them; and HASHING a tracked symlink makes the check `die 2` on
+    # a pristine tree on every run.
     run_case cached_worktree_has_a_tracked_symlink 2 "not regular files" \
         STUB_PRECREATE_WT=1 STUB_WT_NONBLOB=symlink
     run_case cached_worktree_has_a_submodule 2 "not regular files" \
@@ -1664,13 +1608,13 @@ run_positive_control() {
     #
     # 1. It matched nothing, so the driver is unmodified and every case passes:
     #    indistinguishable from a guard that held. That is the `cmp -s` check
-    #    below, and it has already fired for real (round 8, when the `ran_any`
-    #    rework moved a seeded source line).
+    #    below, and it has already fired for real, when a rework moved a seeded
+    #    source line.
     # 2. `sed` ERRORED and wrote a truncated file. `cmp` sees a difference and is
     #    satisfied, but the seeded "driver" is a fragment that fails every case,
     #    so the control reports CAUGHT for reasons having nothing to do with the
-    #    guard. Found in round 10, when a seed's `|` delimiter collided with the
-    #    `|` inside `0 | 101` and sed died; the probe scored it a catch, and it is
+    #    guard. Hit for real when a seed's `|` delimiter collided with the `|`
+    #    inside `0 | 101` and sed died; the probe scored it a catch, and it is
     #    really a survivor.
     # 3. It inserted or deleted lines rather than substituting in place. Nothing
     #    here reasons about driver line numbers, so this is not a correctness
@@ -1716,12 +1660,11 @@ run_positive_control() {
     # is still a driver.
     #
     # Reproduced: injecting a bash syntax error into `usage()` while leaving the
-    # sentinel guard fully intact made every control then in the suite report
-    # "caught" (there were six at the time; quoting a live count here is the
-    # very thing this file's header forbids) and the
-    # suite exit 0, with `just instrument-test` unable to see it (the control
-    # phase prints CAUGHT, not FAIL). That is this project's own "positive-control
-    # any instrument you write" rule, left unapplied to the controls themselves.
+    # sentinel guard fully intact makes every control in the suite report "caught"
+    # and the suite exit 0, with `just instrument-test` unable to see it (the
+    # control phase prints CAUGHT, not FAIL). That is this project's own
+    # "positive-control any instrument you write" rule, left unapplied to the
+    # controls themselves.
     #
     # Two cheap assertions close it: some cases must still PASS, and specifically
     # the ones the removed guard cannot see must still behave correctly.
@@ -1830,15 +1773,14 @@ run_positive_control unattributable-guard-removed \
 
 # The conjunct that stops a BRANCH DEFECT being reported as a TOOL ERROR. Seeded
 # on its own line so it is independent of the gate control above: removing it
-# leaves the gate live and only the rc-1 bucket unprotected, which is exactly the
-# state round 4 shipped.
+# leaves the gate live and only the rc-1 bucket unprotected.
 # shellcheck disable=SC2016
 run_positive_control head_failing_beats_zero_comparable_removed \
     's|^    \[ "${#ONLY_HEAD_FAILING\[@\]}" -eq 0 \]; then|    true; then|' \
     unparked_failing_with_no_comparable_row added_failing_with_no_comparable_row
 
 # The R1/R2 same-test-set guard, whose own comment names the false clean it
-# prevents and which a mutation probe found surviving all 64 cases of round 4.
+# prevents and which a mutation probe found surviving the whole case table.
 # shellcheck disable=SC2016
 run_positive_control r1_r2_cardinality_guard_removed \
     's|^if \[ "${#R1\[@\]}" -ne "${#R2\[@\]}" \]; then|if false; then|' \
@@ -1854,24 +1796,22 @@ run_positive_control r1_r2_containment_guard_removed \
     r2_reports_a_different_test_set
 
 # The all-parked carve-out. Neutering the arm that clears `ran_any` leaves it at
-# its default 1, restoring the pre-carve-out behaviour where a lane whose replay
-# tests are ALL `#[ignore]`d was refused at rc 2 ("its exit code and per-test table
-# therefore mean nothing") about a table that is complete and meaningful -
-# contradicting three specifications that promise rc 1 SILENCED. Seeded on the
-# case arm rather than the `if`, so it is independent of `sentinel-guard-removed`
-# above, which removes the guard outright.
+# its default 1, so a lane whose replay tests are ALL `#[ignore]`d is refused at
+# rc 2 ("its exit code and per-test table therefore mean nothing") about a table
+# that is complete and meaningful - contradicting three specifications that
+# promise rc 1 SILENCED. Seeded on the case arm rather than the `if`, so it is
+# independent of `sentinel-guard-removed` above, which removes the guard outright.
 #
-# This seed was `s|^    local ran_any=0|    local ran_any=1|` until round 8 changed
-# the derivation, at which point it silently matched nothing. The
-# control-of-the-control is what caught that ("edited nothing; its guard's source
-# line moved"), which is the whole reason it exists.
+# A seed keyed on a source line the driver later moves silently matches nothing.
+# The control-of-the-control is what catches that ("edited nothing; its guard's
+# source line moved"), which is the whole reason it exists.
 # shellcheck disable=SC2016
 run_positive_control all_parked_carveout_removed \
     's|ran_any=0 ;;|: ;;|' \
     every_row_silenced_at_head
 
 # `ran_any` SOURCED FROM A PER-TEST ROW rather than from libtest's summary tally.
-# That is the CLASS of the round-7 defect: any row-shaped derivation inherits the
+# That is the whole defect CLASS: any row-shaped derivation inherits the
 # ambiguity of a reason string, because `#[ignore = "..."]` renders the reason into
 # the same line as the verdict. The summary line cannot express that ambiguity, and
 # this control is what pins the difference.
@@ -1880,30 +1820,23 @@ run_positive_control ran_any_read_from_rows \
     's|^    ran_tally="$(grep -m1 -E .*|    ran_tally="$(grep -m1 -E '"'"'^test '"'"' "${out}" \|\| true)"|' \
     every_row_silenced_with_a_dotted_reason
 
-# A round-6 mutation probe found exactly two guards, of 20, that both survive the
-# whole suite and fail OPEN when removed: gutting either yields `OK (0
-# regressions, 0 discriminated)` at rc 0. They are **`wt_status_rc_guard_removed`
-# and `tree_diff_catchall_removed`**, named here rather than pointed at, and both
-# were correct in the driver but unwitnessable, because the stub `git` could not
-# express a status or a diff that FAILED - only ones that answered.
+# A mutation probe found exactly two guards, of 20, that both survive the whole
+# suite and fail OPEN when removed: gutting either yields `OK (0 regressions, 0
+# discriminated)` at rc 0. They are **`wt_status_rc_guard_removed` and
+# `tree_diff_catchall_removed`**, named here rather than pointed at, and both are
+# correct in the driver but unwitnessable unless the stub `git` can express a
+# status or a diff that FAILED, rather than only ones that answered.
 #
-# NAMED, NOT POSITIONAL, because "the two controls immediately below" has now
-# been falsified TWICE by two different insertions. Round 7 spliced the all-parked
-# block between this paragraph and its subjects. Round 8's repair moved the
-# paragraph back and then inserted THREE more controls below it in the same
-# commit, putting `tree_diff_catchall_removed` 30 lines and three controls away
-# again - and exactly ONE of those three (`wt_ignored_rc_guard_removed`) is about
-# stub `git` failing, so a reader following the paragraph downward lands on the
-# wrong control twice before reaching the right one. Re-ordering only holds until
-# the next insertion; a name does not move.
+# NAMED, NOT POSITIONAL. "The two controls immediately below" stops being true the
+# moment anything is inserted between this paragraph and its subjects, and a
+# reader following it downward then lands on the wrong control. Re-ordering only
+# holds until the next insertion; a name does not move.
 #
-# That sentence said "two of those three" until round 10, and the commit that
-# wrote it contradicted itself 15 lines further down, where
-# `wt_ignored_guard_removed` is correctly described as the twin of
-# `cache-dirty-guard-removed`: its case emits `!! .../docs/` and exits 0, so git
-# ANSWERS and the guard's absence discards a non-empty answer. `git failed` and
-# `git answered, and the answer was discarded` are different shapes, and this
-# paragraph's whole argument depends on the distinction it blurred.
+# `git failed` and `git answered, and the answer was discarded` are DIFFERENT
+# shapes, and this paragraph's whole argument depends on the distinction.
+# `wt_ignored_guard_removed` is not a `git failed` control: its case emits
+# `!! .../docs/` and exits 0, so git ANSWERS and the guard's absence discards a
+# non-empty answer, which makes it the twin of `cache-dirty-guard-removed`.
 # shellcheck disable=SC2016
 run_positive_control wt_status_rc_guard_removed \
     's|^if \[ "${wt_status_rc}" -ne 0 \]; then|if false; then|' \
@@ -1935,12 +1868,10 @@ run_positive_control wt_ignored_rc_guard_removed \
 # "git could not say" (the `wt_ignored_rc_guard_removed` shape), and
 # `wt_vacuity_guards_removed` accepts a count taken over nothing.
 #
-# That third name was `wt_lsfiles_vacuity_guard_removed` until round 12 renamed
-# the control, and this sentence kept the dead name - round 9's own "NAME the
-# controls instead of pointing at them" repair, broken by the commit that did the
-# renaming. A name only beats a pointer if it is updated with the thing it names.
-# Its characterisation changed too: the vacuity property now has TWO guards, so
-# the control seeds both, and removing either alone is not a false clean.
+# A name only beats a pointer if it is updated with the thing it names: renaming
+# a control and leaving the dead name here undoes the whole reason for naming it.
+# The vacuity property has TWO guards, so `wt_vacuity_guards_removed` seeds both;
+# removing either alone is not a false clean.
 # shellcheck disable=SC2016
 run_positive_control wt_index_flag_guard_removed \
     's|^if \[ "${wt_suppressed}" -ne 0 \]; then|if false; then|' \
@@ -1952,13 +1883,12 @@ run_positive_control wt_lsfiles_rc_guard_removed \
 # THE VACUITY DEFENCE, seeded as a WHOLE rather than one guard at a time, and the
 # reason is a real result rather than a preference.
 #
-# Round 12's content check brought a SECOND vacuity guard for the same hazard: a
-# count taken over a zero-line answer is zero, so an empty tracked-file list must
-# never read as "nothing is wrong". With two guards for one property, removing
-# either ALONE produces no false clean - the other catches it - and the original
-# single-guard seed became permanently unsatisfiable. The suite said so out loud
-# ("positive control did not catch"), which is the control-of-the-control doing
-# exactly its job.
+# The content check brings a SECOND vacuity guard for the same hazard: a count
+# taken over a zero-line answer is zero, so an empty tracked-file list must never
+# read as "nothing is wrong". With two guards for one property, removing either
+# ALONE produces no false clean - the other catches it - so a single-guard seed is
+# permanently unsatisfiable and the suite says so out loud ("positive control did
+# not catch"), which is the control-of-the-control doing exactly its job.
 #
 # Standing ruling 3 would permit dropping the control entirely, since neither
 # guard's absence alone is a false clean. Seeding both is strictly better: the
@@ -1971,10 +1901,10 @@ run_positive_control wt_vacuity_guards_removed \
      s|^if \[ ! -s "${WORK}/wt-names" \]; then|if false; then|' \
     wt_lsfiles_reports_no_tracked_files
 
-# The `ls-files` call's QUESTION, which round 10 shipped unwitnessed. The three
-# controls above all seed the guard's LOGIC (`if false; then`); these two seed
-# what it ASKS. Both weakenings were measured to survive the whole suite before
-# the stub was taught to read its arguments.
+# The `ls-files` call's QUESTION. The three controls above all seed the guard's
+# LOGIC (`if false; then`); these two seed what it ASKS. Both weakenings were
+# measured to survive the whole suite until the stub was taught to read its
+# arguments.
 #
 # `-v` -> `-t` re-opens the assume-unchanged half only, so exactly ONE index case
 # goes red - `cached_worktree_index_skip_worktree` correctly stays green, because
@@ -2067,10 +1997,10 @@ run_positive_control count_seen_gate_scoped_to_r3 \
     's|\[ "${count_seen}" -eq 0 \]; then|[ "${count_seen}" -eq 0 ] \&\& [ "${run}" -eq 3 ]; then|' \
     r1_green_without_a_count r2_green_without_a_count
 
-# Evidence retention on the DISCRIMINATED run. Reverting to `rc -eq 0` alone is the
-# defect this branch already shipped once: it deletes the logs for the one outcome
-# the instrument exists to produce. A round-8 probe found both this and the
-# delete-always form leaving all cases green.
+# Evidence retention on the DISCRIMINATED run. Narrowing to `rc -eq 0` alone
+# deletes the logs for the one outcome the instrument exists to produce. A
+# mutation probe found both this and the delete-always form leaving all cases
+# green.
 # shellcheck disable=SC2016
 run_positive_control evidence_retention_removed \
     's|^    if \[ "${rc}" -eq 0 \] && \[ "${#DISCRIMINATED\[@\]}" -eq 0 \]; then|    if [ "${rc}" -eq 0 ]; then|' \
@@ -2114,13 +2044,13 @@ run_positive_control summary-crosscheck-removed \
     's|^    if \[ "$((lt_passed + lt_failed + lt_ignored))" -ne "${seen}" \]; then|    if false; then|' \
     mangled_row_is_caught mangled_row_in_baseline summary_disagrees mangled_row_in_HEAD
 
-# The guard that stops the driver comparing something with itself. It was absent
-# until an adversarial review reproduced a green `OK (0 regressions, 0
-# discriminated, ...)` from two builds of identical source.
+# The guard that stops the driver comparing something with itself. Without it, two
+# builds of identical source produce a green `OK (0 regressions, 0 discriminated,
+# ...)`.
 #
-# Seeded by neutering the COMPARISON rather than the `die`, because after round 3
-# the whole guard is one `git diff` and its case arms: forcing rc 1 ("they
-# differ") is exactly what a driver missing this guard would do.
+# Seeded by neutering the COMPARISON rather than the `die`, because the whole
+# guard is one `git diff` and its case arms: forcing rc 1 ("they differ") is
+# exactly what a driver missing this guard would do.
 # shellcheck disable=SC2016
 run_positive_control nothing-to-vary-guard-removed \
     's|^git diff --quiet "${BASE_SHA}" -- crates/ Cargo.toml Cargo.lock 2>"${WORK}/tree-diff.err"$|false|' \
@@ -2132,10 +2062,9 @@ run_positive_control cache-sha-guard-removed \
     's|^if \[ "${wt_sha}" != "${BASE_SHA}" \]; then|if false; then|' \
     cached_worktree_at_wrong_sha cached_worktree_never_created_by_git
 
-# The final rc-0 contract gate. It had NO control and NO witness until round 3: a
-# mutant that neutered it left all 52 cases of the day passing, because the only
-# case NAMED for it exited earlier on the head-only gate and never reached it.
-# That is the failure this whole file exists to prevent, found in this file.
+# The final rc-0 contract gate. A mutant that neuters it leaves every case passing
+# when the only case NAMED for it exits earlier on the head-only gate and never
+# reaches it. That is the failure this whole file exists to prevent.
 # shellcheck disable=SC2016
 run_positive_control rc-zero-contract-gate-removed \
     's|^if \[ "${SCEN\[3\]}" -eq 0 \]; then|if false; then|' \

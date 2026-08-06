@@ -32,7 +32,7 @@ name: auditd-stig-check
 #     against `pin::report`'s output strings. This is the only PR-time job that runs
 #     those tests, so without this entry a PR editing ONLY the workflow's grep
 #     literals would never trigger the coupling test -- the exact drift it was
-#     written to catch (#550, lane-5 spec review).
+#     written to catch (#550).
 on:
   pull_request:
     paths:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared write-discipline helper for the Tier-2 oracle capture scripts
-# (session 9k-1). SOURCE this file; do not execute it.
+# Shared write-discipline helper for the Tier-2 oracle capture scripts.
+# SOURCE this file; do not execute it.
 #
 #   . "${REPO_ROOT}/scripts/rs-capture-guard.sh"
 #   rs_capture_guard_init "capture_sysctld"
@@ -21,8 +21,8 @@
 # The cost of that choice is that an ordinary failing write - a `cp` of a
 # payload file into the container staging tree - does not stop the script. It
 # continues, captures a transcript produced from an INCOMPLETE input tree, and
-# exits 0. Lane B hit exactly this: `cp: Disk quota exceeded` while the run
-# still reported success.
+# exits 0. A capture script hit exactly this: `cp: Disk quota exceeded` while
+# the run still reported success.
 #
 # So writes get an explicit wrapper instead of a global option. Two layers,
 # because neither alone is sufficient:

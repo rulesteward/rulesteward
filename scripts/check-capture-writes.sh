@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/check-capture-writes.sh - layer 3 of the rs-capture-guard defense
-# (session 9k-1): a static gate over the Tier-2 capture scripts themselves.
+# scripts/check-capture-writes.sh - layer 3 of the rs-capture-guard defense:
+# a static gate over the Tier-2 capture scripts themselves.
 #
 # WHY
 # scripts/rs-capture-guard.sh gives every capture_*.sh two runtime layers:
@@ -41,7 +41,7 @@
 # tail of a `{ echo ...; echo ...; } >>file` group command) is a violation of
 # the same shape too: the group's individual commands may each look
 # unremarkable, but the WRITE is the group's own redirect, which sits alone
-# on this line - session 9k-1 Lane A shipped exactly this (a whole `{ ...; }`
+# on this line - a capture script shipped exactly this (a whole `{ ...; }`
 # header block appended into a corpus file with no rc check at all). Only the
 # bare `}...>` shape is matched (never `)...>`, which no capture script in
 # this repo currently uses for a real file write) - see "no speculative
@@ -104,11 +104,8 @@
 # EXPECTED_CAPTURE_SCRIPTS below is the number of capture_*.sh files this
 # branch is expected to carry. Scanning FEWER than that is a hard failure -
 # a capture script vanishing (deleted, renamed, moved out of the glob shape)
-# must not silently shrink what this gate checks. As of session 9k-1's
-# integration commit, the auditd/sysctld/sudoers lanes have all merged their
-# capture_*.sh files, so the shipped floor below is 3 and a real scan of 3 is
-# this branch's honest, expected state - a scan of 0 is now a hard failure
-# (exit 2), not a pass.
+# must not silently shrink what this gate checks. A scan of 0 is a hard
+# failure (exit 2), not a pass.
 #
 # Scanning exactly zero is CLEAN only when the constant is ALSO zero (a state
 # this shipped script is not in; only a `sed`-ed COPY of it, as
@@ -140,10 +137,9 @@ if [[ ! -d "${ROOT}" ]]; then
     exit 2
 fi
 
-# Number of Tier-2 capture scripts expected to exist. Raised from 0 to 3 in
-# the session 9k-1 integration-gate commit, now that the auditd, sysctld and
-# sudoers lanes have all merged their capture_*.sh files onto this branch.
-# Change this only DELIBERATELY (a lane's capture script is added, removed,
+# Number of Tier-2 capture scripts expected to exist: the auditd, sysctld and
+# sudoers corpora each carry one.
+# Change this only DELIBERATELY (a capture script is added, removed,
 # or renamed out of the glob shape) - never to paper over a scan that came
 # back lower than expected, since that constant is the only thing standing
 # between "checked nothing" and "checked everything" for this gate.

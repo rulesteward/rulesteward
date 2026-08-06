@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/rs-oracle-required.sh - the fail-closed "is this oracle required?"
-# predicate shared by every `just diff-<lane>` recipe (session 9k-1).
+# predicate shared by every `just diff-<lane>` recipe.
 #
 # INVOCATION CONTRACT (frozen by scripts/rs-oracle-required-test.sh):
 #

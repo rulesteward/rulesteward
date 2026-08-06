@@ -37,17 +37,16 @@ examine_globs = [
     # comparison (A3). New top-level core file: must be listed explicitly or its
     # mutation gate passes vacuously (allowlist).
     "crates/rulesteward-core/src/num.rs",
-    # shared special-file-safe config reader (#560, 9i): O_NONBLOCK open +
+    # shared special-file-safe config reader (#560): O_NONBLOCK open +
     # fstat-of-the-opened-fd type check, consumed by every backend's
     # command-layer read. New top-level core file: must be listed explicitly
-    # or its mutation gate passes vacuously (allowlist). Full-file sizing
-    # pass (9i, 65 mutants across the 4 files added this wave): 0 survivors.
+    # or its mutation gate passes vacuously (allowlist).
     "crates/rulesteward-core/src/fsread.rs",
-    # shared parameterized inline-comment stripper (#562, 9i): one byte-scan
+    # shared parameterized inline-comment stripper (#562): one byte-scan
     # with per-backend StripConfig (fapolicyd/auditd/sudoers). New top-level
     # core file: list explicitly or its mutation gate passes vacuously.
     "crates/rulesteward-core/src/comment.rs",
-    # shared differential-corpus root resolver (session 9k-1): the unset/blank/set
+    # shared differential-corpus root resolver: the unset/blank/set
     # decision and the is_dir check that keep `just diff-<lane>` from re-verifying
     # the committed corpus against itself. New top-level core file: list explicitly
     # or its mutation gate passes vacuously (allowlist). Note the fail-open shapes
@@ -59,15 +58,15 @@ examine_globs = [
     "crates/rulesteward-fapolicyd/src/lints/**/*.rs",
     "crates/rulesteward-fapolicyd/src/attrs.rs",
     "crates/rulesteward-fapolicyd/src/trustdb/**/*.rs",
-    # pure rule-evaluator core (P0.4 #67): explain replay + future simulate engine.
+    # pure rule-evaluator core (#67): explain replay + simulate engine.
     "crates/rulesteward-fapolicyd/src/evaluate.rs",
     "crates/rulesteward-fapolicyd/src/facts.rs",
-    # P1 explain domain logic (filled by pipeline P1): FANOTIFY record parser + replay/explain.
+    # explain domain logic: FANOTIFY record parser + replay/explain.
     # Top-level src files, NOT under parser/** or lints/**, so they must be listed explicitly
-    # or the P1 mutation gate passes vacuously (examine_globs is an allowlist).
+    # or their mutation gate passes vacuously (examine_globs is an allowlist).
     "crates/rulesteward-fapolicyd/src/fanotify.rs",
     "crates/rulesteward-fapolicyd/src/explain.rs",
-    # P0 (v0.2 round 2) frozen register contract: canonical_grant_key is real
+    # frozen register contract: canonical_grant_key is real
     # AST-equality logic (sorted set-expansion). Top-level src file, must be
     # listed explicitly or its mutation gate passes vacuously (allowlist).
     "crates/rulesteward-fapolicyd/src/register.rs",
@@ -82,7 +81,7 @@ examine_globs = [
     # orchestration (dry-run/apply/delete-legacy on an injectable --rules-dir,
     # tempdir-tested). New file: list explicitly or the gate passes vacuously.
     "crates/rulesteward-cli/src/commands/migrate/**/*.rs",
-    # P5 simulate workload parsing + evaluation dispatch (issue #66/#68/#69;
+    # simulate workload parsing + evaluation dispatch (issue #66/#68/#69;
     # split into simulate/{workload,evaluate,render}.rs + mod.rs in #146): the
     # parsers, load_ruleset, evaluate_query, resolve_trust, and renderer are real
     # branching logic covered by the simulate_oracle + simulate_trustdb_resolution
@@ -115,112 +114,96 @@ examine_globs = [
     # in-module unit tests + the e2e_profile suite. New top-level cli file: list
     # explicitly or its mutation gate passes vacuously (the 4a allowlist lesson).
     "crates/rulesteward-cli/src/profile.rs",
-    # P0 (v0.2 round 2) generic CSV serializer: RFC-4180 escaping branches.
+    # generic CSV serializer: RFC-4180 escaping branches.
     "crates/rulesteward-cli/src/output/csv.rs",
-    # SARIF rendering (#579, 9i): the unanchored-region + startColumn>=1
-    # guard branches (#581) are real logic; the 9h Lane-A gate ran vacuously
-    # because this file was outside the allowlist. Full-file sizing pass
-    # before enabling (per #579's protocol): 0 survivors.
+    # SARIF rendering (#579): the unanchored-region + startColumn>=1
+    # guard branches (#581) are real logic; outside the allowlist this
+    # file's gate runs vacuously.
     "crates/rulesteward-cli/src/output/sarif.rs",
     # emit_lint format dispatch incl. the Sarif arm and the empty-output
-    # skip (#579, 9i). Same vacuous-gate lesson; sized with sarif.rs above.
+    # skip (#579). Same vacuous-gate lesson.
     "crates/rulesteward-cli/src/output/mod.rs",
     # feat-report register renderers (output/register.rs): the trustJoin shape
     # dispatch logic (cap vs Shape A threshold, row-order, source label mapping)
     # is real branching logic covered by the 83-scenario oracle tests.
     "crates/rulesteward-cli/src/output/register.rs",
-    # DEFAULT human renderer (#597 slice, session 9m): the byte->char span
-    # conversion, the severity/ReportKind mappings, the control-ref joiner and
-    # the color predicate. This is the surface every operator sees by default
-    # and it sat outside the allowlist since it was written, so its gate had
-    # never run at all -- the same vacuous-allowlist lesson as sarif.rs above,
-    # and the file where #595's inverted-span panic lives. Sized before
-    # enabling: 21 mutants (23 as of 2026-07-31, after session 9m's later lanes
-    # grew the file -- a sizing note goes stale the moment the file changes, so
-    # re-derive with `cargo mutants --list` rather than trusting either number).
+    # DEFAULT human renderer (#597): the byte->char span conversion, the
+    # severity/ReportKind mappings, the control-ref joiner and the color
+    # predicate. This is the surface every operator sees by default, and the
+    # file where #595's inverted-span panic lives; outside the allowlist its
+    # gate does not run at all -- the same vacuous-allowlist lesson as sarif.rs
+    # above. A pinned mutant count goes stale the moment the file changes, so
+    # re-derive with `cargo mutants --list` rather than recording one here.
     "crates/rulesteward-cli/src/output/human.rs",
-    # auditd logic modules (filled by pipeline P2):
+    # auditd logic modules:
     "crates/rulesteward-auditd/src/parser.rs",
     "crates/rulesteward-auditd/src/cost.rs",
     "crates/rulesteward-auditd/src/bands.rs",
     "crates/rulesteward-auditd/src/from_log.rs",
-    # auditd semantic lint family (#193, session 6a). Added in Phase 0 BEFORE
-    # the pass bodies exist: a new file outside this allowlist mutates zero
-    # times and its gate false-passes (the 4a vacuity lesson) - the allowlist
-    # entry must precede the code, never follow it.
+    # auditd semantic lint family (#193). A new file outside this allowlist
+    # mutates zero times and its gate false-passes, so the allowlist entry
+    # must precede the code, never follow it.
     "crates/rulesteward-auditd/src/lints/**/*.rs",
-    # Lane A differential oracle model + fail-closed transcript parse + compare
-    # (session 9k-1). Registered in Phase 0 BEFORE the file exists, per the same
-    # allowlist-precedes-code rule as the lints glob above: a file added outside
-    # examine_globs mutates zero times, and a "0 survivors" report from a run that
-    # mutated nothing is indistinguishable from a real pass. Matches nothing until
-    # the lane lands (the documented MigrateProbe pre-registration precedent).
+    # auditd differential oracle model + fail-closed transcript parse + compare,
+    # per the same allowlist-precedes-code rule as the lints glob above: a file
+    # added outside examine_globs mutates zero times, and a "0 survivors" report
+    # from a run that mutated nothing is indistinguishable from a real pass.
     "crates/rulesteward-auditd/src/oracle.rs",
-    # sshd_config parser (#149 Phase 0): the hand-rolled tokenizer + Match-block
-    # scoping + criteria parser is the real Phase-0 logic and the mutation target.
+    # sshd_config parser (#149): the hand-rolled tokenizer + Match-block
+    # scoping + criteria parser is the real logic and the mutation target.
     "crates/rulesteward-sshd/src/parser.rs",
-    # sshd_config semantic lints (#149). Wave A (#239) landed structural::e02/e03/e04
-    # and Wave B (#240) landed structural::e01 + lints::registry; this glob brings the
-    # whole lints/ tree into scope (allowlist-precedes-code) so each later wave's pass
-    # is mutation-gated the moment it lands, and the now-non-trivial lint() dispatcher
-    # + anchored() helper are exercised. The still-stub passes (structural::w05,
-    # stig::w01/w02, crypto::w03/w06, deprecation::w04) return `Vec::new()`; Diagnostic has no
-    # Default impl, so their only generated mutant is unviable and they add no
-    # survivors. catalog.rs is const data + #[cfg(test)] only (no mutable fns).
+    # sshd_config semantic lints (#149). This glob brings the whole lints/ tree
+    # into scope (allowlist-precedes-code) so each pass is mutation-gated the
+    # moment it lands, and the lint() dispatcher + anchored() helper are
+    # exercised. catalog.rs is const data + #[cfg(test)] only (no mutable fns).
     "crates/rulesteward-sshd/src/lints/**/*.rs",
-    # sysctl.d/sysctl.conf backend (#150 Phase 0): the parser + lints dispatcher +
-    # catalog are the real Phase-0 logic and the mutation target. Added in Phase 0
-    # BEFORE the F01/W01 pass bodies exist: a new file outside this allowlist
-    # mutates zero times and its gate false-passes (the 4a vacuity lesson) - the
-    # allowlist entry must precede the code, never follow it. parser.rs now carries
-    # the real F01 parse + W01 last-wins logic (issue #150) and is mutation-tested
-    # (0 survivors); lints/mod.rs re-exports those entry points. catalog.rs is const
-    # data + #[cfg(test)] only (no mutable fns).
+    # sysctl.d/sysctl.conf backend (#150): the parser + lints dispatcher +
+    # catalog are the real logic and the mutation target. A new file outside
+    # this allowlist mutates zero times and its gate false-passes, so the
+    # allowlist entry must precede the code, never follow it. parser.rs carries
+    # the F01 parse + W01 last-wins logic (issue #150); lints/mod.rs re-exports
+    # those entry points. catalog.rs is const data + #[cfg(test)] only (no
+    # mutable fns).
     "crates/rulesteward-sysctld/src/parser.rs",
     "crates/rulesteward-sysctld/src/lints/**/*.rs",
     "crates/rulesteward-sysctld/src/catalog.rs",
     # system.rs (#420): the cross-directory precedence + W03 (a/b/c) engine, the
-    # real logic of the --system scan. Added to the allowlist WITH the code so the
-    # mutation gate is non-vacuous (the 4a lesson: a new file outside examine_globs
-    # mutates zero times and false-passes).
+    # real logic of the --system scan. In the allowlist WITH the code so the
+    # mutation gate is non-vacuous: a new file outside examine_globs mutates
+    # zero times and false-passes.
     "crates/rulesteward-sysctld/src/system.rs",
-    # Lane B differential oracle (session 9k-1): the tree.plan model
+    # sysctld differential oracle: the tree.plan model
     # (parse_plan_line/parse_tree_plan), the materializer + canonical tree
     # INVENTORY recomputation (the guard that catches a Rust-vs-bash
     # materializer divergence without docker), and the oracle transcript
-    # classifier. Landed with the extraction from
-    # tests/sysctld_corpus_oracle.rs; mutation-tested against that test's
+    # classifier. Mutation-tested against tests/sysctld_corpus_oracle.rs's
     # corpus + its extraction_unit_tests module.
     "crates/rulesteward-sysctld/src/oracle.rs",
-    # sudoers backend (#329 Phase 0): the hand-rolled two-stage parser (physical-
-    # line join + line classification), the include/dir resolution seam, and the
-    # lints dispatcher + leaf passes are the real Phase-0 logic and the mutation
-    # target. Added in Phase 0 BEFORE the leaf pass bodies exist: a new file
-    # outside this allowlist mutates zero times and its gate false-passes (the 4a
-    # vacuity lesson) - the allowlist entry must precede the code, never follow it.
-    # Only sudo-F01 emits today (every Malformed logical line); the e01/w01..w04
-    # passes return `Vec::new()` and add no survivors (Diagnostic has no Default,
-    # so their only generated mutant is unviable - the sshd/auditd precedent).
-    # lints/catalog.rs is const data + #[cfg(test)] only (no mutable fns; covered
-    # by the lints/**/*.rs glob below). ast.rs is pure type defs and is
+    # sudoers backend (#329): the hand-rolled two-stage parser (physical-line
+    # join + line classification), the include/dir resolution seam, and the
+    # lints dispatcher + leaf passes are the real logic and the mutation target.
+    # A new file outside this allowlist mutates zero times and its gate
+    # false-passes, so the allowlist entry must precede the code, never follow
+    # it. lints/catalog.rs is const data + #[cfg(test)] only (no mutable fns;
+    # covered by the lints/**/*.rs glob below). ast.rs is pure type defs and is
     # auto-excluded by the global `**/ast.rs` exclude_globs entry.
     "crates/rulesteward-sudoers/src/parser.rs",
     "crates/rulesteward-sudoers/src/resolve.rs",
     "crates/rulesteward-sudoers/src/lints/**/*.rs",
-    # Lane C differential oracle: the four-oracle verdict model (visudo -c / -s,
+    # sudoers differential oracle: the four-oracle verdict model (visudo -c / -s,
     # cvtsudoers json / -e), the rc-vs-evidence agreement cross-check, and the
     # structure-only AST projection. Same allowlist-precedes-code rule as the
-    # parser/lints entries above; matches nothing until the lane lands.
+    # parser/lints entries above.
     "crates/rulesteward-sudoers/src/oracle.rs",
-    # selinux logic modules (avc/denial frozen in P0.6/P0.7; triage=P3, te_emit=P4, categorize=P5):
+    # selinux logic modules:
     "crates/rulesteward-selinux/src/avc.rs",
     "crates/rulesteward-selinux/src/denial.rs",
     "crates/rulesteward-selinux/src/triage.rs",
     "crates/rulesteward-selinux/src/te_emit.rs",
     "crates/rulesteward-selinux/src/categorize.rs",
-    # selinux STIG surface (#520, session 9d): allowlisted BEFORE the code lands
-    # (the 4a lesson: a new file outside examine_globs mutates zero times and its
-    # gate passes vacuously). config.rs = /etc/selinux/config reader; stig.rs =
+    # selinux STIG surface (#520): allowlisted so the gate is non-vacuous (a new
+    # file outside examine_globs mutates zero times and its gate passes
+    # vacuously). config.rs = /etc/selinux/config reader; stig.rs =
     # control table + projections; version.rs = TargetVersion; lints/** = se-
     # codes. The selinux doctor CHECK classifiers (pure fns over SelinuxProbe
     # data) enter via the commands/selinux/doctor glob; the LiveSelinuxProbe
@@ -230,9 +213,8 @@ examine_globs = [
     "crates/rulesteward-selinux/src/version.rs",
     "crates/rulesteward-selinux/src/lints/**/*.rs",
     "crates/rulesteward-cli/src/commands/selinux/doctor/**/*.rs",
-    # selinux-sys FFI shim: RESTORED per #131 (excluded in PR #128 when it had
-    # 0% coverage and no consumer). #124/#135 wired it into categorize.rs and
-    # made the vendored build default-on, and it now has a DIRECT vendored-gated
+    # selinux-sys FFI shim (#131): wired into categorize.rs with the vendored
+    # build default-on (#124/#135), and it has a DIRECT vendored-gated
     # known-answer suite (crates/rulesteward-selinux-sys/tests/
     # known_answer_replay.rs) plus the cross-crate -selinux KAT under the
     # nightly --test-workspace run. NOTE for LOCAL scoped runs: `vendored` is
@@ -242,7 +224,7 @@ examine_globs = [
     # where workspace feature unification enables it) - without it the gated
     # test binary compiles EMPTY and the gate passes vacuously.
     "crates/rulesteward-selinux-sys/src/lib.rs",
-    # (session 9n) Three files that carry real logic and were in NO glob above.
+    # Three files that carry real logic and were in NO glob above.
     # Unlike format.rs, ast.rs, the stub crates and the CLI glue, none of them is
     # named in the "Excludes" list at the top of this file or in exclude_re
     # below. They were simply never added, which is the allowlist failure mode
@@ -258,7 +240,7 @@ examine_globs = [
     # count came back 3666 where 3673 was predicted; the file-level view alone
     # would have added a line whose comment was false on arrival.
     #
-    # The measurement also REFUTES the 9n review's "123 of 274 source files are
+    # The measurement also REFUTES the claim that "123 of 274 source files are
     # ungated", which motivated a proposed examine_globs -> exclude_globs flip.
     # That denominator counts test files, which are deliberately never mutated;
     # cargo-mutants itself sees 158 source files, and this config already HAS an
@@ -362,7 +344,7 @@ exclude_globs = [
 # NOTE: the `sha256_unhashable=true` -> `NoMatch` arm of `eval_object_field` in
 # evaluate.rs is also pinned root-independently by the unit tests
 # `unhashable_object_yields_nomatch_at_evaluator_layer` and
-# `absent_object_hash_widens_sha256hash_constraint` (added #126/#127 round-3).
+# `absent_object_hash_widens_sha256hash_constraint` (added #126/#127).
 # The integration test `filehash_present_but_unhashable_is_denied_not_widened`
 # (simulate_trustdb_resolution.rs) self-skips under root (chmod 000 is a no-op
 # when DAC is bypassed); the unit tests fire regardless of uid.
@@ -404,12 +386,8 @@ exclude_re = [
     'replace match guard e\.kind\(\) == std::io::ErrorKind::NotFound with false in verify_entry',
     'replace \| with \^ in categorize',
     'replace < with <= in compute_scope',
-    # fsread.rs parked survivors (#583/9j, registered session 9m). These three
-    # were documented as unreachable in the SOURCE comments when the file
-    # landed, but never registered here -- so the nightly `mutants` workflow
-    # went red on 2026-07-26 and stayed red, which means it could no longer
-    # report a NEW survivor. Rationale in full at fsread.rs:262-272 and
-    # fsread.rs:320-330; summarized here because this file is the reviewable
+    # fsread.rs parked survivors (#583). Rationale in full at fsread.rs:262-272
+    # and fsread.rs:320-330; summarized here because this file is the reviewable
     # record:
     #  - `replace < with <=` on the FIFO retry deadline: not semantically
     #    equivalent, but UNREACHABLE -- distinguishing the two forms needs
@@ -426,8 +404,7 @@ exclude_re = [
     # (`< -> >`, `< -> ==`, `&& -> ||`, `== -> !=`) all stay gated.
     'replace < with <= in read_stream_to_string',
     'delete - in clear_nonblock',
-    # human.rs `color_enabled` FALSE-direction only (session 9m, surfaced the
-    # moment output/human.rs entered examine_globs above). The function is
+    # human.rs `color_enabled` FALSE-direction only. The function is
     # `stdout().is_terminal() && NO_COLOR unset`; under `cargo test` stdout is
     # never a TTY, so the real function ALREADY returns false and no test can
     # distinguish "false because not a TTY" from "false always" without a PTY
@@ -448,9 +425,8 @@ exclude_re = [
     # parse_kernel_version, parse_lint_counts, worst_exit_code, renderers) stays
     # in scope and is killed by the FakeProbe unit tests.
     '<impl SystemProbe for LiveProbe>',
-    # selinux doctor LiveSelinuxProbe shell-out methods (#520, session 9d): same
-    # rationale as the doctor LiveProbe above. Matches nothing until lane 2b
-    # lands (the documented MigrateProbe pre-registration precedent).
+    # selinux doctor LiveSelinuxProbe shell-out methods (#520): same rationale
+    # as the doctor LiveProbe above.
     '<impl SelinuxProbe for LiveSelinuxProbe>',
     # container-check LiveContainerProbe shell-out methods (#175): same rationale
     # as the doctor LiveProbe above. The real OS access (which/systemctl/test/rpm/
@@ -460,10 +436,10 @@ exclude_re = [
     # count_runtime_denials) and the classifier stay in scope, killed by FakeProbe
     # + parser unit tests.
     '<impl ContainerProbe for LiveContainerProbe>',
-    # migrate LiveMigrateProbe shell-out (#211, session 6a): same rationale as
+    # migrate LiveMigrateProbe shell-out (#211): same rationale as
     # the doctor LiveProbe above - the real `fagenrules --check` spawn has no
     # unit-test seam; the pure outcome classification is FakeProbe-tested and
-    # stays in the gate. (Matches nothing until Lane B lands the impl.)
+    # stays in the gate.
     '<impl MigrateProbe for LiveMigrateProbe>',
     # target_probe LiveTargetProbe (#251/#252): same rationale as the doctor
     # LiveProbe above - the real `/etc/os-release` read has no unit-test seam; it is
@@ -471,7 +447,7 @@ exclude_re = [
     # non-RHEL graceful-fallback. The pure parse_os_release / map_to_target /
     # resolve_target logic stays in the gate, killed by the in-module unit tests.
     '<impl HostTargetProbe for LiveTargetProbe>',
-    # `TmpGuard::drop` (#211, session 6a): best-effort temp-file cleanup used
+    # `TmpGuard::drop` (#211): best-effort temp-file cleanup used
     # only by the LiveMigrateProbe shell-out path. Deleting the body leaks a
     # temp file but has no observable behavior any unit test can assert (the
     # file name is process-id-scoped); same I/O-cleanup rationale as above.
@@ -490,9 +466,8 @@ exclude_re = [
     'replace read_fapolicyd_mode -> Option<String>',
     # (`extract_audit_field == 0 -> != 0` is NOT excluded: it is killed directly
     # by `extract_audit_field_key_at_position_zero` in rulesteward-core, which
-    # exercises the pos-0 guard arm. The extractor moved out of doctor/probe.rs
-    # (formerly `extract_kv`) and fanotify.rs (formerly `extract_field`) into the
-    # single shared core helper in #192. A real kill beats an equivalence exclusion.)
+    # exercises the pos-0 guard arm. One shared core helper (#192) serves
+    # doctor/probe.rs and fanotify.rs. A real kill beats an equivalence exclusion.)
     # `parse_fanotify_denials` block-skip guard: `t.is_empty() || t == "----"`.
     # The `|| -> &&` mutant changes the guard to "skip only if BOTH empty AND
     # equal to '----'", which is never true (an empty string cannot equal
@@ -508,10 +483,10 @@ exclude_re = [
     'replace match guard ctx\.ruleset_uses_filehash with true in evaluate_query',
     'replace \|\| with && in parse_audit_event',
     'replace fuzz_hooks::parse_trust_value_fuzz',
-    # selinux-sys FFI shim (#131): the 12 mutants below are the survivors of the
-    # restore gate run; every one is a genuine equivalent or a fault-injection-
-    # only failure arm, verified against the VENDORED libsepol source where the
-    # claim is load-bearing. The shim's logic mutants (rc inversions, context-
+    # selinux-sys FFI shim (#131): every one of the 12 mutants below is a
+    # genuine equivalent or a fault-injection-only failure arm, verified
+    # against the VENDORED libsepol source where the claim is load-bearing.
+    # The shim's logic mutants (rc inversions, context-
     # site checks, perm-bitmask accumulation, reason passthrough) ARE in scope
     # and killed by tests/known_answer_replay.rs.
     # - silence_libsepol_debug -> (): toggles libsepol stderr diagnostics only
@@ -553,35 +528,17 @@ exclude_re = [
     # - Drop -> () (line 552): pure in-process leak of the sidtab htable +
     #   policydb; unobservable by a functional test (PR #170 precedent).
     'selinux-sys/src/lib\.rs:.*replace <impl Drop for Policy>::drop with \(\)',
-    # sshd lints (#149): Wave C completed w05/w06 (and F02's lint_drop_in landed),
-    # so ALL sshd- passes (e01-e04, w01-w06) are implemented; none is a Phase-0
-    # `Vec::new()` stub anymore. The prior `replace (w05|w06) -> Vec<Diagnostic>
-    # with vec![]` exclusion was removed here: that mutant is now REAL and is caught
-    # by the w05/w06 fire tests (an empty return fails every "fires" assertion). Per
-    # the wave protocol, each wave removes its fn from this alternation when it
-    # implements the pass; Wave C is the last, so no sshd empty-return exclusion
-    # remains.
-    # sshd_config tokenizer (#149/#374/#387): the argument tokenizer was historically
-    # `while chars.peek().is_some() { read_arg(...)?; skip_whitespace(...); }`, which
-    # delegated cursor advancement to helpers. A `cargo mutants` body/return
-    # replacement that made a helper STOP advancing (`skip_whitespace -> ()`,
-    # `read_arg -> Ok(String::new())` / `Ok("xyzzy")`) pinned the shared `chars`
-    # cursor, so the outer `while` spun and pushed tokens forever -> unbounded Vec ->
-    # OOM runner-kill (nightly runs #84/#85 shards 12/17/18, then again post-#377 as
-    # #387). Those three OOM mutants USED to be excluded here.
-    #
-    # In #374/#387 the arg loop was rewritten as a single
-    # `while let Some(c) = chars.next()` consuming state machine (faithful `argv_split`
-    # single+double quoting / escapes). `chars.next()` is in the loop HEADER, so every
-    # iteration advances by construction: no body/return mutant can create an infinite
-    # loop, ELIMINATING the OOM class rather than excluding it (the parse_criteria
-    # precedent). Consequently all three exclusions were REMOVED:
-    #   * `read_arg` was deleted -> its two mutants no longer exist.
-    #   * `skip_whitespace` now runs only at the keyword/`=` boundary (never in a
-    #     re-entrant loop), where `skip_whitespace -> ()` is CAUGHT by
-    #     `tokenize_line_consumes_equals_keyword_separator` (`MaxAuthTries = 4` no
-    #     longer consumes the spaced `=`). A real elimination + a real kill beat
-    #     exclusions.
+    # sshd_config tokenizer (#149/#374/#387): the arg loop is a single
+    # `while let Some(c) = chars.next()` consuming state machine (faithful
+    # `argv_split` single+double quoting / escapes). `chars.next()` is in the loop
+    # HEADER, so every iteration advances by construction: no body/return mutant
+    # can create an infinite loop. That ELIMINATES the OOM-by-non-termination
+    # class here rather than excluding it, which is why no sshd-tokenizer OOM
+    # exclusion is listed. `skip_whitespace` runs only at the keyword/`=`
+    # boundary (never in a re-entrant loop), where `skip_whitespace -> ()` is
+    # CAUGHT by `tokenize_line_consumes_equals_keyword_separator`
+    # (`MaxAuthTries = 4` no longer consumes the spaced `=`). A real elimination
+    # + a real kill beat exclusions.
     # sudoers `short_hostname` (#334): reads `/proc/sys/kernel/hostname` (or the
     # HOSTNAME env) for the `@include ... %h` escape. Its return is the live host's
     # name, which varies by machine, so no unit test can pin it; a mutant returning
@@ -594,11 +551,10 @@ exclude_re = [
     'replace short_hostname -> String',
     'delete ! in short_hostname',
     # sshd-W07 (#302/#403) overlap oracle: genuine-equivalent / defensive-only /
-    # non-terminating survivors from the post-GREEN adversarial loop. The
-    # negation-aware + intersection overlap logic is otherwise fully killed by the w07
-    # tests. After the #432 split, the passes and the shared glob/CIDR toolkit live
-    # under lints/structural/ (w07.rs + matching.rs), so these anchors name the NEW
-    # files (function-anchored, not line-anchored).
+    # non-terminating survivors. The negation-aware + intersection overlap logic is
+    # otherwise fully killed by the w07 tests. The passes and the shared glob/CIDR
+    # toolkit live under lints/structural/ (w07.rs + matching.rs), so these anchors
+    # name those files (function-anchored, not line-anchored).
     # - name_instances_have_common_witness candidate filter `&&`->`||` (now w07.rs):
     #   with `||`, wildcard/empty strings get ADDED as candidate names, but the
     #   {listed-literals + FRESH-sentinel} witness set is COMPLETE (any real common
@@ -618,9 +574,9 @@ exclude_re = [
     'matching\.rs:.*replace \+ with \* in glob_match',
     # - glob_advance (matching.rs): the extracted one-line cursor bump `i + 1` that the
     #   three NON-TERMINATING glob_match advances (the `*`-open, backtrack, and
-    #   trailing-`*` sites) now call. Function-anchoring RETIRES the old line-anchored
-    #   907/910/917 exclusion class, which drifted whenever structural.rs shifted (the
-    #   #431 churn). Three of glob_advance's mutants no-op the cursor, so the enclosing
+    #   trailing-`*` sites) call. Function-anchored rather than line-anchored: a line
+    #   anchor drifts whenever the file shifts.
+    #   Three of glob_advance's mutants no-op the cursor, so the enclosing
     #   `while`/backtrack never terminates -- a hang that hits the per-mutant timeout
     #   floor rather than producing a wrong answer, and a hang cannot be killed by an
     #   assertion:
@@ -641,7 +597,7 @@ exclude_re = [
     #   (`a2port` rejects it, rc 255), so no sshd-loadable config ever yields a negated
     #   port. This parser is defensive only for rulesteward's lenient parse of an
     #   invalid config and is unreachable on any valid config, so no valid-config test
-    #   can kill it (the invalid-config tests were removed as mis-grounded).
+    #   can kill it.
     'matching\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
     # - cidr_split `| -> ^` (v4 line ~327 + v6 line ~335, both "in cidr_split"): the
     #   high half SETS the top host bit of a NETWORK address, whose host bits are 0 by
@@ -732,10 +688,10 @@ exclude_re = [
 # timeout to max(this floor, baseline_test_time x multiplier); the floor binds here.
 #
 # The nightly gate runs `--test-workspace true`, so EVERY mutant re-runs the entire
-# workspace suite (unit + proptest + insta). That takes ~100-110s/mutant, which
-# exceeded the old 90s floor -> cargo-mutants killed every mutant as a false TIMEOUT
-# (exit 3) before it could be evaluated, so all 8 shards failed without testing a
-# single mutant. Raise the floor to 180s: comfortably above the observed
-# workspace-suite duration (with headroom for proptest variance / runner load),
-# while still bounding a genuinely hung mutant.
+# workspace suite (unit + proptest + insta). That takes ~100-110s/mutant. A floor
+# below that makes cargo-mutants kill every mutant as a false TIMEOUT (exit 3)
+# before it can be evaluated, so every shard fails without testing a single mutant.
+# 180s is comfortably above the observed workspace-suite duration (with headroom
+# for proptest variance / runner load), while still bounding a genuinely hung
+# mutant.
 minimum_test_timeout = 180.0
