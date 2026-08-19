@@ -30,7 +30,7 @@ use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::boundary::{
     find_closing_quote, inside_a_clean_quoted_region, opens_principal, option_value_end,
-    preceding_token, quoted_value_span, simple_quote_pairs, structural_eq,
+    preceding_token, quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq,
     unquoted_whitespace_runs,
 };
 
@@ -1766,9 +1766,18 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // two must move together.
         //
         // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
+        //
+        // `prev != '!'` is #670. A leading `!` NEGATES the principal that
+        // follows it, so `ALL,!"svc acct" ALL` is two users and one host, not a
+        // boundary at the quote. Without this conjunct the candidate at the
+        // quote won, the user list became `["ALL", "!"]`, the host list
+        // swallowed `"svc acct" ALL`, and the line went silent on a full
+        // ALL/ALL elevation - no F01, no F02, no W06. Grounded: that line is
+        // `visudo` rc 0 with users `ALL` + `svc acct` NEGATED and host `ALL`.
         if open > 0
             && let Some(prev) = lhs[..open].chars().next_back()
             && prev != ','
+            && prev != '!'
             && !runs.iter().any(|&(_, end)| end == open)
         {
             candidates.push((open, open));
@@ -1829,6 +1838,49 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
             && !next.is_whitespace()
         {
             candidates.push((close + 1, close + 1));
+        }
+    }
+    // #672: an unquoted `!` glued to a principal is a THIRD boundary spelling,
+    // alongside the whitespace run and the two glued-quote candidates. Before
+    // this, `alice!h1` produced no candidate at all, fell through to
+    // `(lhs, "")`, folded to `Malformed` and took its NOPASSWD grant with it,
+    // on a line `visudo` accepts (rc 0, host `h1` NEGATED).
+    //
+    // Each guard below is grounded, and three of the four exist to PRESERVE a
+    // correct answer rather than to add one:
+    //
+    //   i > 0            a leading sigil negates the first principal; it is not
+    //                    a boundary. `!!alice ALL = ...` is rc 0.
+    //   prev != '!'      the rest of a leading run, same reason. `(!!root)`,
+    //                    `alice!!h1` and `!!alice` are all rc 0, so the run may
+    //                    be longer than one - which is also why `runas.rs`
+    //                    trims rather than strips a single sigil.
+    //   prev != ','      a `!` after a comma CONTINUES the user list.
+    //                    `alice,!bob ALL = ...` is rc 0 with users
+    //                    `alice` + `bob` negated.
+    //   !separator_escaped
+    //                    `alice\!h1 = ...` is `visudo` rc 1. Splitting there
+    //                    would parse an INVALID file as `alice\` / `!h1` and
+    //                    silently drop a correct `sudo-F01`. This is the one
+    //                    guard whose absence loses a true positive rather than
+    //                    causing a fail-open, and it is why the separator-rule
+    //                    predicate was added to `boundary.rs` instead of being
+    //                    re-derived here.
+    //
+    // A `!` inside a closed quoted span is not a boundary either (`a"b!c" ALL`
+    // is rc 1); `spans` covers that.
+    let spans = simple_quote_pairs(lhs);
+    for (i, c) in lhs.char_indices() {
+        if c == '!'
+            && i > 0
+            && !inside_a_clean_quoted_region(&spans, i)
+            && !separator_escaped(lhs, i)
+            && let Some(prev) = lhs[..i].chars().next_back()
+            && prev != ','
+            && prev != '!'
+            && !runs.iter().any(|&(_, end)| end == i)
+        {
+            candidates.push((i, i));
         }
     }
     candidates.sort_unstable();

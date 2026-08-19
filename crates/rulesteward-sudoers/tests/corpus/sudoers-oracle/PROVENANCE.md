@@ -699,6 +699,57 @@ Row 2 is deliberately NOT xfailed - measured 2026-08-19, its projections AGREE
 with `cvtsudoers`. The harness fails an xfail entry whose projections match, so
 listing it would hide a later real regression.
 
+### 19. The negation sigil, all four call sites (2026-08-19, #670 #671 #672)
+
+Four scenarios added alongside the negation-sigil sweep. `sudoers(5)` lets a
+leading `!` negate a principal; four places in the crate had an opinion about
+that and two of them were wrong.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-glued-bang-principal-boundary` | `alice!h1 = NOPASSWD: ALL` | rc 0; user `alice`, host `h1` NEGATED, `authenticate:false` |
+| `accept-negated-quoted-principal` | `ALL,!"svc acct" ALL = (ALL) ALL` | rc 0; users `ALL` + `svc acct` NEGATED, host `ALL`, runas `ALL` |
+| `accept-negated-runas-principal` | `alice ALL = (ALL,!root) /bin/ls` | rc 0; runasusers `ALL` + `root` NEGATED |
+| `reject-escaped-bang-principal` | `alice\!h1 = NOPASSWD: ALL` | **rc 1** |
+
+The fourth is the important one and it is a REJECT. An escaped `!` is not a
+principal boundary, so a boundary scan that ignored escapes would parse an
+invalid file as `alice\` / `!h1` and silently drop a correct `sudo-F01`. That
+is a lost TRUE POSITIVE rather than a fail-open - the mirror image of the rest
+of this class - and it is why `boundary.rs` gained a named separator-rule
+predicate (`separator_escaped`) instead of the `!` scan hand-rolling its own.
+Witnessed: removing that guard fails L1 on this scenario.
+
+**Grounded facts, all re-derived on this host 2026-08-19 against sudo 1.9.17p2
+and confirmed identical on el8/el9/el10:**
+
+- A **RUN** of leading sigils is legal, not just one: `(!!root)`, `alice!!h1`
+  and `!!alice ALL = ...` are all rc 0. #671's issue text proposed stripping a
+  SINGLE `!`, which would still have reported `(!!root)` as invalid; the fix
+  trims the run, matching `command_specs.rs`. A mutant using `strip_prefix`
+  SURVIVED the first test set, which is why the multi-sigil rows exist.
+- sudo COLLAPSES double negation rather than nesting it: `cvtsudoers` reports
+  `(!!root)` as plain `{"username":"root"}` with no `negated` flag.
+- A `!` after a comma CONTINUES the user list (`alice,!bob ALL = ...` is rc 0
+  with users `alice` + `bob` negated), so it is not a boundary either.
+- A `!` in the MIDDLE of a token really is invalid: `(ro!ot)` is rc 1.
+
+**A fifth scenario was captured and then DROPPED**, recorded here because the
+reason is a property of this corpus rather than of the change:
+`alice ALL = (ro!ot) /bin/ls` is oracle-REJECT, but RuleSteward rejects it at
+the LINT layer (`sudo-F02`), not the PARSE layer, and L1's `ours_rejects` keys
+on `LineKind::Malformed`. It belongs to the documented "not a command-token
+validator" class that is deliberately outside this corpus, so it is pinned by a
+unit test (`mid_token_bang_is_still_invalid`) instead. Adding an `L1_XFAIL` to
+accommodate it would have weakened L1 to fit a scenario that does not meet the
+reject tier's contract.
+
+`accept-negated-quoted-principal` is L3 xfail **#667**: the AST keeps the quotes
+around the negated principal (`!"svc acct"`) where `cvtsudoers` reports
+`!svc acct`, with every structural field agreeing. Same quote-RETENTION class as
+section 17's four rows; this is simply the first input that puts a sigil and a
+quoted principal in the same token.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -725,14 +776,18 @@ L3 xfail #667 - see section 17), `escaped-hash-keeps-nopasswd`,
 `odd-backslash-run-before-hash` (both added 2026-08-19 with #649; both L3 xfail
 #696, an escape-RETENTION divergence),
 `even-backslash-run-before-hash` (added 2026-08-19 with #649; the parity
-control, NOT xfailed - its projections agree - see section 18).
+control, NOT xfailed - its projections agree - see section 18),
+`glued-bang-principal-boundary`, `negated-runas-principal` (both added
+2026-08-19 with the negation-sigil sweep, neither xfailed),
+`negated-quoted-principal` (same sweep; L3 xfail #667 - see section 19).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
 i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 `user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
 `user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
-`equals-only` (the L1/L2 positive-control REJECT input).
+`equals-only` (the L1/L2 positive-control REJECT input), `escaped-bang-principal`
+(added 2026-08-19 with the negation-sigil sweep; see section 19).
 
 ## Re-capturing
 

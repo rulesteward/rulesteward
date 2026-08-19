@@ -398,6 +398,26 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
         .map(|(abs, _)| abs)
 }
 
+/// Whether the byte at `i` is consumed by a SEPARATOR-rule backslash escape:
+/// the run of backslashes immediately before `i` has ODD length.
+///
+/// This is the counterpart to [`quote_is_escaped`], and the two are NOT
+/// interchangeable - see this module's header. Use THIS one outside a quoted
+/// span, where a `\` consumes exactly the next character and parity therefore
+/// decides; use [`quote_is_escaped`] inside one, where a `\` escapes only a
+/// `"` regardless of its own parity.
+///
+/// Grounded on sudo 1.9.17p2, 2026-08-19: `alice\!h1 = NOPASSWD: ALL` is
+/// `visudo` **rc 1**, so an escaped `!` is not a principal boundary and the
+/// existing `sudo-F01` on that line is CORRECT. A boundary scan that ignored
+/// this would parse the line as `alice\` / `!h1` and silently drop a true
+/// positive - the mirror image of the fail-opens this module exists to close,
+/// and the reason this predicate was added rather than the `!` scan
+/// hand-rolling its own.
+pub(crate) fn separator_escaped(s: &str, i: usize) -> bool {
+    s[..i].bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
+}
+
 /// Whether the `"` at byte index `i` in `s` is escaped: it is exactly when the
 /// byte immediately before it is a backslash.
 ///

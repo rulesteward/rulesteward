@@ -18,7 +18,24 @@ use super::shared::{is_denylist_char, is_malformed_gid_tail};
 /// only, so unlike a subject `%name` it can carry an internal space straight
 /// through to this check).
 fn first_invalid_char(token: &str) -> Option<char> {
+    // #671: a LEADING `!` negates the principal and is legal sudoers, so it is
+    // trimmed before the denylist scan rather than reported as an invalid
+    // character. `alice ALL = (ALL,!root) /bin/ls` is `visudo` rc 0 with
+    // runasusers `ALL` + `root` NEGATED, and this predicate used to draw a
+    // FALSE `sudo-F02` on it.
+    //
+    // `trim_start_matches`, not `strip_prefix`: sudo accepts a RUN of sigils.
+    // Grounded 2026-08-19, all rc 0: `(!!root)`, `(!%wheel)`, `(root:!wheel)`.
+    // The issue proposed stripping a single `!`, which would still have
+    // reported `(!!root)` as invalid. This matches `command_specs.rs`'s
+    // `trim_start_matches('!')`, the call site that already had it right.
+    //
+    // Only the LEADING run is trimmed, and that is the whole point: a `!` in
+    // the MIDDLE of a token really is invalid (`(ro!ot)` is rc 1), so it must
+    // still be found. `mid_token_bang_is_still_invalid` pins that direction and
+    // is what stops the lazy repair of dropping `'!'` from the denylist.
     token
+        .trim_start_matches('!')
         .chars()
         .find(|c| is_denylist_char(*c) || c.is_whitespace())
 }

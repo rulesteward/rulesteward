@@ -386,7 +386,16 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-even-backslash-run-before-hash`,
 /// `accept-odd-backslash-run-before-hash`) added 2026-08-19 with #649, the
 /// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18.
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 = 48.
+/// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18; 4 more
+/// (3 `accept-*` plus `reject-escaped-bang-principal`) added 2026-08-19 with
+/// the negation-sigil sweep #670/#671/#672 - see `PROVENANCE.md` section 19.
+/// A fifth was captured and then DROPPED: `alice ALL = (ro!ot) /bin/ls` is
+/// oracle-REJECT but `RuleSteward` rejects it at the LINT layer (`sudo-F02`),
+/// not the PARSE layer, and L1's `ours_rejects` keys on `LineKind::Malformed`.
+/// It belongs to the documented "not a command-token validator" class that is
+/// deliberately outside this corpus, so it is pinned by a unit test
+/// (`mid_token_bang_is_still_invalid`) instead of by a scenario.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 = 52.
 ///
 /// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
 /// since 2026-08-03 the suite ENFORCES that rather than asking: the two
@@ -413,7 +422,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 48;
+const SCENARIO_FLOOR: usize = 52;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -452,11 +461,16 @@ const SCENARIO_FLOOR: usize = 48;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **40** accept scenarios x 3
-/// targets = 120 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 119 attempted; minus **21** xfail hits (the **7** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **43** accept scenarios x 3
+/// targets = 129 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 128 attempted; minus **24** xfail hits (the **8** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
-/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 98.
+/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 104.
+///
+/// 98 -> 104 is the negation-sigil sweep: +3 accept scenarios contribute +9
+/// attempted, and one of the three (`accept-negated-quoted-principal`) is an
+/// `L3_XFAIL`, so it gives back 3 - a NET +6. Both figures moved, which is the
+/// non-cancellation this const's own warning below is about.
 ///
 /// 95 -> 98 is #649's three escape scenarios: all three add +1 attempted per
 /// target, and only TWO of them are `L3_XFAIL`, so the third
@@ -480,7 +494,7 @@ const SCENARIO_FLOOR: usize = 48;
 /// `accept-timeout-option` contribute 3 targets each, while
 /// `accept-selinux-role-type` contributes only 2 because its el8 pair is
 /// scoped out of L3 entirely (9 + 2 = 11).
-const L3_CLEAN_FLOOR: usize = 98;
+const L3_CLEAN_FLOOR: usize = 104;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -672,6 +686,14 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     // Filed as #696, which asks for ONE ruling covering both this and #667's
     // quote retention: answering escapes differently from quotes would be worse
     // than either answer.
+    // Quote RETENTION on a NEGATED quoted principal, reached for the first time
+    // by the #670 scenario. Same class as the four rows above (the AST keeps the
+    // surrounding quotes, cvtsudoers reports the dequoted value, every
+    // structural field agreeing) - the sigil is simply carried along on the
+    // outside of the quotes. NOT a defect of the negation-sigil sweep: the
+    // divergence is #667's, and this scenario is the first input that puts a
+    // quoted principal and a sigil in the same token.
+    ("accept-negated-quoted-principal", Some(667)),
     ("accept-escaped-hash-keeps-nopasswd", Some(696)),
     ("accept-odd-backslash-run-before-hash", Some(696)),
 ];
@@ -2252,6 +2274,56 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             "L3 {id} ({target}): #667 predicts the users lists agree once ONE \
                              balanced quote pair is removed from each AST token; got ast={:?} \
                              unwrapped={:?} cvt={:?}",
+                            ast_proj.users,
+                            dequoted,
+                            cvt_proj.users
+                        );
+                    }
+                    "accept-negated-quoted-principal" => {
+                        // Everything except the user tokens agrees; state that
+                        // first so a divergence that spreads is a FAILURE here
+                        // rather than a silently wider xfail.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): quote retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a USER-token divergence only; \
+                             hosts/commands must already agree. got ast hosts={:?} \
+                             commands={:?} cvt hosts={:?} commands={:?}",
+                            ast_proj.hosts,
+                            ast_proj.commands,
+                            cvt_proj.hosts,
+                            cvt_proj.commands
+                        );
+                        // The predicted divergence, stated exactly: dropping ONE
+                        // balanced quote pair from INSIDE the leading sigil run
+                        // yields the cvtsudoers token. Deliberately not
+                        // `replace('"', "")` and not `trim_matches`, for the same
+                        // reason the #667 arm below refuses them: an over-wide
+                        // unquote passes on divergences it was not written for.
+                        let unwrap_inside_sigils = |u: &str| -> String {
+                            let sigils = u.len() - u.trim_start_matches('!').len();
+                            let (lead, rest) = u.split_at(sigils);
+                            let b = rest.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                format!("{lead}{}", &rest[1..rest.len() - 1])
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| unwrap_inside_sigils(u))
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the user lists agree once ONE \
+                             balanced quote pair is removed from inside each token's leading \
+                             sigil run; got ast={:?} unwrapped={:?} cvt={:?}",
                             ast_proj.users,
                             dequoted,
                             cvt_proj.users
