@@ -414,6 +414,30 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
 /// positive - the mirror image of the fail-opens this module exists to close,
 /// and the reason this predicate was added rather than the `!` scan
 /// hand-rolling its own.
+///
+/// # The COMMA call sites (#675), where parity is the whole point
+///
+/// Added 2026-08-19, and they are why the ODD-run wording above is load-bearing
+/// rather than pedantic. A `\,` is a LITERAL comma inside ONE principal and does
+/// not continue a `User_List`; an EVEN backslash run leaves the comma unescaped
+/// and the list really does continue. All six rows re-derived on `rs-oracle9`
+/// (sudo 1.9.17p2, 2026-08-19), stdin only:
+///
+/// | input | `visudo -c -f -` |
+/// |---|---|
+/// | `alice\, h1 = NOPASSWD: /bin/ls` | rc 0, `User_List ["alice,"]` / `Host_List ["h1"]` |
+/// | `a\,"b" = NOPASSWD: ALL` | rc 0, `["a,"]` / `["b"]` |
+/// | `a\,!h1 = NOPASSWD: ALL` | rc 0, `["a,"]` / `["h1"]` NEGATED |
+/// | `a\\, b = NOPASSWD: ALL` | **rc 1** - even run, the comma separates |
+/// | `a\\,"b" = NOPASSWD: ALL` | **rc 1** |
+/// | `a\\,!h1 = NOPASSWD: ALL` | **rc 1** |
+///
+/// [`quote_is_escaped`] is a CATEGORY ERROR on a comma: it is
+/// `s[..i].ends_with('\\')`, so it calls the comma in `a\\,` escaped, admits a
+/// boundary on a line `visudo` rejects and converts a correct `sudo-F01` into
+/// silence. That is the wrong-rule-in-the-wrong-context shape this module's
+/// header names. The three rc-1 rows above are what pin the difference; each of
+/// the rc-0 rows on its own is satisfied by a non-parity check.
 pub(crate) fn separator_escaped(s: &str, i: usize) -> bool {
     s[..i].bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
 }

@@ -1718,11 +1718,44 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // (too-narrow) and `escaped_whitespace_before_an_opening_quote_still_reports_the_grant`
         // (too-wide), each carrying its own one-byte control.
         //
-        // The `,` half is still a predicate and is still escape-BLIND: an
-        // escaped `a\,"b"` is a literal comma that does not continue the user
-        // list, and this suppresses the candidate anyway. Filed as #675, with
-        // the sibling in the continuation filter below; unswept here because the
-        // two must move together.
+        // The `,` half asks `separator_escaped` for the same reason the `!`
+        // scan below does, rather than testing the char: an escaped `a\,"b"` is
+        // a LITERAL comma inside ONE principal and does not continue the user
+        // list, so the candidate at the quote is the only correct boundary.
+        // Suppressing it left the line with no candidate at all, folded it to
+        // `Malformed` and dropped a passwordless-ALL grant on a line `visudo`
+        // accepts (rc 0, `User_List ["a,"]` / `Host_List ["b"]`, re-derived on
+        // rs-oracle9 2026-08-19). #675.
+        //
+        // It is the SEPARATOR rule, so PARITY matters and this is NOT
+        // `quote_is_escaped`: `a\\, b` is an EVEN run, so that comma is
+        // UNESCAPED, the list really does continue, and its `sudo-F01` is
+        // correct. A naive "previous byte is a backslash" check calls it escaped
+        // and turns that FATAL into silence.
+        //
+        // A comma cannot be literal by being QUOTED here, so no
+        // `inside_a_clean_quoted_region` conjunct is needed - and the absence is
+        // a proof, not an unchecked axis. `open` is itself a pair start and
+        // `simple_quote_pairs` never overlaps, so the previous pair has already
+        // closed at some `pb < open`; `lhs[open - 1]` is therefore either that
+        // closing `"` or outside every span, never a comma inside one.
+        //
+        // Indexed by `open - prev.len_utf8()` rather than `open - 1`. The two
+        // are identical whenever `prev == ','`, and only the first is a char
+        // boundary UNCONDITIONALLY. That matters because `||` short-circuiting
+        // is what would otherwise keep `open - 1` safe, which makes the safety a
+        // property of the operator rather than of the expression: swap the `||`
+        // for `&&` and `alice,<NBSP>"b c" ALL` slices mid-NBSP and panics.
+        //
+        // This conjunct is REDUNDANT as a filter, and saying so is the honest
+        // record rather than an invitation to delete it. Any opener candidate it
+        // suppresses has `before` ending in that same comma, which the
+        // continuation filter below rejects on its own when the comma is
+        // unescaped -- and when it IS escaped, this admits the candidate anyway.
+        // So deleting it changes no answer, exactly like the closer guard's own
+        // `,` exclusion documented above, and nothing pins it. It is kept as the
+        // PRODUCER's statement of intent: on `a\,"b"` there is no other
+        // candidate at all, so what cannot be done is leave it bare.
         //
         // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
         //
@@ -1735,7 +1768,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // `visudo` rc 0 with users `ALL` + `svc acct` NEGATED and host `ALL`.
         if open > 0
             && let Some(prev) = lhs[..open].chars().next_back()
-            && prev != ','
+            && (prev != ',' || separator_escaped(lhs, open - prev.len_utf8()))
             && prev != '!'
             && !runs.iter().any(|&(_, end)| end == open)
         {
@@ -1814,9 +1847,23 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     //                    `alice!!h1` and `!!alice` are all rc 0, so the run may
     //                    be longer than one - which is also why `runas.rs`
     //                    trims rather than strips a single sigil.
-    //   prev != ','      a `!` after a comma CONTINUES the user list.
-    //                    `alice,!bob ALL = ...` is rc 0 with users
-    //                    `alice` + `bob` negated.
+    //   prev != ','      an UNESCAPED `!` after a comma CONTINUES the user
+    //                    list. `alice,!bob ALL = ...` is rc 0 with users
+    //                    `alice` + `bob` negated. An ESCAPED one does not, and
+    //                    this conjunct was escape-blind until #675's third face:
+    //                    `a\,!h1 = NOPASSWD: ALL` is rc 0 with user `a,` and
+    //                    host `h1` NEGATED (rs-oracle9, 2026-08-19), but the `!`
+    //                    scan is the ONLY producer for that line -- no
+    //                    whitespace, no quotes -- so suppressing it left no
+    //                    candidate, folded the line to `Malformed` and dropped a
+    //                    passwordless-ALL grant.
+    //
+    //                    Unlike the opener guard's twin, this one is NOT
+    //                    redundant against the continuation filter: it is
+    //                    frequently the only candidate producer, so its absence
+    //                    is a dropped grant rather than a no-op. #675's own
+    //                    sibling sweep does not list this site because the sweep
+    //                    predates `c153bc5`, which introduced this scan.
     //   !separator_escaped
     //                    `alice\!h1 = ...` is `visudo` rc 1. Splitting there
     //                    would parse an INVALID file as `alice\` / `!h1` and
@@ -1835,7 +1882,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
             && !inside_a_clean_quoted_region(&spans, i)
             && !separator_escaped(lhs, i)
             && let Some(prev) = lhs[..i].chars().next_back()
-            && prev != ','
+            && (prev != ',' || separator_escaped(lhs, i - prev.len_utf8()))
             && prev != '!'
             && !runs.iter().any(|&(_, end)| end == i)
         {
@@ -1847,15 +1894,52 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     for (start, resume) in candidates {
         let before = &lhs[..start];
         let after = &lhs[resume..];
-        // The run continues across this boundary if a comma sits on either side
-        // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
-        // its own token and both adjacent runs continue). Both glued candidates
-        // always pass this check, but for DIFFERENT reasons, and stating one
-        // reason for both was wrong once already: an OPENER candidate's `after`
-        // literally starts with `"`, while a CLOSER candidate's `after` starts
-        // with the next token's first byte, which is `,`-excluded at the push
-        // site instead. Neither `before` ends with `,` (excluded above).
-        if !before.ends_with(',') && !after.starts_with(',') {
+        // The run continues across this boundary if an UNESCAPED comma sits on
+        // either side of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where
+        // the comma is its own token and both adjacent runs continue). Both
+        // glued candidates always pass this check, but for DIFFERENT reasons,
+        // and stating one reason for both was wrong once already: an OPENER
+        // candidate's `after` literally starts with `"`, while a CLOSER
+        // candidate's `after` starts with the next token's first byte, which is
+        // `,`-excluded at the push site instead.
+        //
+        // #675: `before` ending with a comma no longer settles it, and the
+        // sentence replaced here ("Neither `before` ends with `,`") is now
+        // false BY DESIGN -- since the opener guard began admitting an escaped
+        // one, that is exactly the candidate this filter must let through. An
+        // escaped `\,` is a literal comma inside ONE principal, so `alice\, h1`
+        // is a complete `User_List Host_List` pair that `visudo` accepts (rc 0,
+        // `User_List ["alice,"]` / `Host_List ["h1"]`, rs-oracle9 2026-08-19);
+        // rejecting its only candidate folded the line to `Malformed` and took
+        // the `NOPASSWD` grant with it. Asking `separator_escaped` is the
+        // SEPARATOR rule, so parity decides: `a\\, b` is an EVEN run, an
+        // unescaped comma, a continuing list, and a CORRECT `sudo-F01`.
+        //
+        // The `after` side needs no matching treatment, and that is exhaustive
+        // over the four candidate producers rather than merely untested: `after`
+        // can never BEGIN with an escaped comma. If `lhs[r]` were an escaped
+        // comma then the backslash run ending at `r - 1` has ODD length, so
+        // `unquoted_whitespace_runs` is inside its `escaped` prologue at `r` and
+        // closes no run there -- the last run end it can produce is `r - 1`, at
+        // the backslash itself. Opener candidates resume at `"`; closer
+        // candidates at `close + 1`, where `lhs[close]` is a one-byte `"`; `!`
+        // candidates at the `!`.
+        //
+        // A comma cannot be literal by being QUOTED at this site either, and
+        // again the omission is a proof: no candidate `start` is ever strictly
+        // inside a clean span (runs are emitted only outside one and terminate
+        // at the opening quote, opener candidates sit at pair starts, closer
+        // candidates one byte past a close, and the `!` scan tests
+        // `inside_a_clean_quoted_region` itself), so `lhs[start - 1]` being
+        // interior would force `start <= close`, which every producer excludes.
+        //
+        // `before.len() - 1` is evaluated only when `before` ends with `,`,
+        // which is one byte, so it is a char boundary; and `separator_escaped`
+        // reads only `s[..i]`, so asking it of `before` and of `lhs` at that
+        // index is the same question.
+        let before_comma_continues =
+            before.ends_with(',') && !separator_escaped(before, before.len() - 1);
+        if !before_comma_continues && !after.starts_with(',') {
             // `after` starts right after the boundary - a non-whitespace char,
             // a quote, or the string end - so the HOST half is trimmed. That
             // holds exhaustively over the three candidate producers:

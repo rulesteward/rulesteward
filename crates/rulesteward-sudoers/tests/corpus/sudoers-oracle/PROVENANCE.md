@@ -801,6 +801,65 @@ quotes around `"h c"` where `cvtsudoers` reports `h c`. Same quote-RETENTION
 class as sections 17 and 19, on the HOSTS axis this time; its arm asserts that
 axis specifically so a divergence spreading to users or commands would fail.
 
+### 21. The escape-blind comma, all three faces (2026-08-19, #675)
+
+A backslash-escaped `\,` is a LITERAL comma inside ONE principal and does not
+continue a `User_List`. Three conjuncts in `split_user_list` re-decided that
+with bare predicates and got it wrong, so lines real sudo ACCEPTS folded to
+`Malformed`; per #668 a `Malformed` line is invisible to every W/E pass, making
+all three fail-opens that dropped a `NOPASSWD` grant with nothing said.
+
+All rows re-derived on `rs-oracle{8,9,10}` (sudo 1.9.17p2 on el9), stdin only,
+`--network=none`. **All three EL majors agree on every row**, so there is no
+per-target divergence to model here.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-escaped-comma-user-list` | `alice\, h1 = NOPASSWD: /bin/ls` | rc 0; `User_List ["alice,"]` / `Host_List ["h1"]` |
+| `accept-escaped-comma-glued-quote` | `a\,"b" = NOPASSWD: ALL` | rc 0; `["a,"]` / `["b"]` |
+| `accept-escaped-comma-negated-host` | `a\,!h1 = NOPASSWD: ALL` | rc 0; `["a,"]` / `["h1"]` NEGATED |
+| `reject-unescaped-comma-no-host-list` | `alice, h1 = NOPASSWD: /bin/ls` | **rc 1** |
+| `reject-even-backslash-comma-continues` | `a\\, b = NOPASSWD: ALL` | **rc 1** |
+
+The two rejects are what make this a two-sided sweep rather than "stop looking
+at commas", and both fail for the RIGHT reason: visudo's caret lands on the `=`
+in each case, so the `User_List` continued across the comma and no host list
+remained. Neither is rejected for carrying an invalid username token, which is
+how a reject-side control on this surface usually goes wrong.
+
+`reject-even-backslash-comma-continues` is the PARITY control and the sharpest
+row in the set. The SEPARATOR escape rule counts a backslash RUN mod 2, so an
+EVEN run leaves the comma unescaped and the list really does continue. It is
+what separates `separator_escaped` from a naive `ends_with('\\')` check, which
+would call that comma escaped and convert a correct `sudo-F01` into silence.
+
+**Face C was not in #675's sibling sweep.** The issue lists six sites and marks
+the two comma conjuncts as "the last of that class in this function"; that was
+true when written and false by the time it was fixed, because `c153bc5` had
+since added a third one to the `!` boundary scan. It was found by the post-GREEN
+adversarial review of faces A and B and reported back to #675. On `a\,!h1` the
+`!` scan is the ONLY candidate producer, so unlike the opener guard's twin that
+site is redundant against nothing.
+
+**The three accepts are L3 xfail #645 Face B, not #667/#696.** The distinction is
+deliberate and is the reason they carry a different number from every retention
+row above: retention keeps the raw token intact and differs from `cvtsudoers`
+only by dequoting or unescaping, whereas `comma_split` (a bare `s.split(',')`)
+LOSES a byte - the recovered `alice\,` becomes the member `alice\`, comma gone,
+escaping backslash kept. Calling that retention would be a doc-truth defect.
+`accept-escaped-comma-glued-quote` is the corpus's only row diverging on TWO
+axes at once, users by #645 and hosts by #667, and its arm states both.
+
+None of this is introduced by #675: before the fix these three lines did not
+parse at all and never reached L3, which is why the corpus had never sampled an
+escaped comma in a principal. The entries are #645's acceptance signal, since
+this harness fails an xfail entry whose projections match.
+
+`L3_CLEAN_FLOOR` did NOT move (113 -> 113) while four of its five cross-check
+figures did. Three accepts add +9 attempted and all three are xfail, giving back
+-9 exactly. Nothing would have failed had the figures been left stale, which is
+the cancellation that const's own warning describes; they were updated anyway.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -834,7 +893,10 @@ control, NOT xfailed - its projections agree - see section 18),
 `quoted-close-paren-in-runas`, `escaped-close-paren-in-runas`,
 `quoted-runas-principal-space` (all three added 2026-08-19 with #650/#652, none
 xfailed), `quoted-host-space-group-subj` (same pair; L3 xfail #667 on the HOSTS
-axis - see section 20).
+axis - see section 20), `escaped-comma-user-list`,
+`escaped-comma-glued-quote`, `escaped-comma-negated-host` (all three added
+2026-08-19 with #675; all three L3 xfail **#645 Face B** on the USERS axis, and
+the glued-quote one ALSO diverges on hosts by #667 - see section 21).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
@@ -842,7 +904,10 @@ i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 `user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
 `user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
 `equals-only` (the L1/L2 positive-control REJECT input), `escaped-bang-principal`
-(added 2026-08-19 with the negation-sigil sweep; see section 19).
+(added 2026-08-19 with the negation-sigil sweep; see section 19),
+`unescaped-comma-no-host-list`, `even-backslash-comma-continues` (both added
+2026-08-19 with #675; the one-byte control and the PARITY control - see
+section 21).
 
 ## Re-capturing
 
