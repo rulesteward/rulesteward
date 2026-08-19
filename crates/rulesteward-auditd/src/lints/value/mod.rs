@@ -1836,15 +1836,18 @@ mod tests {
     #[test]
     fn canonical_perm_spells_each_bit_in_rwxa_order() {
         let p = ft(AuditField::Perm);
-        // Every assertion below uses a PROPER SUBSET of the rwxa bits, which is
-        // what makes it a mutation kill rather than a restatement. The rest of
-        // the perm suite compares two -F perm= predicates for equality; a bit
-        // test flipped from `!= 0` to `== 0` inverts which masks carry which
-        // letter but stays a BIJECTION over the 16 masks, so no two masks ever
-        // collide and every equality-shaped test still passes. Only an exact
-        // expected string distinguishes the inverted mapping, and only when at
-        // least one bit is set and one is clear: "rwxa" and "" are the two
-        // fixed points where an inversion is invisible.
+        // What makes this a mutation kill rather than a restatement: the rest
+        // of the perm suite compares two -F perm= predicates for EQUALITY, and
+        // a bit test flipped from `!= 0` to `== 0` sends every mask `m` to the
+        // letters of `m XOR bit`. That is a BIJECTION over the 16 masks, so no
+        // two masks ever collide and every equality-shaped test still passes.
+        // Only an exact expected string distinguishes it.
+        //
+        // `bit` is non-zero, so `m XOR bit != m` for EVERY mask: a single-arm
+        // inversion has no invisible input, and each assertion below kills all
+        // four of them on its own. The table still spans single bits, proper
+        // subsets and the full set, so the rwxa ORDERING is pinned as well as
+        // bit membership.
         assert_eq!(canonical_value(p, "r", OFF), "r");
         assert_eq!(canonical_value(p, "w", OFF), "w");
         assert_eq!(canonical_value(p, "x", OFF), "x");

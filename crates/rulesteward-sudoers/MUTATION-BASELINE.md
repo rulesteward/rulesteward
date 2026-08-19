@@ -43,15 +43,18 @@ both survivors of a recorded kill ATTEMPT rather than of an argument:
 test can distinguish the mutant from the real code) and
 `replace > with >= in split_user_list` (`>= 0` is always true on a `usize`, and
 at `open == 0` the let-chain it guards fails on `lhs[..0].chars().next_back()`
-either way). Full rationale, including the attempt transcripts, is in
+either way). Full rationale, including each attempt's outcome, is in
 `.cargo/mutants.toml` next to each regex.
 
 Two further survivors from the same nightly, both `< with <=` in
 `inside_a_clean_quoted_region`, are NOT excluded: the attempt succeeded and they
 are killed by `a_clean_quoted_region_excludes_its_own_two_quote_bytes`, a direct
-in-crate call pinning that a quoted region excludes its own two quote bytes. No
-caller can reach that boundary, which is why they survived a suite built
-entirely on `parse()`; the predicate's contract is testable regardless.
+in-crate call pinning that a quoted region excludes its own two quote bytes.
+No call site can reach that boundary: all eight hand this predicate the offset
+of a `)`, `,`, `=`, `:` or a whitespace byte, none of which can be a `"`. That
+is why the two mutants survived every existing test, the crate's own
+direct-call tests of `split_top_level_segments` included; the predicate's
+contract is testable regardless.
 
 ## Refactor identity (#433 - behavior-preserving split)
 

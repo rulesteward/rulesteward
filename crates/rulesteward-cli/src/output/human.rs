@@ -111,8 +111,11 @@ fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
         // the fallback is unreachable.
         // Only the ROUNDING changed here: the counting below still routes
         // through `str::chars().count()` for the reason the doc comment above
-        // gives, so this function's measured cost is unaffected (the rounding
-        // advances at most 3 bytes).
+        // gives. Nothing was re-measured for this change and none was needed,
+        // by deduction rather than by benchmark: the rounding is O(<= 4) per
+        // call either way (the longest UTF-8 scalar is 4 bytes) and the ratio
+        // gate's source is all-ASCII, so it hits a boundary on the first
+        // probe in both forms.
         let q = (b.min(source.len())..=source.len())
             .find(|&i| source.is_char_boundary(i))
             .unwrap_or(source.len());

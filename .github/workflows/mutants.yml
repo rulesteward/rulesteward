@@ -210,6 +210,13 @@ jobs:
       # there is no mutants.out at all, and erroring here would bury the real
       # cause under an upload failure.
       #
+      # KNOWN GAP, recorded rather than papered over: a shard CANCELLED by
+      # `timeout-minutes` above does not run `if: failure()` steps, so the one
+      # shard whose triage data would be most valuable uploads nothing. The
+      # obvious fix, `if: always()`, contradicts "a green nightly uploads
+      # nothing" and is itself not guaranteed to run on a cancel, so the
+      # limitation is documented instead of traded for a worse default.
+      #
       # The per-mutant logs under mutants.out/log/ are NOT uploaded (hundreds of
       # files per shard). Add them if a future triage needs to tell a genuine
       # survivor from a stale-target false MISSED, which is decided by whether
