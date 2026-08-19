@@ -356,12 +356,21 @@ fn perm_distinct_perm_values_produce_no_duplicate_finding() {
     // AUDIT_PERM bitmask, so `w01` must not group the two rules as "the same
     // rule" at all -- zero findings, not a severity question. The first six
     // pairs cover every unordered pair of single letters; the next four
-    // toggle exactly ONE bit relative to a base value that lacks it (so a
-    // `to_letters` mutant that forces one specific bit's letter to ALWAYS
-    // appear collides two otherwise-distinct masks, e.g. WRITE=2 and
-    // rw=3 collide if the READ check is broken to always report present);
-    // the last two are the `rw`-vs-`rx` / `wa`-vs-`ra` pairs called out
-    // when this round was scoped.
+    // toggle exactly ONE bit relative to a base value that lacks it; the last
+    // two are the `rw`-vs-`rx` / `wa`-vs-`ra` pairs called out when this round
+    // was scoped.
+    //
+    // What this table does and does not pin, both confirmed by RUNNING the
+    // mutants rather than by reasoning about them. It kills a COLLISION-shaped
+    // `to_letters` mutant that forces one bit's letter to always appear: an
+    // always-true READ arm makes WRITE=2 and rw=3 both spell "rw", and this
+    // test fails. It does NOT kill the INVERSION-shaped mutant cargo-mutants
+    // actually generates (`!= 0` -> `== 0`), because inverting a bit test is
+    // still a bijection over the 16 masks, so no two masks collide and every
+    // equality-shaped assertion here still holds. The inversion is pinned
+    // instead by `canonical_perm_spells_each_bit_in_rwxa_order` in
+    // rulesteward-auditd/src/lints/value/mod.rs, which asserts the exact
+    // canonical string for a proper subset of the bits.
     let pairs = [
         ("r", "w"),
         ("r", "x"),

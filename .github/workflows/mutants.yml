@@ -194,3 +194,43 @@ jobs:
             exit 2
           fi
           exit "${rc}"
+
+      # Triage aid, failure-only. Without this the ONLY record of which mutants
+      # survived is the job log, and `gh run view --log` rewrites ANSI escapes
+      # into the LITERAL bytes `^` `[` `[` -- so every `\x1b`-based stripper
+      # silently extracts nothing and reports zero survivors, which is exactly
+      # what a clean run also looks like. Reconstructing the failing set that
+      # way took four extractor revisions; these files say it directly.
+      #
+      # `if: failure()` so a green nightly uploads nothing, and it must sit
+      # AFTER the run step (which ends in `exit "${rc}"`).
+      #
+      # `if-no-files-found: warn`, deliberately NOT `error`: the denominator
+      # assertion above exits 2 BEFORE cargo-mutants runs, so on that failure
+      # there is no mutants.out at all, and erroring here would bury the real
+      # cause under an upload failure.
+      #
+      # KNOWN GAP, recorded rather than papered over: a shard CANCELLED by
+      # `timeout-minutes` above does not run `if: failure()` steps, so the one
+      # shard whose triage data would be most valuable uploads nothing. The
+      # obvious fix, `if: always()`, contradicts "a green nightly uploads
+      # nothing" and is itself not guaranteed to run on a cancel, so the
+      # limitation is documented instead of traded for a worse default.
+      #
+      # The per-mutant logs under mutants.out/log/ are NOT uploaded (hundreds of
+      # files per shard). Add them if a future triage needs to tell a genuine
+      # survivor from a stale-target false MISSED, which is decided by whether
+      # a mutant's log shows `Compiling` or only `Fresh`.
+      - name: Upload mutants.out on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mutants-out-shard-${{ matrix.shard }}
+          path: |
+            mutants.out/missed.txt
+            mutants.out/timeout.txt
+            mutants.out/caught.txt
+            mutants.out/unviable.txt
+            mutants.out/outcomes.json
+          retention-days: 14
+          if-no-files-found: warn

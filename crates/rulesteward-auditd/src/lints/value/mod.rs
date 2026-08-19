@@ -1830,4 +1830,35 @@ mod tests {
             "auid>=1000 and auid=1500 overlap regardless of operand order"
         );
     }
+
+    // --- canonical_value: -F perm= letter mapping ------------------------
+
+    #[test]
+    fn canonical_perm_spells_each_bit_in_rwxa_order() {
+        let p = ft(AuditField::Perm);
+        // What makes this a mutation kill rather than a restatement: the rest
+        // of the perm suite compares two -F perm= predicates for EQUALITY, and
+        // a bit test flipped from `!= 0` to `== 0` sends every mask `m` to the
+        // letters of `m XOR bit`. That is a BIJECTION over the 16 masks, so no
+        // two masks ever collide and every equality-shaped test still passes.
+        // Only an exact expected string distinguishes it.
+        //
+        // `bit` is non-zero, so `m XOR bit != m` for EVERY mask: a single-arm
+        // inversion has no invisible input, and each assertion below kills all
+        // four of them on its own. The table still spans single bits, proper
+        // subsets and the full set, so the rwxa ORDERING is pinned as well as
+        // bit membership.
+        assert_eq!(canonical_value(p, "r", OFF), "r");
+        assert_eq!(canonical_value(p, "w", OFF), "w");
+        assert_eq!(canonical_value(p, "x", OFF), "x");
+        assert_eq!(canonical_value(p, "a", OFF), "a");
+        assert_eq!(canonical_value(p, "rw", OFF), "rw");
+        assert_eq!(canonical_value(p, "wa", OFF), "wa");
+        // Source order and case do not survive the fold: the canonical spelling
+        // is always rwxa-ordered lowercase, matching normalize::perm_letters so
+        // a -F perm= predicate and a -p watch value agree on one bitmask.
+        assert_eq!(canonical_value(p, "ax", OFF), "xa");
+        assert_eq!(canonical_value(p, "AR", OFF), "ra");
+        assert_eq!(canonical_value(p, "rwxa", OFF), "rwxa");
+    }
 }

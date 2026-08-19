@@ -100,10 +100,25 @@ fn report_kind(severity: Severity) -> ReportKind<'static> {
 /// ~12.8x (release) / ~1000x (dev) per-byte cost down to roughly 1.0x-1.6x.
 fn byte_span_to_char_span(span: &Span, source: &str) -> Span {
     let to_char = |b: usize| {
-        let mut q = b.min(source.len());
-        while !source.is_char_boundary(q) {
-            q += 1;
-        }
+        // Round the byte offset UP to the next char boundary. Expressed as a
+        // search rather than a manual `q += 1` cursor: an advance a mutation
+        // can no-op turns this loop into a HANG rather than a wrong answer,
+        // and a hang fails the mutation gate as a TIMEOUT (cargo-mutants exit
+        // 3, distinct from exit 2 for a survivor) that no assertion can kill.
+        // That leaves only two remedies, park it or remove the mutable
+        // advance; this removes it. `source.len()` is always a char boundary
+        // and is the range's last element, so the search always succeeds and
+        // the fallback is unreachable.
+        // Only the ROUNDING changed here: the counting below still routes
+        // through `str::chars().count()` for the reason the doc comment above
+        // gives. Nothing was re-measured for this change and none was needed,
+        // by deduction rather than by benchmark: the rounding is O(<= 4) per
+        // call either way (the longest UTF-8 scalar is 4 bytes) and the ratio
+        // gate's source is all-ASCII, so it hits a boundary on the first
+        // probe in both forms.
+        let q = (b.min(source.len())..=source.len())
+            .find(|&i| source.is_char_boundary(i))
+            .unwrap_or(source.len());
         source[..q].chars().count()
     };
     to_char(span.start)..to_char(span.end)
