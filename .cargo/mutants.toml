@@ -599,6 +599,59 @@ exclude_re = [
     #   invalid config and is unreachable on any valid config, so no valid-config test
     #   can kill it.
     'matching\.rs:.*replace parse_negated_port_list -> Vec<u32> with',
+    # load_order.rs `take_digit_run` body replacements (vec![] / vec![0] /
+    # vec![1] -- exactly three, confirmed against `cargo mutants --list`). The
+    # function's CONTRACT is a side effect: it is handed a `&mut Peekable` and
+    # CONSUMES the leading digit-run, returning the bytes it consumed.
+    # `natural_cmp`'s `loop` (load_order.rs:31-55) makes progress ONLY through
+    # that consumption -- the digit branch peeks, calls this, and loops. A
+    # whole-body replacement returns a constant without consuming anything, so
+    # both peeks yield the same digit forever: the mutant HANGS to the
+    # per-mutant timeout floor rather than producing a wrong answer, and a hang
+    # cannot be killed by an assertion. cargo-mutants has no way to express a
+    # body replacement that preserves a side effect, so this is structural, not
+    # a test gap. Same class as `glob_advance`'s three no-op-cursor mutants
+    # above. (The sibling hang in `byte_span_to_char_span` was NOT excluded --
+    # its `q += 1` cursor was refactored into a boundary search, removing the
+    # mutant entirely. That is the better fix and was taken where it was
+    # available; here the side effect IS the function, so there is nothing to
+    # refactor away without rewriting `natural_cmp` itself.)
+    # VALUE-anchored on `with vec!` so the KILLABLE mutants on this same file --
+    # `natural_cmp`/`cmp_digit_runs`/`fagenrules_cmp` -> Default::default(), the
+    # `&&`->`||` at line 38, the `!=`->`==` in strip_leading_zeros -- all
+    # terminate and all stay in the gate.
+    'load_order\.rs:.*replace take_digit_run -> Vec<u8> with vec!',
+    # sudoers parser.rs, the first two sudoers exclusions. Both are survivors of
+    # a RECORDED kill attempt, not of an argument: the rule is that a SURVIVOR
+    # claims no current test distinguishes the mutant, while calling one
+    # EQUIVALENT claims none COULD, and only an attempted construction supports
+    # the stronger claim. Two of the four sudoers survivors in the same nightly
+    # FAILED that attempt and are now killed by
+    # `a_clean_quoted_region_excludes_its_own_two_quote_bytes` rather than
+    # parked; these two survived it.
+    #
+    # - `opens_principal` `open < i` -> `open <= i`. The two forms differ ONLY
+    #   at `open == i`, and the function opens with a `debug_assert!` that every
+    #   span starts strictly before the cursor. ATTEMPT (recorded): a direct
+    #   in-crate call `opens_principal(&[(3, 7)], 3)` panics on UNMUTATED code at
+    #   parser.rs:1322, "span starting at or after the cursor 3". A test built on
+    #   the only discriminating input therefore fails against the real code too,
+    #   so it cannot distinguish the mutant from it. Operator-specific: the
+    #   `< with ==`, `< with >`, `<= with >`, `&& with ||` and `delete !` mutants
+    #   at the same site are all still gated.
+    'rulesteward-sudoers/src/parser\.rs:.*replace < with <= in opens_principal',
+    # - `split_user_list` `open > 0` -> `open >= 0`. `>= 0` is always true on a
+    #   `usize`, so the mutant reduces the guard to the let-chain that follows
+    #   it, and at `open == 0` that chain's first link is
+    #   `lhs[..0].chars().next_back()`, which is `None` for every input. Both
+    #   forms are false at `open == 0` and identical elsewhere, with no side
+    #   effect in between. ATTEMPT (recorded): the whole crate suite (unit +
+    #   integration) returns rc 0 against the mutant, and rc 101 against a
+    #   known-killable mutant on the neighbouring predicate under the identical
+    #   command, so the instrument does discriminate. Operator-specific: the
+    #   `> with ==` and `> with <` mutants at the same site are still gated, and
+    #   so is every other mutant in this function.
+    'rulesteward-sudoers/src/parser\.rs:.*replace > with >= in split_user_list',
     # - cidr_split `| -> ^` (v4 line ~327 + v6 line ~335, both "in cidr_split"): the
     #   high half SETS the top host bit of a NETWORK address, whose host bits are 0 by
     #   construction, so `addr | bit` == `addr ^ bit` (setting a 0 bit equals toggling

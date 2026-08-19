@@ -3633,4 +3633,38 @@ mod tests {
             "an overshot `tok_start` clamps to an empty token, never an inverted range"
         );
     }
+
+    #[test]
+    fn a_clean_quoted_region_excludes_its_own_two_quote_bytes() {
+        // `inside_a_clean_quoted_region` answers "does byte `i` sit STRICTLY
+        // between a matched pair of quotes", and the two quote bytes are NOT
+        // inside: a separator is masked only when it lies between the quotes,
+        // never when it IS one of them.
+        //
+        // Direct call, for the reason the `split_top_level_segments` tests
+        // above give for theirs. Every current caller hands this predicate the
+        // offset of a `,` / `)` / `=` / `:` / whitespace run, none of which can
+        // coincide with a quote byte, so the public path cannot reach either
+        // boundary -- which is exactly why the two comparison mutants
+        // (`open < i` -> `open <= i` and `i < close` -> `i <= close`) survived
+        // the nightly gate. The strictness is still the predicate's contract,
+        // and pinning it here means a future caller that CAN land on a quote
+        // byte inherits the boundary rather than rediscovering it.
+        let spans = [(3usize, 7usize)];
+        assert!(
+            !inside_a_clean_quoted_region(&spans, 3),
+            "the opening quote byte is not inside the region it opens"
+        );
+        assert!(
+            !inside_a_clean_quoted_region(&spans, 7),
+            "the closing quote byte is not inside the region it closes"
+        );
+        // Interior bytes ARE inside, so the assertions above are not vacuously
+        // true of every input.
+        assert!(inside_a_clean_quoted_region(&spans, 4));
+        assert!(inside_a_clean_quoted_region(&spans, 6));
+        // And a byte outside the pair on either side is not inside it.
+        assert!(!inside_a_clean_quoted_region(&spans, 2));
+        assert!(!inside_a_clean_quoted_region(&spans, 8));
+    }
 }

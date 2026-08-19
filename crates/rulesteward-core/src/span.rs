@@ -207,6 +207,32 @@ mod tests {
     }
 
     #[test]
+    fn fill_columns_backfills_a_span_anchored_at_byte_zero() {
+        use crate::diagnostic::{Diagnostic, Severity};
+        // A 0..N span is ANCHORED; only 0..0 means "no source byte range".
+        // The pre-set column is a SENTINEL, and it is what makes this a
+        // mutation kill rather than a restatement: byte 0 backfills to column
+        // 1, so a diagnostic that already carried column = 1 would look
+        // identical whether fill_columns ran or skipped it. Under a
+        // `start == 0 || end == 0` guard this diagnostic is skipped and the
+        // sentinel survives.
+        let mut d = Diagnostic::new(
+            Severity::Warning,
+            "test-W04",
+            0..3,
+            "anchored at byte zero",
+            "test.rules",
+            1,
+            99,
+        );
+        span_util::fill_columns(std::slice::from_mut(&mut d), "abc\ndef\n");
+        assert_eq!(
+            d.column, 1,
+            "a 0..N span is anchored and must be backfilled, not skipped"
+        );
+    }
+
+    #[test]
     fn fill_columns_column_one_preserved_for_line_start_span() {
         use crate::diagnostic::{Diagnostic, Severity};
         // A span starting at the beginning of its line gives column 1.

@@ -34,8 +34,24 @@ examine_globs = [
 The recursive `lints/**/*.rs` glob automatically covers the new `lints/tokens/`
 subdirectory and `lints/f01.rs` created by the #433 split - no glob widening was
 needed (a file outside `examine_globs` mutates zero times and silently
-false-passes; staying under `lints/` avoids that vacuity trap). There is no
-sudoers-specific `exclude_re` entry.
+false-passes; staying under `lints/` avoids that vacuity trap).
+
+There are two sudoers-specific `exclude_re` entries, both in `parser.rs` and
+both survivors of a recorded kill ATTEMPT rather than of an argument:
+`replace < with <= in opens_principal` (the only discriminating input,
+`open == i`, trips the function's own `debug_assert!` on unmutated code, so no
+test can distinguish the mutant from the real code) and
+`replace > with >= in split_user_list` (`>= 0` is always true on a `usize`, and
+at `open == 0` the let-chain it guards fails on `lhs[..0].chars().next_back()`
+either way). Full rationale, including the attempt transcripts, is in
+`.cargo/mutants.toml` next to each regex.
+
+Two further survivors from the same nightly, both `< with <=` in
+`inside_a_clean_quoted_region`, are NOT excluded: the attempt succeeded and they
+are killed by `a_clean_quoted_region_excludes_its_own_two_quote_bytes`, a direct
+in-crate call pinning that a quoted region excludes its own two quote bytes. No
+caller can reach that boundary, which is why they survived a suite built
+entirely on `parse()`; the predicate's contract is testable regardless.
 
 ## Refactor identity (#433 - behavior-preserving split)
 
