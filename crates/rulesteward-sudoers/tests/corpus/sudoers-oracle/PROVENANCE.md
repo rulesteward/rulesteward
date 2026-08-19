@@ -687,12 +687,13 @@ reason this section's parity control matters beyond its own row: after #649 the
 comment stripper and `split_continuation` read backslashes on the SAME string
 under two different models.
 
-Rows 1 and 3 are L3 xfail with **no issue number yet** - an escape-RETENTION
+Rows 1 and 3 are L3 xfail against **#696** - an escape-RETENTION
 divergence exactly analogous to #667's quote retention, and reached here for
 the first time: the AST keeps the backslash (`/bin/echo \#x`) and `cvtsudoers`
 reports the unescaped value (`/bin/echo #x`), with every structural field
-agreeing. It needs an issue filed, scoped alongside #667, since both are the
-one cause: this parser does not dequote or unescape token values anywhere.
+agreeing. #696 asks for one ruling covering it and #667 together, since both
+are the one cause: this parser does not dequote or unescape token values
+anywhere.
 
 Row 2 is deliberately NOT xfailed - measured 2026-08-19, its projections AGREE
 with `cvtsudoers`. The harness fails an xfail entry whose projections match, so
@@ -722,7 +723,7 @@ xfail; see section 16), `glued-closing-quote-principal`,
 `spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
 L3 xfail #667 - see section 17), `escaped-hash-keeps-nopasswd`,
 `odd-backslash-run-before-hash` (both added 2026-08-19 with #649; both L3 xfail
-on an escape-RETENTION divergence with no issue filed yet),
+#696, an escape-RETENTION divergence),
 `even-backslash-run-before-hash` (added 2026-08-19 with #649; the parity
 control, NOT xfailed - its projections agree - see section 18).
 

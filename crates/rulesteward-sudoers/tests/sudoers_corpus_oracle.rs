@@ -669,10 +669,11 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     // KNOWN ... divergence, but the projections matched"), so listing it would
     // be wrong in the direction that hides a real regression later.
     //
-    // `None` because no issue is filed yet, matching
-    // `accept-negated-uid-subject` above. It needs one, scoped with #667.
-    ("accept-escaped-hash-keeps-nopasswd", None),
-    ("accept-odd-backslash-run-before-hash", None),
+    // Filed as #696, which asks for ONE ruling covering both this and #667's
+    // quote retention: answering escapes differently from quotes would be worse
+    // than either answer.
+    ("accept-escaped-hash-keeps-nopasswd", Some(696)),
+    ("accept-odd-backslash-run-before-hash", Some(696)),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN

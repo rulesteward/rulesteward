@@ -237,8 +237,8 @@ fn split_continuation(body: &str) -> Option<&str> {
 // substrate, alongside the rest of the quote/escape call sites.
 //
 // Pre-existing and unchanged by #649 (which is the ESCAPE axis; this is the
-// QUOTE axis). Verified two-sided against the fork point a700c38. Needs its own
-// issue, scoped with #668.
+// QUOTE axis). Verified two-sided against the fork point a700c38. Filed as
+// #695, scoped with #668.
 
 /// Stage 2: classify one joined logical line into a [`LineKind`].
 ///
