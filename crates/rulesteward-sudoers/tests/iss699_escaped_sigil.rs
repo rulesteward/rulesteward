@@ -51,8 +51,12 @@
 //! `!` following a backslash as literal turns that rc-1 file into a silent
 //! pass.
 //!
-//! The UNESCAPED-sigil direction is not re-tested here. It is pinned in
-//! `iss670_negation_sigil.rs`, which this fix must leave untouched.
+//! The UNESCAPED-sigil direction is pinned mainly in `iss670_negation_sigil.rs`,
+//! which this fix must leave untouched. It is not absent here, though, and an
+//! earlier version of this line wrongly said it was: the three
+//! `an_even_backslash_run_*` rows assert unescaped-sigil behaviour by
+//! construction (an even run leaves a REAL sigil), and the #701 block at the end
+//! of this file is entirely unescaped.
 
 use std::path::Path;
 
@@ -260,4 +264,143 @@ fn an_unescaped_sigil_after_a_comma_continues_the_user_list() {
         "cvtsudoers: TWO users, the second negated - the comma continues the list"
     );
     assert_eq!(hosts, vec!["ALL".to_string()]);
+}
+
+// -------------------------------------- #701: a half of nothing but sigils
+//
+// Found by the impl-AWARE adversarial review of THIS file's own fix, and by the
+// suppression lens in the same round. `split_user_list` picks a boundary and
+// never asks whether either half IS a principal list, so a half of nothing but
+// `!` becomes a `Host_List`, the line parses as a well-formed `UserSpec`, and a
+// passwordless-ALL grant is reported off a file `visudo` REFUSES TO LOAD.
+//
+// That is the exact contract
+// `an_escaped_sigil_without_a_following_boundary_is_still_a_real_f01` above
+// states, applied to a shape no test in this crate covered: every `!`-bearing
+// test here and in `iss670_negation_sigil.rs` puts a principal AFTER the sigil.
+//
+// TWO of these are lane regressions rather than inherited defects, confirmed
+// two-sided against binaries built at four revisions:
+//
+//   `alice!`  correct at `a700c38`, wrong from `c153bc5` (#670/#671/#672)
+//   `a\!!`    correct through `11f6ea0`, wrong from `6abb10a` (#699)
+//
+// `cargo mutants` cannot see either: both are a MISSING conjunct and there is
+// no insert-a-conjunct operator, which is why the scoped gate returned rc 0
+// with 25 mutants and 0 missed over exactly this code.
+//
+// GROUNDING, rs-oracle9 (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-19.
+// The discriminator is whether a principal FOLLOWS the sigil - not escape
+// parity, not sigil count:
+//
+// | input | `visudo` |
+// |---|---|
+// | `a\!! = NOPASSWD: ALL` | rc 1 |
+// | `alice! = NOPASSWD: ALL` | rc 1 |
+// | `alice!! = NOPASSWD: ALL` | rc 1 |
+// | `alice ! = NOPASSWD: ALL` | rc 1 |
+// | `! h1 = NOPASSWD: ALL` | rc 1 (the USER half) |
+// | `alice!h1`, `alice!!h1`, `a\!!h1`, `!!alice ALL`, `alice,!bob h1` | rc 0 |
+
+/// visudo rc 1. Its one-byte-longer twin `a\!!h1` is rc 0 and asserted above,
+/// which is what makes this a discriminating row rather than a restatement.
+#[test]
+fn an_escaped_sigil_run_with_no_principal_after_it_is_still_a_real_f01() {
+    let src = r"a\!! = NOPASSWD: ALL
+";
+    assert_eq!(
+        count_code(src, "sudo-F01"),
+        1,
+        "visudo rejects this file (rc 1)"
+    );
+    assert_eq!(
+        count_code(src, "sudo-W01"),
+        0,
+        "no grant may be reported off a line real sudo refuses to load"
+    );
+}
+
+/// visudo rc 1. The `c153bc5` half of the regression: a glued sigil with
+/// nothing after it. `alice!h1` is rc 0 and pinned in `iss670_negation_sigil.rs`.
+#[test]
+fn a_glued_sigil_with_no_principal_after_it_is_still_a_real_f01() {
+    let src = "alice! = NOPASSWD: ALL\n";
+    assert_eq!(
+        count_code(src, "sudo-F01"),
+        1,
+        "visudo rejects this file (rc 1)"
+    );
+    assert_eq!(count_code(src, "sudo-W01"), 0);
+}
+
+/// visudo rc 1. The sigil RUN spelling, so a fix cannot be a `strip_prefix`
+/// that leaves a second sigil looking like a principal.
+#[test]
+fn a_glued_sigil_run_with_no_principal_after_it_is_still_a_real_f01() {
+    let src = "alice!! = NOPASSWD: ALL\n";
+    assert_eq!(
+        count_code(src, "sudo-F01"),
+        1,
+        "visudo rejects this file (rc 1)"
+    );
+    assert_eq!(count_code(src, "sudo-W01"), 0);
+}
+
+/// visudo rc 1. The WHITESPACE-separated spelling, which reaches the same
+/// fallthrough through a different producer (a run candidate, not the `!`
+/// scan). Without this row a fix scoped to the `!` scan looks complete.
+#[test]
+fn a_spaced_sigil_with_no_principal_after_it_is_still_a_real_f01() {
+    let src = "alice ! = NOPASSWD: ALL\n";
+    assert_eq!(
+        count_code(src, "sudo-F01"),
+        1,
+        "visudo rejects this file (rc 1)"
+    );
+    assert_eq!(count_code(src, "sudo-W01"), 0);
+}
+
+/// visudo rc 1, and the mirror direction: the degenerate half is the USER list,
+/// not the host list. A postcondition that checks only the host half passes
+/// every row above and still fails here.
+#[test]
+fn a_lone_sigil_user_list_is_still_a_real_f01() {
+    let src = "! h1 = NOPASSWD: ALL\n";
+    assert_eq!(
+        count_code(src, "sudo-F01"),
+        1,
+        "visudo rejects this file (rc 1)"
+    );
+    assert_eq!(count_code(src, "sudo-W01"), 0);
+}
+
+/// visudo rc 0. The control that stops the lazy repair "reject any half
+/// containing a sigil": a sigil RUN followed by a real principal is legal, and
+/// `cvtsudoers` collapses the double negation to a plain `alice`.
+#[test]
+fn a_user_list_of_sigils_plus_a_principal_still_reports_the_grant() {
+    let src = "!!alice ALL = NOPASSWD: ALL\n";
+    assert_eq!(count_code(src, "sudo-F01"), 0, "visudo accepts this file");
+    assert_eq!(
+        count_code(src, "sudo-W01"),
+        1,
+        "the grant must still be reported; 0 here means the postcondition is too wide"
+    );
+}
+
+/// visudo rc 0. The list control: a negated MEMBER inside a comma list leaves
+/// the half holding a principal, so the boundary stands.
+#[test]
+fn a_negated_member_inside_a_list_still_reports_the_grant() {
+    let src = "alice,!bob h1 = NOPASSWD: ALL\n";
+    assert_eq!(count_code(src, "sudo-F01"), 0, "visudo accepts this file");
+    assert_eq!(count_code(src, "sudo-W01"), 1);
+    assert_eq!(
+        principals(src),
+        (
+            vec!["alice".to_string(), "!bob".to_string()],
+            vec!["h1".to_string()]
+        ),
+        "cvtsudoers: two users, the second negated, host h1"
+    );
 }

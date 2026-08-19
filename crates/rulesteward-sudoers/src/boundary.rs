@@ -398,6 +398,40 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
         .map(|(abs, _)| abs)
 }
 
+/// `true` when a principal-list half contains something that could BE a
+/// principal name.
+///
+/// [`split_user_list`](crate::parser) chooses a boundary and returns the two
+/// halves; until #701 it never asked whether either half IS a principal list.
+/// A half of nothing but negation sigils was accepted, so `alice!` parsed as
+/// user `alice` / host `!`, the line became a well-formed `UserSpec`, and a
+/// passwordless-`ALL` grant was reported off a file `visudo` REFUSES to load.
+/// That is the worst outcome this tool has, and it is the postcondition the
+/// three producer-level sigil fixes (#670, #672, #699) each left in place.
+///
+/// The discriminator is grounded and is NOT what the producers ask about: a
+/// principal must FOLLOW the sigil. Escape parity and sigil count are both
+/// irrelevant here. rs-oracle9, sudo 1.9.17p2, 2026-08-19: `alice!`, `alice!!`,
+/// `alice !`, `a\!!` and `! h1` are all rc **1**, while `alice!h1`,
+/// `alice!!h1`, `a\!!h1`, `!!alice ALL` and `alice,!bob h1` are all rc 0.
+///
+/// Blank means `' '` and `'\t'` ONLY, deliberately, and not
+/// [`char::is_whitespace`]. sudo's `toke.l` discards `[[:blank:]]+` and nothing
+/// else, so a half consisting of a single NBSP genuinely IS a principal to sudo
+/// (`"a"<NBSP> = NOPASSWD: ALL` is rc 0 with `Host_List [{"hostname":"\u00a0"}]`).
+/// Reaching for the wide predicate here would cement #702, which is the
+/// separate fail-open caused by exactly that confusion in the three recognizers
+/// above this one.
+///
+/// It deliberately does NOT reject an empty QUOTED principal: `alice!"" = ...`
+/// is rc 1 and `RuleSteward` is wrong on it too, but `""` holds a non-sigil
+/// character so this predicate passes it through. That is #677, and folding it
+/// in here risks the #669/#677 masking interaction this lane records as its
+/// sharpest hazard.
+pub(crate) fn holds_a_principal(s: &str) -> bool {
+    s.chars().any(|c| c != '!' && !matches!(c, ' ' | '\t'))
+}
+
 /// Whether the byte at `i` is consumed by a SEPARATOR-rule backslash escape:
 /// the run of backslashes immediately before `i` has ODD length.
 ///

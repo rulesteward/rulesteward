@@ -1,0 +1,8 @@
+{
+  "target": "el8",
+  "sudo_rpm": "sudo-1.9.5p2-1.el8_10.5.x86_64",
+  "visudo": {"rc": 1, "stdout": "", "stderr": "stdin:1:8: syntax error\nalice! = NOPASSWD: ALL\nefault to the setting for group.       ^\n"},
+  "visudo_strict": {"rc": 1, "stdout": "", "stderr": "stdin:1:8: syntax error\nalice! = NOPASSWD: ALL\nefault to the setting for group.       ^\n"},
+  "cvtsudoers": {"rc": 1, "stdout": "", "stderr": "stdin:1:8: syntax error\nalice! = NOPASSWD: ALL\nlse       ^\ncvtsudoers: parse error in stdin near line 1\n"},
+  "cvtsudoers_expanded": {"rc": 1, "stdout": "", "stderr": "stdin:1:8: syntax error\nalice! = NOPASSWD: ALL\nlse       ^\ncvtsudoers: parse error in stdin near line 1\n"}
+}

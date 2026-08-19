@@ -397,10 +397,21 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// (`mid_token_bang_is_still_invalid`) instead of by a scenario. The same
 /// applies to the #650/#652 rc-1 rows (`%bad group ALL = ALL`, `(a>b)`,
 /// `("a b)`): all three are LINT-level rejects, so all three are unit tests
-/// rather than scenarios; 4 more `accept-*` added 2026-08-19 with #650/#652
-/// (`PROVENANCE.md` section 20), 5 with #675 (section 21) and 5 with #699
-/// (section 22).
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 = 65.
+/// rather than scenarios; then, all on 2026-08-19, 4 `accept-*` with #650/#652
+/// (`PROVENANCE.md` section 20), 5 with #675 of which 3 are `accept-*`
+/// (section 21), 4 `accept-*` with #699 (section 22) and 1 `reject-*` with #701
+/// (section 23). The per-issue counts are SCENARIOS; only #650/#652's and
+/// #699's happen to be all-accept, and an earlier version of this sentence
+/// applied the `accept-*` qualifier to every group and said "5 with #699",
+/// contradicting both its own addend below and the paragraph after it.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 = 66.
+///
+/// #701's single scenario is a `reject-*`, so it moves this floor and leaves
+/// `L3_CLEAN_FLOOR` alone: L3 compares accept scenarios only. It IS
+/// corpus-eligible, unlike #699's rejected parity control, because a
+/// `split_user_list` rc-1 row is a STRUCTURAL `sudo-F01` that L1 compares
+/// directly, where a runas rc-1 row is a LINT-level `sudo-F02` that L1's
+/// F01-verdict comparison cannot see.
 ///
 /// #699 contributes FOUR, not five. Its parity control `(\\!root)` is `visudo`
 /// rc 1 but a LINT-level reject: `RuleSteward` answers `sudo-F02`, not `sudo-F01`,
@@ -440,14 +451,18 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 65;
+const SCENARIO_FLOOR: usize = 66;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
 ///
-/// DERIVED FROM A RUN, never computed. This is a ONE-SIDED floor: set too
-/// high it is unsatisfiable and blocks the implementer forever, set too low
-/// it silently weakens the differential, and both are defects. This constant
+/// DERIVED FROM A RUN, never computed. It was a ONE-SIDED floor until #699,
+/// which is the failure mode described next: set too high it is unsatisfiable
+/// and blocks the implementer forever, set too low it does not fail at all and
+/// silently stops binding, and both are defects. It is now an `assert_eq!` when
+/// this binary judges its own tree and a `>=` only under `RS_BRANCH_DIFF`; see
+/// the assertion site for why the carve-out is required and why L1's and L2's
+/// `>=` are not the same weakness. This constant
 /// was frozen at a value no contract-honouring implementation could reach (66
 /// against an achievable 60); that survived two full adversarial rounds
 /// because every reviewer asked "what WRONG implementation passes these
@@ -494,11 +509,16 @@ const SCENARIO_FLOOR: usize = 65;
 /// 113 -> 113 is #675, and it is the CANCELLATION this const's own warning
 /// below is about, happening for real rather than hypothetically. Three accept
 /// scenarios contribute +9 attempted and all three are `L3_XFAIL`, giving back
-/// exactly -9, so the RESULT did not move while four of the five figures did
-/// (47->50, 141->150, 140->149, 27->36), as did the inner `L3_XFAIL` entry
-/// count (9->12). Those six numbers are the state as of #675 and are kept as
-/// history; the CURRENT ones are in the paragraph above. Nothing would have failed had they
-/// been left stale: the floor is a `>=` and 113 still binds. They were updated
+/// exactly -9, so the RESULT did not move while four of the five CROSS-CHECK
+/// figures did (47->50, 141->150, 140->149, 27->36), as did the inner
+/// `L3_XFAIL` entry count (9->12). "The five" means the five figures of the
+/// cross-check sentence above - accepts, pairs, attempted, xfail hits, result -
+/// and the entry count is an inner factor of the fourth, not a sixth member;
+/// the paragraph above counts it separately and says so. Those six numbers are
+/// the state as of #675 and are kept as history; the CURRENT ones are in the
+/// paragraph above. Nothing would have failed had they
+/// been left stale: the floor WAS a `>=` at the time and 113 still bound (it is
+/// an `assert_eq!` outside a branch differential since #699). They were updated
 /// in the same commit anyway, which is the only thing that keeps this
 /// cross-check able to cross-check. Measured, not computed: a floor of 9999
 /// failed with `expected >= 9999 clean L3 comparisons, got 113`, and that
@@ -926,22 +946,6 @@ fn read_target(root: &Path, id: &str, target: &str) -> OracleDoc {
     }
 }
 
-/// Read a token's TRAILING backslash back as the escaped comma that
-/// `comma_split` consumed, which is the exact shape of #645 Face B.
-///
-/// `split_user_list` now correctly keeps `alice\,` as ONE `User_List` (#675),
-/// but `comma_split` is still a bare `s.split(',')`, so it splits on that
-/// ESCAPED comma and the trailing empty piece is filtered away: the member
-/// arrives as `alice\` where `cvtsudoers` reports `alice,`.
-///
-/// Deliberately narrow. It rewrites only a SINGLE trailing backslash and only
-/// into a comma - never `replace('\\', ",")`, which would also absorb a token
-/// where `RuleSteward` kept an interior backslash `cvtsudoers` never had, and
-/// never `trim_end_matches`, which would eat an even run. An even run is
-/// precisely the case where the comma was NOT escaped, the list really did
-/// continue, and the line is a `visudo` reject that never reaches L3 at all; an
-/// over-wide restore would make these arms pass on divergences they were not
-/// written for. Same discipline as `unwrap_one_pair` in the #667 arms.
 /// Drop the FIRST backslash of each escape in an AST token, yielding what
 /// `cvtsudoers` reports for the same token.
 ///
@@ -970,6 +974,22 @@ fn unescape_one_token(c: &str) -> String {
     out
 }
 
+/// Read a token's TRAILING backslash back as the escaped comma that
+/// `comma_split` consumed, which is the exact shape of #645 Face B.
+///
+/// `split_user_list` now correctly keeps `alice\,` as ONE `User_List` (#675),
+/// but `comma_split` is still a bare `s.split(',')`, so it splits on that
+/// ESCAPED comma and the trailing empty piece is filtered away: the member
+/// arrives as `alice\` where `cvtsudoers` reports `alice,`.
+///
+/// Deliberately narrow. It rewrites only a SINGLE trailing backslash and only
+/// into a comma - never `replace('\\', ",")`, which would also absorb a token
+/// where `RuleSteward` kept an interior backslash `cvtsudoers` never had, and
+/// never `trim_end_matches`, which would eat an even run. An even run is
+/// precisely the case where the comma was NOT escaped, the list really did
+/// continue, and the line is a `visudo` reject that never reaches L3 at all; an
+/// over-wide restore would make these arms pass on divergences they were not
+/// written for. Same discipline as `unwrap_one_pair` in the #667 arms.
 fn restore_split_comma(users: &[String]) -> Vec<String> {
     users
         .iter()
@@ -2767,20 +2787,52 @@ fn l3_structure_projection_matches_cvtsudoers() {
     // `ids.len()` here would overstate what L3 actually compared.
     announce(compared);
 
-    // `assert_eq!`, not `>=`, since #699. `compared` is fully determined by the
-    // committed corpus and the compiled-in xfail/scope-out tables, so equality
-    // is exactly as derivable as `SCENARIO_FLOOR`'s - and this constant had the
-    // one-directional failure mode that one was converted away from on
-    // 2026-08-03. A `>=` floor left too LOW does not fail; it silently stops
-    // binding, which is how this file's four cross-check figures went stale
-    // through #651 while the RESULT stayed 95 and nothing complained.
-    assert_eq!(
-        compared, L3_CLEAN_FLOOR,
-        "expected exactly {L3_CLEAN_FLOOR} clean L3 comparisons, got {compared}. \
-         A comparison LOST (a scenario reclassified, a new xfail entry) and one \
-         GAINED (a fix retiring an xfail) are both defects here; the equality is \
-         what makes the second one visible"
-    );
+    // `assert_eq!`, not `>=`, since #699 - but ONLY when this binary is judging
+    // its own tree. `compared` is fully determined by the committed corpus and
+    // the compiled-in xfail/scope-out tables, so equality is exactly as
+    // derivable as `SCENARIO_FLOOR`'s, and this constant had the one-directional
+    // failure mode that one was converted away from on 2026-08-03: a `>=` floor
+    // left too LOW does not fail, it silently stops binding, which is how this
+    // file's cross-check figures went stale through #651 while the RESULT stayed
+    // 95 and nothing complained.
+    //
+    // The `RS_BRANCH_DIFF` carve-out is the same one `assert_scenario_cardinality`
+    // makes, for the same reason and with the same wording - see that function's
+    // doc comment, which explains it once. Under a branch differential this
+    // binary replays ANOTHER TREE's corpus; #658 MANDATES that such a tree add
+    // scenarios, so equality would assert something this binary cannot know and
+    // would fail in `rs-branch-diff.sh`'s R2 run, surfacing as DISCRIMINATED on
+    // this test name with no content but "the constant moved".
+    //
+    // #699 shipped the equality WITHOUT this carve-out and #673 is where that
+    // belongs, since it already owns "three floors remain one-sided". Measured
+    // 2026-08-19: with one extra scenario and `RS_BRANCH_DIFF=1`, the un-carved
+    // version failed `expected exactly 116 clean L3 comparisons, got 119` while
+    // L1 and L2 passed - so L3 was the sole failure, which is precisely the
+    // false DISCRIMINATED signal. That run is also this branch's positive
+    // control for the carve-out.
+    //
+    // L1's and L2's surviving `>=` are NOT the same weakness and must be left
+    // alone: their floors are COMPUTED from `SCENARIO_FLOOR` rather than
+    // hand-maintained, so they cannot drift, and their `>=` is what keeps them
+    // branch-differential-safe.
+    if std::env::var_os("RS_BRANCH_DIFF").is_some() {
+        assert!(
+            compared >= L3_CLEAN_FLOOR,
+            "expected >= {L3_CLEAN_FLOOR} clean L3 comparisons in the overridden \
+             corpus, got {compared}. A branch differential replays ANOTHER TREE's \
+             corpus, which #658 requires to hold MORE scenarios than this binary \
+             was built with; fewer means it shrank below what this binary requires"
+        );
+    } else {
+        assert_eq!(
+            compared, L3_CLEAN_FLOOR,
+            "expected exactly {L3_CLEAN_FLOOR} clean L3 comparisons, got {compared}. \
+             A comparison LOST (a scenario reclassified, a new xfail entry) and one \
+             GAINED (a fix retiring an xfail) are both defects here; the equality is \
+             what makes the second one visible"
+        );
+    }
     assert_eq!(
         scope_out_confirmed,
         L3_EL8_INVALID_JSON_SCOPE_OUT.len(),

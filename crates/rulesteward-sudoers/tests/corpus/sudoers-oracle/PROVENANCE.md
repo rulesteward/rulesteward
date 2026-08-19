@@ -919,7 +919,8 @@ i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 (added 2026-08-19 with the negation-sigil sweep; see section 19),
 `unescaped-comma-no-host-list`, `even-backslash-comma-continues` (both added
 2026-08-19 with #675; the one-byte control and the PARITY control - see
-section 21).
+section 21), `lone-sigil-host-list` (added 2026-08-19 with #701 - see
+section 23).
 
 ## 22. #699 - the escape-blind negation sigil
 
@@ -973,6 +974,53 @@ branch: that commit closed three UNESCAPED-sigil fail-opens and opened this
 ESCAPED one. The face-C mutation gate ran over exactly this code and returned rc
 0 with 0 survivors, because `cargo mutants` has no delete-a-conjunct operator
 and a dropped guard inside a compound `&&` chain is invisible to it.
+
+## 23. #701 - a principal-list half of nothing but negation sigils
+
+One reject scenario, `reject-lone-sigil-host-list`, `alice! = NOPASSWD: ALL`.
+`visudo -c -f -` **rc 1** on all three targets (`rs-oracle{8,9,10}`, sudo 1.9.17p2,
+stdin, `--network=none`, 2026-08-19).
+
+`split_user_list` chose a boundary and never asked whether either half IS a
+principal list. This line parsed as user `alice` / host `!`, became a well-formed
+`UserSpec`, and RuleSteward reported `sudo-W01` - a passwordless-`ALL` grant -
+off a file real sudo REFUSES to load, while dropping the `sudo-F01` that
+correctly says the file is broken.
+
+**Two lane regressions, not inherited defects**, confirmed two-sided against
+binaries built at four revisions:
+
+| input | `a700c38` (fork) | `c153bc5` | `11f6ea0` | `6abb10a` |
+|---|---|---|---|---|
+| `alice!` | `sudo-F01` CORRECT | **`sudo-W01`** | `sudo-W01` | `sudo-W01` |
+| `a\!!` | `sudo-F01` CORRECT | `sudo-F01` | `sudo-F01` | **`sudo-W01`** |
+
+The `!` boundary scan does not exist at `a700c38`. So `c153bc5` (#670/#671/#672)
+introduced the first and `6abb10a` (#699) the second - each while fixing a
+different member of the same class.
+
+**Why one scenario and five unit tests.** The corpus row pins the shape at the L1
+layer; the discriminating set is wider than one row and lives in
+`tests/iss699_escaped_sigil.rs`: `alice!`, `alice!!`, `alice !`, `a\!!` and
+`! h1` are all rc 1, against controls `alice!h1`, `alice!!h1`, `a\!!h1`,
+`!!alice ALL` and `alice,!bob h1` which are all rc 0. The discriminator is
+whether a principal FOLLOWS the sigil - not escape parity, not sigil count.
+`! h1` is the one that puts the degenerate half on the USER side; a
+postcondition checking only the host half passes every other row and still fails
+it, and that is exactly what the `holds_a_principal(before)` mutant demonstrates.
+
+**Why no gate caught it.** `cargo mutants` has no insert-a-conjunct operator, and
+both rows are a MISSING conjunct, so the scoped gate returned rc 0 with 25
+mutants and 0 missed over exactly this code. Every `!`-bearing test in the crate
+put a principal after the sigil, and all four #699 scenarios are `accept-*`. It
+was found by the impl-AWARE adversarial reviewer and, independently, by the
+suppression lens in the same ATL round.
+
+**Deliberately still divergent:** `alice!"" = ...` is rc 1 and RuleSteward still
+reports `sudo-W01` on it. `""` holds a non-sigil character, so `holds_a_principal`
+passes it through. That is **#677**, which owns the empty-principal question;
+folding it in here risks the #669/#677 masking interaction this lane records as
+its sharpest hazard.
 
 ## Re-capturing
 

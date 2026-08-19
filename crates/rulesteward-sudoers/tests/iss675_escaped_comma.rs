@@ -26,11 +26,19 @@
 //! time it was fixed. Face C was found by the post-GREEN adversarial review of
 //! faces A and B, and is reported back to #675 rather than filed separately.
 //!
-//! Face C is also the one face redundant against nothing. On `a\,!h1` the `!`
-//! scan is the only candidate producer at all, so suppressing it is not a worse
-//! split but NO split: `Malformed`, and the grant is gone. By contrast the
-//! opener guard's conjunct is redundant AS A FILTER - deleting it outright
-//! leaves every answer unchanged, which was measured, not assumed.
+//! Face C is NOT special in the way this paragraph used to claim. On `a\,!h1`
+//! the `!` scan is indeed the only candidate producer, so an escape-BLIND
+//! conjunct there is not a worse split but NO split: `Malformed`, and the grant
+//! is gone. But that is an argument for the ESCAPE-AWARENESS, not for the `,`
+//! member, and this paragraph said "Face C is the one face redundant against
+//! nothing" while the opener's twin was "redundant AS A FILTER".
+//!
+//! Measured 2026-08-19, which is what #699's review did and this text did not:
+//! deleting the `,` member leaves the whole suite green at BOTH sites, because
+//! the continuation filter re-answers the comma axis downstream. The two sites
+//! are symmetric. See `parser.rs`'s opener block for the full equivalence
+//! record and the correction 220 lines below for the same repair at the row it
+//! describes.
 //!
 //! GROUNDING. Every row below was re-derived on THIS host on 2026-08-19 against
 //! sudo 1.9.17p2 in `rs-oracle9`, fed on stdin with `--network=none`, rather than
@@ -64,8 +72,11 @@
 //!
 //! Measured 2026-08-19 with `--no-fail-fast`: replacing `separator_escaped`'s
 //! parity count with `ends_with` turns all three of them RED, and they are the
-//! only rows IN THIS FILE that catch it. It also turns the corpus's
-//! `l1_f01_matches_visudo_verdict_per_target` and #699's three parity rows RED.
+//! only rows IN THIS FILE that catch it. It also turns #699's three parity rows
+//! and BOTH corpus layers that fire - `l1_f01_matches_visudo_verdict_per_target`
+//! and `l3_structure_projection_matches_cvtsudoers` - RED. (L2 stays green; the
+//! corpus has three layers, not two.) The L3 half was omitted when this
+//! paragraph was written, in the same breath as its own rule to name the rows.
 //!
 //! An earlier version of this paragraph said "exactly those three rows RED and
 //! nothing else". That was wrong twice over: it was measured under a plain

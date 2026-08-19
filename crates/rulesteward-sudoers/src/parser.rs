@@ -29,9 +29,10 @@ use rulesteward_core::Span;
 use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::boundary::{
-    clean_double_quoted_interior, find_closing_quote, inside_a_clean_quoted_region,
-    opens_principal, option_value_end, preceding_token, quoted_value_span, separator_escaped,
-    simple_quote_pairs, structural_eq, unquoted_unescaped, unquoted_whitespace_runs,
+    clean_double_quoted_interior, find_closing_quote, holds_a_principal,
+    inside_a_clean_quoted_region, opens_principal, option_value_end, preceding_token,
+    quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq, unquoted_unescaped,
+    unquoted_whitespace_runs,
 };
 
 use crate::ast::{
@@ -1643,8 +1644,9 @@ fn comma_split(s: &str) -> Vec<String> {
 /// the run set rather than testing the char. A quote reached after an UNESCAPED
 /// `,` or `!` is not glued either, but an ESCAPED `\,` / `\!` is a literal char
 /// and the quote after it IS a boundary - see the guard's own block below, which
-/// carries that grounding. This paragraph said "preceding non-`,` char" and "one
-/// reached after a comma is not glued" until #675 and #699 made both false.
+/// carries that grounding. This paragraph said "preceding non-`,` char" (whose
+/// `!` omission dates from `c153bc5`) and "one reached after a comma is not
+/// glued"; #675 falsified both, and #699 is the commit that repaired the text.
 ///
 /// That phrasing is deliberate. This said "non-whitespace byte" until #651, and
 /// re-deciding "is this whitespace a separator" here instead of asking the one
@@ -1762,7 +1764,8 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         //     turns four tests RED, one per axis:
         //     `an_escaped_comma_before_a_glued_quote_is_not_a_list_separator`
         //     and `an_escaped_sigil_before_a_glued_quote_is_a_principal_boundary`,
-        //     plus both corpus layers.
+        //     plus `l1_f01_matches_visudo_verdict_per_target` and
+        //     `l3_structure_projection_matches_cvtsudoers`. L2 stays green.
         //   - Dropping the `,` member alone, or swapping `separator_escaped`
         //     for a non-parity `ends_with`, leaves the WHOLE suite green. Those
         //     two are EQUIVALENT MUTANTS and are recorded as such rather than
@@ -1859,8 +1862,10 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // `(lhs, "")`, folded to `Malformed` and took its NOPASSWD grant with it,
     // on a line `visudo` accepts (rc 0, host `h1` NEGATED).
     //
-    // Each guard below is grounded, and three of the four exist to PRESERVE a
-    // correct answer rather than to add one:
+    // Each of the three guards below is grounded, and two of them exist to
+    // PRESERVE a correct answer rather than to add one. It read "three of the
+    // four" until #699 merged the `,` and `!` conjuncts into the single `prev`
+    // bullet, leaving the count pointing at nothing:
     //
     //   i > 0            a leading sigil negates the first principal; it is not
     //                    a boundary. `!!alice ALL = ...` is rc 0.
@@ -1895,7 +1900,9 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     //                    dead` RED, and dropping the ESCAPE-AWARENESS turns
     //                    `an_escaped_comma_before_a_negation_sigil_is_not_a_
     //                    list_separator`, `an_escaped_sigil_run_still_yields_a_
-    //                    negated_host` and both corpus layers RED - but
+    //                    negated_host`, `l1_f01_matches_visudo_verdict_per_target`
+    //                    and `l3_structure_projection_matches_cvtsudoers` RED
+    //                    (L2 stays green) - but
     //                    dropping the `,` member alone, or swapping in a
     //                    non-parity `ends_with`, leaves the WHOLE suite green.
     //                    The `,` member is therefore an EQUIVALENT MUTANT here
@@ -1970,7 +1977,22 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // index is the same question.
         let before_comma_continues =
             before.ends_with(',') && !separator_escaped(before, before.len() - 1);
-        if !before_comma_continues && !after.starts_with(',') {
+        // #701, the POSTCONDITION. Every guard above decides where a boundary
+        // COULD be; this one asks whether the split it produces is a pair of
+        // principal lists at all. Its absence is why three producer-level sigil
+        // fixes each left `alice!` parsing as user `alice` / host `!` - a
+        // well-formed `UserSpec` carrying a passwordless-ALL grant, off a file
+        // `visudo` rc-1 rejects. Both halves are asked, because `! h1` is the
+        // same defect with the degenerate half on the USER side.
+        //
+        // It is a filter on the candidate rather than a check on the return, so
+        // a later candidate still gets its turn; today no input reaches a second
+        // one, and writing it this way costs nothing and removes the question.
+        if !before_comma_continues
+            && !after.starts_with(',')
+            && holds_a_principal(before)
+            && holds_a_principal(after)
+        {
             // `after` starts right after the boundary - a non-whitespace char,
             // a quote, or the string end - so the HOST half is trimmed. That
             // holds exhaustively over the four candidate producers:
@@ -1978,9 +2000,17 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
             // (or at a `\`), opener candidates resume at `"`, `!` candidates
             // resume at the `!` itself, and closer candidates are excluded by
             // `!next.is_whitespace()` above, the SAME predicate
-            // `unquoted_whitespace_runs` uses. It said "three" until #699: the
-            // `!` scan has been a producer since `c153bc5` and the count above
-            // at the `after` proof was updated then while this one was not. An intermediate version
+            // `unquoted_whitespace_runs` uses.
+            //
+            // It said "three" until #699. The `!` scan has been a producer since
+            // `c153bc5`, which left this count stale; the "four" at the `after`
+            // proof above was then written fresh by #675 (`11f6ea0`), not
+            // updated at `c153bc5`. `git log -S "four candidate producers"`
+            // names only `11f6ea0` and `6abb10a`, and `c153bc5` contains no such
+            // count at all - an earlier version of this sentence credited it
+            // anyway.
+            //
+            // An intermediate version
             // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,
             // which broke it for non-ASCII whitespace and swallowed a principal;
             // do not restore it.
