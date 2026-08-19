@@ -838,8 +838,15 @@ the two comma conjuncts as "the last of that class in this function"; that was
 true when written and false by the time it was fixed, because `c153bc5` had
 since added a third one to the `!` boundary scan. It was found by the post-GREEN
 adversarial review of faces A and B and reported back to #675. On `a\,!h1` the
-`!` scan is the ONLY candidate producer, so unlike the opener guard's twin that
-site is redundant against nothing.
+`!` scan is the ONLY candidate producer, so an escape-BLIND conjunct there drops
+the grant outright.
+
+That sentence used to end "so unlike the opener guard's twin that site is
+redundant against nothing", and #699's review measured it false. What is
+load-bearing is the ESCAPE-AWARENESS, not the `,` member: making the conjunct
+escape-blind turns named tests RED at both sites, but deleting the `,` member
+outright leaves the whole suite green at both, because the continuation filter
+re-answers the comma axis downstream. The two sites are symmetric after all.
 
 **The three accepts are L3 xfail #645 Face B, not #667/#696.** The distinction is
 deliberate and is the reason they carry a different number from every retention
@@ -896,7 +903,12 @@ xfailed), `quoted-host-space-group-subj` (same pair; L3 xfail #667 on the HOSTS
 axis - see section 20), `escaped-comma-user-list`,
 `escaped-comma-glued-quote`, `escaped-comma-negated-host` (all three added
 2026-08-19 with #675; all three L3 xfail **#645 Face B** on the USERS axis, and
-the glued-quote one ALSO diverges on hosts by #667 - see section 21).
+the glued-quote one ALSO diverges on hosts by #667 - see section 21),
+`escaped-bang-glued-quote`, `escaped-bang-run`, `escaped-bang-runas`,
+`even-backslash-bang-boundary` (all four added 2026-08-19 with #699; three carry
+an L3 xfail **#696** on the USERS axis and `escaped-bang-runas` is L3-CLEAN,
+because L3 projects users/hosts/commands and not the runas group - see
+section 22).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
@@ -908,6 +920,59 @@ i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 `unescaped-comma-no-host-list`, `even-backslash-comma-continues` (both added
 2026-08-19 with #675; the one-byte control and the PARITY control - see
 section 21).
+
+## 22. #699 - the escape-blind negation sigil
+
+Four accept scenarios, added 2026-08-19 with the #699 fix. Every row was derived
+on `rs-oracle{8,9,10}` by `capture_sudoers.sh` and independently re-derived by
+hand against `rs-oracle9` (sudo 1.9.17p2) before the fix was written.
+
+| scenario | input | visudo | cvtsudoers |
+|---|---|---|---|
+| `accept-escaped-bang-glued-quote` | `alice\!"h1" = NOPASSWD: ALL` | rc 0 | ONE user `alice!`, host `h1`, `authenticate:false` |
+| `accept-escaped-bang-run` | `a\!!h1 = NOPASSWD: ALL` | rc 0 | user `a!`, host `h1` NEGATED |
+| `accept-escaped-bang-runas` | `alice ALL = (\!root) /bin/ls` | rc 0 | runasuser `!root`, NOT negated |
+| `accept-even-backslash-bang-boundary` | `alice\\!"h1" = NOPASSWD: ALL` | rc 0 | user `alice\`, host `h1` NEGATED |
+
+**An escaped sigil is a CHARACTER, not a modifier.** Read those `cvtsudoers`
+columns for shape and not just for rc: the escape is consumed and the `!`
+survives inside the name (`alice!`, `a!`, `!root`). Three predicates in this
+crate read a bare `!` as a sigil without asking whether it was escaped, so the
+first two rows lost their boundary entirely - `Malformed`, and per #668 every
+W/E lint suppressed on a passwordless-ALL grant - and the third drew a false
+`sudo-F02`.
+
+**The fourth row is the PARITY control and it is an ACCEPT, not a reject.** The
+separator rule counts a backslash run mod 2, so `alice\\!` is an EVEN run, the
+`!` is a real sigil again, and the boundary moves from the quote to the `!`
+leaving the host negated. It is what separates `separator_escaped` from a naive
+`ends_with('\\')`; that mutant leaves this row RED.
+
+**A fifth was staged and then reclassified, by the harness rather than by
+argument.** `alice ALL = (\\!root) /bin/ls` is `visudo` rc **1** - the even run
+leaves a literal backslash, so the `!` is MID-token, the same reject as
+`(ro!ot)`. Note that this is the OPPOSITE verdict from the row above it on the
+same bytes, decided by grammar position. Staged as `reject-even-backslash-bang-runas`
+it failed L1 immediately: RuleSteward answers `sudo-F02`, not `sudo-F01`, so it
+is a LINT-level reject and belongs with the #650/#652 rc-1 rows as a unit test
+(`an_even_backslash_run_leaves_the_runas_sigil_unescaped` in
+`tests/iss699_escaped_sigil.rs`), not as a scenario. It was removed.
+
+**The three L3 xfails are #696 ESCAPE retention, not #645.** `alice\!` and
+`alice!` are the same token modulo one consumed escape, where #645's rows LOSE
+the comma byte outright; the distinction is the same one section 21 draws in the
+other direction. Two of the three - `accept-escaped-bang-glued-quote` and
+`accept-even-backslash-bang-boundary` - ALSO diverge on hosts by #667 quote
+retention, so like `accept-escaped-comma-glued-quote` they are **not
+self-removing**: whichever of #667 and #696 lands second must delete them by
+hand. `accept-escaped-bang-run` is single-axis and does retire itself.
+
+**Provenance of the defect.** Not shipped. `prev != '!'` does not exist at
+`a700c38` and appears at `c153bc5`, the #670/#671/#672 commit on this same
+branch: that commit closed three UNESCAPED-sigil fail-opens and opened this
+ESCAPED one. The face-C mutation gate ran over exactly this code and returned rc
+0 with 0 survivors, because `cargo mutants` has no delete-a-conjunct operator
+and a dropped guard inside a compound `&&` chain is invisible to it.
 
 ## Re-capturing
 

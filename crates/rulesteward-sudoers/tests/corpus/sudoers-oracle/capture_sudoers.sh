@@ -228,12 +228,31 @@ for scen_dir in "$SELF_DIR"/*/; do
     case "$scen" in
     _*) continue ;;
     esac
+    # Set BEFORE the input check, so the abort below is labelled with the
+    # scenario that is actually broken rather than with whichever one happened
+    # to be captured last.
+    rs_capture_context "$scen"
     input="$scen_dir/input.sudoers"
     if [ ! -f "$input" ]; then
-        continue
+        # FAIL CLOSED (#699). This used to `continue` at rc 0, and the skip was
+        # invisible in both directions: the `continue` sits BEFORE
+        # `scenario_count` increments, so the expected-file count shrank in
+        # lockstep and `rs_capture_verify_output`'s recount still balanced. A
+        # scenario directory that lost its input therefore vanished from the
+        # corpus while the capture reported success - the exact #572 shape this
+        # file's own header cites, reproduced inside the script written to
+        # prevent it.
+        #
+        # rc 2 is what the header already documents for this condition ("a
+        # scenario's input.sudoers is missing/unreadable"), so the code is being
+        # brought to the contract rather than the contract loosened. NOT rc 3:
+        # that means "precondition unmet, a legitimate skip" and
+        # `rs-oracle-diff.sh` honours it as a skip on any box without
+        # RS_ORACLE_REQUIRED=1, which would turn a lost scenario back into a
+        # silent pass.
+        rs_capture_die "scenario '$scen': input.sudoers is missing or unreadable"
     fi
     scenario_count=$((scenario_count + 1))
-    rs_capture_context "$scen"
     rs_checked mkdir -p "$OUT/$scen"
     # The fresh corpus still needs the scenario's input alongside the oracle
     # results, since the Tier-1 test reads `input.sudoers` from the SAME

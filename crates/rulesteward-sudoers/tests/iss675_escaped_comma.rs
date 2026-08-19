@@ -1,10 +1,12 @@
 //! The escape-blind comma in `split_user_list`, all THREE faces (#675).
 //!
 //! A backslash-escaped `\,` is a LITERAL comma inside ONE principal; it does not
-//! continue the `User_List`. Two conjuncts in `split_user_list` re-decided that
-//! with bare predicates and got it wrong, so a line real sudo ACCEPTS folded to
-//! `Malformed` and, per #668, became invisible to every W/E pass. Both faces are
-//! therefore fail-opens: the grant is never evaluated and nothing says so.
+//! continue the `User_List`. THREE predicates in `split_user_list` re-decided
+//! that with bare comparisons and got it wrong, so a line real sudo ACCEPTS
+//! folded to `Malformed` and, per #668, became invisible to every W/E pass. All
+//! three faces are therefore fail-opens: the grant is never evaluated and
+//! nothing says so. (This paragraph said "Two conjuncts" and "Both faces" while
+//! the table below already listed three; corrected by #699's review.)
 //!
 //! | call site | before |
 //! |---|---|
@@ -58,9 +60,18 @@
 //! 2, so an EVEN run leaves the comma UNESCAPED and the list really does
 //! continue. They are what separate `separator_escaped` from a naive
 //! `ends_with('\\')` check, which would call that comma escaped and convert a
-//! correct `sudo-F01` into a fail-open. Measured: replacing the parity count
-//! with `ends_with` turns exactly those three rows RED and nothing else, so
-//! without them that mutant survives at every site.
+//! correct `sudo-F01` into a fail-open.
+//!
+//! Measured 2026-08-19 with `--no-fail-fast`: replacing `separator_escaped`'s
+//! parity count with `ends_with` turns all three of them RED, and they are the
+//! only rows IN THIS FILE that catch it. It also turns the corpus's
+//! `l1_f01_matches_visudo_verdict_per_target` and #699's three parity rows RED.
+//!
+//! An earlier version of this paragraph said "exactly those three rows RED and
+//! nothing else". That was wrong twice over: it was measured under a plain
+//! `cargo test`, which stops after the first failing test BINARY and cannot see
+//! the corpus layers at all, and an exclusivity claim about a whole suite is
+//! invalidated by any test anyone adds later. Name the rows, not a count.
 //!
 //! # What these tests deliberately do NOT assert
 //!
@@ -233,8 +244,14 @@ fn an_unescaped_comma_before_a_glued_quote_is_still_a_list_separator() {
 /// worse split, it is no split at all: `Malformed`, and the passwordless-ALL
 /// grant is never reported.
 ///
-/// This is why the site is NOT redundant against the continuation filter the way
-/// the opener guard's twin is.
+/// What makes this row necessary is the ESCAPE-AWARENESS, not the `,` member
+/// itself. Measured 2026-08-19: making the conjunct escape-blind turns this test
+/// RED, but deleting the `,` member outright leaves the whole suite green,
+/// because the continuation filter re-answers the comma axis downstream. This
+/// comment claimed the site was "NOT redundant against the continuation filter
+/// the way the opener guard's twin is"; that was reasoned rather than run, and
+/// running it refutes it. See the guard's own block in `parser.rs` for the full
+/// equivalence record.
 #[test]
 fn an_escaped_comma_before_a_negation_sigil_is_not_a_list_separator() {
     let src = "a\\,!h1 = NOPASSWD: ALL\n";

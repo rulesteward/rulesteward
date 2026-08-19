@@ -1637,10 +1637,14 @@ fn comma_split(s: &str) -> Vec<String> {
 /// whitespace outside the quoted span to find at all - the single space sits
 /// INSIDE the pair), so the loop below also treats the OPEN position of a
 /// [`simple_quote_pairs`] pair as a candidate boundary whenever it is glued to a
-/// preceding non-`,` char at a position where no whitespace RUN ends. A quote at
-/// `lhs`'s own start, or one reached after a comma, is not "glued"; one reached
-/// after whitespace is already reachable through the whitespace-run candidates,
-/// which is why the guard ASKS the run set rather than testing the char.
+/// preceding char at a position where no whitespace RUN ends. A quote at
+/// `lhs`'s own start is not "glued"; one reached after whitespace is already
+/// reachable through the whitespace-run candidates, which is why the guard ASKS
+/// the run set rather than testing the char. A quote reached after an UNESCAPED
+/// `,` or `!` is not glued either, but an ESCAPED `\,` / `\!` is a literal char
+/// and the quote after it IS a boundary - see the guard's own block below, which
+/// carries that grounding. This paragraph said "preceding non-`,` char" and "one
+/// reached after a comma is not glued" until #675 and #699 made both false.
 ///
 /// That phrasing is deliberate. This said "non-whitespace byte" until #651, and
 /// re-deciding "is this whitespace a separator" here instead of asking the one
@@ -1718,58 +1722,75 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // (too-narrow) and `escaped_whitespace_before_an_opening_quote_still_reports_the_grant`
         // (too-wide), each carrying its own one-byte control.
         //
-        // The `,` half asks `separator_escaped` for the same reason the `!`
-        // scan below does, rather than testing the char: an escaped `a\,"b"` is
-        // a LITERAL comma inside ONE principal and does not continue the user
-        // list, so the candidate at the quote is the only correct boundary.
-        // Suppressing it left the line with no candidate at all, folded it to
-        // `Malformed` and dropped a passwordless-ALL grant on a line `visudo`
-        // accepts (rc 0, `User_List ["a,"]` / `Host_List ["b"]`, re-derived on
-        // rs-oracle9 2026-08-19). #675.
+        // ONE conjunct, not two, because both structural predecessors ask the
+        // same question: is the char immediately before this position a `,` or
+        // a `!` that REALLY is one, or a literal spelled `\,` / `\!`? It was
+        // two adjacent conjuncts with identical `separator_escaped` calls until
+        // #699 - one concept given two recognizers, the shape this surface
+        // keeps producing.
+        //
+        // `,` is #675. An escaped `a\,"b"` is a LITERAL comma inside ONE
+        // principal and does not continue the user list, so the candidate at
+        // the quote is the only correct boundary. Suppressing it left the line
+        // with no candidate at all, folded it to `Malformed` and dropped a
+        // passwordless-ALL grant on a line `visudo` accepts (rc 0,
+        // `User_List ["a,"]` / `Host_List ["b"]`).
+        //
+        // `!` is #670 and #699. UNESCAPED it negates the principal that
+        // follows, so `ALL,!"svc acct" ALL` is two users and one host, not a
+        // boundary at the quote; without the guard the user list became
+        // `["ALL", "!"]`, the host list swallowed `"svc acct" ALL`, and the
+        // line went silent on a full ALL/ALL elevation. ESCAPED it is a literal
+        // `!` inside the name and the quote IS the boundary:
+        // `alice\!"h1" = NOPASSWD: ALL` is rc 0 with ONE user `alice!` and host
+        // `h1`. Both re-derived on rs-oracle9, 2026-08-19.
         //
         // It is the SEPARATOR rule, so PARITY matters and this is NOT
         // `quote_is_escaped`: `a\\, b` is an EVEN run, so that comma is
         // UNESCAPED, the list really does continue, and its `sudo-F01` is
-        // correct. A naive "previous byte is a backslash" check calls it escaped
-        // and turns that FATAL into silence.
+        // correct; `alice\\!"h1"` is an even run too, so the `!` is a real
+        // sigil again and the boundary moves to it, leaving the host negated.
         //
-        // A comma cannot be literal by being QUOTED here, so no
-        // `inside_a_clean_quoted_region` conjunct is needed - and the absence is
-        // a proof, not an unchecked axis. `open` is itself a pair start and
-        // `simple_quote_pairs` never overlaps, so the previous pair has already
-        // closed at some `pb < open`; `lhs[open - 1]` is therefore either that
-        // closing `"` or outside every span, never a comma inside one.
+        // WHAT IS AND IS NOT LOAD-BEARING HERE, measured 2026-08-19 rather than
+        // argued, because the previous version of this comment argued it and
+        // was wrong:
+        //
+        //   - Dropping the `!` member turns `negated_quoted_principal_still_
+        //     reports_the_elevation` and `l3_structure_projection_matches_
+        //     cvtsudoers` RED. It is decisive.
+        //   - Dropping the ESCAPE-AWARENESS (a blind `!matches!(prev, ',' | '!')`)
+        //     turns four tests RED, one per axis:
+        //     `an_escaped_comma_before_a_glued_quote_is_not_a_list_separator`
+        //     and `an_escaped_sigil_before_a_glued_quote_is_a_principal_boundary`,
+        //     plus both corpus layers.
+        //   - Dropping the `,` member alone, or swapping `separator_escaped`
+        //     for a non-parity `ends_with`, leaves the WHOLE suite green. Those
+        //     two are EQUIVALENT MUTANTS and are recorded as such rather than
+        //     chased: the continuation filter below re-answers the comma axis
+        //     authoritatively (a candidate this admits with `before` ending in
+        //     an unescaped comma is rejected there anyway), so the comma member
+        //     cannot change an answer. It is kept as the PRODUCER's statement
+        //     of intent; a later commit may delete it, but must not make it
+        //     escape-BLIND, which is a third state and the one that is wrong.
         //
         // Indexed by `open - prev.len_utf8()` rather than `open - 1`. The two
-        // are identical whenever `prev == ','`, and only the first is a char
+        // are identical for these one-byte chars, and only the first is a char
         // boundary UNCONDITIONALLY. That matters because `||` short-circuiting
         // is what would otherwise keep `open - 1` safe, which makes the safety a
         // property of the operator rather than of the expression: swap the `||`
         // for `&&` and `alice,<NBSP>"b c" ALL` slices mid-NBSP and panics.
         //
-        // This conjunct is REDUNDANT as a filter, and saying so is the honest
-        // record rather than an invitation to delete it. Any opener candidate it
-        // suppresses has `before` ending in that same comma, which the
-        // continuation filter below rejects on its own when the comma is
-        // unescaped -- and when it IS escaped, this admits the candidate anyway.
-        // So deleting it changes no answer, exactly like the closer guard's own
-        // `,` exclusion documented above, and nothing pins it. It is kept as the
-        // PRODUCER's statement of intent: on `a\,"b"` there is no other
-        // candidate at all, so what cannot be done is leave it bare.
+        // Neither char can be literal by being QUOTED here, so no
+        // `inside_a_clean_quoted_region` conjunct is needed - and the absence is
+        // a proof, not an unchecked axis. `open` is itself a pair start and
+        // `simple_quote_pairs` never overlaps, so the previous pair has already
+        // closed at some `pb < open`; `lhs[open - 1]` is therefore either that
+        // closing `"` or outside every span, never a `,` or `!` inside one.
         //
         // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
-        //
-        // `prev != '!'` is #670. A leading `!` NEGATES the principal that
-        // follows it, so `ALL,!"svc acct" ALL` is two users and one host, not a
-        // boundary at the quote. Without this conjunct the candidate at the
-        // quote won, the user list became `["ALL", "!"]`, the host list
-        // swallowed `"svc acct" ALL`, and the line went silent on a full
-        // ALL/ALL elevation - no F01, no F02, no W06. Grounded: that line is
-        // `visudo` rc 0 with users `ALL` + `svc acct` NEGATED and host `ALL`.
         if open > 0
             && let Some(prev) = lhs[..open].chars().next_back()
-            && (prev != ',' || separator_escaped(lhs, open - prev.len_utf8()))
-            && prev != '!'
+            && (!matches!(prev, ',' | '!') || separator_escaped(lhs, open - prev.len_utf8()))
             && !runs.iter().any(|&(_, end)| end == open)
         {
             candidates.push((open, open));
@@ -1843,27 +1864,6 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     //
     //   i > 0            a leading sigil negates the first principal; it is not
     //                    a boundary. `!!alice ALL = ...` is rc 0.
-    //   prev != '!'      the rest of a leading run, same reason. `(!!root)`,
-    //                    `alice!!h1` and `!!alice` are all rc 0, so the run may
-    //                    be longer than one - which is also why `runas.rs`
-    //                    trims rather than strips a single sigil.
-    //   prev != ','      an UNESCAPED `!` after a comma CONTINUES the user
-    //                    list. `alice,!bob ALL = ...` is rc 0 with users
-    //                    `alice` + `bob` negated. An ESCAPED one does not, and
-    //                    this conjunct was escape-blind until #675's third face:
-    //                    `a\,!h1 = NOPASSWD: ALL` is rc 0 with user `a,` and
-    //                    host `h1` NEGATED (rs-oracle9, 2026-08-19), but the `!`
-    //                    scan is the ONLY producer for that line -- no
-    //                    whitespace, no quotes -- so suppressing it left no
-    //                    candidate, folded the line to `Malformed` and dropped a
-    //                    passwordless-ALL grant.
-    //
-    //                    Unlike the opener guard's twin, this one is NOT
-    //                    redundant against the continuation filter: it is
-    //                    frequently the only candidate producer, so its absence
-    //                    is a dropped grant rather than a no-op. #675's own
-    //                    sibling sweep does not list this site because the sweep
-    //                    predates `c153bc5`, which introduced this scan.
     //   !separator_escaped
     //                    `alice\!h1 = ...` is `visudo` rc 1. Splitting there
     //                    would parse an INVALID file as `alice\` / `!h1` and
@@ -1872,6 +1872,38 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     //                    causing a fail-open, and it is why the separator-rule
     //                    predicate was added to `boundary.rs` instead of being
     //                    re-derived here.
+    //   the `prev` conjunct
+    //                    the MIRROR of the opener guard's, same shape and same
+    //                    reasons; that block carries the full grounding and is
+    //                    not repeated here. `!` is the rest of a leading run
+    //                    (`(!!root)`, `alice!!h1` and `!!alice` are all rc 0,
+    //                    which is also why `runas.rs` TRIMS rather than strips
+    //                    a single sigil); `,` is a list that continues
+    //                    (`alice,!bob ALL = ...` is rc 0, users `alice` + `bob`
+    //                    negated). Both members ask `separator_escaped`, so an
+    //                    ESCAPED one is a literal char and the boundary stands:
+    //                    `a\,!h1` is rc 0 with user `a,` and host `h1` NEGATED
+    //                    (#675's third face), and `a\!!h1` is rc 0 with user
+    //                    `a!` and host `h1` NEGATED (#699). For both, the `!`
+    //                    scan is the ONLY candidate producer - no whitespace,
+    //                    no quotes - so suppressing it left no candidate at all
+    //                    and dropped a passwordless-ALL grant.
+    //
+    //                    Measured 2026-08-19, and the previous version of this
+    //                    comment got it exactly backwards: dropping the `!`
+    //                    member turns `w03_double_negation_in_user_subject_not_
+    //                    dead` RED, and dropping the ESCAPE-AWARENESS turns
+    //                    `an_escaped_comma_before_a_negation_sigil_is_not_a_
+    //                    list_separator`, `an_escaped_sigil_run_still_yields_a_
+    //                    negated_host` and both corpus layers RED - but
+    //                    dropping the `,` member alone, or swapping in a
+    //                    non-parity `ends_with`, leaves the WHOLE suite green.
+    //                    The `,` member is therefore an EQUIVALENT MUTANT here
+    //                    just as it is at the opener, for the same reason: the
+    //                    continuation filter re-answers the comma axis
+    //                    downstream. The claim that stood here until #699 - that
+    //                    this site, unlike the opener's twin, is NOT redundant -
+    //                    was never measured and is false.
     //
     // A `!` inside a closed quoted span is not a boundary either (`a"b!c" ALL`
     // is rc 1); `spans` covers that.
@@ -1882,8 +1914,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
             && !inside_a_clean_quoted_region(&spans, i)
             && !separator_escaped(lhs, i)
             && let Some(prev) = lhs[..i].chars().next_back()
-            && (prev != ',' || separator_escaped(lhs, i - prev.len_utf8()))
-            && prev != '!'
+            && (!matches!(prev, ',' | '!') || separator_escaped(lhs, i - prev.len_utf8()))
             && !runs.iter().any(|&(_, end)| end == i)
         {
             candidates.push((i, i));
@@ -1942,11 +1973,14 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         if !before_comma_continues && !after.starts_with(',') {
             // `after` starts right after the boundary - a non-whitespace char,
             // a quote, or the string end - so the HOST half is trimmed. That
-            // holds exhaustively over the three candidate producers:
+            // holds exhaustively over the four candidate producers:
             // whitespace-run candidates resume at the first non-whitespace char
-            // (or at a `\`), opener candidates resume at `"`, and closer
-            // candidates are excluded by `!next.is_whitespace()` above, the SAME
-            // predicate `unquoted_whitespace_runs` uses. An intermediate version
+            // (or at a `\`), opener candidates resume at `"`, `!` candidates
+            // resume at the `!` itself, and closer candidates are excluded by
+            // `!next.is_whitespace()` above, the SAME predicate
+            // `unquoted_whitespace_runs` uses. It said "three" until #699: the
+            // `!` scan has been a producer since `c153bc5` and the count above
+            // at the `after` proof was updated then while this one was not. An intermediate version
             // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,
             // which broke it for non-ASCII whitespace and swallowed a principal;
             // do not restore it.

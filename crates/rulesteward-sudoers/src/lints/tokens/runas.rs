@@ -8,7 +8,7 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::SudoersFile;
 use crate::lints::anchored;
 
-use crate::boundary::clean_double_quoted_interior;
+use crate::boundary::{clean_double_quoted_interior, separator_escaped};
 
 use super::shared::{is_denylist_char, is_malformed_gid_tail};
 
@@ -52,8 +52,28 @@ fn first_invalid_char(token: &str) -> Option<char> {
     if clean_double_quoted_interior(bare).is_some() {
         return None;
     }
-    bare.chars()
-        .find(|c| is_denylist_char(*c) || c.is_whitespace())
+    // #699: a BACKSLASH-ESCAPED `!` is a literal character in the name, not a
+    // sigil, so the denylist must not match it. `alice ALL = (\!root) /bin/ls`
+    // is `visudo` rc 0 with runasuser `!root` and NO `negated` flag
+    // (rs-oracle9, 2026-08-19), and this scan used to draw a FALSE `sudo-F02`
+    // on it.
+    //
+    // It is asked of `!` ALONE, deliberately. The other four denylist chars are
+    // escape-blind in exactly the same way (`(a\>b)` is rc 0 with username
+    // `a>b`), but their repair has no parity subtlety and an unprobed
+    // whitespace half, so it is filed as #700 rather than folded in here. An
+    // admitted gap is auditable; a silently widened one is not.
+    //
+    // PARITY, not `ends_with`: `(\\!root)` is `visudo` rc **1**, because an
+    // EVEN run leaves a literal backslash and the `!` is then MID-token, the
+    // same reject as `(ro!ot)`. Widening the `trim_start_matches` above to
+    // swallow a preceding backslash, or asking a non-parity predicate here,
+    // turns that rc-1 file into a silent pass.
+    bare.char_indices()
+        .find(|&(i, c)| {
+            (is_denylist_char(c) || c.is_whitespace()) && !(c == '!' && separator_escaped(bare, i))
+        })
+        .map(|(_, c)| c)
 }
 
 /// #375 Rule 1: runas-position defects on a single `CmndSpec.runas` group.
