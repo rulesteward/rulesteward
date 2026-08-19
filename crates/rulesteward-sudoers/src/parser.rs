@@ -1193,11 +1193,14 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     // byte and must not be mistaken for the group's closer. Distinct from `quotes`
     // above, which tracks only `Option_Spec` VALUE spans.
     //
-    // No LINT-level input flips a grant through this splitter alone: #650's
-    // truncation in `parse_cmnd_spec` intercepts every line with a quoted `)` in
-    // a runas list before this splitter's `tok_start` can matter. That masking is
-    // a property of one CALLER, not of the splitter, so the arm is witnessed
-    // directly instead -- see `quoted_close_paren_in_a_runas_principal_keeps_the_
+    // No LINT-level input flipped a grant through this splitter alone while
+    // #650 stood: `parse_cmnd_spec`'s truncation intercepted every line with a
+    // quoted `)` in a runas list before this splitter's `tok_start` could
+    // matter. #650 is FIXED, so that masking is gone and a CLI input now reaches
+    // this arm. The direct witness is kept anyway - it tests the splitter in
+    // isolation from whatever its callers do, which is the property that made it
+    // survive the masking in the first place -- see
+    // `quoted_close_paren_in_a_runas_principal_keeps_the_
     // option_value_anchor` and `a_depth_zero_quote_never_shields_a_later_runas_
     // close_paren` in this file's test module, which call `split_cmnd_specs`
     // itself. Both halves of the guard below are killed by them; nothing here is
@@ -1665,10 +1668,12 @@ fn comma_split(s: &str) -> Vec<String> {
 ///   * [`option_value_end`] is the same rule for the same delimiter - a closing
 ///     QUOTE (`return close + 1`, #631).
 ///   * [`parse_cmnd_spec`] is the same rule for a different delimiter: its
-///     `close` comes from `after_open.find(')')`, a closing PAREN of the runas
-///     group. Do NOT read it as a co-model of the quote rule - that `find(')')`
-///     is quote-BLIND, stops at a quoted paren and truncates `"a)b"` to `"a`,
-///     and is filed as #650.
+///     `close` comes from [`unquoted_unescaped`], a closing PAREN of the runas
+///     group. Do NOT read it as a co-model of the quote rule - it answers a
+///     different question (where is a structural byte outside a quoted span)
+///     using the SEPARATOR escape rule. It was a bare `after_open.find(')')`
+///     until #650: quote- and escape-BLIND, stopping at a quoted paren and
+///     truncating `"a)b"` to `"a`.
 ///
 /// So two quote recognizers and one paren recognizer, and until #651 the
 /// principal-side quote one was the odd out. Recognizers of one concept
@@ -3009,11 +3014,14 @@ mod tests {
 
     #[test]
     fn quoted_close_paren_in_a_runas_principal_keeps_the_option_value_anchor() {
-        // WITNESS for this splitter's `runas_quotes` guard. The lint-level face of
-        // this arm is masked by #650 (`parse_cmnd_spec`'s `after_open.find(')')`
-        // truncates the runas token before the split can matter), so no CLI input
-        // observes it and its mutants survive the diff-scoped gate. Calling the
-        // splitter directly bypasses that masking.
+        // WITNESS for this splitter's `runas_quotes` guard. The lint-level face
+        // of this arm WAS masked by #650 (`parse_cmnd_spec`'s bare
+        // `after_open.find(')')` truncated the runas token before the split could
+        // matter), so no CLI input observed it and its mutants survived the
+        // diff-scoped gate. #650 is fixed and the masking is gone. This test is
+        // kept because calling the splitter directly still tests it in isolation
+        // from its callers, which is why it was the only witness available then
+        // and remains the sharpest one now.
         //
         // `alice ALL = (root,"a)b") CWD="/x,y" /bin/ls, NOPASSWD: /bin/su` is
         // `visudo -c -f -` rc 0 with TWO `Cmnd_Spec`s (sudo 1.9.17p2, 2026-08-02).

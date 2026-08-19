@@ -425,15 +425,17 @@ fn quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group(
     assert_eq!(w05_count(src), 2, "both groups' grants: group 1's and h2's");
 }
 
-/// The security property with #650's interference removed: only the SECOND host
-/// group carries a `NOPASSWD`, so the count cannot be satisfied by the first
-/// group's grant.
+/// The security property isolated from the first group entirely: only the
+/// SECOND host group carries a `NOPASSWD`, so the count cannot be satisfied by
+/// the first group's grant. (This doc said "with #650's interference removed"
+/// while #650 stood; it is fixed, and the isolation here was always a property
+/// of the INPUT - no NOPASSWD in group 1 - rather than of that defect.)
 ///
 /// NOT the regression pin, despite testing the property the regression violated.
 /// Its line has no tag colon in the first host group, and the tag colon is what
 /// makes a corrupted `tok_start` observable -- so a `')'` arm that loses its
-/// content guard leaves this test GREEN. Isolating it from #650 also isolated it
-/// from the defect. The pin is
+/// content guard leaves this test GREEN. Isolating it from the first group also
+/// isolated it from the defect. The pin is
 /// [`quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group`].
 #[test]
 fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
@@ -444,9 +446,13 @@ fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
 }
 
 /// The one-byte negative control: the same line with the `)` deleted from the
-/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES. The two
-/// lines still do not lint IDENTICALLY -- `w05_count` is 1 above and 2 here --
-/// because #650 truncates the first group's grant on the `a)b` spelling only.
+/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES.
+///
+/// `w05_count` is 1 in the test above and 2 here, and this doc used to blame
+/// #650 for the difference. That was wrong, and #650's fix is what exposed it:
+/// the two INPUTS differ. The line above carries a plain `/bin/ls` in the first
+/// host group, so only h2's grant can be counted; this one carries `NOPASSWD:`
+/// in BOTH groups. Both counts are unchanged by the #650 fix.
 ///
 /// Green on the fork point as well, so a fix cannot pass by DISABLING the `')'`
 /// arm outright. It is blind to deletion of `depth > 0` on its own: this line
