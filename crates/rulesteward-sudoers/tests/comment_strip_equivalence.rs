@@ -1,6 +1,13 @@
 //! #562 equivalence pin: the shared `rulesteward_core::comment` helper,
 //! configured for sudoers, must match the OLD `parser::strip_inline_comment`
-//! behavior byte-for-byte. Expected values are derived by READING
+//! behavior byte-for-byte.
+//!
+//! EXCEPTION, added by #649: the FINAL row no longer does, and deliberately.
+//! It pins real sudo 1.9.17p2 instead, because the old implementation was
+//! simply wrong about an escaped quote and preserving that byte-for-byte would
+//! have blocked the escape-awareness fix. Every other row is still an
+//! equivalence pin, so the test name's `matches_old_` is accurate for all but
+//! that one. Expected values are derived by READING
 //! `src/parser.rs` (cited per case) - not by calling the old function,
 //! which this refactor deletes. All cited cases reproduce EXISTING pinned
 //! tests already in `src/parser.rs`'s own `#[cfg(test)] mod tests`, which
@@ -42,12 +49,18 @@ fn matches_old_parser_rs_strip_inline_comment() {
         // #include bypass (parser.rs:238-246): the whole line survives
         // unchanged.
         ("#include /etc/sudoers.extra", "#include /etc/sudoers.extra"),
-        // Escaped-quote is NOT honored (no backslash awareness): the 3rd
-        // `"` re-opens the quote state, so the trailing `#tail` reads as
-        // inside quotes and the whole line survives unchanged.
+        // Escaped quote inside a span (#649). CHANGED from the pre-#649
+        // expectation, which pinned the whole line surviving. That was an
+        // equivalence pin on the old implementation, not on sudo:
+        // `printf 'Defaults passprompt="a\\"b" #tail\n' | cvtsudoers -f json`
+        // (backslash DOUBLED on purpose: bash printf eats `\"`, and the
+        // single-backslash spelling emits a different, rc-1 file)
+        // on sudo 1.9.17p2 (2026-08-19) records the value as `a"b` with no
+        // ` #tail`, so the tail is a comment. See the matching row and its
+        // full grounding in `rulesteward-core/src/comment.rs`.
         (
             r#"Defaults passprompt="a\"b" #tail"#,
-            r#"Defaults passprompt="a\"b" #tail"#,
+            r#"Defaults passprompt="a\"b" "#,
         ),
     ];
     for (i, (input, expected)) in cases.iter().enumerate() {

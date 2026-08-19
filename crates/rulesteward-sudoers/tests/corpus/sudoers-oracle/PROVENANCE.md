@@ -640,6 +640,64 @@ claim was corrected in the header itself later on the same branch, so the warnin
 outlived what it warned about and pointed a reader at text that no longer exists.
 It also attributed the rc 2 to `cp`, which returns 1.)
 
+### 18. The corpus's first backslash ESCAPES (2026-08-19, #649)
+
+Three scenarios added alongside the #649 fix, for a backslash-escaped `#` in
+command text. All three are `visudo -c -f -` rc 0 `parsed OK` on all three
+targets:
+
+| scenario | input (command part) | oracle Cmnd_Specs |
+|---|---|---|
+| `escaped-hash-keeps-nopasswd` | `/bin/echo \#x, NOPASSWD: /bin/su` | `/bin/echo #x`, then `authenticate:false` + `/bin/su` |
+| `even-backslash-run-before-hash` | `/bin/echo \\#x, NOPASSWD: /bin/su` | `/bin/echo \` only - NO second spec |
+| `odd-backslash-run-before-hash` | `/bin/echo \\\#x, NOPASSWD: /bin/su` | `/bin/echo \#x`, then `authenticate:false` + `/bin/su` |
+
+The second is the parity control and it is the interesting one: real sudo
+truncates at the `#` when the backslash run before it is EVEN, because the
+backslashes escape each other. So the grant genuinely disappears there and
+reporting none is CORRECT, while reporting none on the other two is the #649
+fail-open. An implementation that only asked "is the previous byte a
+backslash?" gets rows 1 and 3 right and row 2 wrong.
+
+**These are the corpus's FIRST backslash ESCAPES**, which is a narrower claim
+than "first backslashes" and the distinction is the point. Checked mechanically
+when they were added, `grep -l '\\' */input.sudoers` returned these three and
+one other: `accept-continuation-line`, whose input is
+
+```
+carol ALL = \
+    NOPASSWD: ALL
+```
+
+That backslash is a line CONTINUATION - a backslash at end of line, consumed by
+`split_continuation` - and it never reaches the question this section is about,
+which is what a backslash does to the byte AFTER it in the middle of a line. So
+of the 45 pre-existing scenarios exactly one contained a backslash at all, and
+none contained an escape.
+
+The gap is the same shape as section 17's: the escaped-`#` fail-open discarded
+the rest of a logical line with no diagnostic about it, and no differential run
+could see it because nothing in the corpus had an escape to sample.
+
+The neighbouring gap is still open. `split_continuation` (`parser.rs:168`) reads
+that trailing backslash with a bare `rfind('\\')` and NO parity model, so an
+EVEN run at end of line is read as a continuation and silently merges the next
+rule. That is **#648**, it is pre-existing and unchanged by #649, and it is the
+reason this section's parity control matters beyond its own row: after #649 the
+comment stripper and `split_continuation` read backslashes on the SAME string
+under two different models.
+
+Rows 1 and 3 are L3 xfail with **no issue number yet** - an escape-RETENTION
+divergence exactly analogous to #667's quote retention, and reached here for
+the first time: the AST keeps the backslash (`/bin/echo \#x`) and `cvtsudoers`
+reports the unescaped value (`/bin/echo #x`), with every structural field
+agreeing. It needs an issue filed, scoped alongside #667, since both are the
+one cause: this parser does not dequote or unescape token values anywhere.
+
+Row 2 is deliberately NOT xfailed - measured 2026-08-19, its projections AGREE
+with `cvtsudoers`. The harness fails an xfail entry whose projections match, so
+listing it would hide a later real regression.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -662,7 +720,11 @@ see section 16), `negated-uid-subject` (added 2026-07-27, round 4; L1 xfail
 xfail; see section 16), `glued-closing-quote-principal`,
 `glued-closing-quote-with-inner-space`, `glued-closing-quote-after-comma-list`,
 `spaced-closing-quote-control` (all four added 2026-08-03 with #651; all four
-L3 xfail #667 - see section 17).
+L3 xfail #667 - see section 17), `escaped-hash-keeps-nopasswd`,
+`odd-backslash-run-before-hash` (both added 2026-08-19 with #649; both L3 xfail
+on an escape-RETENTION divergence with no issue filed yet),
+`even-backslash-run-before-hash` (added 2026-08-19 with #649; the parity
+control, NOT xfailed - its projections agree - see section 18).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -

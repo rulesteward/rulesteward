@@ -1,0 +1,1 @@
+alice ALL = /bin/echo \\\#x, NOPASSWD: /bin/su

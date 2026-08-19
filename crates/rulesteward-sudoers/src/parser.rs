@@ -205,13 +205,40 @@ fn split_continuation(body: &str) -> Option<&str> {
 // visudo-invalid) line rather than special-cased; faithful per-position token
 // validation is a documented Phase-1 extension.
 //
-// KNOWN DIVERGENCE (documented, intentionally not handled here): sudo's COMMAND
-// lexer does not protect a `#` with double quotes the way its Defaults-value
-// lexer does, so a pathological `/bin/echo "a # b"` is truncated by real sudo at
-// the `#` but the quote-balance rule here keeps `a # b`. This OVER-protects (it
-// never corrupts a normal rule, and Phase-0 keeps command tokens verbatim),
-// which is the safe direction; a position-aware lexer is a documented Phase-1
-// extension point.
+// KNOWN DIVERGENCE (documented, NOT handled here, and NOT benign): sudo's
+// COMMAND lexer does not protect a `#` with double quotes the way its
+// Defaults-value and principal lexers do, so `/bin/echo "a # b"` is truncated by
+// real sudo at the `#` while the quote-balance rule here keeps `a # b`.
+//
+// This comment used to say the over-protection "never corrupts a normal rule ...
+// which is the safe direction". That is FALSE and it was falsified on the input
+// below, not by inspection. Retaining the tail retains any STRUCTURAL byte inside
+// it, and a retained `:` reaches the host-group splitter:
+//
+//   alice ALL = NOPASSWD: /bin/su, /bin/echo "a#b:c"
+//     visudo -c -f -     -> rc 0 "parsed OK"
+//     cvtsudoers -f json -> { "authenticate": false }, { "command": "/bin/su" },
+//                           { "command": "/bin/echo \"a" }
+//     RuleSteward        -> a FALSE sudo-F01 and ZERO sudo-W05
+//
+// So the live passwordless grant on `/bin/su` disappears behind a fabricated
+// FATAL. Per #668 a Malformed line suppresses every other pass, which is what
+// converts the mis-parse into a dropped grant rather than a visible complaint.
+// Two controls, both rc 0 with the same `authenticate:false` and both handled
+// CORRECTLY today, isolate it to the quote plus the retained `:`:
+// `/bin/echo a#b:c` (no quotes) and `/bin/echo "a#b"` (no colon) each give
+// sudo-W05 x2 and no F01.
+//
+// The quote protection is still CORRECT in the other positions and must not
+// simply be dropped: `Defaults passprompt="a # b"` keeps the value `a # b`, and
+// `alice "h#1" = ALL` keeps the hostname `h#1`. Both verified on sudo 1.9.17p2,
+// 2026-08-19. The fix is therefore POSITION-AWARENESS, which this line-level
+// stripper structurally cannot have - it belongs with the parser's boundary
+// substrate, alongside the rest of the quote/escape call sites.
+//
+// Pre-existing and unchanged by #649 (which is the ESCAPE axis; this is the
+// QUOTE axis). Verified two-sided against the fork point a700c38. Needs its own
+// issue, scoped with #668.
 
 /// Stage 2: classify one joined logical line into a [`LineKind`].
 ///
