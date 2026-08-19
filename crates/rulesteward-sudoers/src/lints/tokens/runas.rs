@@ -8,6 +8,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::SudoersFile;
 use crate::lints::anchored;
 
+use crate::boundary::clean_double_quoted_interior;
+
 use super::shared::{is_denylist_char, is_malformed_gid_tail};
 
 /// Return the first Case-4(b) denylist char (`! ( ) > "`) or whitespace char
@@ -34,9 +36,23 @@ fn first_invalid_char(token: &str) -> Option<char> {
     // the MIDDLE of a token really is invalid (`(ro!ot)` is rc 1), so it must
     // still be found. `mid_token_bang_is_still_invalid` pins that direction and
     // is what stops the lazy repair of dropping `'!'` from the denylist.
-    token
-        .trim_start_matches('!')
-        .chars()
+    let bare = token.trim_start_matches('!');
+    // #652 face B: a CLEAN quoted region's interior is a literal principal
+    // name, so neither the quotes nor anything they enclose is invalid.
+    //
+    // Grounded 2026-08-19, sudo 1.9.17p2, every row `visudo -c -f -` rc 0:
+    // `("a b")`, `("a(b")`, `("a>b")`, `("a!b")`. Quoting legitimises the WHOLE
+    // denylist, not just whitespace, which is why this returns early rather
+    // than filtering whitespace out of the scan.
+    //
+    // It DISCRIMINATES rather than deletes, which #652 asks for explicitly.
+    // Both directions are pinned: `(a>b)` is rc 1 and still fires, and
+    // `("a b)` - an UNTERMINATED quote, so not a clean region - is rc 1 and
+    // still fires because this returns `None` only for a closed pair.
+    if clean_double_quoted_interior(bare).is_some() {
+        return None;
+    }
+    bare.chars()
         .find(|c| is_denylist_char(*c) || c.is_whitespace())
 }
 

@@ -6,6 +6,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::SudoersFile;
 use crate::lints::anchored;
 
+use crate::boundary::clean_double_quoted_interior;
+
 use super::shared::{is_denylist_char, is_malformed_gid_tail};
 
 /// Case 4: malformed group subject.
@@ -118,7 +120,18 @@ pub(super) fn check_group_subject(
     if spec.users.iter().any(|u| u.starts_with('%')) {
         for host_group in &spec.host_groups {
             for host in &host_group.hosts {
-                if host.contains(char::is_whitespace) {
+                // #652 face A: sub-case (a)'s premise - "the parser split the
+                // group name at the space" - is FALSE when the host token is a
+                // CLEAN quoted region, which may legally contain a space.
+                // `%grp "h c" = /bin/ls` is visudo rc 0.
+                //
+                // Discriminating rather than deleting is the point: the
+                // UNQUOTED `%bad group ALL = ALL` is rc 1 and must keep firing,
+                // and so must an UNTERMINATED quote, which is not a clean
+                // region and so still reaches the whitespace test.
+                if clean_double_quoted_interior(host).is_none()
+                    && host.contains(char::is_whitespace)
+                {
                     let pct_user = spec
                         .users
                         .iter()

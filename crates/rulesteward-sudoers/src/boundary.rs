@@ -528,3 +528,71 @@ pub(crate) fn unquoted_whitespace_runs(s: &str) -> Vec<(usize, usize)> {
     }
     runs
 }
+
+/// If `value` is exactly ONE clean double-quoted string -- an opening `"`, an
+/// interior with no UNESCAPED `"`, and a closing `"` as the final byte -- return
+/// the interior with the surrounding quotes stripped. Otherwise return `None`
+/// (the value is left verbatim by the caller).
+///
+/// "Unescaped" uses the sudoers single-backslash escape model (the same one
+/// [`split_default_settings`] uses): a `\` escapes the next char, and `\\` is one
+/// literal backslash that does NOT escape a following `"`. So the FIRST unescaped
+/// `"` after the opening quote must be the LAST byte of the value; an unescaped
+/// `"` before the end means a second quoted region or unquoted trailing content
+/// follows -- e.g. `"a" #5 "b"` (the `#5` sits in an unquoted gap between two
+/// regions) -- which is NOT one clean region.
+///
+/// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
+/// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
+/// `"a\\" #5 "b"` rc=1, `"a\\\" #5 b"` rc=0.
+///
+/// CAVEAT on the third, re-checked 2026-08-02: the rc is right but the reason
+/// once given here ("`\\` is a literal backslash, so the `"` closes the first
+/// region") is not what visudo reports. Its caret lands on the `b`, i.e. the
+/// string ran ON past that `"` and the bare `b` is the syntax error - the
+/// QUOTE-FINDING rule of the two in [`unescaped_quote_positions`], not the
+/// separator one this function implements. Both readings give rc 1 here, so no
+/// probe in this set distinguishes them and this function's model is unpinned
+/// on the `Defaults` surface. Left as-is deliberately rather than changed on an
+/// unproven hunch; tracked separately.
+pub(crate) fn clean_double_quoted_interior(value: &str) -> Option<&str> {
+    let inner = value.strip_prefix('"')?;
+    let mut escaped = false;
+    for (i, c) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            // First unescaped `"` in the interior: a clean single region only
+            // when it is the closing quote at the very end (nothing follows).
+            '"' => return (i + 1 == inner.len()).then_some(&inner[..i]),
+            _ => {}
+        }
+    }
+    // No unescaped closing `"` (unterminated) -> not a clean region.
+    None
+}
+
+/// Byte index of the first `needle` in `s` that is neither SEPARATOR-escaped
+/// nor inside a closed quoted span, or `None`.
+///
+/// The generalisation of what `split_top_level_segments` and `split_cmnd_specs`
+/// already do inline for their `')'` arms, extracted so a THIRD `)`-locating
+/// primitive does not have to re-derive it. `parse_cmnd_spec` used a bare
+/// `after_open.find(')')` and was the odd one out (#650): it stopped at a
+/// quoted `)` and truncated `"a)b"` to `"a`, or at an escaped one, dropping the
+/// `NOPASSWD` grant that followed.
+///
+/// Uses the SEPARATOR-finding rule via [`separator_escaped`], because the
+/// question is where a structural byte is OUTSIDE a quoted span. See this
+/// module's header for why that is not [`quote_is_escaped`].
+pub(crate) fn unquoted_unescaped(s: &str, needle: char) -> Option<usize> {
+    let spans = simple_quote_pairs(s);
+    s.char_indices()
+        .find(|&(i, c)| {
+            c == needle && !separator_escaped(s, i) && !inside_a_clean_quoted_region(&spans, i)
+        })
+        .map(|(i, _)| i)
+}

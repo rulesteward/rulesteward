@@ -750,6 +750,57 @@ around the negated principal (`!"svc acct"`) where `cvtsudoers` reports
 section 17's four rows; this is simply the first input that puts a sigil and a
 quoted principal in the same token.
 
+### 20. The runas boundary and the quoted-principal premise (2026-08-19, #650 #652)
+
+Four scenarios added alongside the #650/#652 fix. These two issues are one
+commit because #650 MASKED #652's runas face: `is_denylist_char` matched the `"`
+first and reported the quote as the invalid character, so fixing #650 alone
+would have UNMASKED a still-live false FATAL on `("r t")`.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-quoted-close-paren-in-runas` | `alice ALL = (root,"a)b") NOPASSWD: /bin/ls` | rc 0; runasusers `root` + `a)b` |
+| `accept-escaped-close-paren-in-runas` | `alice ALL = (root,a\)b) NOPASSWD: /bin/ls` | rc 0 |
+| `accept-quoted-host-space-group-subj` | `%grp "h c" = /bin/ls` | rc 0; host `h c` |
+| `accept-quoted-runas-principal-space` | `alice ALL = ("r t") /bin/ls` | rc 0; runasuser `r t` |
+
+**The measured fact that shaped the fix: quoting legitimises the WHOLE denylist,
+not just whitespace.** Re-derived on this host 2026-08-19 against sudo 1.9.17p2,
+every row rc 0:
+
+```
+alice ALL = ("a b") /bin/ls     alice ALL = ("a(b") /bin/ls
+alice ALL = ("a>b") /bin/ls     alice ALL = ("a!b") /bin/ls
+%grp "h(c" = /bin/ls            %grp "h>c" = /bin/ls
+```
+
+So the fix is not "ignore whitespace inside quotes" but the simpler and more
+honest "a CLEAN quoted region's interior is literal" - a single early return in
+`first_invalid_char`, and one guard on `check_group_subject`'s sub-case (a).
+`clean_double_quoted_interior` moved from `parser.rs` into `boundary.rs` to serve
+both, rather than either lint growing its own quote model.
+
+**Three rc-1 rows pin the other direction and are deliberately NOT scenarios.**
+All three are LINT-level rejects (`sudo-F02`), and L1's `ours_rejects` keys on
+`LineKind::Malformed`, so they would fail L1 the way the dropped
+`reject-mid-token-bang-runas` did in section 19. They live as unit tests in
+`tests/iss650_runas_boundary.rs`:
+
+| input | rc | why it must still fire |
+|---|---|---|
+| `%bad group ALL = ALL` | 1 | an UNQUOTED space really does split the group name |
+| `alice ALL = (a>b) /bin/ls` | 1 | an UNQUOTED denylist char is still invalid |
+| `alice ALL = ("a b) /bin/ls` | 1 | an UNTERMINATED quote is not a clean region |
+
+#652 states that without those rows the fix is satisfiable by DELETING the
+predicate outright, and #669's abandoned arity check broke the first of them.
+Both deletions were run as mutants and both are caught.
+
+`accept-quoted-host-space-group-subj` is L3 xfail **#667**: the AST keeps the
+quotes around `"h c"` where `cvtsudoers` reports `h c`. Same quote-RETENTION
+class as sections 17 and 19, on the HOSTS axis this time; its arm asserts that
+axis specifically so a divergence spreading to users or commands would fail.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -779,7 +830,11 @@ L3 xfail #667 - see section 17), `escaped-hash-keeps-nopasswd`,
 control, NOT xfailed - its projections agree - see section 18),
 `glued-bang-principal-boundary`, `negated-runas-principal` (both added
 2026-08-19 with the negation-sigil sweep, neither xfailed),
-`negated-quoted-principal` (same sweep; L3 xfail #667 - see section 19).
+`negated-quoted-principal` (same sweep; L3 xfail #667 - see section 19),
+`quoted-close-paren-in-runas`, `escaped-close-paren-in-runas`,
+`quoted-runas-principal-space` (all three added 2026-08-19 with #650/#652, none
+xfailed), `quoted-host-space-group-subj` (same pair; L3 xfail #667 on the HOSTS
+axis - see section 20).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -

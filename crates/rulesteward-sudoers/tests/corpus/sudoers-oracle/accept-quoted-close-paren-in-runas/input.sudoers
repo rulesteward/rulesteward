@@ -1,0 +1,1 @@
+alice ALL = (root,"a)b") NOPASSWD: /bin/ls

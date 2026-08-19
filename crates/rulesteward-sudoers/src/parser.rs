@@ -29,9 +29,9 @@ use rulesteward_core::Span;
 use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::boundary::{
-    find_closing_quote, inside_a_clean_quoted_region, opens_principal, option_value_end,
-    preceding_token, quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq,
-    unquoted_whitespace_runs,
+    clean_double_quoted_interior, find_closing_quote, inside_a_clean_quoted_region,
+    opens_principal, option_value_end, preceding_token, quoted_value_span, separator_escaped,
+    simple_quote_pairs, structural_eq, unquoted_unescaped, unquoted_whitespace_runs,
 };
 
 use crate::ast::{
@@ -540,52 +540,6 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
             value_double_quoted: false,
         }
     }
-}
-
-/// If `value` is exactly ONE clean double-quoted string -- an opening `"`, an
-/// interior with no UNESCAPED `"`, and a closing `"` as the final byte -- return
-/// the interior with the surrounding quotes stripped. Otherwise return `None`
-/// (the value is left verbatim by the caller).
-///
-/// "Unescaped" uses the sudoers single-backslash escape model (the same one
-/// [`split_default_settings`] uses): a `\` escapes the next char, and `\\` is one
-/// literal backslash that does NOT escape a following `"`. So the FIRST unescaped
-/// `"` after the opening quote must be the LAST byte of the value; an unescaped
-/// `"` before the end means a second quoted region or unquoted trailing content
-/// follows -- e.g. `"a" #5 "b"` (the `#5` sits in an unquoted gap between two
-/// regions) -- which is NOT one clean region.
-///
-/// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
-/// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
-/// `"a\\" #5 "b"` rc=1, `"a\\\" #5 b"` rc=0.
-///
-/// CAVEAT on the third, re-checked 2026-08-02: the rc is right but the reason
-/// once given here ("`\\` is a literal backslash, so the `"` closes the first
-/// region") is not what visudo reports. Its caret lands on the `b`, i.e. the
-/// string ran ON past that `"` and the bare `b` is the syntax error - the
-/// QUOTE-FINDING rule of the two in [`unescaped_quote_positions`], not the
-/// separator one this function implements. Both readings give rc 1 here, so no
-/// probe in this set distinguishes them and this function's model is unpinned
-/// on the `Defaults` surface. Left as-is deliberately rather than changed on an
-/// unproven hunch; tracked separately.
-fn clean_double_quoted_interior(value: &str) -> Option<&str> {
-    let inner = value.strip_prefix('"')?;
-    let mut escaped = false;
-    for (i, c) in inner.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            // First unescaped `"` in the interior: a clean single region only
-            // when it is the closing quote at the very end (nothing follows).
-            '"' => return (i + 1 == inner.len()).then_some(&inner[..i]),
-            _ => {}
-        }
-    }
-    // No unescaped closing `"` (unterminated) -> not a clean region.
-    None
 }
 
 /// Classify an alias definition, if the line is one. Returns `None` when the first
@@ -1436,7 +1390,7 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
     // Optional leading run-as spec: `(...)`.
     let mut runas = None;
     if let Some(after_open) = rest.strip_prefix('(')
-        && let Some(close) = after_open.find(')')
+        && let Some(close) = unquoted_unescaped(after_open, ')')
     {
         runas = Some(parse_runas(&after_open[..close]));
         rest = after_open[close + 1..].trim_start();

@@ -394,8 +394,13 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// not the PARSE layer, and L1's `ours_rejects` keys on `LineKind::Malformed`.
 /// It belongs to the documented "not a command-token validator" class that is
 /// deliberately outside this corpus, so it is pinned by a unit test
-/// (`mid_token_bang_is_still_invalid`) instead of by a scenario.
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 = 52.
+/// (`mid_token_bang_is_still_invalid`) instead of by a scenario. The same
+/// applies to the #650/#652 rc-1 rows (`%bad group ALL = ALL`, `(a>b)`,
+/// `("a b)`): all three are LINT-level rejects, so all three are unit tests
+/// rather than scenarios; 4 more `accept-*` added 2026-08-19 with #650/#652 -
+/// see
+/// `PROVENANCE.md` section 20.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 = 56.
 ///
 /// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
 /// since 2026-08-03 the suite ENFORCES that rather than asking: the two
@@ -422,7 +427,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 52;
+const SCENARIO_FLOOR: usize = 56;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -461,16 +466,20 @@ const SCENARIO_FLOOR: usize = 52;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **43** accept scenarios x 3
-/// targets = 129 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 128 attempted; minus **24** xfail hits (the **8** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **47** accept scenarios x 3
+/// targets = 141 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 140 attempted; minus **27** xfail hits (the **9** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
-/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 104.
+/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 113.
 ///
-/// 98 -> 104 is the negation-sigil sweep: +3 accept scenarios contribute +9
+/// 98 -> 104 was the negation-sigil sweep: +3 accept scenarios contribute +9
 /// attempted, and one of the three (`accept-negated-quoted-principal`) is an
-/// `L3_XFAIL`, so it gives back 3 - a NET +6. Both figures moved, which is the
-/// non-cancellation this const's own warning below is about.
+/// `L3_XFAIL`, so it gives back 3, for a NET +6.
+///
+/// 104 -> 113 is #650/#652: +4 accept scenarios contribute +12 attempted, and
+/// one (`accept-quoted-host-space-group-subj`) is an `L3_XFAIL`, giving back 3,
+/// for a NET +9. Both figures moved again, which is the non-cancellation this
+/// const's own warning below is about.
 ///
 /// 95 -> 98 is #649's three escape scenarios: all three add +1 attempted per
 /// target, and only TWO of them are `L3_XFAIL`, so the third
@@ -494,7 +503,7 @@ const SCENARIO_FLOOR: usize = 52;
 /// `accept-timeout-option` contribute 3 targets each, while
 /// `accept-selinux-role-type` contributes only 2 because its el8 pair is
 /// scoped out of L3 entirely (9 + 2 = 11).
-const L3_CLEAN_FLOOR: usize = 104;
+const L3_CLEAN_FLOOR: usize = 113;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -693,6 +702,13 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     // outside of the quotes. NOT a defect of the negation-sigil sweep: the
     // divergence is #667's, and this scenario is the first input that puts a
     // quoted principal and a sigil in the same token.
+    // Quote RETENTION on a HOST token, reached for the first time by the #652
+    // scenario. Same class as the rows above, different axis: the AST keeps the
+    // quotes around `"h c"` where cvtsudoers reports `h c`, with users,
+    // commands and arity all agreeing. NOT a defect of the #650/#652 fix - that
+    // fix is what makes this line parse at all instead of drawing a false
+    // sudo-F02.
+    ("accept-quoted-host-space-group-subj", Some(667)),
     ("accept-negated-quoted-principal", Some(667)),
     ("accept-escaped-hash-keeps-nopasswd", Some(696)),
     ("accept-odd-backslash-run-before-hash", Some(696)),
@@ -2277,6 +2293,48 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.users,
                             dequoted,
                             cvt_proj.users
+                        );
+                    }
+                    "accept-quoted-host-space-group-subj" => {
+                        // Everything except the HOST tokens agrees; state that
+                        // first so a divergence that spreads is a FAILURE.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): quote retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.users, &cvt_proj.users)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a HOST-token divergence only; \
+                             users/commands must already agree. got ast users={:?} \
+                             commands={:?} cvt users={:?} commands={:?}",
+                            ast_proj.users,
+                            ast_proj.commands,
+                            cvt_proj.users,
+                            cvt_proj.commands
+                        );
+                        // Same one-balanced-pair unwrap the #667 arm below uses,
+                        // and deliberately no wider: `trim_matches` would also
+                        // absorb an UNBALANCED token, which is the shape a
+                        // mis-split produces and is exactly what must still fail.
+                        let unwrap_one_pair = |u: &str| -> String {
+                            let b = u.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                u[1..u.len() - 1].to_string()
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> =
+                            ast_proj.hosts.iter().map(|h| unwrap_one_pair(h)).collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 predicts the host lists agree once ONE \
+                             balanced quote pair is removed from each AST token; got ast={:?} \
+                             unwrapped={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            dequoted,
+                            cvt_proj.hosts
                         );
                     }
                     "accept-negated-quoted-principal" => {

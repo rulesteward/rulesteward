@@ -405,18 +405,24 @@ fn quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group(
         2,
         "cvtsudoers reports two User_Specs; the h2 grant must not vanish"
     );
-    // 1 and not 2, and the missing one is NOT this arm's doing: `parse_cmnd_spec`
-    // locates the runas list's end with a bare `after_open.find(')')`, which stops at
-    // the QUOTED paren and truncates the token to `"a` (visible in the collateral
-    // `sudo-F02` text). That drops the FIRST group's grant, identically on the fork
-    // point and on HEAD, and is filed as #650. When #650 lands this becomes 2.
+    // 2 as of #650. This assertion read `1` until then, and the comment here
+    // said "when #650 lands this becomes 2" - so this is that co-edit, made in
+    // the same commit as the fix rather than chased afterwards as a regression.
+    //
+    // What was wrong: `parse_cmnd_spec` located the runas list's end with a bare
+    // `after_open.find(')')`, which stopped at the QUOTED paren and truncated
+    // the token to `"a` (visible in the collateral `sudo-F02` text), dropping
+    // the FIRST group's grant. It now routes through
+    // `boundary::unquoted_unescaped`, which skips a `)` that is quoted or
+    // escaped, so both groups' grants are reported.
     //
     // THIS test is the regression pin, and it pins via `f01_count` above rather
     // than via the count below: with the content guard removed from both `')'`
     // arms, it is the ONLY test in this file that fails, and it fails on
     // `f01_count` (`left: 1, right: 0`) -- the regression surfaces as a false
-    // FATAL, not as a missing grant. Measured by building that mutant, 2026-08-02.
-    assert_eq!(w05_count(src), 1, "h2's grant; group 1's is lost to #650");
+    // FATAL, not as a missing grant. Measured by building that mutant,
+    // 2026-08-02, and that property is unchanged by #650.
+    assert_eq!(w05_count(src), 2, "both groups' grants: group 1's and h2's");
 }
 
 /// The security property with #650's interference removed: only the SECOND host
