@@ -110,7 +110,7 @@ instrument-test:
     for t in rs-oracle-required rs-oracle-diff rs-branch-diff rs-capture-guard \
              check-capture-writes check-dac-guard check-codes-count \
              check-no-mnt-paths rs-mutation-gate check-doc-citations \
-             check-corpus-growth; do
+             check-corpus-growth rs-sweep; do
         # Captured rather than streamed, so the FAIL-token assertion below can see
         # it. Printed verbatim immediately afterwards: a suite's own transcript is
         # what a maintainer debugs from, and swallowing it would trade one
@@ -169,10 +169,10 @@ instrument-test:
         [ -x "${f}" ] || notexec="${notexec} ${f}"
     done
     [ -z "${notexec}" ] || { echo "instrument-test: not executable:${notexec} - every scripts/*.sh is mode 0755 (#658)" >&2; fail=1; }
-    [ "${guards}" -eq 11 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 11 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
+    [ "${guards}" -eq 12 ] || { echo "instrument-test: scripts/ has ${guards} guards, this recipe self-tests 12 - add the new guard's -test.sh to the loop above and bump this number" >&2; fail=1; }
     # (2) The loop itself must have run. A typo'd list that iterates zero times
     # would otherwise report clean, which is the very defect being gated.
-    [ "${ran}" -eq 11 ] || { echo "instrument-test: ran ${ran} suites, expected 11" >&2; fail=1; }
+    [ "${ran}" -eq 12 ] || { echo "instrument-test: ran ${ran} suites, expected 12" >&2; fail=1; }
     echo "instrument-test: ${ran} suites run, ${guards} guards present, fail=${fail}"
     [ "${fail}" -eq 0 ]
 
@@ -897,6 +897,49 @@ diff-sudoers-branch base:
 
 diff-sysctld-branch base:
     bash scripts/rs-branch-diff.sh sysctld "{{base}}"
+
+# ---------------------------------------------------------------------------
+# LIVE: exhaustive token sweep against a COMMITTED frontier. (epic #654)
+#
+# The third axis. `diff-<lane>` holds the binary fixed and varies the corpus;
+# `diff-<lane>-branch` holds the corpus fixed and varies the binary; this holds
+# the ORACLE fixed and sweeps the INPUT SPACE, then compares the divergence set
+# against crates/rulesteward-sudoers/tests/corpus/sweep-frontier.txt.
+#
+# WHY IT IS COMMITTED. Five Adversarial Testing Loop rounds on the sudoers
+# boundary lane each built an exhaustive oracle differential, learned something,
+# and threw it away - and round 3's sweep already CONTAINED round 4's regression
+# inputs, scored as acceptable loss because its tally summed two error classes
+# with opposite severity. This one is the same instrument with its output kept,
+# and it never sums the buckets.
+#
+# Four buckets, printed on four lines and never added together:
+#   FALSE-FATAL   visudo rc 0, we emit sudo-F01        (a false alarm)
+#   MISSED-GRANT  visudo rc 0, we emit NEITHER code    (silence on a live
+#                                                       passwordless-root grant)
+#   FAIL-OPEN     visudo rc 1, we report a grant       (a grant off a file that
+#                                                       will never load)
+#   AGREE         everything else
+#
+#   0  the measured frontier matches the committed one
+#   1  the frontier MOVED - a NEW divergence, or a CLOSED one. A closed one is
+#      still rc 1: an issue was fixed, so the committed evidence is now stale.
+#   2  tool error, including "this run measured nothing"
+#   3  precondition unmet (no docker, image absent) - honours RS_ORACLE_REQUIRED
+#
+# Deliberately NOT in `just ci`: it needs docker and the rs-oracle9 image, and
+# takes minutes. Run it EVERY ATL round, like the branch differential.
+#
+# Opt-in mutation (`-update`), per the project's read-only-by-default rule.
+# Every row it writes as UNROUTED needs an issue number before it is committed.
+
+# LIVE: sweep the sudoers input space vs visudo, compare to the committed frontier.
+sweep-sudoers:
+    bash scripts/rs-sweep.sh sudoers
+
+# LIVE: re-measure the sudoers sweep frontier and rewrite it. Review the diff.
+sweep-sudoers-update:
+    bash scripts/rs-sweep.sh sudoers --update-frontier
 
 # Self-test of the differential/capture INSTRUMENTS. In `just ci` because an
 # unverified instrument is the exact failure this contract exists to prevent: a

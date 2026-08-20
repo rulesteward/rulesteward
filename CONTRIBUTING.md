@@ -218,6 +218,69 @@ Second, a row in the frozen lane table in
 table but not in `rs-oracle-diff.sh`'s: it has no live capture script, so it is
 offline-only.
 
+### The input sweep: a fourth axis (`just sweep-<lane>`)
+
+The three instruments above all compare a FIXED set of inputs. `scripts/rs-sweep.sh`
+varies the inputs instead: it holds the oracle fixed and sweeps a generated input
+space, then compares the measured divergence set against a COMMITTED frontier at
+`crates/rulesteward-<lane>/tests/corpus/sweep-frontier.txt`.
+
+| instrument | fixed | varied | answers |
+|---|---|---|---|
+| `just diff-<lane>` | binary | corpus | has the real subsystem drifted? |
+| `just diff-<lane>-branch` | corpus | binary | does the corpus this branch added discriminate? |
+| `just sweep-<lane>` | oracle | **input space** | what SHAPE is the divergence set? |
+
+It exists because the evidence kept being thrown away. Five Adversarial Testing
+Loop rounds on the sudoers boundary lane each built an exhaustive oracle
+differential by hand, positive-controlled it, learned something, and discarded
+it. Round 3's sweep already CONTAINED round 4's regression inputs and scored them
+as acceptable loss, because its tally summed two error classes with opposite
+severity. Committing the frontier is what makes round N+1 start from round N.
+
+**Two properties are load-bearing and neither is optional.**
+
+*The buckets are never summed.* An input is classified from three independent
+signals - the oracle's verdict, whether we emit the lane's FATAL code, and
+whether we report the grant - and reported on separate lines:
+
+| bucket | meaning |
+|---|---|
+| `FALSE-FATAL` | the oracle ACCEPTS it, we call it malformed. A false alarm. |
+| `MISSED-GRANT` | the oracle ACCEPTS it, we emit neither code. Silence on a grant that is live. |
+| `FAIL-OPEN` | the oracle REJECTS it, we report a grant off a file that will never load. |
+| `AGREE` | everything else. |
+
+A single verdict-agreement ratio is the instrument defect this splits apart: it
+is what let a round net a live CRITICAL out against a mass of low-severity rows.
+`MISSED-GRANT` and `FALSE-FATAL` are both "the oracle accepted it" and must not
+share a count - one is noise and the other is the failure mode the linter exists
+to prevent.
+
+*A sweep that measured nothing must not report clean.* The driver carries
+two-sided canaries on BOTH sides, appended to every oracle manifest and written
+into every product batch: one input the oracle must accept and one it must
+reject, one the product must report a grant on and one it must call fatal. They
+are not decoration. A product whose files were never opened emits no
+diagnostics, and "no diagnostics" is byte-identical to "we were silent about
+this grant" - `MISSED-GRANT` for every accepted input, reported with total
+confidence. The canaries are the only thing that separates those two readings.
+The driver additionally refuses a run whose oracle returned a single verdict
+class across the swept space, whose batched and single-file verdicts disagree on
+a sampled stride, or whose frontier rewrite carried fewer rows than were
+measured.
+
+**A CLOSED divergence is also rc 1.** If the committed frontier lists a row that
+now agrees, an issue was fixed and the committed evidence is stale; re-run with
+`just sweep-<lane>-update` and commit the result. Only rc 2 and rc 3 mean the run
+could not be trusted. The `ISSUE` column is metadata and is excluded from the
+comparison, so re-routing a known divergence does not read as a frontier move.
+
+Deliberately NOT in `just ci`: it needs docker and the oracle image, and it takes
+minutes. Run it every Adversarial Testing Loop round, for the same reason as the
+branch differential - both are instruments whose evidence accumulates, and a
+fresh adversary's DRY verdict measures that draw rather than the code.
+
 ### Exit codes
 
 Applies to NEW dev-tooling harnesses (`tools/*-update`, `just diff-*`). This is
