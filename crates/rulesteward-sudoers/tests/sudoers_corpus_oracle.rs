@@ -403,7 +403,12 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// #699's happen to be all-accept, and an earlier version of this sentence
 /// applied the `accept-*` qualifier to every group and said "5 with #699",
 /// contradicting both its own addend below and the paragraph after it.
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 + 1 = 67.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 + 1 + 1 = 68.
+///
+/// The last is #676's `accept-even-run-glued-quote`, added by #702's follow-up.
+/// It is an ACCEPT scenario carrying an `L1_XFAIL` entry, which is unusual and
+/// deliberate: `visudo` accepts it and `RuleSteward` answers `sudo-F01`, so it
+/// is a real F01-verdict divergence rather than a projection one.
 ///
 /// #701's single scenario is a `reject-*`, so it moves this floor and leaves
 /// `L3_CLEAN_FLOOR` alone: L3 compares accept scenarios only. It IS
@@ -450,7 +455,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 67;
+const SCENARIO_FLOOR: usize = 68;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -493,11 +498,19 @@ const SCENARIO_FLOOR: usize = 67;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **55** accept scenarios x 3
-/// targets = 165 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 164 attempted; minus **48** xfail hits (the **16** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **56** accept scenarios x 3
+/// targets = 168 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 167 attempted; minus **51** xfail hits (the **17** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
 /// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 116.
+///
+/// 116 -> 116 for the THIRD time on this branch, and by now that is a property
+/// of how the lane works rather than a coincidence: every scenario it adds is an
+/// accept that carries an xfail, so +3 attempted and -3 hits cancel exactly. The
+/// RESULT is therefore the least informative figure here. Update the other five
+/// (55->56, 165->168, 164->167, 48->51, 16->17) in the same commit that adds the
+/// scenario; they are the only part of this cross-check that can disagree with
+/// the measurement, and a cross-check whose inputs go stale is not one.
 ///
 /// 116 -> 116 is #702, and it is the CANCELLATION this const's warning below is
 /// about, happening for the second time on this branch. One accept scenario
@@ -613,7 +626,27 @@ const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
 /// context-sensitive and belongs in `rulesteward-core`, not here. Drafted as
 /// a tracked issue (not filed) in `PROVENANCE.md`; do NOT fold this into
 /// #538 (unrelated defect, different crate).
-const L1_XFAIL: &[&str] = &["accept-negated-uid-subject"];
+/// Second entry added 2026-08-20 by #702's follow-up: `accept-even-run-glued-quote`.
+///
+/// `\\"h1" = NOPASSWD: ALL` is `visudo` rc 0 - an EVEN backslash run consumes
+/// itself, so the `"` that follows really does open a quoted region, and
+/// `cvtsudoers` reports user `\` / host `h1`. `simple_quote_pairs` asks
+/// `quote_is_escaped`, which is the INSIDE-a-string rule, at an OPENING
+/// position; it finds no pair, so there is no opener candidate, no closer and no
+/// `!`, and the line folds to `Malformed` with a false `sudo-F01`.
+///
+/// That is **#676** exactly - "`quote_is_escaped` applies the inside-a-string
+/// rule at the OPENER" - and its fix is face D, out of scope here.
+///
+/// It is entered now because #702 changed which members of the family are
+/// visible. `\\"<VT>"` and `\\"<NBSP>"` used to answer correctly, but only by
+/// accident: the wide whitespace predicate emitted a run at the exotic blank and
+/// that run was the line's ONLY candidate. Narrowing the blank class to sudo's
+/// `[[:blank:]]` removed the accident. The pure-ASCII members (`\\"h1"`,
+/// `\\"ax"`) were wrong at the fork point and are wrong now; nothing about the
+/// defect moved, only which spellings expose it. Recording the ASCII member is
+/// what makes that auditable rather than a silent behaviour change.
+const L1_XFAIL: &[&str] = &["accept-negated-uid-subject", "accept-even-run-glued-quote"];
 
 /// Known `-s`-vs-default divergences: see the module doc's L2 section and
 /// `PROVENANCE.md` section 5. Grounded in `man 8 visudo`'s own description of
@@ -818,6 +851,10 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     // `cvtsudoers` reports a one-character hostname. The VERDICT is right
     // (`sudo-W01` reported, no false `sudo-F01`); only the structure is not.
     ("accept-nbsp-host-principal", Some(705)),
+    // #676, the L3 half of the `L1_XFAIL` entry above: the line folds to
+    // `Malformed`, so our projection is EMPTY on every axis while `cvtsudoers`
+    // reports a complete user-spec.
+    ("accept-even-run-glued-quote", Some(676)),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -2787,6 +2824,35 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.commands,
                             cvt_proj.commands
                         );
+                        // Round 4 caught this arm's comment claiming it asserted
+                        // users when it did not: injecting a wrong users
+                        // projection left the test GREEN. Adding the assertion
+                        // immediately proved the row is TWO-axis, which both the
+                        // original comment and its repair called host-only - the
+                        // user token is `"a"` here and `a` there, i.e. #667
+                        // quote retention on top of #705's lost host token. An
+                        // unwritten assertion had been hiding a whole axis.
+                        let dequoted_users: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| {
+                                let b = u.as_bytes();
+                                if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                    u[1..u.len() - 1].to_string()
+                                } else {
+                                    u.clone()
+                                }
+                            })
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted_users, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the user lists agree once ONE \
+                             balanced quote pair is removed; got ast={:?} dequoted={:?} \
+                             cvt={:?}",
+                            ast_proj.users,
+                            dequoted_users,
+                            cvt_proj.users
+                        );
                         assert!(
                             ast_proj.hosts.is_empty(),
                             "L3 {id} ({target}): #705 predicts the host token is LOST, so \
@@ -2800,6 +2866,33 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             "L3 {id} ({target}): cvtsudoers reports exactly one host \
                              (the non-blank whitespace principal); got {:?}",
                             cvt_proj.hosts
+                        );
+                    }
+                    "accept-even-run-glued-quote" => {
+                        // #676. Our side did not parse a user-spec at all, so
+                        // EVERY projection axis is empty. Asserting emptiness
+                        // rather than "differs" is what makes this entry fail
+                        // the moment #676 lands, which is its acceptance signal.
+                        assert_eq!(
+                            ast_proj.tuple_count, 0,
+                            "L3 {id} ({target}): #676 predicts the line folds to Malformed, \
+                             so no user-spec is projected; got tuple_count={}",
+                            ast_proj.tuple_count
+                        );
+                        assert!(
+                            ast_proj.users.is_empty()
+                                && ast_proj.hosts.is_empty()
+                                && ast_proj.commands.is_empty(),
+                            "L3 {id} ({target}): #676 predicts EVERY axis is empty; got \
+                             users={:?} hosts={:?} commands={:?}. Anything non-empty means \
+                             the line now parses and this entry must be removed",
+                            ast_proj.users,
+                            ast_proj.hosts,
+                            ast_proj.commands
+                        );
+                        assert_eq!(
+                            cvt_proj.tuple_count, 1,
+                            "L3 {id} ({target}): cvtsudoers parses it as one user-spec"
                         );
                     }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),

@@ -909,7 +909,8 @@ the glued-quote one ALSO diverges on hosts by #667 - see section 21),
 an L3 xfail **#696** on the USERS axis and `escaped-bang-runas` is L3-CLEAN,
 because L3 projects users/hosts/commands and not the runas group - see
 section 22), `nbsp-host-principal` (added 2026-08-19 with #702; L3 xfail **#705**
-on the HOSTS axis - see section 24).
+on the HOSTS axis - see section 24), `even-run-glued-quote` (added 2026-08-20; L1 **and** L3 xfail
+**#676** - see section 25).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
@@ -1072,6 +1073,48 @@ projects EMPTY where `cvtsudoers` has one entry. The verdict is correct; the
 structure is not. Routing `comma_split` as well moves it to `[""]` rather than to the
 NBSP, so at least one more recognizer remains - enumerated in #705 rather than
 guessed at here.
+
+## 25. #704 + the postcondition's shape, and #676 gaining a corpus row
+
+**One accept scenario, `accept-even-run-glued-quote`**, input `\\"h1" = NOPASSWD: ALL`.
+`visudo -c -f -` **rc 0** on all three targets; `cvtsudoers` reports user `\` and
+host `h1`. An EVEN backslash run consumes itself, so the `"` after it really does
+open a quoted region.
+
+RuleSteward answers `sudo-F01`. `simple_quote_pairs` asks `quote_is_escaped` - the
+INSIDE-a-string rule - at an OPENING position, finds no pair, and the line folds to
+`Malformed`. That is **#676** verbatim, and its fix (alternating the two escape
+rules) is face D and out of scope here. The scenario carries BOTH an `L1_XFAIL`
+entry (the F01-verdict divergence) and an `L3_XFAIL` entry (every projection axis
+empty), so it retires itself when #676 lands.
+
+**Why it is entered now rather than when #676 was filed.** #702 changed which
+members of the family are visible, and the change deserves to be on the record
+rather than discovered later. `\\"<VT>"` and `\\"<NBSP>"` answered CORRECTLY before
+#702 - but only by accident: the wide whitespace predicate emitted a run at the
+exotic blank, and that run was the line's only candidate. Narrowing the blank class
+to sudo's `[[:blank:]]` removed the accident. The pure-ASCII members (`\\"h1"`,
+`\\"ax"`) were wrong at the fork point and are wrong now. Nothing about the defect
+moved; only which spellings expose it. The scenario pins the ASCII member so the
+family is auditable instead of silently re-classified.
+
+**The postcondition is a FILTER again.** #702's round changed it to an abort
+(`return (lhs, "")` on a degenerate half) and that was a fail-open on a family of
+ACCEPTED lines: `! alice h1 = NOPASSWD: ALL` is rc 0 with user `alice` NEGATED and
+host `h1`, and the abort answered `sudo-F01`, suppressing every W/E lint per #668.
+sudo's `toke.l` discards `[[:blank:]]`, so `opuser: '!' opuser` binds a sigil across
+a blank; the first candidate's `before` is `"!"` and the SECOND is the correct one.
+The abort's only advantage - rc-1 rows like `! " a` - was a workaround for #704.
+
+**#704 is fixed, and NOT the way its own sketch proposed.** The sketch said to add
+`"` to the excluded character set. Grounding refutes that: `alice " "` and
+`alice "!"` are **rc 0** - a quoted span with any interior is a legal name - while
+`alice ""` is rc 1. So the predicate is "a character outside `{! , " blank}`, OR a
+quote pair with a NON-EMPTY interior". `a!:` is rc 1 and was already correct, so `:`
+is deliberately absent: the top-level `:` splits segments upstream of the predicate.
+
+Derived on `rs-oracle9` (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-20.
+`rs-oracle8` ships sudo 1.9.5p2; the rc values above were confirmed on all three.
 
 ## Re-capturing
 

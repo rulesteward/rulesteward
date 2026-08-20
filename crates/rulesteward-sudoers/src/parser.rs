@@ -1828,25 +1828,27 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // kept as defence-in-depth and as a statement of intent, and nothing
         // pins it - say so rather than implying a test would catch its removal.
         //
-        // This tests the CHAR at `close + 1` with `char::is_whitespace`, the
+        // This tests the CHAR at `close + 1` with `is_sudoers_blank`, the
         // SAME predicate `unquoted_whitespace_runs` uses, and that agreement is
-        // deliberate. It first shipped as a byte-level `u8::is_ascii_whitespace`
-        // and the mismatch was a real defect, not a stylistic one: a whitespace
-        // char outside the ASCII set (any non-ASCII one, and ASCII `0x0B`
-        // VERTICAL TAB, which `char::is_whitespace` accepts and the byte test
-        // does not) was NOT excluded here while `unquoted_whitespace_runs` DID
-        // emit a run for it. The candidate was pushed, sorted ahead of the run,
-        // and won.
+        // the entire point rather than a coincidence.
         //
-        // On `"ab"<U+00A0>,alice ALL` that swallowed a principal: `after` began
-        // with the NBSP rather than with `,`, so the continuation filter could
-        // not fire, and `alice` - which belongs to the USER list - ended up
-        // inside a host token. The fork point split it correctly. Two
-        // recognizers of "where does whitespace end a token" disagreeing is the
-        // exact shape of every prior regression on this surface, so the fix is
-        // to make them the same predicate rather than to document the gap.
-        // `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
-        // pins it.
+        // The history is worth keeping because it is the same mistake twice.
+        // This first shipped as a byte-level `u8::is_ascii_whitespace` while the
+        // run scanner asked `char::is_whitespace`: two recognizers of "where
+        // does whitespace end a token", disagreeing, and the gap was a real
+        // defect. #651 fixed it by making both `char::is_whitespace`. #702 then
+        // found that predicate was itself wrong - sudo separates on
+        // `[[:blank:]]` ONLY - and moved both to `is_sudoers_blank`. Aligning
+        // two recognizers is only a fix when the thing they agree on is right.
+        //
+        // Do NOT restore any narrative here about `"ab"<U+00A0>,alice ALL`
+        // keeping `alice` in the user list. That was true while NBSP counted as
+        // whitespace and is false now: the character is an ordinary name byte,
+        // the candidate at `close + 1` IS pushed, and the host half begins at
+        // the NBSP. `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_
+        // is_not_a_boundary` was RE-PINNED to that answer, with its `visudo`
+        // rc-1 status recorded - so a comment describing the old behaviour
+        // contradicts the test it cites.
         //
         // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.
         if let Some(next) = lhs[close + 1..].chars().next()
@@ -1870,8 +1872,12 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // `i > 0` is a PROVABLE EQUIVALENT and deleting it leaves the suite green -
     // recorded rather than chased, because a witness cannot exist. `i > 0` holds
     // exactly when `lhs[..i]` is non-empty, which holds exactly when
-    // `lhs[..i].chars().next_back()` is `Some` - and that is the very next
-    // conjunct. The guard asks a question its neighbour already answers. Keep it
+    // `lhs[..i].chars().next_back()` is `Some` - the `let Some(prev)` bind two
+    // conjuncts below. (It IS the very next conjunct at the opener guard, which
+    // is where this sentence came from; here two others sit between them, and
+    // that block warns that operator ordering is load-bearing - so the
+    // imprecision mattered.) The guard asks a question its neighbour answers.
+    // Keep it
     // as the reader's statement of the leading-sigil rule; do not treat its
     // survival as a missing test.
     //
@@ -1992,41 +1998,58 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         let before_comma_continues =
             before.ends_with(',') && !separator_escaped(before, before.len() - 1);
         if !before_comma_continues && !after.starts_with(',') {
-            // #701's postcondition, as an ABORT rather than a filter (changed by
-            // #702's round). Every guard above decides where a boundary COULD
-            // be; this one asks whether the split it produces is a pair of
-            // principal lists at all. Its absence is why three producer-level
+            // #701's postcondition. Every guard above decides where a boundary
+            // COULD be; this one asks whether the split it produces is a pair
+            // of principal lists at all. Its absence is why three producer-level
             // sigil fixes each left `alice!` parsing as user `alice` / host `!`
             // - a well-formed `UserSpec` carrying a passwordless-ALL grant, off
             // a file `visudo` rc-1 rejects. Both halves are asked, because
             // `! h1` is the same defect with the degenerate half on the USER
             // side.
             //
-            // It SHIPPED as a filter, on the stated basis that "today no input
-            // reaches a second one". Measurement refuted both halves of that:
-            // 287 inputs do reach a second candidate, and on exactly those the
-            // abort agrees with `visudo` 205 times against the filter's 82.
-            // Falling through to a later candidate is wrong about 2.5x as
-            // often, because a candidate whose half is degenerate is evidence
-            // the LINE is malformed, not evidence that this particular boundary
-            // was the wrong guess.
+            // A FILTER, not an abort: a rejected candidate falls through and the
+            // next one gets its turn. #702's round made it
+            // `return (lhs, "")` and that was a fail-open on a whole family of
+            // ACCEPTED lines - `! alice h1 = NOPASSWD: ALL` is `visudo` rc 0
+            // with user `alice` NEGATED and host `h1`, and the abort answered
+            // `sudo-F01`, suppressing every W/E lint on it per #668. The first
+            // candidate there is the blank run after the sigil, so `before` is
+            // `"!"`; the SECOND (`"! alice"` / `"h1"`) is the correct one.
             //
-            // `! " a = NOPASSWD: ALL` is the worked example: `visudo` rc 1, the
-            // first candidate is correctly rejected (`before` is `!`), and the
-            // second lands because `before` is then `! "` whose `"` satisfies
-            // `holds_a_principal`. The filter reported a grant off a rejected
-            // file; the abort reports `sudo-F01`.
+            // The abort's only advantage was rc-1 rows like `! " a`, where the
+            // second candidate used to land because `before` is `! "` and the
+            // `"` satisfied `holds_a_principal`. That was a workaround for
+            // #704, not an argument for the shape: with `"` and `,` excluded
+            // from the predicate the loop runs out on its own and returns
+            // `(lhs, "")` at the bottom. Measured, not argued - dropping the
+            // `"` exclusion turns `a_degenerate_second_candidate_is_not_a_
+            // boundary_either` RED while the rc-0 family stays green.
+            //
+            // The abort was justified by a verdict tally that is deliberately
+            // NOT repeated here. It counted disagreements as interchangeable
+            // units when the two error classes have opposite severity - a
+            // suppressed grant on a file sudo LOADS versus noise on one it
+            // refuses - and it was uncitable, living only in the comment that
+            // asserted it. `just sweep-sudoers` and its committed frontier file
+            // exist so a number like that never appears in a comment again.
             if !holds_a_principal(before) || !holds_a_principal(after) {
-                return (lhs, "");
+                continue;
             }
-            // `after` starts right after the boundary - a non-whitespace char,
-            // a quote, or the string end - so the HOST half is trimmed. That
-            // holds exhaustively over the four candidate producers:
-            // whitespace-run candidates resume at the first non-whitespace char
-            // (or at a `\`), opener candidates resume at `"`, `!` candidates
-            // resume at the `!` itself, and closer candidates are excluded by
-            // `!next.is_whitespace()` above, the SAME predicate
-            // `unquoted_whitespace_runs` uses.
+            // `after` starts right after the boundary. It used to carry a
+            // PROOF that the host half is therefore trimmed, over the four
+            // candidate producers. **That proof is false since #702** and is
+            // deleted rather than restated: narrowing the blank class means a
+            // closer candidate whose next char is VT or NBSP is now admitted,
+            // so `after` CAN begin with a whitespace character. Nothing
+            // downstream currently notices, and only because `comma_split`
+            // still trims wide - i.e. the invariant is upheld today by the very
+            // bug filed as #705. Whoever fixes #705 must re-derive this, not
+            // re-assert it.
+            //
+            // What remains true and is worth keeping: whitespace-run candidates
+            // resume at the first non-blank char (or at a `\`), opener
+            // candidates resume at `"`, and `!` candidates resume at the `!`
+            // itself.
             //
             // It said "three" until #699. The `!` scan has been a producer since
             // `c153bc5`, which left this count stale; the "four" at the `after`

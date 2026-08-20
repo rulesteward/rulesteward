@@ -1107,7 +1107,7 @@ fn control_two_token_left_hand_sides_still_parse() {
 ///
 /// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
 #[test]
-fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+fn a_non_ascii_whitespace_after_a_closing_quote_is_a_name_byte_not_a_separator() {
     // The ASCII control FIRST, because it is the row whose verdict the oracle
     // actually determines. `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo` rc 0
     // (rs-oracle9, 2026-08-19): a space then a comma still continues the user
@@ -1175,7 +1175,7 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
 /// rc 0 with `User_List [alice, "<0x0B>bob"]` (rs-oracle9, sudo 1.9.17p2,
 /// 2026-08-03).
 #[test]
-fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
+fn a_non_ascii_whitespace_before_an_opening_quote_is_a_name_byte_not_a_separator() {
     // The ASCII-space control, correct on every sha and UNCHANGED by #702.
     // This row is `visudo` rc 0 (the comma makes `alice, "b c"` a single
     // `User_List`, so the LHS has two tokens), so unlike the two below its

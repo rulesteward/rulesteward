@@ -56,8 +56,10 @@
 //! earlier version of this line wrongly said it was: the three
 //! `an_even_backslash_run_*` rows assert unescaped-sigil behaviour by
 //! construction (an even run leaves a REAL sigil), and six of the seven rows in
-//! the #701 block at the end of this file are unescaped - the seventh is
-//! `a\!!`, whose name says so.
+//! the #701 block below are unescaped - the seventh is `a\!!`, whose name says
+//! so. (This said "at the end of this file" until the postcondition-shape block
+//! was appended after it, falsifying the locator in the same commit that wrote
+//! it. Positional references rot; name the block.)
 
 use std::path::Path;
 
@@ -409,30 +411,102 @@ fn a_negated_member_inside_a_list_still_reports_the_grant() {
     );
 }
 
-// ------------------------- the postcondition's SHAPE (abort, not filter)
+// ------------------- the postcondition's SHAPE: a FILTER, not an abort
 //
-// #701 shipped the guard as a FILTER on each candidate, so a rejected
-// candidate fell through and a later one could still win. The stated basis was
-// "today no input reaches a second one". Round 3's suppression sweep measured
-// both halves of that false: 287 inputs DO reach a second candidate, and on
-// exactly those the abort agrees with `visudo` 205 times against the filter's
-// 82. Falling through is wrong roughly 2.5x as often, because a candidate whose
-// half is degenerate is evidence the LINE is malformed - not evidence that this
-// particular boundary was the wrong guess.
+// #701 shipped this guard as a filter on each candidate. #702's round changed
+// it to an ABORT (`return (lhs, "")` on a degenerate half) on the strength of a
+// verdict tally, and round 4 measured that decision wrong in the worst possible
+// direction: the abort turned a whole family of `visudo`-ACCEPTED lines into
+// `sudo-F01`, suppressing every W/E lint on them per #668. It is a filter again.
 //
-// These rows pin the SHAPE. Without them, reverting the abort to a filter
-// leaves the whole suite green, which is how the shape shipped unmeasured in
-// the first place.
+// WHY THE TALLY WAS WRONG, since the number looked convincing. It counted
+// verdict disagreements as interchangeable units. They are not: the abort's
+// errors are SUPPRESSED GRANTS on files sudo loads, and the filter's are noise
+// on files sudo refuses. And the abort's only real advantage - rc-1 rows like
+// `! " a`, where the filter's SECOND candidate lands because `before` is `! "`
+// and the `"` satisfied `holds_a_principal` - was a workaround for #704. With
+// `"` and `,` excluded from that predicate the filter is right in both
+// directions, so the abort bought nothing.
 //
-// Grounded rs-oracle9 (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-19:
-// all three are rc 1, and the rc-0 controls below them are unaffected.
+// The lesson that outlives this block: the tally was also UNCITABLE. It lived
+// only in the two comments asserting it, with no script, no corpus and no
+// command, and `205 + 82 = 287` quietly asserted a partition with zero ties.
+// A measurement that cannot be re-run is not evidence. `just sweep-sudoers` and
+// its committed frontier file exist so this class of number never appears in a
+// comment again.
+//
+// Grounded rs-oracle9 (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-19.
 
-/// visudo rc 1. The worked example: candidate 1 is correctly rejected (`before`
-/// is `!`), and candidate 2 lands because `before` is then `! "`, whose `"`
-/// satisfies `holds_a_principal`. Under the filter this reported a grant off a
-/// rejected file; under the abort it reports `sudo-F01`.
+/// visudo rc **0**, and the family the abort broke. A leading sigil separated
+/// from its principal by a blank is legal: sudo's `toke.l` discards
+/// `[[:blank:]]`, so the parser sees `'!' WORD(alice) WORD(h1)` and
+/// `opuser: '!' opuser` binds the sigil across the blank. `cvtsudoers` on
+/// `! alice h1`: user `alice` NEGATED, host `h1`, `authenticate:false`.
+///
+/// The first candidate is the blank run right after the sigil, so `before` is
+/// `"!"` and the postcondition correctly rejects it. The point of the FILTER is
+/// that the second candidate (`"! alice"` / `"h1"`) then gets its turn. The
+/// abort returned `(lhs, "")` instead: `Malformed`, and a passwordless-ALL
+/// grant reported by nothing.
+///
+/// `! alice ALL = NOPASSWD: ALL` is the row that says what the severity is:
+/// everyone except alice may run anything, without a password.
 #[test]
-fn a_rejected_candidate_aborts_rather_than_falling_through() {
+fn a_spaced_leading_sigil_still_reports_the_grant() {
+    for src in [
+        "! alice h1 = NOPASSWD: ALL\n",
+        "!! alice h1 = NOPASSWD: ALL\n",
+        "!\talice h1 = NOPASSWD: ALL\n",
+        "! %adm h1 = NOPASSWD: ALL\n",
+        "! \"alice\" h1 = NOPASSWD: ALL\n",
+        "! alice ALL = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            count_code(src, "sudo-F01"),
+            0,
+            "visudo accepts this file (rc 0): {src:?}"
+        );
+        assert_eq!(
+            count_code(src, "sudo-W01"),
+            1,
+            "the passwordless-ALL grant must be reported; 0 here is the abort fail-open: {src:?}"
+        );
+    }
+}
+
+/// The two controls the previous version of this block got wrong, and the
+/// reason it could not see the fail-open above.
+///
+/// `!alice h1` is GLUED, so its first candidate is already good and the guard
+/// is never reached - it cannot control anything about the guard. `! h1` is the
+/// rc-1 row #701 exists for, where there genuinely is no host list. A control
+/// has to be a row that REACHES the code under test and comes out the other
+/// way; the old block had neither.
+#[test]
+fn the_glued_and_no_host_controls_are_unaffected() {
+    let glued = "!alice h1 = NOPASSWD: ALL\n";
+    assert_eq!(count_code(glued, "sudo-F01"), 0, "visudo rc 0");
+    assert_eq!(count_code(glued, "sudo-W01"), 1);
+
+    let no_host = "! h1 = NOPASSWD: ALL\n";
+    assert_eq!(
+        count_code(no_host, "sudo-F01"),
+        1,
+        "visudo rc 1: a lone sigil user half with no host list is a real F01"
+    );
+    assert_eq!(count_code(no_host, "sudo-W01"), 0);
+}
+
+/// visudo rc **1**, and the rows the abort was introduced for. They are correct
+/// under the FILTER too, once #704's fix stops `"` counting as a principal:
+/// candidate 2's `before` is `! "`, which no longer holds a principal, so the
+/// loop runs out and returns `(lhs, "")` on its own.
+///
+/// Keeping them here is what makes that claim falsifiable rather than asserted:
+/// undo #704's exclusion and these go RED while the rc-0 block above stays
+/// green, which is the whole argument for the filter in one pair of tests.
+#[test]
+fn a_degenerate_second_candidate_is_not_a_boundary_either() {
     for src in [
         "! \" a = NOPASSWD: ALL\n",
         "! \"\"a = NOPASSWD: ALL\n",
@@ -441,7 +515,7 @@ fn a_rejected_candidate_aborts_rather_than_falling_through() {
         assert_eq!(
             count_code(src, "sudo-F01"),
             1,
-            "visudo rejects this file (rc 1); a degenerate half must end the search: {src:?}"
+            "visudo rejects this file (rc 1): {src:?}"
         );
         assert_eq!(
             count_code(src, "sudo-W01"),
@@ -451,24 +525,15 @@ fn a_rejected_candidate_aborts_rather_than_falling_through() {
     }
 }
 
-/// visudo rc 0. The controls for the block above: aborting must not swallow a
-/// line whose FIRST candidate is fine. Without these, "abort on any rejection"
-/// could be over-applied and every quoted-principal grant would vanish.
+/// visudo rc 0. Lines whose FIRST candidate is good must be untouched by any of
+/// this.
 #[test]
-fn aborting_does_not_disturb_a_line_whose_first_candidate_is_good() {
+fn an_ordinary_line_is_unaffected_by_the_postcondition() {
     for src in [
         "alice h1 = NOPASSWD: ALL\n",
         "alice \"h 1\" = NOPASSWD: ALL\n",
     ] {
-        assert_eq!(
-            count_code(src, "sudo-F01"),
-            0,
-            "visudo accepts this file: {src:?}"
-        );
-        assert_eq!(
-            count_code(src, "sudo-W01"),
-            1,
-            "the grant must be reported: {src:?}"
-        );
+        assert_eq!(count_code(src, "sudo-F01"), 0, "visudo accepts: {src:?}");
+        assert_eq!(count_code(src, "sudo-W01"), 1, "the grant: {src:?}");
     }
 }

@@ -409,7 +409,7 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
 /// "\u00a0"}]`, and `al<NBSP>ice h1 = ...` is rc 0 with the NBSP inside the
 /// username.
 ///
-/// This exists because the concept had FIVE recognizers asking
+/// This exists because the concept had SIX recognizers asking
 /// `char::is_whitespace`, which is far wider, and #702 is what that cost: a
 /// line real sudo ACCEPTS lost its `Host_List`, folded to `Malformed`, and per
 /// #668 every W/E lint on it was suppressed - a passwordless-`ALL` grant
@@ -433,7 +433,8 @@ pub(crate) fn is_sudoers_blank(c: char) -> bool {
 }
 
 /// `true` when a principal-list half contains something that could BE a
-/// principal name.
+/// principal name: some character outside `{! , " blank}`, or a quoted span
+/// with a non-empty interior.
 ///
 /// [`split_user_list`](crate::parser) chooses a boundary and returns the two
 /// halves; until #701 it never asked whether either half IS a principal list.
@@ -468,7 +469,23 @@ pub(crate) fn is_sudoers_blank(c: char) -> bool {
 /// in here risks the #669/#677 masking interaction this lane records as its
 /// sharpest hazard.
 pub(crate) fn holds_a_principal(s: &str) -> bool {
-    s.chars().any(|c| c != '!' && !is_sudoers_blank(c))
+    // Any character that is not a sigil, a separator or a blank is a principal
+    // byte on its own.
+    if s.chars()
+        .any(|c| !matches!(c, '!' | ',' | '"') && !is_sudoers_blank(c))
+    {
+        return true;
+    }
+    // Otherwise the half can still be a principal, and #704's own fix sketch got
+    // this wrong: a quoted span with a NON-EMPTY interior is a legal name
+    // whatever the interior contains. `alice " "` and `alice "!"` are `visudo`
+    // rc 0; `alice ""` is rc 1. So the discriminator is the interior, not the
+    // quote character - excluding `"` outright turns two accepted files into a
+    // false `sudo-F01`, which is what the grounding probe caught before this was
+    // written.
+    simple_quote_pairs(s)
+        .iter()
+        .any(|&(open, close)| close > open + 1)
 }
 
 /// Whether the byte at `i` is consumed by a SEPARATOR-rule backslash escape:

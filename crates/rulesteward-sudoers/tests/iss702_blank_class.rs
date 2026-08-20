@@ -3,9 +3,10 @@
 //! sudo's lexer (`toke.l`) discards `[[:blank:]]+` - space and tab - and
 //! nothing else. Every other whitespace character is an ordinary `WORD` byte
 //! and can appear inside, or BE, a principal name. This crate asked
-//! `char::is_whitespace`, which is far wider, in FIVE places, so the same
-//! concept had five recognizers and they did not agree with sudo or with each
-//! other.
+//! `char::is_whitespace` or `str::trim`, which are far wider, in SIX places, so
+//! the same concept had six recognizers and they did not agree with sudo or with
+//! each other. (Four of the six asked `str::trim`, not `char::is_whitespace`;
+//! naming only the predicate was itself imprecise.)
 //!
 //! Two failure directions, both live before this fix:
 //!
