@@ -21,6 +21,42 @@ pub enum QuoteChar {
     Double,
 }
 
+/// Whether this backend's line grammar has a backslash escape, and therefore
+/// whether a `\`-escaped byte is a literal token byte rather than a comment
+/// marker or a quote toggle (#649).
+///
+/// Modelled as an enum rather than a `bool` for the same reason [`QuoteChar`]
+/// is: the axis names a grammar property, and a two-variant enum says which
+/// property at every call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscapeRule {
+    /// No backslash escape: a `\` is an ordinary byte. fapolicyd and auditd,
+    /// whose tables each pin the escape-blind reading explicitly (the
+    /// `allow \#x` row in `fapolicyd_table` and the `auid>=1000 \#x` row in
+    /// `auditd_table`).
+    ///
+    /// Both are EQUIVALENCE pins on the pre-#562 implementations, NOT
+    /// derivations of either subsystem's real grammar. Nothing in this tree
+    /// derives whether `fapolicyd` rule files or `auditctl` rule files have a
+    /// backslash escape at all; the auditd row says why deriving it needs the
+    /// `rs-oracle` containers. If either grammar turns out to have one, that is
+    /// a latent instance of the very defect #649 fixed for sudoers, not
+    /// something these rows have ruled out.
+    None,
+    /// A `\` escapes, under BOTH of the rules documented at
+    /// `rulesteward-sudoers/src/parser.rs:1114-1135`. They apply in different
+    /// places and collapsing them regresses one:
+    ///
+    /// - OUTSIDE a quoted span, the SEPARATOR-finding rule: a `\` consumes
+    ///   exactly the next byte, so parity matters (`\\"` opens a span, while
+    ///   `\#` does not start a comment).
+    /// - INSIDE a quoted span, the QUOTE-finding rule: a `\` escapes only the
+    ///   quote byte immediately after it, regardless of its own parity, so
+    ///   `"a\"b"` is a single span and a doubled backslash before a quote
+    ///   still escapes it.
+    Backslash,
+}
+
 /// Per-backend configuration for [`comment_index`] / [`strip`]. Every
 /// behavioral nuance of the three old line-level strippers is expressed as
 /// one of these fields; the three associated consts below reproduce each
@@ -47,6 +83,10 @@ pub struct StripConfig {
     /// `paren_opens_runas` (`parser.rs:261-315,324-335`, the `#407`/`#424`
     /// grounded exceptions).
     pub uid_gid_exception: bool,
+    /// Whether a backslash escapes in this backend's grammar (#649).
+    /// [`EscapeRule::Backslash`] for sudoers; [`EscapeRule::None`] for
+    /// fapolicyd and auditd.
+    pub escape: EscapeRule,
 }
 
 impl StripConfig {
@@ -59,6 +99,7 @@ impl StripConfig {
         require_preceding_token: true,
         include_bypass: false,
         uid_gid_exception: false,
+        escape: EscapeRule::None,
     };
 
     /// auditd `parser.rs::strip_comment`: single-quote aware, no
@@ -69,6 +110,7 @@ impl StripConfig {
         require_preceding_token: false,
         include_bypass: false,
         uid_gid_exception: false,
+        escape: EscapeRule::None,
     };
 
     /// sudoers `parser.rs::strip_inline_comment`: double-quote aware, plus
@@ -79,6 +121,7 @@ impl StripConfig {
         require_preceding_token: false,
         include_bypass: true,
         uid_gid_exception: true,
+        escape: EscapeRule::Backslash,
     };
 }
 
@@ -121,17 +164,42 @@ pub fn comment_index(line: &str, config: StripConfig) -> Option<usize> {
     let mut in_runas_paren = false;
     let mut seen_token = false;
     let mut prev: Option<u8> = None;
+    // Separator-rule state: set by an unescaped `\` OUTSIDE a quoted span,
+    // consumed by the byte after it. Never set inside a span, where the
+    // quote-finding rule applies instead and reads `prev` directly.
+    let mut escape_pending = false;
 
     for (i, &b) in bytes.iter().enumerate() {
-        let is_quote_byte = match config.quote {
+        let matches_quote = match config.quote {
             QuoteChar::Unquoted => false,
             QuoteChar::Single => b == b'\'',
             QuoteChar::Double => b == b'"',
         };
 
+        // Is this byte a literal one, escaped by a preceding backslash? See
+        // `EscapeRule::Backslash` for why the two branches differ; they are
+        // the two escape rules of
+        // `rulesteward-sudoers/src/parser.rs:1114-1135`, each in the context
+        // it was grounded for.
+        let literal = if config.escape == EscapeRule::None {
+            false
+        } else if in_quote {
+            matches_quote && prev == Some(b'\\')
+        } else if escape_pending {
+            escape_pending = false;
+            true
+        } else if b == b'\\' {
+            escape_pending = true;
+            true
+        } else {
+            false
+        };
+
+        let is_quote_byte = matches_quote && !literal;
+
         if is_quote_byte {
             in_quote = !in_quote;
-        } else if config.uid_gid_exception && !in_quote {
+        } else if config.uid_gid_exception && !in_quote && !literal {
             if b == b'(' {
                 in_runas_paren |= paren_opens_runas(bytes, i);
             } else if b == b')' {
@@ -139,7 +207,7 @@ pub fn comment_index(line: &str, config: StripConfig) -> Option<usize> {
             }
         }
 
-        if b == b'#' && !in_quote {
+        if b == b'#' && !in_quote && !literal {
             let is_inline = !config.require_preceding_token || seen_token;
             if is_inline {
                 if config.uid_gid_exception {
@@ -343,6 +411,22 @@ mod tests {
             (r"-F 'a\'b' # tail", r"-F 'a\'b' # tail"),
             // Empty line: loop never executes -> whole (empty) line.
             ("", ""),
+            // No backslash escape (`EscapeRule::None`): a `\` is an ordinary
+            // byte, so the `#` immediately after it still starts a comment.
+            //
+            // This row is a NO-CHANGE regression pin added by #649, which
+            // gave sudoers escape awareness. It asserts only that auditd was
+            // NOT changed by that work; it is deliberately NOT a fresh
+            // derivation of `auditctl` comment semantics. Grounding that
+            // properly needs the `rs-oracle8/9/10` containers, because an
+            // unprivileged `auditctl` bails BEFORE parsing (rc 4, identical
+            // for a valid and an invalid rule) and `-R` against live netlink
+            // would mutate the HOST ruleset. See #584 for the raw-reader
+            // (`audit_strsplit`) modelling question that owns that answer.
+            (
+                r"-a always,exit -F auid>=1000 \#x",
+                r"-a always,exit -F auid>=1000 \",
+            ),
         ];
 
         #[test]
@@ -372,6 +456,11 @@ mod tests {
     // hand-traced against the same function for the required table shapes
     // (quote states, `#include`, empty line, `#` at position 0, escaped
     // chars).
+    //
+    // ONE EXCEPTION, added by #649: the escaped-quote row deliberately does NOT
+    // follow `strip_inline_comment`. That function was wrong there, so the row
+    // was re-grounded on sudo 1.9.17p2 directly; its own comment carries the
+    // commands and the output.
     mod sudoers_table {
         use super::*;
 
@@ -463,13 +552,36 @@ mod tests {
                 "Defaults env_keep=\"FOO#BAR\" # comment",
                 "Defaults env_keep=\"FOO#BAR\" ",
             ),
-            // Escaped-quote is NOT honored (no backslash awareness, same
-            // pattern as auditd): the 3rd `"` re-opens the quote state, so
-            // the trailing `#tail` reads as inside quotes and the whole
-            // line survives unchanged.
+            // Escaped quote inside a span, under the quote-finding rule
+            // (`EscapeRule::Backslash`, #649). The middle `"` is escaped, so
+            // it does NOT close the span; the span closes at the 3rd `"` and
+            // trailing `#tail` is therefore an ordinary inline comment.
+            //
+            // CHANGED by #649. This row previously pinned the opposite
+            // ("escaped-quote is NOT honored, the whole line survives"),
+            // which was an equivalence pin on the pre-#562 implementation
+            // rather than on sudo. Re-grounded against sudo 1.9.17p2 on
+            // 2026-08-19:
+            //
+            //   printf 'Defaults passprompt="a\\"b" #tail\n'
+            //     visudo -c -f -     -> rc 0 ("parsed OK")
+            //     cvtsudoers -f json -> exactly one Options entry,
+            //                           { "passprompt": "a\"b" }
+            //
+            // The backslash is DOUBLED in that `printf` on purpose: bash
+            // `printf` consumes `\"`, so the single-backslash spelling emits
+            // `passprompt="a"b"`, which cvtsudoers rejects with a syntax error
+            // at rc 1. The doubled form is what actually produces the bytes
+            // this row pins. (`\#` elsewhere in this file needs no doubling -
+            // it is not a printf escape.)
+            //
+            // The value real sudo records is `a"b` with NO ` #tail` in it,
+            // so sudo read the tail as a comment and the old expectation
+            // was wrong. Keeping it would have made the escaped-`#` fix
+            // below unreachable, since both need the same escape state.
             (
                 r#"Defaults passprompt="a\"b" #tail"#,
-                r#"Defaults passprompt="a\"b" #tail"#,
+                r#"Defaults passprompt="a\"b" "#,
             ),
             // Empty line: the byte loop never executes -> whole (empty)
             // line.
@@ -560,6 +672,52 @@ mod tests {
             assert_eq!(
                 comment_index("#include foo #real", StripConfig::SUDOERS),
                 None
+            );
+        }
+
+        // ---- Escape awareness (#649). Ground truth: sudo 1.9.17p2,
+        // re-derived 2026-08-19 on this host, both files fed on stdin.
+        //
+        //   printf 'alice ALL = /bin/echo \#x, NOPASSWD: /bin/su\n'
+        //     visudo -c -f -   -> rc 0 ("parsed OK")
+        //     cvtsudoers -f json -> TWO Cmnd_Specs:
+        //       { "command": "/bin/echo #x" }
+        //       { "authenticate": false } + { "command": "/bin/su" }
+        //
+        //   printf 'alice ALL = /bin/echo a#b, NOPASSWD: /bin/su\n'
+        //     visudo -c -f -   -> rc 0
+        //     cvtsudoers -f json -> ONE Cmnd_Spec, { "command": "/bin/echo a" },
+        //       and NO "authenticate": false anywhere.
+        //
+        // So the backslash is the discriminator: sudo genuinely truncates at
+        // an UNESCAPED `#`, and genuinely does not at an escaped one. The two
+        // tests below are each other's control; neither is meaningful alone.
+
+        #[test]
+        fn escaped_hash_is_a_literal_byte_not_a_comment_start() {
+            // The escaped `#` must not start a comment, or everything after
+            // it (here a live NOPASSWD grant) is discarded before parsing
+            // and no diagnostic of any kind is emitted (#649).
+            assert_eq!(
+                comment_index(
+                    r"alice ALL = /bin/echo \#x, NOPASSWD: /bin/su",
+                    StripConfig::SUDOERS
+                ),
+                None
+            );
+        }
+
+        #[test]
+        fn unescaped_hash_still_starts_a_comment() {
+            // The control for the row above. A fix that simply stopped
+            // treating `#` as a comment marker would pass that test and fail
+            // this one; real sudo truncates here.
+            assert_eq!(
+                strip(
+                    "alice ALL = /bin/echo a#b, NOPASSWD: /bin/su",
+                    StripConfig::SUDOERS
+                ),
+                "alice ALL = /bin/echo a"
             );
         }
     }

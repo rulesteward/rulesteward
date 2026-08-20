@@ -27,8 +27,8 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-mutants'))
     runs-on: ubuntu-latest
-    # Per-shard ceiling. With 20 shards x -j1 (see below) each shard tests ~183
-    # mutants serially; most are caught fast, a few run the full --test-workspace
+    # Per-shard ceiling. With 20 shards x -j2 (see below) each shard tests ~183
+    # mutants; most are caught fast, a few run the full --test-workspace
     # suite (~100s) to completion, so a shard finishes well inside 2h (measured
     # 2026-07-30 on run 30519128558: 40-44 min/shard at 170-171 mutants each,
     # which scales to roughly 48 min at the current 183/shard -- still inside
@@ -41,9 +41,10 @@ jobs:
       # Shard the full mutant suite (~3666 mutants) into 20 shards (the
       # GitHub-hosted concurrent-job cap, so the whole run starts at once).
       # Why 20 (not fewer): the gate runs --test-workspace (every mutant
-      # re-runs the whole workspace suite, slow) and -j1 (below) runs them
-      # serially, so ~183 mutants/shard keeps each JOB inside the 2h ceiling
-      # at a measured 40-44 min -- 8 shards x ~430 mutants serial would blow it.
+      # re-runs the whole workspace suite, slow), so ~183 mutants/shard keeps
+      # each JOB inside the 2h ceiling at a measured 40-44 min (measured under
+      # -j1; -j2 below should only reduce it) -- 8 shards x ~430 mutants would
+      # blow it.
       # The total is a DERIVED number, not a fixed one: re-run
       # `cargo mutants --list | wc -l` and update it whenever examine_globs or
       # exclude_re changes, and re-check the per-shard runtime against the
@@ -117,12 +118,31 @@ jobs:
       # --sharding round-robin  assign mutant i to shard i%20, so each file's
       #                   mutants spread across shards (vs `slice`, which would
       #                   pile one slow file's whole block onto a single shard).
-      # -j1               run ONE mutant at a time per shard. Under --test-workspace
-      #                   each mutant re-runs the whole suite, which is CPU-bound;
-      #                   -j2 ran two suites on a 4-core box at once, ~doubling each
-      #                   test's wall time so EVERY mutant blew the per-mutant test
-      #                   timeout (false TIMEOUT -> gate fail). Serial keeps each
-      #                   test at full speed; the 20-way shard recovers throughput.
+      # -j2               run TWO mutants at a time per shard. Under --test-workspace
+      #                   each mutant re-runs the whole suite, which is CPU-bound.
+      #
+      #                   THIS SETTING HAS BEEN BOTH WAYS, and the earlier
+      #                   measurement is kept here rather than deleted, because it
+      #                   is the thing to check first if this run goes red: -j2
+      #                   once ran two suites on a 4-core box at once, ~doubling
+      #                   each test's wall time so EVERY mutant blew the
+      #                   per-mutant test timeout (false TIMEOUT -> gate fail,
+      #                   cargo-mutants exit 3). -j1 was chosen for that reason.
+      #
+      #                   Returned to -j2 on 2026-08-19 on the operator's call:
+      #                   the GitHub-hosted runners are better resourced than the
+      #                   private ones the failure was measured on, so the
+      #                   contention that produced it may no longer apply. This is
+      #                   an EXPERIMENT with a one-line revert, and the nightly is
+      #                   where it shows.
+      #
+      #                   FAILURE SIGNATURE to look for: shards failing with
+      #                   TIMEOUT outcomes rather than survivors. That is the
+      #                   false-TIMEOUT mode, not a real gate failure. Next lever
+      #                   before reverting is `--timeout-multiplier` (default 5x,
+      #                   relative to the uncontended baseline test time), which
+      #                   is deliberately NOT set here so this experiment measures
+      #                   -j2 alone rather than -j2 plus a widened timeout.
       # --test-workspace true  (#129) run the ENTIRE workspace's tests against
       #                   every mutant, not just the mutated package's tests
       #                   (cargo-mutants' default). Cross-crate-covered code -- e.g.
@@ -161,7 +181,7 @@ jobs:
           # WHY a shard failed -- would be dead code on exactly the runs that
           # need it.
           rc=0
-          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j1 --sharding round-robin --test-workspace true || rc=$?
+          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/20 -j2 --sharding round-robin --test-workspace true || rc=$?
 
           # NON-VACUITY ASSERTION. rc is the gate, but rc alone cannot tell a
           # clean shard from a shard that tested NOTHING: both exit 0 and both

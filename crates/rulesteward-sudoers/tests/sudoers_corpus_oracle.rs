@@ -381,8 +381,12 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-glued-closing-quote-with-inner-space`,
 /// `accept-glued-closing-quote-after-comma-list`,
 /// `accept-spaced-closing-quote-control`) added 2026-08-03 with #651, the
-/// corpus's first quoted principals - see `PROVENANCE.md` section 17.
-/// 22 + 8 + 2 + 6 + 3 + 4 = 45.
+/// corpus's first quoted principals - see `PROVENANCE.md` section 17; 3 more
+/// `accept-*` scenarios (`accept-escaped-hash-keeps-nopasswd`,
+/// `accept-even-backslash-run-before-hash`,
+/// `accept-odd-backslash-run-before-hash`) added 2026-08-19 with #649, the
+/// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 = 48.
 ///
 /// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
 /// since 2026-08-03 the suite ENFORCES that rather than asking: the two
@@ -401,9 +405,15 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 ///
 /// verified: 2026-08-03 - both directions, which together are this constant's
 /// positive control. Deleting one scenario fails (`found 44`) and ADDING one
-/// fails too (`found 46`), while the committed 45 passes. Only the second of
-/// those was newly bought by the equality; under `>=` a 46th scenario was rc 0.
-const SCENARIO_FLOOR: usize = 45;
+/// fails too (`found 46`), while the then-committed 45 passes. Only the second
+/// of those was newly bought by the equality; under `>=` a 46th scenario was
+/// rc 0.
+///
+/// verified: 2026-08-19 - re-run at the new value when #649 took it to 48.
+/// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
+/// bump is the enforcement working as designed, not a weakening: the equality
+/// is what MADE adding a scenario require touching this line.
+const SCENARIO_FLOOR: usize = 48;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -442,11 +452,19 @@ const SCENARIO_FLOOR: usize = 45;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **37** accept scenarios x 3
-/// targets = 111 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 110 attempted; minus **15** xfail hits (the **5** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **40** accept scenarios x 3
+/// targets = 120 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 119 attempted; minus **21** xfail hits (the **7** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
-/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 95.
+/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 98.
+///
+/// 95 -> 98 is #649's three escape scenarios: all three add +1 attempted per
+/// target, and only TWO of them are `L3_XFAIL`, so the third
+/// (`accept-even-backslash-run-before-hash`, whose projections AGREE) is the
+/// entire net gain of +3. Note that this is exactly the cancellation the
+/// paragraph below warns about NOT happening this time: had all three been
+/// xfailed, attempted and xfail hits would have moved together and the RESULT
+/// would have stayed 95 while all four figures went stale.
 ///
 /// Those numbers were 33 / 99 / 98 / 3 until 2026-08-03 and every one of them
 /// was stale, while the RESULT stayed 95 and nothing failed. #651 added 4 accept
@@ -462,7 +480,7 @@ const SCENARIO_FLOOR: usize = 45;
 /// `accept-timeout-option` contribute 3 targets each, while
 /// `accept-selinux-role-type` contributes only 2 because its el8 pair is
 /// scoped out of L3 entirely (9 + 2 = 11).
-const L3_CLEAN_FLOOR: usize = 95;
+const L3_CLEAN_FLOOR: usize = 98;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -632,6 +650,30 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     ("accept-glued-closing-quote-with-inner-space", Some(667)),
     ("accept-glued-closing-quote-after-comma-list", Some(667)),
     ("accept-spaced-closing-quote-control", Some(667)),
+    // #649's escape scenarios, TWO of the three. RuleSteward RETAINS the
+    // backslash in the
+    // command token (`/bin/echo \\#x`) where cvtsudoers consumes the escape
+    // and reports `/bin/echo #x`. This is the ESCAPE-retention sibling of the
+    // four #667 rows above, which are QUOTE-retention, and it has the same
+    // cause: this parser does not dequote or unescape token values anywhere.
+    //
+    // NOT introduced by #649. Before that fix these lines were truncated at the
+    // `#` and never reached L3 at all, which is why the corpus had never
+    // sampled an escape. The fix moved them from "silently dropped" to
+    // "parsed, with a known projection divergence" - strictly better, and now
+    // visible.
+    //
+    // `accept-even-backslash-run-before-hash` is deliberately ABSENT from this
+    // list. Measured 2026-08-19: its projections AGREE with cvtsudoers, and
+    // this harness fails an xfail entry whose projections match ("expected the
+    // KNOWN ... divergence, but the projections matched"), so listing it would
+    // be wrong in the direction that hides a real regression later.
+    //
+    // Filed as #696, which asks for ONE ruling covering both this and #667's
+    // quote retention: answering escapes differently from quotes would be worse
+    // than either answer.
+    ("accept-escaped-hash-keeps-nopasswd", Some(696)),
+    ("accept-odd-backslash-run-before-hash", Some(696)),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -2213,6 +2255,63 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.users,
                             dequoted,
                             cvt_proj.users
+                        );
+                    }
+                    "accept-escaped-hash-keeps-nopasswd"
+                    | "accept-odd-backslash-run-before-hash" => {
+                        // ESCAPE retention, the sibling of #667's quote
+                        // retention above. Everything except the command list
+                        // agrees; state that first so a divergence that spreads
+                        // to users/hosts/arity is a FAILURE here, not a silently
+                        // wider xfail.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): escape retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.users, &cvt_proj.users)
+                                && sorted_eq(&ast_proj.hosts, &cvt_proj.hosts),
+                            "L3 {id} ({target}): escape retention is a COMMAND-token \
+                             divergence only; users/hosts must already agree. got \
+                             ast users={:?} hosts={:?} cvt users={:?} hosts={:?}",
+                            ast_proj.users,
+                            ast_proj.hosts,
+                            cvt_proj.users,
+                            cvt_proj.hosts
+                        );
+                        // The predicted divergence, stated exactly: dropping the
+                        // FIRST backslash of each run in the AST token yields
+                        // the cvtsudoers token. Deliberately NOT `replace("\\",
+                        // "")`, which would also absorb a token where RuleSteward
+                        // kept a backslash cvtsudoers never had, and NOT
+                        // `trim_matches`, for the same reason the #667 arm above
+                        // refuses it: an over-wide unescape makes the assertion
+                        // pass on divergences it was not written for.
+                        let unescape_one = |c: &str| -> String {
+                            let mut out = String::with_capacity(c.len());
+                            let mut it = c.chars();
+                            while let Some(ch) = it.next() {
+                                if ch == '\\' {
+                                    // consume the escape, keep what it escaped
+                                    if let Some(next) = it.next() {
+                                        out.push(next);
+                                    }
+                                } else {
+                                    out.push(ch);
+                                }
+                            }
+                            out
+                        };
+                        let unescaped: Vec<String> =
+                            ast_proj.commands.iter().map(|c| unescape_one(c)).collect();
+                        assert!(
+                            sorted_eq(&unescaped, &cvt_proj.commands),
+                            "L3 {id} ({target}): the escape-retention divergence predicts the \
+                             command lists agree once each AST token is unescaped once; got \
+                             ast={:?} unescaped={:?} cvt={:?}",
+                            ast_proj.commands,
+                            unescaped,
+                            cvt_proj.commands
                         );
                     }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),
