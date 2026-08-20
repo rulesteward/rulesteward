@@ -188,6 +188,13 @@ examine_globs = [
     # covered by the lints/**/*.rs glob below). ast.rs is pure type defs and is
     # auto-excluded by the global `**/ast.rs` exclude_globs entry.
     "crates/rulesteward-sudoers/src/parser.rs",
+    # boundary.rs (#698): the quote/escape/blank primitives the parser and the
+    # token lints both call, given one home by "give the boundary primitives one
+    # home". It is a NEW top-level file and so needs its own entry under the
+    # allowlist-precedes-code rule stated above - without it all seventeen
+    # primitives mutate zero times and the sudoers gate false-passes on exactly
+    # the surface #702/#704 were fixed in.
+    "crates/rulesteward-sudoers/src/boundary.rs",
     "crates/rulesteward-sudoers/src/resolve.rs",
     "crates/rulesteward-sudoers/src/lints/**/*.rs",
     # sudoers differential oracle: the four-oracle verdict model (visudo -c / -s,
@@ -631,7 +638,8 @@ exclude_re = [
     # Vec::leak(Vec::new()|vec![0]|vec![1]), and `!=`->`==` in
     # strip_leading_zeros.
     'rulesteward-fapolicyd/src/load_order\.rs:.*replace take_digit_run -> Vec<u8> with vec!',
-    # sudoers parser.rs, the first two sudoers exclusions. Both are survivors of
+    # sudoers boundary.rs + parser.rs, the first two sudoers exclusions. Both
+    # are survivors of
     # a RECORDED kill attempt, not of an argument: the rule is that a SURVIVOR
     # claims no current test distinguishes the mutant, while calling one
     # EQUIVALENT claims none COULD, and only an attempted construction supports
@@ -644,12 +652,25 @@ exclude_re = [
     #   at `open == i`, and the function opens with a `debug_assert!` that every
     #   span starts strictly before the cursor. ATTEMPT (recorded): a direct
     #   in-crate call `opens_principal(&[(3, 7)], 3)` panics on UNMUTATED code at
-    #   parser.rs:1322, "span starting at or after the cursor 3". A test built on
+    #   the `debug_assert!` opening `opens_principal` in boundary.rs, "span
+    #   starting at or after the cursor 3". A test built on
     #   the only discriminating input therefore fails against the real code too,
     #   so it cannot distinguish the mutant from it. Operator-specific: the
     #   `< with ==`, `< with >`, `<= with >`, `&& with ||` and `delete !` mutants
     #   at the same site are all still gated.
-    'rulesteward-sudoers/src/parser\.rs:.*replace < with <= in opens_principal',
+    #
+    #   The citation is deliberately a SYMBOL, not a line number. This file is
+    #   not scanned by `scripts/check-doc-citations.sh` (which is `.rs`-only),
+    #   so a bare `file:line` here decays with nothing to catch it - which is
+    #   how the stale `parser.rs:1322` this replaced survived.
+    #
+    #   PATH REPOINTED (#698): `opens_principal` moved parser.rs -> boundary.rs
+    #   in "give the boundary primitives one home". The anchor still said
+    #   `parser\.rs` and so matched nothing, which was harmless only while
+    #   boundary.rs was itself outside `examine_globs`. Adding the glob above
+    #   makes a stale anchor a RED nightly gate on a survivor that is parked on
+    #   a recorded, still-valid attempt - so the two changes must land together.
+    'rulesteward-sudoers/src/boundary\.rs:.*replace < with <= in opens_principal',
     # - `split_user_list` `open > 0` -> `open >= 0`. `>= 0` is always true on a
     #   `usize`, so the mutant reduces the guard to the let-chain that follows
     #   it, and at `open == 0` that chain's first link is
@@ -661,7 +682,24 @@ exclude_re = [
     #   command, so the instrument does discriminate. Operator-specific: the
     #   `> with ==` and `> with <` mutants at the same site are still gated, and
     #   so is every other mutant in this function.
-    'rulesteward-sudoers/src/parser\.rs:.*replace > with >= in split_user_list',
+    #
+    #   LINE-PINNED (#698). The unpinned form was OVER-BROAD: `split_user_list`
+    #   now contains a SECOND `>` guard, the `i > 0` of the `!` boundary scan,
+    #   added by "model the negation sigil at all four call sites" (#670 #671
+    #   #672). `main` has no `i > 0` in this file at all, so at the fork point
+    #   the anchor matched exactly one mutant and the drift is new. The ATTEMPT
+    #   recorded above is entirely about `open > 0` and `lhs[..open]`; nothing
+    #   adjudicates the `i > 0` site, so excluding it violated the rule that a
+    #   parked survivor needs a RECORDED attempt. Pinning to the adjudicated
+    #   line re-gates the other one: if it survives a nightly it gets its own
+    #   ruling instead of being silently skipped.
+    #
+    #   A line-pinned anchor CAN go stale when the file shifts, and that is the
+    #   lesser risk on purpose: a stale pin matches nothing, so the mutant is
+    #   GATED and a survivor turns the nightly red where someone looks at it.
+    #   An over-broad anchor fails the other way, silently swallowing every
+    #   future mutant that happens to match - which is what happened here.
+    'rulesteward-sudoers/src/parser\.rs:1794:.*replace > with >= in split_user_list',
     # - cidr_split `| -> ^` (v4 line ~327 + v6 line ~335, both "in cidr_split"): the
     #   high half SETS the top host bit of a NETWORK address, whose host bits are 0 by
     #   construction, so `addr | bit` == `addr ^ bit` (setting a 0 bit equals toggling
