@@ -908,7 +908,8 @@ the glued-quote one ALSO diverges on hosts by #667 - see section 21),
 `even-backslash-bang-boundary` (all four added 2026-08-19 with #699; three carry
 an L3 xfail **#696** on the USERS axis and `escaped-bang-runas` is L3-CLEAN,
 because L3 projects users/hosts/commands and not the runas group - see
-section 22).
+section 22), `nbsp-host-principal` (added 2026-08-19 with #702; L3 xfail **#705**
+on the HOSTS axis - see section 24).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
@@ -978,8 +979,11 @@ and a dropped guard inside a compound `&&` chain is invisible to it.
 ## 23. #701 - a principal-list half of nothing but negation sigils
 
 One reject scenario, `reject-lone-sigil-host-list`, `alice! = NOPASSWD: ALL`.
-`visudo -c -f -` **rc 1** on all three targets (`rs-oracle{8,9,10}`, sudo 1.9.17p2,
-stdin, `--network=none`, 2026-08-19).
+`visudo -c -f -` **rc 1** on all three targets (`rs-oracle{8,9,10}`; the hand
+re-derivation was on `rs-oracle9`, sudo 1.9.17p2, stdin, `--network=none`,
+2026-08-19). `rs-oracle8` ships sudo **1.9.5p2**, not 1.9.17p2 - sections 21 and
+22 scope the version to el9 and this one dropped the qualifier, which section 2
+exists specifically to prevent.
 
 `split_user_list` chose a boundary and never asked whether either half IS a
 principal list. This line parsed as user `alice` / host `!`, became a well-formed
@@ -1021,6 +1025,53 @@ reports `sudo-W01` on it. `""` holds a non-sigil character, so `holds_a_principa
 passes it through. That is **#677**, which owns the empty-principal question;
 folding it in here risks the #669/#677 masking interaction this lane records as
 its sharpest hazard.
+
+## 24. #702 - sudo separates on `[[:blank:]]` only
+
+One accept scenario, `accept-nbsp-host-principal`, input `"a"<NBSP> = NOPASSWD: ALL`
+(U+00A0). `visudo -c -f -` **rc 0** on all three targets; `cvtsudoers -f json` on
+`rs-oracle9` (sudo 1.9.17p2) reports `User_List [{"username":"a"}]`,
+`Host_List [{"hostname":"\u00a0"}]`, `authenticate:false`, command `ALL`. The NBSP is
+the HOST NAME.
+
+sudo's `toke.l` discards `[[:blank:]]+` - space and tab - and nothing else. Every
+other whitespace character is an ordinary `WORD` byte. This crate asked
+`char::is_whitespace` in SIX places on the principal path, so one concept had six
+recognizers: the line trim in `classify_logical_line`, the user-spec segment
+splitter in `split_top_level_segments`, the LHS trim in `classify_user_spec`, and
+in `split_user_list` the entry trim, the closer guard and
+`unquoted_whitespace_runs`. All six now route through `is_sudoers_blank`.
+
+**Both failure directions were live, and the second is why this is a class fix
+rather than another patch:**
+
+* a line `visudo` ACCEPTS lost its `Host_List`, folded to `Malformed`, and per #668
+  every W/E lint on it was suppressed - a passwordless-`ALL` grant evaluated by
+  nothing.
+* #701's `holds_a_principal` used the NARROW class while the trims stayed WIDE, so
+  the trim ate the character that made a half a principal and the postcondition
+  then correctly rejected the remainder. Rows like `a!<VT>` and `ALL !<NBSP>` are
+  `visudo` rc 0, were CORRECT at `6abb10a`, and regressed at `360ca9c`. VT
+  (U+000B) and FF (U+000C) are pure ASCII, so this was never a Unicode corner.
+
+Four consecutive adversarial rounds on this lane each found one defect and all four
+were the same shape: two recognizers of one lexical concept disagreeing. Narrowing
+one created the next round's regression at the seam with the one beside it.
+
+**Two `boundary_substrate.rs` rows were RE-PINNED rather than deleted.**
+`"ab"<NBSP>,alice ALL` and `alice,<NBSP>"b c" ALL` are `visudo` **rc 1**, so no split
+of them is the correct one; those tests pinned an arbitrary internal answer that came
+from the recognizers disagreeing. Their new answers are recorded with the reasoning,
+their rc-1 status is restated, and an rc-0 control was ADDED to the first (it had
+none). Nothing oracle-anchored moved: RuleSteward reports `sudo-W01` on both before
+and after, which is #669's three-token gap and remains the live defect there.
+
+**Deliberately still divergent, and xfailed as #705:** the host-token layer BELOW
+`split_user_list` still discards the character, so this scenario's `Host_List`
+projects EMPTY where `cvtsudoers` has one entry. The verdict is correct; the
+structure is not. Routing `comma_split` as well moves it to `[""]` rather than to the
+NBSP, so at least one more recognizer remains - enumerated in #705 rather than
+guessed at here.
 
 ## Re-capturing
 

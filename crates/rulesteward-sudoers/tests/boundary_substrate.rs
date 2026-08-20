@@ -1108,6 +1108,36 @@ fn control_two_token_left_hand_sides_still_parse() {
 /// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
 #[test]
 fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+    // The ASCII control FIRST, because it is the row whose verdict the oracle
+    // actually determines. `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo` rc 0
+    // (rs-oracle9, 2026-08-19): a space then a comma still continues the user
+    // list. Added by #702; this test had no rc-0 row before, which is why the
+    // rows below could be re-pinned without anything noticing.
+    let s = only_spec("\"ab\" ,alice ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string(), "alice".to_string()],
+        "rc-0 control: a blank then a comma continues the USER list"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+
+    // The NBSP and VT rows. `visudo` rc **1** on both, so no split is the
+    // correct one and this pins only what the parser does.
+    //
+    // RE-PINNED by #702, and the change is the point rather than an accident.
+    // These used to assert `users == ["ab", alice]`. That answer came from the
+    // recognizers DISAGREEING: `unquoted_whitespace_runs` called U+00A0
+    // whitespace, so the comma landed at the start of `after` and the
+    // continuation filter fired. #702 gave the blank concept ONE recognizer
+    // (`is_sudoers_blank`, `' ' | '\t'`, which is sudo's `[[:blank:]]` and
+    // nothing else), so the NBSP is now an ordinary name byte on every code
+    // path, the boundary falls at the closing quote, and `<NBSP>,alice ALL`
+    // becomes the host half.
+    //
+    // Nothing oracle-anchored moved: the line is rc 1 either way, and
+    // RuleSteward reports `sudo-W01` on it BOTH before and after - a grant off
+    // a file real sudo refuses to load. THAT is the live defect on these rows
+    // and it belongs to #669's three-token gap, not here.
     for src in [
         "\"ab\"\u{a0},alice ALL = NOPASSWD: ALL\n",
         "\"ab\"\u{b},alice ALL = NOPASSWD: ALL\n",
@@ -1115,14 +1145,9 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
         let s = only_spec(src);
         assert_eq!(
             s.users,
-            vec!["\"ab\"".to_string(), "alice".to_string()],
-            "the comma continues the USER list even after a whitespace char outside \
-             `u8::is_ascii_whitespace`'s set: {src:?}"
-        );
-        assert_eq!(
-            s.host_groups[0].hosts,
-            vec!["ALL".to_string()],
-            "the host list must not swallow `alice`: {src:?}"
+            vec!["\"ab\"".to_string()],
+            "a non-blank whitespace char is a NAME byte, so the user list ends at \
+             the closing quote: {src:?}"
         );
     }
 }
@@ -1151,24 +1176,46 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
 /// 2026-08-03).
 #[test]
 fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
+    // The ASCII-space control, correct on every sha and UNCHANGED by #702.
+    // This row is `visudo` rc 0 (the comma makes `alice, "b c"` a single
+    // `User_List`, so the LHS has two tokens), so unlike the two below its
+    // VERDICT is oracle-determined and its split is pinnable.
+    let s = only_spec("alice, \"b c\" ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["alice".to_string(), "\"b c\"".to_string()],
+        "rc-0 control: the quoted USER principal must not be swallowed into the hosts"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+
+    // The NBSP and VT rows, `visudo` rc **1** (three LHS tokens, #669's gap).
+    //
+    // RE-PINNED by #702, and this one deserves a plain statement rather than a
+    // quiet edit: the quoted principal `"b c"` IS now swallowed into the host
+    // half, which is literally what this test was written to prevent.
+    //
+    // It is not #651's defect returning. That one was the recognizers
+    // DISAGREEING - the byte-level opener guard did not see U+00A0 as
+    // whitespace while `unquoted_whitespace_runs` did, so a SPURIOUS candidate
+    // was pushed at the quote and beat a correct one. #702 gave the blank
+    // concept ONE recognizer (`is_sudoers_blank`), so every path now agrees
+    // that a non-blank whitespace char is a name byte; `alice,<NBSP>` is the
+    // user half and `"b c" ALL` the host half, consistently, from one rule.
+    //
+    // Nothing oracle-anchored moved. The line is rc 1 before and after, and
+    // RuleSteward reports `sudo-W01` on it before and after - a grant off a
+    // file real sudo refuses to load. That surviving false grant is the live
+    // defect on these rows (#669), and it is why the SPLIT here is arbitrary:
+    // there is no correct split of a line that does not parse.
     for src in [
         "alice,\u{a0}\"b c\" ALL = NOPASSWD: ALL\n",
         "alice,\u{b}\"b c\" ALL = NOPASSWD: ALL\n",
-        // The ASCII-space control, correct on every sha. This row is visudo
-        // rc 0 (two LHS tokens), so unlike the two above its VERDICT is
-        // pinnable too.
-        "alice, \"b c\" ALL = NOPASSWD: ALL\n",
     ] {
         let s = only_spec(src);
         assert_eq!(
             s.users,
-            vec!["alice".to_string(), "\"b c\"".to_string()],
-            "the quoted USER principal must not be swallowed into the hosts: {src:?}"
-        );
-        assert_eq!(
-            s.host_groups[0].hosts,
-            vec!["ALL".to_string()],
-            "the host list is exactly `ALL`: {src:?}"
+            vec!["alice".to_string()],
+            "the non-blank whitespace is a name byte, so the user half ends at it: {src:?}"
         );
     }
 }

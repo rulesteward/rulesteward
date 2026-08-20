@@ -385,7 +385,6 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-*` scenarios (`accept-escaped-hash-keeps-nopasswd`,
 /// `accept-even-backslash-run-before-hash`,
 /// `accept-odd-backslash-run-before-hash`) added 2026-08-19 with #649, the
-/// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18.
 /// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18; 4 more
 /// (3 `accept-*` plus `reject-escaped-bang-principal`) added 2026-08-19 with
 /// the negation-sigil sweep #670/#671/#672 - see `PROVENANCE.md` section 19.
@@ -404,7 +403,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// #699's happen to be all-accept, and an earlier version of this sentence
 /// applied the `accept-*` qualifier to every group and said "5 with #699",
 /// contradicting both its own addend below and the paragraph after it.
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 = 66.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 + 1 = 67.
 ///
 /// #701's single scenario is a `reject-*`, so it moves this floor and leaves
 /// `L3_CLEAN_FLOOR` alone: L3 compares accept scenarios only. It IS
@@ -451,7 +450,7 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 66;
+const SCENARIO_FLOOR: usize = 67;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
@@ -494,11 +493,20 @@ const SCENARIO_FLOOR: usize = 66;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **54** accept scenarios x 3
-/// targets = 162 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 161 attempted; minus **45** xfail hits (the **15** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **55** accept scenarios x 3
+/// targets = 165 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 164 attempted; minus **48** xfail hits (the **16** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
 /// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 116.
+///
+/// 116 -> 116 is #702, and it is the CANCELLATION this const's warning below is
+/// about, happening for the second time on this branch. One accept scenario
+/// contributes +3 attempted and is itself an `L3_XFAIL` (#705), giving back
+/// exactly -3, so the RESULT does not move while FIVE figures do
+/// (54->55, 162->165, 161->164, 45->48, and the inner entry count 15->16).
+/// Nothing would have failed had they been left stale, since the equality is on
+/// the RESULT. They were updated in the same commit anyway, which is the only
+/// thing that keeps this cross-check able to cross-check.
 ///
 /// 113 -> 116 is #699. FIVE figures move and so does the RESULT, because the
 /// face adds FOUR accept scenarios of which only THREE are xfailed: the fourth,
@@ -803,6 +811,13 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     ("accept-escaped-bang-run", Some(696)),
     ("accept-escaped-bang-glued-quote", Some(696)),
     ("accept-even-backslash-bang-boundary", Some(696)),
+    // #702's scenario. The divergence is DATA LOSS, not retention, so it carries
+    // its own number (#705) rather than #667's or #696's: `split_user_list` now
+    // correctly returns the NBSP as the host half, and the host-token layer
+    // below it throws the character away, leaving an EMPTY `Host_List` where
+    // `cvtsudoers` reports a one-character hostname. The VERDICT is right
+    // (`sudo-W01` reported, no false `sudo-F01`); only the structure is not.
+    ("accept-nbsp-host-principal", Some(705)),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -2214,7 +2229,7 @@ fn l2_strict_gate_matches_default_gate() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn l3_structure_projection_matches_cvtsudoers() {
-    let (root, _mode) = corpus_root();
+    let (root, mode) = corpus_root();
     let ids = scenarios(&root);
 
     let mut compared = 0usize;
@@ -2756,6 +2771,37 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             cvt_proj.hosts
                         );
                     }
+                    "accept-nbsp-host-principal" => {
+                        // #705, stated exactly: users, commands and arity all
+                        // agree, and the HOST list is empty on our side where
+                        // cvtsudoers has exactly one entry. Asserting emptiness
+                        // rather than "differs" is what makes a divergence that
+                        // SPREADS fail here instead of widening silently.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): the lost host token must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): commands must AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        assert!(
+                            ast_proj.hosts.is_empty(),
+                            "L3 {id} ({target}): #705 predicts the host token is LOST, so \
+                             our host list is EMPTY; got ast={:?}. A non-empty list here \
+                             means #705 is fixed and this entry must be removed",
+                            ast_proj.hosts
+                        );
+                        assert_eq!(
+                            cvt_proj.hosts.len(),
+                            1,
+                            "L3 {id} ({target}): cvtsudoers reports exactly one host \
+                             (the non-blank whitespace principal); got {:?}",
+                            cvt_proj.hosts
+                        );
+                    }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),
                 }
                 xfail_hit.push(id.clone());
@@ -2796,9 +2842,11 @@ fn l3_structure_projection_matches_cvtsudoers() {
     // file's cross-check figures went stale through #651 while the RESULT stayed
     // 95 and nothing complained.
     //
-    // The `RS_BRANCH_DIFF` carve-out is the same one `assert_scenario_cardinality`
-    // makes, for the same reason and with the same wording - see that function's
-    // doc comment, which explains it once. Under a branch differential this
+    // The carve-out is the same one `assert_scenario_cardinality` makes, for the
+    // same reason - see that function's doc comment, which explains it once.
+    // It must also be keyed the same way, on `CorpusMode::Fresh` AND the env
+    // var; keying on the variable alone let the constant be relaxed on the
+    // committed corpus, which is what the block below now prevents. Under a branch differential this
     // binary replays ANOTHER TREE's corpus; #658 MANDATES that such a tree add
     // scenarios, so equality would assert something this binary cannot know and
     // would fail in `rs-branch-diff.sh`'s R2 run, surfacing as DISCRIMINATED on
@@ -2816,7 +2864,16 @@ fn l3_structure_projection_matches_cvtsudoers() {
     // alone: their floors are COMPUTED from `SCENARIO_FLOOR` rather than
     // hand-maintained, so they cannot drift, and their `>=` is what keeps them
     // branch-differential-safe.
-    if std::env::var_os("RS_BRANCH_DIFF").is_some() {
+    // BOTH conditions, matching `assert_scenario_cardinality` exactly. It
+    // shipped keyed on the env var ALONE, which is not what that function does
+    // and not what its doc comment says ("the relaxation now follows the CALLER
+    // rather than the mere presence of an override"). Measured 2026-08-19 on the
+    // COMMITTED corpus with no override: with `L3_CLEAN_FLOOR` set to 100,
+    // `RS_BRANCH_DIFF=1` made a 16-count drift pass green while the sibling
+    // constant still failed. Nothing in the repo exports the variable today -
+    // `rs-branch-diff.sh` sets it per-command - so it was latent rather than
+    // live, and the guard that prevents it was already written 800 lines above.
+    if matches!(mode, CorpusMode::Fresh) && std::env::var_os("RS_BRANCH_DIFF").is_some() {
         assert!(
             compared >= L3_CLEAN_FLOOR,
             "expected >= {L3_CLEAN_FLOOR} clean L3 comparisons in the overridden \

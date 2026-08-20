@@ -55,8 +55,9 @@
 //! which this fix must leave untouched. It is not absent here, though, and an
 //! earlier version of this line wrongly said it was: the three
 //! `an_even_backslash_run_*` rows assert unescaped-sigil behaviour by
-//! construction (an even run leaves a REAL sigil), and the #701 block at the end
-//! of this file is entirely unescaped.
+//! construction (an even run leaves a REAL sigil), and six of the seven rows in
+//! the #701 block at the end of this file are unescaped - the seventh is
+//! `a\!!`, whose name says so.
 
 use std::path::Path;
 
@@ -302,8 +303,11 @@ fn an_unescaped_sigil_after_a_comma_continues_the_user_list() {
 // | `! h1 = NOPASSWD: ALL` | rc 1 (the USER half) |
 // | `alice!h1`, `alice!!h1`, `a\!!h1`, `!!alice ALL`, `alice,!bob h1` | rc 0 |
 
-/// visudo rc 1. Its one-byte-longer twin `a\!!h1` is rc 0 and asserted above,
-/// which is what makes this a discriminating row rather than a restatement.
+/// visudo rc 1. Its minimal control `a\!!h1` is rc 0 and asserted above, which
+/// is what makes this a discriminating row rather than a restatement. (Two bytes
+/// longer, not one; this file uses "one-byte control" loosely elsewhere - the
+/// `alice\!h1` row differs from `alice\!"h1"` by two quotes - so the intent is
+/// "minimal", and only the arithmetic was wrong.)
 #[test]
 fn an_escaped_sigil_run_with_no_principal_after_it_is_still_a_real_f01() {
     let src = r"a\!! = NOPASSWD: ALL
@@ -403,4 +407,68 @@ fn a_negated_member_inside_a_list_still_reports_the_grant() {
         ),
         "cvtsudoers: two users, the second negated, host h1"
     );
+}
+
+// ------------------------- the postcondition's SHAPE (abort, not filter)
+//
+// #701 shipped the guard as a FILTER on each candidate, so a rejected
+// candidate fell through and a later one could still win. The stated basis was
+// "today no input reaches a second one". Round 3's suppression sweep measured
+// both halves of that false: 287 inputs DO reach a second candidate, and on
+// exactly those the abort agrees with `visudo` 205 times against the filter's
+// 82. Falling through is wrong roughly 2.5x as often, because a candidate whose
+// half is degenerate is evidence the LINE is malformed - not evidence that this
+// particular boundary was the wrong guess.
+//
+// These rows pin the SHAPE. Without them, reverting the abort to a filter
+// leaves the whole suite green, which is how the shape shipped unmeasured in
+// the first place.
+//
+// Grounded rs-oracle9 (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-19:
+// all three are rc 1, and the rc-0 controls below them are unaffected.
+
+/// visudo rc 1. The worked example: candidate 1 is correctly rejected (`before`
+/// is `!`), and candidate 2 lands because `before` is then `! "`, whose `"`
+/// satisfies `holds_a_principal`. Under the filter this reported a grant off a
+/// rejected file; under the abort it reports `sudo-F01`.
+#[test]
+fn a_rejected_candidate_aborts_rather_than_falling_through() {
+    for src in [
+        "! \" a = NOPASSWD: ALL\n",
+        "! \"\"a = NOPASSWD: ALL\n",
+        "! \"!a = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            count_code(src, "sudo-F01"),
+            1,
+            "visudo rejects this file (rc 1); a degenerate half must end the search: {src:?}"
+        );
+        assert_eq!(
+            count_code(src, "sudo-W01"),
+            0,
+            "no grant may be reported off a line real sudo refuses to load: {src:?}"
+        );
+    }
+}
+
+/// visudo rc 0. The controls for the block above: aborting must not swallow a
+/// line whose FIRST candidate is fine. Without these, "abort on any rejection"
+/// could be over-applied and every quoted-principal grant would vanish.
+#[test]
+fn aborting_does_not_disturb_a_line_whose_first_candidate_is_good() {
+    for src in [
+        "alice h1 = NOPASSWD: ALL\n",
+        "alice \"h 1\" = NOPASSWD: ALL\n",
+    ] {
+        assert_eq!(
+            count_code(src, "sudo-F01"),
+            0,
+            "visudo accepts this file: {src:?}"
+        );
+        assert_eq!(
+            count_code(src, "sudo-W01"),
+            1,
+            "the grant must be reported: {src:?}"
+        );
+    }
 }

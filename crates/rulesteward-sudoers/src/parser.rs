@@ -30,9 +30,9 @@ use rulesteward_core::comment::{StripConfig, strip};
 
 use crate::boundary::{
     clean_double_quoted_interior, find_closing_quote, holds_a_principal,
-    inside_a_clean_quoted_region, opens_principal, option_value_end, preceding_token,
-    quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq, unquoted_unescaped,
-    unquoted_whitespace_runs,
+    inside_a_clean_quoted_region, is_sudoers_blank, opens_principal, option_value_end,
+    preceding_token, quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq,
+    unquoted_unescaped, unquoted_whitespace_runs,
 };
 
 use crate::ast::{
@@ -252,7 +252,7 @@ fn split_continuation(body: &str) -> Option<&str> {
 /// `was_comment` is `true` when stage 1's inline-comment strip emptied a
 /// wholly-`#` comment line (so the now-empty text is a `Comment`, not a `Blank`).
 fn classify_logical_line(text: &str, was_comment: bool) -> LineKind {
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(is_sudoers_blank);
 
     if trimmed.is_empty() {
         // Stage 1 already stripped any inline comment. An empty text that came from
@@ -638,7 +638,7 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
                 "user specification segment is missing its `= command` part".to_string(),
             );
         };
-        let lhs = seg[..eq].trim();
+        let lhs = seg[..eq].trim_matches(is_sudoers_blank);
         let rhs = &seg[eq + 1..];
 
         let hosts = if idx == 0 {
@@ -1068,7 +1068,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     // the preceding-token start for the next segment; the next segment
                     // opens with a Host_List (not a `Cmnd_Spec`), so both `at_spec_start`
                     // and `in_cmnd_list` reset until that segment's structural `=`.
-                    segments.push(s[seg_start..i].trim());
+                    segments.push(s[seg_start..i].trim_matches(is_sudoers_blank));
                     seg_start = i + 1;
                     tok_start = i + 1;
                     at_spec_start = false;
@@ -1078,7 +1078,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
             _ => at_spec_start = false,
         }
     }
-    segments.push(s[seg_start..].trim());
+    segments.push(s[seg_start..].trim_matches(is_sudoers_blank));
     segments
 }
 
@@ -1686,7 +1686,7 @@ fn comma_split(s: &str) -> Vec<String> {
 /// disagreeing is the recurring shape on this surface (#622, #629, #630, #631,
 /// #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
-    let lhs = lhs.trim();
+    let lhs = lhs.trim_matches(is_sudoers_blank);
 
     // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
     // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
@@ -1851,7 +1851,7 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.
         if let Some(next) = lhs[close + 1..].chars().next()
             && next != ','
-            && !next.is_whitespace()
+            && !is_sudoers_blank(next)
         {
             candidates.push((close + 1, close + 1));
         }
@@ -1865,7 +1865,15 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     // Each of the three guards below is grounded, and two of them exist to
     // PRESERVE a correct answer rather than to add one. It read "three of the
     // four" until #699 merged the `,` and `!` conjuncts into the single `prev`
-    // bullet, leaving the count pointing at nothing:
+    // bullet, leaving the count pointing at nothing.
+    //
+    // `i > 0` is a PROVABLE EQUIVALENT and deleting it leaves the suite green -
+    // recorded rather than chased, because a witness cannot exist. `i > 0` holds
+    // exactly when `lhs[..i]` is non-empty, which holds exactly when
+    // `lhs[..i].chars().next_back()` is `Some` - and that is the very next
+    // conjunct. The guard asks a question its neighbour already answers. Keep it
+    // as the reader's statement of the leading-sigil rule; do not treat its
+    // survival as a missing test.
     //
     //   i > 0            a leading sigil negates the first principal; it is not
     //                    a boundary. `!!alice ALL = ...` is rc 0.
@@ -1894,10 +1902,16 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     //                    no quotes - so suppressing it left no candidate at all
     //                    and dropped a passwordless-ALL grant.
     //
-    //                    Measured 2026-08-19, and the previous version of this
-    //                    comment got it exactly backwards: dropping the `!`
+    //                    Measured, and RE-measured after each change, because
+    //                    this bullet has now been wrong twice. Dropping the `!`
     //                    member turns `w03_double_negation_in_user_subject_not_
-    //                    dead` RED, and dropping the ESCAPE-AWARENESS turns
+    //                    dead` AND `a_user_list_of_sigils_plus_a_principal_
+    //                    still_reports_the_grant` RED. It briefly turned
+    //                    NOTHING red, between #701 adding the postcondition
+    //                    (which masked it) and #702's round adding that second
+    //                    test - a comment true when written, false one commit
+    //                    later, and true again for a different reason.
+    //                    Dropping the ESCAPE-AWARENESS turns
     //                    `an_escaped_comma_before_a_negation_sigil_is_not_a_
     //                    list_separator`, `an_escaped_sigil_run_still_yields_a_
     //                    negated_host`, `l1_f01_matches_visudo_verdict_per_target`
@@ -1977,22 +1991,34 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // index is the same question.
         let before_comma_continues =
             before.ends_with(',') && !separator_escaped(before, before.len() - 1);
-        // #701, the POSTCONDITION. Every guard above decides where a boundary
-        // COULD be; this one asks whether the split it produces is a pair of
-        // principal lists at all. Its absence is why three producer-level sigil
-        // fixes each left `alice!` parsing as user `alice` / host `!` - a
-        // well-formed `UserSpec` carrying a passwordless-ALL grant, off a file
-        // `visudo` rc-1 rejects. Both halves are asked, because `! h1` is the
-        // same defect with the degenerate half on the USER side.
-        //
-        // It is a filter on the candidate rather than a check on the return, so
-        // a later candidate still gets its turn; today no input reaches a second
-        // one, and writing it this way costs nothing and removes the question.
-        if !before_comma_continues
-            && !after.starts_with(',')
-            && holds_a_principal(before)
-            && holds_a_principal(after)
-        {
+        if !before_comma_continues && !after.starts_with(',') {
+            // #701's postcondition, as an ABORT rather than a filter (changed by
+            // #702's round). Every guard above decides where a boundary COULD
+            // be; this one asks whether the split it produces is a pair of
+            // principal lists at all. Its absence is why three producer-level
+            // sigil fixes each left `alice!` parsing as user `alice` / host `!`
+            // - a well-formed `UserSpec` carrying a passwordless-ALL grant, off
+            // a file `visudo` rc-1 rejects. Both halves are asked, because
+            // `! h1` is the same defect with the degenerate half on the USER
+            // side.
+            //
+            // It SHIPPED as a filter, on the stated basis that "today no input
+            // reaches a second one". Measurement refuted both halves of that:
+            // 287 inputs do reach a second candidate, and on exactly those the
+            // abort agrees with `visudo` 205 times against the filter's 82.
+            // Falling through to a later candidate is wrong about 2.5x as
+            // often, because a candidate whose half is degenerate is evidence
+            // the LINE is malformed, not evidence that this particular boundary
+            // was the wrong guess.
+            //
+            // `! " a = NOPASSWD: ALL` is the worked example: `visudo` rc 1, the
+            // first candidate is correctly rejected (`before` is `!`), and the
+            // second lands because `before` is then `! "` whose `"` satisfies
+            // `holds_a_principal`. The filter reported a grant off a rejected
+            // file; the abort reports `sudo-F01`.
+            if !holds_a_principal(before) || !holds_a_principal(after) {
+                return (lhs, "");
+            }
             // `after` starts right after the boundary - a non-whitespace char,
             // a quote, or the string end - so the HOST half is trimmed. That
             // holds exhaustively over the four candidate producers:
@@ -2005,10 +2031,18 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
             // It said "three" until #699. The `!` scan has been a producer since
             // `c153bc5`, which left this count stale; the "four" at the `after`
             // proof above was then written fresh by #675 (`11f6ea0`), not
-            // updated at `c153bc5`. `git log -S "four candidate producers"`
-            // names only `11f6ea0` and `6abb10a`, and `c153bc5` contains no such
-            // count at all - an earlier version of this sentence credited it
-            // anyway.
+            // updated at `c153bc5`. Verified with `git log -S` over that
+            // phrase AS OF `6abb10a`: it named `11f6ea0` and `6abb10a` only, and
+            // `c153bc5` contains no such count at all - an earlier version of
+            // this sentence credited it anyway.
+            //
+            // The "as of" is load-bearing, not pedantry. The sentence CONTAINS
+            // the phrase it searches for, so every commit editing it adds an
+            // occurrence and changes the answer: the citation falsified itself
+            // the moment it was written, and at HEAD the same command names
+            // three commits. A `git log -S` result belongs in a comment only
+            // pinned to a sha, or phrased over a substring the comment does not
+            // itself spell.
             //
             // An intermediate version
             // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,

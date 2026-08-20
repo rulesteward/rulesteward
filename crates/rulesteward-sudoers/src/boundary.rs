@@ -398,6 +398,40 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
         .map(|(abs, _)| abs)
 }
 
+/// sudo's separator class, and the ONLY one: `toke.l` discards `[[:blank:]]+`
+/// and nothing else.
+///
+/// Every other whitespace character - U+00A0 NBSP, but also the pure-ASCII
+/// U+000B VT and U+000C FF - is an ordinary `WORD` byte to sudo and can appear
+/// inside, or BE, a principal name. Grounded on `rs-oracle9` (sudo 1.9.17p2),
+/// 2026-08-19: `alice<NBSP>h1 = ...` is rc **1** (one token, no host list)
+/// while `"a"<NBSP> = NOPASSWD: ALL` is rc **0** with `Host_List` `[{"hostname":
+/// "\u00a0"}]`, and `al<NBSP>ice h1 = ...` is rc 0 with the NBSP inside the
+/// username.
+///
+/// This exists because the concept had FIVE recognizers asking
+/// `char::is_whitespace`, which is far wider, and #702 is what that cost: a
+/// line real sudo ACCEPTS lost its `Host_List`, folded to `Malformed`, and per
+/// #668 every W/E lint on it was suppressed - a passwordless-`ALL` grant
+/// evaluated by nothing, reported by nothing.
+///
+/// The lane's four adversarial rounds each found one defect and all four were
+/// this same shape: two recognizers of one lexical concept disagreeing.
+/// #701 narrowed [`holds_a_principal`] to `' ' | '\t'` while
+/// `split_user_list`'s entry trim stayed wide, and THAT disagreement was round
+/// 4's regression - the trim ate the character that made a half a principal and
+/// the postcondition then correctly rejected the half. Narrowing one recognizer
+/// creates the next defect; this is the fix that does not.
+///
+/// Deliberately NOT applied to `unquoted_value_end`, which scans a `Defaults`
+/// VALUE rather than a principal list, or to the `.trim()` calls in
+/// `Defaults`/alias parsing. Those are a different grammar position and are
+/// unprobed on this axis; widening the blame beyond what is grounded is how
+/// #647's "indistinguishable readings" claim became false.
+pub(crate) fn is_sudoers_blank(c: char) -> bool {
+    matches!(c, ' ' | '\t')
+}
+
 /// `true` when a principal-list half contains something that could BE a
 /// principal name.
 ///
@@ -415,13 +449,18 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
 /// `alice !`, `a\!!` and `! h1` are all rc **1**, while `alice!h1`,
 /// `alice!!h1`, `a\!!h1`, `!!alice ALL` and `alice,!bob h1` are all rc 0.
 ///
-/// Blank means `' '` and `'\t'` ONLY, deliberately, and not
-/// [`char::is_whitespace`]. sudo's `toke.l` discards `[[:blank:]]+` and nothing
-/// else, so a half consisting of a single NBSP genuinely IS a principal to sudo
-/// (`"a"<NBSP> = NOPASSWD: ALL` is rc 0 with `Host_List [{"hostname":"\u00a0"}]`).
-/// Reaching for the wide predicate here would cement #702, which is the
-/// separate fail-open caused by exactly that confusion in the three recognizers
-/// above this one.
+/// Blank is [`is_sudoers_blank`], which is sudo's `[[:blank:]]` and nothing
+/// else. This predicate spelled `matches!(c, ' ' | '\t')` inline when #701
+/// added it, while five other sites still asked `char::is_whitespace` or
+/// `str::trim` - and THAT disagreement was the next round's regression, because
+/// the wide trim ate the very character that made a half a principal and this
+/// predicate then correctly rejected the remainder. #702 gave the concept one
+/// recognizer and routed all six sites through it.
+///
+/// Widening it back is no longer an equivalent mutant, which is worth stating
+/// because it WAS one for exactly one commit: swapping [`is_sudoers_blank`] for
+/// `char::is_whitespace` now turns five tests RED, including both re-pinned
+/// NBSP rows in `boundary_substrate.rs`.
 ///
 /// It deliberately does NOT reject an empty QUOTED principal: `alice!"" = ...`
 /// is rc 1 and `RuleSteward` is wrong on it too, but `""` holds a non-sigil
@@ -429,7 +468,7 @@ pub(crate) fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
 /// in here risks the #669/#677 masking interaction this lane records as its
 /// sharpest hazard.
 pub(crate) fn holds_a_principal(s: &str) -> bool {
-    s.chars().any(|c| c != '!' && !matches!(c, ' ' | '\t'))
+    s.chars().any(|c| c != '!' && !is_sudoers_blank(c))
 }
 
 /// Whether the byte at `i` is consumed by a SEPARATOR-rule backslash escape:
@@ -573,7 +612,7 @@ pub(crate) fn unquoted_whitespace_runs(s: &str) -> Vec<(usize, usize)> {
             }
             continue;
         }
-        if c.is_whitespace() && !inside_a_clean_quoted_region(&quotes, i) {
+        if is_sudoers_blank(c) && !inside_a_clean_quoted_region(&quotes, i) {
             if run_start.is_none() {
                 run_start = Some(i);
             }
