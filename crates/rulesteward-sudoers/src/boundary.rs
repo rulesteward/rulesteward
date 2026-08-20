@@ -149,8 +149,9 @@ pub(crate) fn inside_a_clean_quoted_region(spans: &[(usize, usize)], i: usize) -
 
 /// Adjacent PAIRS of [`unescaped_quote_positions`], with NO notion of which
 /// token each quote belongs to: quote 1 pairs with quote 2, quote 3 with quote
-/// 4, and so on (`chunks_exact(2)`, silently dropping a trailing unmatched
-/// quote). Correct only where ANY quote may legitimately open a span
+/// 4, and so on (`as_chunks::<2>()`, whose remainder half is dropped, so a
+/// trailing unmatched quote is silently discarded). Correct only where ANY
+/// quote may legitimately open a span
 /// regardless of what precedes it -- a `User_List`/`Host_List` principal may be
 /// quoted anywhere (`man 5 sudoers`, rendered page lines 399-402), so
 /// [`unquoted_whitespace_runs`] and [`split_user_list`]'s glued-quote boundary
@@ -160,7 +161,9 @@ pub(crate) fn inside_a_clean_quoted_region(spans: &[(usize, usize)], i: usize) -
 /// (#538 gap A/C).
 pub(crate) fn simple_quote_pairs(s: &str) -> Vec<(usize, usize)> {
     unescaped_quote_positions(s)
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }

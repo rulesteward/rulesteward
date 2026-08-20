@@ -1704,7 +1704,7 @@ fn gap_c_the_structural_equals_is_never_an_option_equals() {
 //     and it never toggles back OFF, so the scan reads the rest of the LINE
 //     (a following tag, or even the next command) as still inside the value.
 //   * ROOT CAUSE 2 - `inside_a_clean_quoted_region` pairs
-//     `unescaped_quote_positions` with `chunks_exact(2)` over the WHOLE
+//     `unescaped_quote_positions` with `as_chunks::<2>()` over the WHOLE
 //     string, with no notion of which TOKEN each quote belongs to. Two quotes
 //     that each close a DIFFERENT token (two different commands, or two
 //     different host-groups) still form a "clean pair" by that blind pairing,
@@ -1855,7 +1855,7 @@ fn interior_quote_in_an_option_value_does_not_swallow_a_bare_command_across_a_ho
 /// ```
 ///
 /// Mechanism: `inside_a_clean_quoted_region` pairs `unescaped_quote_positions`
-/// with `chunks_exact(2)` over the WHOLE `Cmnd_Spec_List` text with no notion
+/// with `as_chunks::<2>()` over the WHOLE `Cmnd_Spec_List` text with no notion
 /// of which command each quote belongs to. The first command's trailing `"`
 /// and the second command's trailing `"` form a "clean pair" by that blind
 /// pairing even though neither quote OPENS the other's token, so the comma
@@ -2050,7 +2050,7 @@ fn a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespa
 }
 
 /// Pins that an ESCAPED quote (`\"`) is not counted as a quote position: doing
-/// so re-pairs every later quote, and `chunks_exact(2)` then silently drops a
+/// so re-pairs every later quote, and `as_chunks::<2>()` then silently drops a
 /// leftover odd element, flipping a separator from "inside a clean region" to
 /// "outside" it.
 ///
@@ -2068,7 +2068,7 @@ fn a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespa
 /// the assertion pins the escape SEMANTICS, not one spelling of them.
 ///
 /// The masking is NOT done by `unescaped_quote_positions` +
-/// `chunks_exact(2)`; that call path does not exist. `split_cmnd_specs`'s `,`
+/// `as_chunks::<2>()`; that call path does not exist. `split_cmnd_specs`'s `,`
 /// guard reads a registry built by `quoted_value_span` / `find_closing_quote`.
 /// The two share the escape RULE, not a call.
 ///
@@ -2091,7 +2091,7 @@ fn a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespa
 ///
 /// WITHOUT it (the surviving mutant): the backslash falls through to the
 /// catch-all and never sets `escaped`, so the `"` at index 4 IS counted:
-/// positions become `[0, 4, 9]`. `chunks_exact(2)` yields only the pair
+/// positions become `[0, 4, 9]`. `as_chunks::<2>()` yields only the pair
 /// `(0, 4)` and silently drops the trailing `9`. The comma at index 6 is now
 /// OUTSIDE every recognized "clean" region, so it would be read as a real
 /// separator, corrupting this value into two pieces. This test pins the

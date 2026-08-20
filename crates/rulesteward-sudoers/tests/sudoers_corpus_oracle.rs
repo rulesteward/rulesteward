@@ -2462,7 +2462,7 @@ fn l3_structure_projection_matches_cvtsudoers() {
                         // token - and an unbalanced principal quote is precisely
                         // what this defect family produces. `simple_quote_pairs`
                         // silently drops a trailing unmatched quote
-                        // (`chunks_exact(2)`), and an off-by-one in the very
+                        // (`as_chunks::<2>()`), and an off-by-one in the very
                         // guard #651 adds yields users `"ops team` with a clean
                         // host `web1`: tuple_count, hosts and commands all agree
                         // and `trim_matches` would have eaten the stray quote.
