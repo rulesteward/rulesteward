@@ -138,12 +138,12 @@ fn int_set_contains(fact_val_i64: i64, rule_value: &AttrValue, sets: &SetTable) 
         AttrValue::SetRef(name) => match sets.get(name) {
             Some(members) => members
                 .iter()
-                .any(|m| m.parse::<i64>().ok().is_some_and(|n| n == fact_val_i64)),
+                .any(|m| m.parse::<i64>().is_ok_and(|n| n == fact_val_i64)),
             None => false,
         },
         AttrValue::Str(s) => {
             // A string literal like "0" or a name - try numeric parse first.
-            s.parse::<i64>().ok().is_some_and(|n| n == fact_val_i64)
+            s.parse::<i64>().is_ok_and(|n| n == fact_val_i64)
         }
     }
 }

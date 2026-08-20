@@ -28,6 +28,13 @@ use std::path::Path;
 use rulesteward_core::Span;
 use rulesteward_core::comment::{StripConfig, strip};
 
+use crate::boundary::{
+    clean_double_quoted_interior, find_closing_quote, holds_a_principal,
+    inside_a_clean_quoted_region, is_sudoers_blank, opens_principal, option_value_end,
+    preceding_token, quoted_value_span, separator_escaped, simple_quote_pairs, structural_eq,
+    unquoted_unescaped, unquoted_whitespace_runs,
+};
+
 use crate::ast::{
     AliasDef, AliasKind, AliasSpec, CmndItem, CmndOption, CmndOptionKey, CmndSpec, DefaultSetting,
     DefaultsEntry, DefaultsScope, HostGroup, IncludeDirective, IncludeKind, LineKind, LogicalLine,
@@ -245,7 +252,7 @@ fn split_continuation(body: &str) -> Option<&str> {
 /// `was_comment` is `true` when stage 1's inline-comment strip emptied a
 /// wholly-`#` comment line (so the now-empty text is a `Comment`, not a `Blank`).
 fn classify_logical_line(text: &str, was_comment: bool) -> LineKind {
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(is_sudoers_blank);
 
     if trimmed.is_empty() {
         // Stage 1 already stripped any inline comment. An empty text that came from
@@ -536,52 +543,6 @@ fn parse_one_default_setting(token: &str) -> DefaultSetting {
     }
 }
 
-/// If `value` is exactly ONE clean double-quoted string -- an opening `"`, an
-/// interior with no UNESCAPED `"`, and a closing `"` as the final byte -- return
-/// the interior with the surrounding quotes stripped. Otherwise return `None`
-/// (the value is left verbatim by the caller).
-///
-/// "Unescaped" uses the sudoers single-backslash escape model (the same one
-/// [`split_default_settings`] uses): a `\` escapes the next char, and `\\` is one
-/// literal backslash that does NOT escape a following `"`. So the FIRST unescaped
-/// `"` after the opening quote must be the LAST byte of the value; an unescaped
-/// `"` before the end means a second quoted region or unquoted trailing content
-/// follows -- e.g. `"a" #5 "b"` (the `#5` sits in an unquoted gap between two
-/// regions) -- which is NOT one clean region.
-///
-/// Grounded via `visudo -c -f` 1.9.17p2 (2026-07-04): `"a" #5 "b"` rc=1 (two
-/// regions), `"a\" #5 b"` rc=0 (escaped inner quote -> one region),
-/// `"a\\" #5 "b"` rc=1, `"a\\\" #5 b"` rc=0.
-///
-/// CAVEAT on the third, re-checked 2026-08-02: the rc is right but the reason
-/// once given here ("`\\` is a literal backslash, so the `"` closes the first
-/// region") is not what visudo reports. Its caret lands on the `b`, i.e. the
-/// string ran ON past that `"` and the bare `b` is the syntax error - the
-/// QUOTE-FINDING rule of the two in [`unescaped_quote_positions`], not the
-/// separator one this function implements. Both readings give rc 1 here, so no
-/// probe in this set distinguishes them and this function's model is unpinned
-/// on the `Defaults` surface. Left as-is deliberately rather than changed on an
-/// unproven hunch; tracked separately.
-fn clean_double_quoted_interior(value: &str) -> Option<&str> {
-    let inner = value.strip_prefix('"')?;
-    let mut escaped = false;
-    for (i, c) in inner.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            // First unescaped `"` in the interior: a clean single region only
-            // when it is the closing quote at the very end (nothing follows).
-            '"' => return (i + 1 == inner.len()).then_some(&inner[..i]),
-            _ => {}
-        }
-    }
-    // No unescaped closing `"` (unterminated) -> not a clean region.
-    None
-}
-
 /// Classify an alias definition, if the line is one. Returns `None` when the first
 /// word is not one of the alias keywords. Returns `Some(Malformed)` when it IS an
 /// alias keyword but the body is broken (e.g. no `=`).
@@ -677,7 +638,7 @@ fn classify_user_spec(trimmed: &str) -> LineKind {
                 "user specification segment is missing its `= command` part".to_string(),
             );
         };
-        let lhs = seg[..eq].trim();
+        let lhs = seg[..eq].trim_matches(is_sudoers_blank);
         let rhs = &seg[eq + 1..];
 
         let hosts = if idx == 0 {
@@ -1107,7 +1068,7 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
                     // the preceding-token start for the next segment; the next segment
                     // opens with a Host_List (not a `Cmnd_Spec`), so both `at_spec_start`
                     // and `in_cmnd_list` reset until that segment's structural `=`.
-                    segments.push(s[seg_start..i].trim());
+                    segments.push(s[seg_start..i].trim_matches(is_sudoers_blank));
                     seg_start = i + 1;
                     tok_start = i + 1;
                     at_spec_start = false;
@@ -1117,275 +1078,8 @@ fn split_top_level_segments(s: &str, skip_tag_colons: bool) -> Vec<&str> {
             _ => at_spec_start = false,
         }
     }
-    segments.push(s[seg_start..].trim());
+    segments.push(s[seg_start..].trim_matches(is_sudoers_blank));
     segments
-}
-
-/// The trimmed text of `s` between `tok_start` and the boundary char at `i` - the
-/// token candidate [`split_top_level_segments`] tests against the `Tag_Spec` and
-/// `Option_Spec` keyword sets.
-///
-/// `tok_start` is CLAMPED to `i`. It can legitimately overshoot: an `Option_Spec`
-/// whose value runs to the end of the string (`TIMEOUT=30:x`, no whitespace after
-/// the `=`) pushes `tok_start` to `s.len()`, and a boundary char INSIDE that value
-/// is then at a lower index. The clamp yields `""`, which is the right reading -
-/// the boundary sits inside a token, not after a complete one - and `""` matches
-/// neither keyword set.
-fn preceding_token(s: &str, tok_start: usize, i: usize) -> &str {
-    s[tok_start.min(i)..i].trim()
-}
-
-/// Byte positions of every UNESCAPED `"` in `s`, per [`quote_is_escaped`]: a
-/// `"` is escaped exactly when a backslash immediately precedes it.
-///
-/// # This file has TWO escape rules, and both are correct
-///
-/// They apply to different contexts, so a comment naming one must say which
-/// (several used to say "the" escape model and were wrong by omission):
-///
-/// - **Quote-finding** ([`quote_is_escaped`], used here and by
-///   [`find_closing_quote`]): a `\` escapes ONLY a `"`. A `\` before anything
-///   else, including another `\`, is a literal byte that consumes nothing.
-///   Grounded on `alice "h\\1" = ALL` -> rc 0 with hostname `h\\1`, BOTH
-///   backslashes kept, and `alice "h\\" = ALL` -> rc 1 because that `"` does
-///   not close. This is the rule INSIDE a quoted string.
-/// - **Separator-finding** (the `escaped` state machines in
-///   [`split_top_level_segments`], [`split_cmnd_specs`], [`structural_eq`],
-///   [`unquoted_whitespace_runs`]): a `\` consumes exactly the next char, so an
-///   escaped separator is a literal token byte. Grounded on
-///   `a\=b ALL = NOPASSWD: /bin/ls` -> rc 0 with `User_List ['a=b']` (frozen as
-///   the third case of `principal_containing_eq_still_reports_its_nopasswd_grant`).
-///   This is the rule OUTSIDE a quoted string, where sudoers lets any special
-///   character be backslash-escaped.
-///
-/// Changing [`quote_is_escaped`] therefore propagates to quote-finding only; it
-/// does NOT reach those state machines, and it should not.
-///
-/// # Call graph
-///
-/// The single quote-SCANNING primitive: its ONLY direct caller is
-/// [`simple_quote_pairs`], which feeds [`unquoted_whitespace_runs`] and
-/// [`split_user_list`]. The splitters' `:` and `,` guards do NOT reach this
-/// function at all, directly or indirectly - they consume spans from
-/// [`quoted_value_span`] / [`find_closing_quote`], which locate quotes by their
-/// own scan and share only the RULE above. (Two earlier revisions of this
-/// comment claimed a call path that has never existed.)
-fn unescaped_quote_positions(s: &str) -> Vec<usize> {
-    s.char_indices()
-        .filter(|&(i, c)| c == '"' && !quote_is_escaped(s, i))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// Whether byte index `i` sits strictly inside one of `spans` -- a set of
-/// pre-computed `(open, close)` quote-pair byte ranges. THREE DIFFERENT
-/// producers feed this, per caller (#538 gap A/B/C - "quote handling
-/// must be TOKEN-SCOPED, and a quote only quotes when it ENCLOSES the token it
-/// starts"):
-///   * `Option_Spec` VALUE spans, recorded by [`split_top_level_segments`]'s
-///     and [`split_cmnd_specs`]'s own `'='` arms -- each records a span ONLY
-///     when ITS OWN `preceding_token`/`tok_start` check (the same one that
-///     decides whether the current `=` is a genuine `Option_Spec` anchor at
-///     all - #538/9m; see [`quoted_value_span`]) recognizes that `=` as the
-///     option's own, not just any `=` and not necessarily glued to it. Consumed
-///     by the `:` and `,` arms, where a bare COMMAND quote must never mask a
-///     real separator.
-///   * PRINCIPAL spans, recorded by [`split_top_level_segments`]'s `'"'` arm
-///     and independently by [`structural_eq`], both via [`opens_principal`].
-///     These DO deliberately mask a separator: a `User_List`/`Host_List`
-///     principal may be quoted precisely to carry an `=` or a `:` of its own
-///     (`alice "h:1" = NOPASSWD: ALL` is rc 0 with `Host_List ["h:1"]`), so
-///     [`split_top_level_segments`]'s `':'` arm consults both this and the
-///     option-value one above. The distinction from a command quote is WHERE it
-///     may open, not what it does once open.
-///   * RUNAS spans, recorded by [`split_top_level_segments`]'s and
-///     [`split_cmnd_specs`]'s `'"' if depth > 0` arms, also via
-///     [`opens_principal`]. A quoted RUNAS principal is legal
-///     (`alice ALL = (root,"a)b") ...` is rc 0 with `runasusers ["root", "a)b"]`),
-///     so its bytes are literal too -- including a `)`, which no `depth` test can
-///     distinguish from the group's real closer. `split_top_level_segments`'s
-///     `'='` arm consults this AND the principal registry above; its `','` and
-///     `')'` arms consult this one.
-///   * [`simple_quote_pairs`] -- ANY unescaped quote may open, with no
-///     token-scoping at all (used by [`unquoted_whitespace_runs`] and
-///     [`split_user_list`], which are already operating inside a region known
-///     to hold nothing but principals).
-///
-/// Either way, an UNMATCHED trailing `"` opens no span at all: the frozen
-/// `unterminated_quote_does_not_swallow_comma_separator` (on [`split_cmnd_specs`])
-/// and `unterminated_quote_does_not_swallow_the_segment_colon` (on
-/// [`split_top_level_segments`]) regressions already pin that a lone,
-/// never-closed quote must not suppress a real separator, so only a
-/// properly-CLOSED pair may mask one.
-fn inside_a_clean_quoted_region(spans: &[(usize, usize)], i: usize) -> bool {
-    spans.iter().any(|&(open, close)| open < i && i < close)
-}
-
-/// Adjacent PAIRS of [`unescaped_quote_positions`], with NO notion of which
-/// token each quote belongs to: quote 1 pairs with quote 2, quote 3 with quote
-/// 4, and so on (`chunks_exact(2)`, silently dropping a trailing unmatched
-/// quote). Correct only where ANY quote may legitimately open a span
-/// regardless of what precedes it -- a `User_List`/`Host_List` principal may be
-/// quoted anywhere (`man 5 sudoers`, rendered page lines 399-402), so
-/// [`unquoted_whitespace_runs`] and [`split_user_list`]'s glued-quote boundary
-/// check both use this. Contrast [`quoted_value_span`], whose callers restrict
-/// an opener to immediately after an `Option_Spec`'s OWN `=` -- a bare
-/// command or host-group's own quote has NO such unrestricted pairing power
-/// (#538 gap A/C).
-fn simple_quote_pairs(s: &str) -> Vec<(usize, usize)> {
-    unescaped_quote_positions(s)
-        .chunks_exact(2)
-        .map(|pair| (pair[0], pair[1]))
-        .collect()
-}
-
-/// Byte index of the first STRUCTURAL `=` in `s` -- the first one that is
-/// neither backslash-escaped nor inside a quoted principal -- or `None`.
-///
-/// This is the `User_List Host_List = Cmnd_Spec_List` boundary in a user-spec
-/// segment and the `NAME = members` boundary in an alias segment. A bare
-/// `s.find('=')` finds the first `=` BYTE, which is a different thing whenever
-/// a principal contains one, and every such disagreement is a misparse of a
-/// line real sudo accepts. Probes on sudo 1.9.17p2 (2026-08-02), all rc 0:
-///
-/// - `"a=b" h1 = ALL` -> `User_List ["a=b"]`, `Host_List ["h1"]`
-/// - `alice "h=1" = NOPASSWD: /bin/ls` -> `Host_List ["h=1"]`
-/// - `a\=b ALL = NOPASSWD: /bin/ls` -> `User_List ["a=b"]` (escape, not quote)
-///
-/// Splitting those at the byte `=` puts the boundary inside the principal, so
-/// the LHS loses its host list (a false `sudo-F01` FATAL on a valid line, #622)
-/// or the RHS swallows it and the `NOPASSWD` grant stops being reported at all
-/// (#630) -- one call site failing loud and the other silent, from one bug.
-///
-/// Spans are opened by [`opens_principal`] (alternate pairing) and an unmatched
-/// quote opens nothing. [`split_top_level_segments`] applies the same predicate
-/// during its own scan, so the two agree by construction; it additionally gates
-/// on `!in_cmnd_list`, which this function does not need because it returns at
-/// the FIRST unmasked `=` and so never scans past the principal region.
-/// Escaping here uses BOTH of the file's two rules, in their proper places (see
-/// [`unescaped_quote_positions`]): the scan below consumes a `\`-escaped char
-/// whole, so `a\=b` keeps its `=` as a token byte and `\"` never reaches the
-/// `'"'` arm as an opener; once a span opens, its CLOSING quote is located by
-/// [`find_closing_quote`], where a `\` escapes only a `"`.
-///
-/// NOT needed at the other two `=` scans in this file, both re-probed
-/// 2026-08-02 and left on `find('=')` deliberately:
-/// [`parse_one_default_setting`], because a `Defaults` NAME cannot contain an
-/// `=` in any form (`Defaults "a=b"` and `Defaults a\=b` are both rc 1), and
-/// [`split_leading_option`], because an `Option_Spec` keyword cannot be quoted
-/// (`alice ALL = "CWD"=/a /bin/ls` is rc 1) and a command's own `=` fails that
-/// function's exact keyword match anyway.
-fn structural_eq(s: &str) -> Option<usize> {
-    let mut principal_quotes: Vec<(usize, usize)> = Vec::new();
-    let mut escaped = false;
-    for (i, c) in s.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            '"' if opens_principal(&principal_quotes, i) => {
-                if let Some(close) = find_closing_quote(s, i + 1) {
-                    principal_quotes.push((i, close));
-                }
-            }
-            '=' if !inside_a_clean_quoted_region(&principal_quotes, i) => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Whether the `"` at byte index `i` OPENS a principal span, given the spans
-/// already opened before it: it does unless it lies within one, where `within`
-/// INCLUDES that span's own closing quote (`i <= close`).
-///
-/// This is real sudo's ALTERNATE PAIRING: quotes pair first-with-second,
-/// third-with-fourth, and whitespace has nothing to do with it. Probes on sudo
-/// 1.9.17p2 (2026-08-02), all rc 0. The first two carry a GLUED opener, which
-/// is what refutes the positional rule this replaced; the third is a
-/// comma-preceded opener that rule already accepted, kept only as a second
-/// pairing case:
-///
-/// - `alice" h=1" = NOPASSWD: /bin/ls` -> `Host_List [" h=1"]`, `authenticate:
-///   false`
-/// - `alice"h=1" = NOPASSWD: ALL` -> `Host_List ["h=1"]`
-/// - `alice,"b=c" ALL = NOPASSWD: /bin/ls` -> `User_List ["alice", "b=c"]`
-///
-/// The `i <= close` half is what makes this a PAIRING rule rather than a
-/// blanket one, and it is load-bearing rather than defensive: treating every
-/// `"` as an opener lets a span's own CLOSING quote start a second span that
-/// then runs on and swallows the structural `=`. The compact witness is
-/// `"a b" ALL=(ALL:ALL)CHROOT="/a)CWD=" NOPASSWD: /bin/ls`, frozen as
-/// `quoted_user_with_a_space_plus_a_chroot_value_holding_a_paren_and_a_keyword`;
-/// run that test against a `-> true` mutant of this function to see it fail.
-/// An UNMATCHED quote still opens nothing that closes, so it protects nothing
-/// and `%bad"group ALL = ALL` stays rejected, matching every other quote rule
-/// in this file.
-///
-/// This REPLACES a positional predicate that asked whether the `"` followed
-/// whitespace / `,` / `:`. That rule was refuted twice over: by live probe
-/// above, and by this crate's own frozen
-/// `a_quote_right_after_a_bare_word_starts_a_new_principal_token_with_no_whitespace_needed`,
-/// whose recorded ground truth reads "a `\"` always opens a NEW token, whether
-/// or not whitespace precedes it". It shipped green because no test combined a
-/// GLUED opener with an `=` INSIDE the quotes -- each half was covered, the
-/// intersection was not.
-///
-/// The escape case never reaches here: ALL FOUR call sites consume a
-/// `\`-escaped char before matching, so a `\"` is never offered as an opener.
-/// They are `split_top_level_segments`'s two `'"'` arms (principal and runas),
-/// `structural_eq`'s, and `split_cmnd_specs`'s.
-fn opens_principal(spans: &[(usize, usize)], i: usize) -> bool {
-    // All FOUR call sites scan forward and push a span only AFTER deciding to
-    // open it,
-    // so every recorded span starts strictly before the cursor. Stated as an
-    // assertion rather than a comment because it is what makes the `open < i`
-    // -> `open <= i` mutant EQUIVALENT (the two differ only at `open == i`,
-    // which this forbids). A refactor that batches spans, rescans, or reuses
-    // this predicate outside a forward scan breaks that equivalence, and should
-    // fail here rather than silently make the mutation gate's ruling stale.
-    debug_assert!(
-        spans.iter().all(|&(open, _)| open < i),
-        "opens_principal: span starting at or after the cursor {i}; spans={spans:?}"
-    );
-    !spans.iter().any(|&(open, close)| open < i && i <= close)
-}
-
-/// If `s`'s byte at `value_start` is an unescaped `"`, and a later unescaped
-/// `"` closes it, the `(open, close)` byte-index pair of that `Option_Spec`
-/// value-ENCLOSING span -- otherwise `None`. `value_start` must already be
-/// the value's TRUE first byte (any whitespace between an `Option_Spec`'s `=`
-/// and its value already skipped by the caller, via
-/// [`skip_value_leading_whitespace`]); see [`option_value_end`]'s doc comment
-/// for the fuller grounding this mirrors (there is no `man 5 sudoers`
-/// passage documenting `Option_Spec` value quoting at all - this behavior is
-/// grounded ONLY by live `visudo -c -f -` / `cvtsudoers -f json` probes,
-/// sudo 1.9.17p2, 2026-07-31): a `"` opens a span ONLY at `value_start`
-/// itself, and only the FIRST unescaped `"` after that closes it.
-///
-/// Shared by [`split_top_level_segments`]'s and [`split_cmnd_specs`]'s own
-/// `'='` arms (#538 gaps A/C): each already knows, from
-/// its own `tok_start`-anchored `preceding_token` check, exactly when the
-/// CURRENT `=` is a genuine `Option_Spec`'s own -- never a command
-/// argument's merely keyword-spelled `=` (`/bin/echo CWD="..."`, where the
-/// preceding token since the last boundary is `"/bin/echo CWD"`, not `CWD`)
-/// -- so calling this at that SAME position-anchored point is what keeps the
-/// opener itself position-aware. The predecessor of this function,
-/// `is_option_value_quote_opener`, instead re-derived "the word before the
-/// `=`" from scratch over the WHOLE prefix `s[..open]` with no token-boundary
-/// context at all, so it disagreed with the `'='` arm's own check and let a
-/// command argument merely SPELLED like a keyword gain the same
-/// quote-pairing power as a genuine leading `Option_Spec`, masking a `,` or
-/// `:` inside that argument's own quotes and silently hiding a `NOPASSWD`
-/// grant or a `Cmnd_Alias` definition.
-fn quoted_value_span(s: &str, value_start: usize) -> Option<(usize, usize)> {
-    if s.as_bytes().get(value_start) == Some(&b'"') {
-        find_closing_quote(s, value_start + 1).map(|close| (value_start, close))
-    } else {
-        None
-    }
 }
 
 /// The first byte index at or after `start` that is not whitespace: `start`
@@ -1410,151 +1104,6 @@ fn skip_value_leading_whitespace(s: &str, start: usize) -> usize {
         .char_indices()
         .find(|&(_, c)| !c.is_whitespace())
         .map_or(s.len(), |(i, _)| start + i)
-}
-
-/// The end (exclusive byte index, absolute within `s`) of an `Option_Spec`
-/// value starting at `start`: the byte just PAST the closing quote when the
-/// value is enclosed in double quotes, or (otherwise) the first
-/// backslash-escape-aware unquoted whitespace -- or `s.len()` if neither is
-/// found.
-///
-/// A quoted value ends AT its closing quote, with the next token starting
-/// immediately, whitespace or not. That is not an inference from the grammar;
-/// it is what the real parser does (probes on sudo 1.9.17p2, 2026-08-02):
-/// `alice ALL = CWD="/a"NOPASSWD: /usr/bin/env FOO=/bin/ls` is rc 0 and yields
-/// BOTH `runcwd=/a` and `authenticate=false`, so the glued `NOPASSWD` is a
-/// real tag; `alice ALL = CWD="/a"/bin/su` is rc 0 with command `/bin/su`; and
-/// `alice ALL = CWD="/a:b"c NOPASSWD: /bin/su` is rc 1 precisely BECAUSE the
-/// glued `c` starts a fresh token that is neither a tag nor a command.
-///
-/// This function once scanned ON from the closing quote to the next unquoted
-/// whitespace, which made a glued tag part of the VALUE and silently dropped
-/// the `NOPASSWD` above with no diagnostic -- a fail-open on the exact
-/// construct this parser exists to report (#631). It also put this function in
-/// direct disagreement with [`quoted_value_span`], which computes the SAME
-/// value's span and always stopped at the closing quote; the two are now
-/// consistent by construction, which is what lets the `quotes` registry both
-/// splitters build be trusted as the single boundary substrate.
-///
-/// `start` MUST already be the value's true first byte - i.e. any whitespace
-/// separating the `Option_Spec`'s `=` from its value has already been skipped
-/// by the caller ([`skip_value_leading_whitespace`]; #538). A `start` still
-/// pointing at that whitespace makes the quoted-value check below fail (a
-/// space is never `"`) and `unquoted_value_end` return `start` itself
-/// unchanged (its very first char IS the boundary) - an EMPTY value that
-/// desyncs every caller.
-///
-/// There is NO passage in `man 5 sudoers` documenting `Option_Spec` value
-/// quoting (same grounding gap [`quoted_value_span`]'s doc comment covers). A
-/// quote once cited here for it - "may be enclosed in
-/// double quotes ... \[or\] specified in escaped hex mode" - is verbatim the
-/// Aliases section's PRINCIPAL-quoting sentence (a user/group/netgroup name,
-/// not an `Option_Spec` value); it does not apply here. The behavior below is
-/// grounded ONLY by live `visudo -c -f -` / `cvtsudoers -f json` probes: the
-/// shipping parser treats a value's special characters as EITHER enclosed in
-/// a matching double-quote pair OR individually backslash-escaped
-/// (`CWD=/tmp/a\ b`) for the purpose of finding the value's end; the raw text
-/// (quotes and backslashes included) is kept verbatim, never decoded - see
-/// [`CmndOption`]. "Enclosed" means at BOTH ends: a `"` only opens a quoted
-/// span when it is `start`'s own first byte, and only the FIRST unescaped
-/// `"` after that closes it (#538 gap A/C). A `"` anywhere else in the value
-/// is a literal byte with NO toggling power -- the value `/a"b` never
-/// re-enters a quoted state, so a following tag or command is never
-/// swallowed
-/// (`interior_quote_in_an_option_value_does_not_swallow_a_following_tag_and_command`).
-/// An OPENING quote with no matching close is likewise not an enclosing pair
-/// (mirrors [`inside_a_clean_quoted_region`]'s "unmatched quote protects
-/// nothing" rule) and falls through to the same literal-byte scan. Escaping
-/// follows whichever of the file's two rules the context calls for (see
-/// [`unescaped_quote_positions`]): the UNQUOTED scan below has a `\` consume
-/// exactly the next byte, whitespace or not; locating the CLOSING quote of a
-/// quoted value goes through [`find_closing_quote`], where a `\` escapes only a
-/// `"`. So `alice ALL = CWD="/a\\" NOPASSWD: /bin/ls` is visudo rc 1 - that
-/// quote does not close the value - and this function does not close it either.
-/// Shared by
-/// [`split_leading_option`] (the value's own scan) and
-/// [`split_top_level_segments`]'s `=` arm, which needs the SAME end point so
-/// its preceding-token marker lands past the whole value rather than inside it
-/// (#538 gap A/C).
-fn option_value_end(s: &str, start: usize) -> usize {
-    if s.as_bytes().get(start) == Some(&b'"')
-        && let Some(close) = find_closing_quote(s, start + 1)
-    {
-        return close + 1;
-    }
-    unquoted_value_end(s, start)
-}
-
-/// The byte index of the first UNESCAPED `"` at or after `start` (the single
-/// sudoers backslash-escape model, matching [`unescaped_quote_positions`]), or
-/// `None` if `s[start..]` contains no such quote.
-fn find_closing_quote(s: &str, start: usize) -> Option<usize> {
-    s[start..]
-        .char_indices()
-        .map(|(i, c)| (start + i, c))
-        .find(|&(abs, c)| c == '"' && !quote_is_escaped(s, abs))
-        .map(|(abs, _)| abs)
-}
-
-/// Whether the `"` at byte index `i` in `s` is escaped: it is exactly when the
-/// byte immediately before it is a backslash.
-///
-/// Inside a sudoers double-quoted string a backslash escapes ONLY a `"`. A
-/// backslash followed by anything else - INCLUDING another backslash - is a
-/// literal byte that consumes nothing, so a `\` before a `"` always escapes it
-/// no matter how many backslashes precede THAT one. Probes on sudo 1.9.17p2
-/// (2026-08-02), stdin only:
-///
-/// - `alice "h\"1" = ALL`    -> rc 0, `Host_List ['h"1']`
-/// - `alice "h\\1" = ALL`    -> rc 0, `Host_List ['h\\1']` (both kept, neither consumed)
-/// - `alice "h\\" = ALL`     -> **rc 1** - that `"` does not close the string
-/// - `alice "a\\"b" = ALL`   -> rc 0, `Host_List ['a\"b']` - the span runs past it
-/// - `alice "a\\\\" = ALL`   -> **rc 1** - four backslashes, still escaped
-///
-/// This REPLACES a consume-the-next-char model ("a `\` consumes exactly the
-/// next char, so `\\` is one literal backslash that leaves a following `"`
-/// un-escaped"). The two agree on `\"` and disagree on every EVEN run of two or
-/// more backslashes, where the old model closed the span a quote too early. It
-/// was harmless while nothing grant-bearing depended on it and became a
-/// fail-open the moment [`opens_principal`] did: an early close leaves the next
-/// quote looking like a fresh opener, and the bogus span it opens covers the
-/// structural `=`, so a line real sudo accepts is thrown away `Malformed` and
-/// its `NOPASSWD` grant is never linted. Frozen as
-/// `doubled_backslash_before_a_quote_does_not_close_the_principal_span`.
-fn quote_is_escaped(s: &str, i: usize) -> bool {
-    s[..i].ends_with('\\')
-}
-
-/// The end (exclusive byte index, absolute within `s`) of a run of value bytes
-/// starting at `start` in which a `"` is ALWAYS a literal byte (never toggles
-/// anything): the first backslash-escape-aware unquoted whitespace, or
-/// `s.len()` if none. The escape-only half of [`option_value_end`]'s scan,
-/// reached when `start` is not a `"` at all, AND when it is one whose closing
-/// quote is missing -- [`option_value_end`]'s let-chain fails on the unmatched
-/// case and falls through to here, matching the "an unmatched quote encloses
-/// nothing" rule the rest of this file follows.
-///
-/// It once also scanned the literal tail after an enclosing pair's closing
-/// quote. That second use is gone: a quoted value ends AT its closing quote and
-/// the next token starts immediately, so [`option_value_end`] returns
-/// `close + 1` directly (#631). Scanning on past the quote is what swallowed a
-/// glued `NOPASSWD:` into the value.
-fn unquoted_value_end(s: &str, start: usize) -> usize {
-    let mut escaped = false;
-    for (i, c) in s[start..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            continue;
-        }
-        if c.is_whitespace() {
-            return start + i;
-        }
-    }
-    s.len()
 }
 
 /// Parse a comma-separated `Cmnd_Spec_List` into [`CmndSpec`]s.
@@ -1645,11 +1194,14 @@ fn split_cmnd_specs(s: &str) -> Vec<&str> {
     // byte and must not be mistaken for the group's closer. Distinct from `quotes`
     // above, which tracks only `Option_Spec` VALUE spans.
     //
-    // No LINT-level input flips a grant through this splitter alone: #650's
-    // truncation in `parse_cmnd_spec` intercepts every line with a quoted `)` in
-    // a runas list before this splitter's `tok_start` can matter. That masking is
-    // a property of one CALLER, not of the splitter, so the arm is witnessed
-    // directly instead -- see `quoted_close_paren_in_a_runas_principal_keeps_the_
+    // No LINT-level input flipped a grant through this splitter alone while
+    // #650 stood: `parse_cmnd_spec`'s truncation intercepted every line with a
+    // quoted `)` in a runas list before this splitter's `tok_start` could
+    // matter. #650 is FIXED, so that masking is gone and a CLI input now reaches
+    // this arm. The direct witness is kept anyway - it tests the splitter in
+    // isolation from whatever its callers do, which is the property that made it
+    // survive the masking in the first place -- see
+    // `quoted_close_paren_in_a_runas_principal_keeps_the_
     // option_value_anchor` and `a_depth_zero_quote_never_shields_a_later_runas_
     // close_paren` in this file's test module, which call `split_cmnd_specs`
     // itself. Both halves of the guard below are killed by them; nothing here is
@@ -1842,7 +1394,7 @@ fn parse_cmnd_spec(spec: &str) -> CmndSpec {
     // Optional leading run-as spec: `(...)`.
     let mut runas = None;
     if let Some(after_open) = rest.strip_prefix('(')
-        && let Some(close) = after_open.find(')')
+        && let Some(close) = unquoted_unescaped(after_open, ')')
     {
         runas = Some(parse_runas(&after_open[..close]));
         rest = after_open[close + 1..].trim_start();
@@ -2086,10 +1638,15 @@ fn comma_split(s: &str) -> Vec<String> {
 /// whitespace outside the quoted span to find at all - the single space sits
 /// INSIDE the pair), so the loop below also treats the OPEN position of a
 /// [`simple_quote_pairs`] pair as a candidate boundary whenever it is glued to a
-/// preceding non-`,` char at a position where no whitespace RUN ends. A quote at
-/// `lhs`'s own start, or one reached after a comma, is not "glued"; one reached
-/// after whitespace is already reachable through the whitespace-run candidates,
-/// which is why the guard ASKS the run set rather than testing the char.
+/// preceding char at a position where no whitespace RUN ends. A quote at
+/// `lhs`'s own start is not "glued"; one reached after whitespace is already
+/// reachable through the whitespace-run candidates, which is why the guard ASKS
+/// the run set rather than testing the char. A quote reached after an UNESCAPED
+/// `,` or `!` is not glued either, but an ESCAPED `\,` / `\!` is a literal char
+/// and the quote after it IS a boundary - see the guard's own block below, which
+/// carries that grounding. This paragraph said "preceding non-`,` char" (whose
+/// `!` omission dates from `c153bc5`) and "one reached after a comma is not
+/// glued"; #675 falsified both, and #699 is the commit that repaired the text.
 ///
 /// That phrasing is deliberate. This said "non-whitespace byte" until #651, and
 /// re-deciding "is this whitespace a separator" here instead of asking the one
@@ -2117,17 +1674,19 @@ fn comma_split(s: &str) -> Vec<String> {
 ///   * [`option_value_end`] is the same rule for the same delimiter - a closing
 ///     QUOTE (`return close + 1`, #631).
 ///   * [`parse_cmnd_spec`] is the same rule for a different delimiter: its
-///     `close` comes from `after_open.find(')')`, a closing PAREN of the runas
-///     group. Do NOT read it as a co-model of the quote rule - that `find(')')`
-///     is quote-BLIND, stops at a quoted paren and truncates `"a)b"` to `"a`,
-///     and is filed as #650.
+///     `close` comes from [`unquoted_unescaped`], a closing PAREN of the runas
+///     group. Do NOT read it as a co-model of the quote rule - it answers a
+///     different question (where is a structural byte outside a quoted span)
+///     using the SEPARATOR escape rule. It was a bare `after_open.find(')')`
+///     until #650: quote- and escape-BLIND, stopping at a quoted paren and
+///     truncating `"a)b"` to `"a`.
 ///
 /// So two quote recognizers and one paren recognizer, and until #651 the
 /// principal-side quote one was the odd out. Recognizers of one concept
 /// disagreeing is the recurring shape on this surface (#622, #629, #630, #631,
 /// #643).
 fn split_user_list(lhs: &str) -> (&str, &str) {
-    let lhs = lhs.trim();
+    let lhs = lhs.trim_matches(is_sudoers_blank);
 
     // Candidate boundaries, each `(candidate_start, resume_after)`: the split is
     // `lhs[..candidate_start]` / `lhs[resume_after..]`. Whitespace-run candidates
@@ -2165,16 +1724,76 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // (too-narrow) and `escaped_whitespace_before_an_opening_quote_still_reports_the_grant`
         // (too-wide), each carrying its own one-byte control.
         //
-        // The `,` half is still a predicate and is still escape-BLIND: an
-        // escaped `a\,"b"` is a literal comma that does not continue the user
-        // list, and this suppresses the candidate anyway. Filed as #675, with
-        // the sibling in the continuation filter below; unswept here because the
-        // two must move together.
+        // ONE conjunct, not two, because both structural predecessors ask the
+        // same question: is the char immediately before this position a `,` or
+        // a `!` that REALLY is one, or a literal spelled `\,` / `\!`? It was
+        // two adjacent conjuncts with identical `separator_escaped` calls until
+        // #699 - one concept given two recognizers, the shape this surface
+        // keeps producing.
+        //
+        // `,` is #675. An escaped `a\,"b"` is a LITERAL comma inside ONE
+        // principal and does not continue the user list, so the candidate at
+        // the quote is the only correct boundary. Suppressing it left the line
+        // with no candidate at all, folded it to `Malformed` and dropped a
+        // passwordless-ALL grant on a line `visudo` accepts (rc 0,
+        // `User_List ["a,"]` / `Host_List ["b"]`).
+        //
+        // `!` is #670 and #699. UNESCAPED it negates the principal that
+        // follows, so `ALL,!"svc acct" ALL` is two users and one host, not a
+        // boundary at the quote; without the guard the user list became
+        // `["ALL", "!"]`, the host list swallowed `"svc acct" ALL`, and the
+        // line went silent on a full ALL/ALL elevation. ESCAPED it is a literal
+        // `!` inside the name and the quote IS the boundary:
+        // `alice\!"h1" = NOPASSWD: ALL` is rc 0 with ONE user `alice!` and host
+        // `h1`. Both re-derived on rs-oracle9, 2026-08-19.
+        //
+        // It is the SEPARATOR rule, so PARITY matters and this is NOT
+        // `quote_is_escaped`: `a\\, b` is an EVEN run, so that comma is
+        // UNESCAPED, the list really does continue, and its `sudo-F01` is
+        // correct; `alice\\!"h1"` is an even run too, so the `!` is a real
+        // sigil again and the boundary moves to it, leaving the host negated.
+        //
+        // WHAT IS AND IS NOT LOAD-BEARING HERE, measured 2026-08-19 rather than
+        // argued, because the previous version of this comment argued it and
+        // was wrong:
+        //
+        //   - Dropping the `!` member turns `negated_quoted_principal_still_
+        //     reports_the_elevation` and `l3_structure_projection_matches_
+        //     cvtsudoers` RED. It is decisive.
+        //   - Dropping the ESCAPE-AWARENESS (a blind `!matches!(prev, ',' | '!')`)
+        //     turns four tests RED, one per axis:
+        //     `an_escaped_comma_before_a_glued_quote_is_not_a_list_separator`
+        //     and `an_escaped_sigil_before_a_glued_quote_is_a_principal_boundary`,
+        //     plus `l1_f01_matches_visudo_verdict_per_target` and
+        //     `l3_structure_projection_matches_cvtsudoers`. L2 stays green.
+        //   - Dropping the `,` member alone, or swapping `separator_escaped`
+        //     for a non-parity `ends_with`, leaves the WHOLE suite green. Those
+        //     two are EQUIVALENT MUTANTS and are recorded as such rather than
+        //     chased: the continuation filter below re-answers the comma axis
+        //     authoritatively (a candidate this admits with `before` ending in
+        //     an unescaped comma is rejected there anyway), so the comma member
+        //     cannot change an answer. It is kept as the PRODUCER's statement
+        //     of intent; a later commit may delete it, but must not make it
+        //     escape-BLIND, which is a third state and the one that is wrong.
+        //
+        // Indexed by `open - prev.len_utf8()` rather than `open - 1`. The two
+        // are identical for these one-byte chars, and only the first is a char
+        // boundary UNCONDITIONALLY. That matters because `||` short-circuiting
+        // is what would otherwise keep `open - 1` safe, which makes the safety a
+        // property of the operator rather than of the expression: swap the `||`
+        // for `&&` and `alice,<NBSP>"b c" ALL` slices mid-NBSP and panics.
+        //
+        // Neither char can be literal by being QUOTED here, so no
+        // `inside_a_clean_quoted_region` conjunct is needed - and the absence is
+        // a proof, not an unchecked axis. `open` is itself a pair start and
+        // `simple_quote_pairs` never overlaps, so the previous pair has already
+        // closed at some `pb < open`; `lhs[open - 1]` is therefore either that
+        // closing `"` or outside every span, never a `,` or `!` inside one.
         //
         // `open > 0` makes `lhs[..open]` non-empty, so `next_back()` is `Some`.
         if open > 0
             && let Some(prev) = lhs[..open].chars().next_back()
-            && prev != ','
+            && (!matches!(prev, ',' | '!') || separator_escaped(lhs, open - prev.len_utf8()))
             && !runs.iter().any(|&(_, end)| end == open)
         {
             candidates.push((open, open));
@@ -2209,32 +1828,123 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         // kept as defence-in-depth and as a statement of intent, and nothing
         // pins it - say so rather than implying a test would catch its removal.
         //
-        // This tests the CHAR at `close + 1` with `char::is_whitespace`, the
+        // This tests the CHAR at `close + 1` with `is_sudoers_blank`, the
         // SAME predicate `unquoted_whitespace_runs` uses, and that agreement is
-        // deliberate. It first shipped as a byte-level `u8::is_ascii_whitespace`
-        // and the mismatch was a real defect, not a stylistic one: a whitespace
-        // char outside the ASCII set (any non-ASCII one, and ASCII `0x0B`
-        // VERTICAL TAB, which `char::is_whitespace` accepts and the byte test
-        // does not) was NOT excluded here while `unquoted_whitespace_runs` DID
-        // emit a run for it. The candidate was pushed, sorted ahead of the run,
-        // and won.
+        // the entire point rather than a coincidence.
         //
-        // On `"ab"<U+00A0>,alice ALL` that swallowed a principal: `after` began
-        // with the NBSP rather than with `,`, so the continuation filter could
-        // not fire, and `alice` - which belongs to the USER list - ended up
-        // inside a host token. The fork point split it correctly. Two
-        // recognizers of "where does whitespace end a token" disagreeing is the
-        // exact shape of every prior regression on this surface, so the fix is
-        // to make them the same predicate rather than to document the gap.
-        // `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary`
-        // pins it.
+        // The history is worth keeping because it is the same mistake twice.
+        // This first shipped as a byte-level `u8::is_ascii_whitespace` while the
+        // run scanner asked `char::is_whitespace`: two recognizers of "where
+        // does whitespace end a token", disagreeing, and the gap was a real
+        // defect. #651 fixed it by making both `char::is_whitespace`. #702 then
+        // found that predicate was itself wrong - sudo separates on
+        // `[[:blank:]]` ONLY - and moved both to `is_sudoers_blank`. Aligning
+        // two recognizers is only a fix when the thing they agree on is right.
+        //
+        // Do NOT restore any narrative here about `"ab"<U+00A0>,alice ALL`
+        // keeping `alice` in the user list. That was true while NBSP counted as
+        // whitespace and is false now: the character is an ordinary name byte,
+        // the candidate at `close + 1` IS pushed, and the host half begins at
+        // the NBSP. `a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_
+        // is_not_a_boundary` was RE-PINNED to that answer, with its `visudo`
+        // rc-1 status recorded - so a comment describing the old behaviour
+        // contradicts the test it cites.
         //
         // `close + 1` is always a char boundary: `close` indexes a one-byte `"`.
         if let Some(next) = lhs[close + 1..].chars().next()
             && next != ','
-            && !next.is_whitespace()
+            && !is_sudoers_blank(next)
         {
             candidates.push((close + 1, close + 1));
+        }
+    }
+    // #672: an unquoted `!` glued to a principal is a THIRD boundary spelling,
+    // alongside the whitespace run and the two glued-quote candidates. Before
+    // this, `alice!h1` produced no candidate at all, fell through to
+    // `(lhs, "")`, folded to `Malformed` and took its NOPASSWD grant with it,
+    // on a line `visudo` accepts (rc 0, host `h1` NEGATED).
+    //
+    // Each of the three guards below is grounded, and two of them exist to
+    // PRESERVE a correct answer rather than to add one. It read "three of the
+    // four" until #699 merged the `,` and `!` conjuncts into the single `prev`
+    // bullet, leaving the count pointing at nothing.
+    //
+    // `i > 0` is a PROVABLE EQUIVALENT and deleting it leaves the suite green -
+    // recorded rather than chased, because a witness cannot exist. `i > 0` holds
+    // exactly when `lhs[..i]` is non-empty, which holds exactly when
+    // `lhs[..i].chars().next_back()` is `Some` - the `let Some(prev)` bind two
+    // conjuncts below. (It IS the very next conjunct at the opener guard, which
+    // is where this sentence came from; here two others sit between them, and
+    // that block warns that operator ordering is load-bearing - so the
+    // imprecision mattered.) The guard asks a question its neighbour answers.
+    // Keep it
+    // as the reader's statement of the leading-sigil rule; do not treat its
+    // survival as a missing test.
+    //
+    //   i > 0            a leading sigil negates the first principal; it is not
+    //                    a boundary. `!!alice ALL = ...` is rc 0.
+    //   !separator_escaped
+    //                    `alice\!h1 = ...` is `visudo` rc 1. Splitting there
+    //                    would parse an INVALID file as `alice\` / `!h1` and
+    //                    silently drop a correct `sudo-F01`. This is the one
+    //                    guard whose absence loses a true positive rather than
+    //                    causing a fail-open, and it is why the separator-rule
+    //                    predicate was added to `boundary.rs` instead of being
+    //                    re-derived here.
+    //   the `prev` conjunct
+    //                    the MIRROR of the opener guard's, same shape and same
+    //                    reasons; that block carries the full grounding and is
+    //                    not repeated here. `!` is the rest of a leading run
+    //                    (`(!!root)`, `alice!!h1` and `!!alice` are all rc 0,
+    //                    which is also why `runas.rs` TRIMS rather than strips
+    //                    a single sigil); `,` is a list that continues
+    //                    (`alice,!bob ALL = ...` is rc 0, users `alice` + `bob`
+    //                    negated). Both members ask `separator_escaped`, so an
+    //                    ESCAPED one is a literal char and the boundary stands:
+    //                    `a\,!h1` is rc 0 with user `a,` and host `h1` NEGATED
+    //                    (#675's third face), and `a\!!h1` is rc 0 with user
+    //                    `a!` and host `h1` NEGATED (#699). For both, the `!`
+    //                    scan is the ONLY candidate producer - no whitespace,
+    //                    no quotes - so suppressing it left no candidate at all
+    //                    and dropped a passwordless-ALL grant.
+    //
+    //                    Measured, and RE-measured after each change, because
+    //                    this bullet has now been wrong twice. Dropping the `!`
+    //                    member turns `w03_double_negation_in_user_subject_not_
+    //                    dead` AND `a_user_list_of_sigils_plus_a_principal_
+    //                    still_reports_the_grant` RED. It briefly turned
+    //                    NOTHING red, between #701 adding the postcondition
+    //                    (which masked it) and #702's round adding that second
+    //                    test - a comment true when written, false one commit
+    //                    later, and true again for a different reason.
+    //                    Dropping the ESCAPE-AWARENESS turns
+    //                    `an_escaped_comma_before_a_negation_sigil_is_not_a_
+    //                    list_separator`, `an_escaped_sigil_run_still_yields_a_
+    //                    negated_host`, `l1_f01_matches_visudo_verdict_per_target`
+    //                    and `l3_structure_projection_matches_cvtsudoers` RED
+    //                    (L2 stays green) - but
+    //                    dropping the `,` member alone, or swapping in a
+    //                    non-parity `ends_with`, leaves the WHOLE suite green.
+    //                    The `,` member is therefore an EQUIVALENT MUTANT here
+    //                    just as it is at the opener, for the same reason: the
+    //                    continuation filter re-answers the comma axis
+    //                    downstream. The claim that stood here until #699 - that
+    //                    this site, unlike the opener's twin, is NOT redundant -
+    //                    was never measured and is false.
+    //
+    // A `!` inside a closed quoted span is not a boundary either (`a"b!c" ALL`
+    // is rc 1); `spans` covers that.
+    let spans = simple_quote_pairs(lhs);
+    for (i, c) in lhs.char_indices() {
+        if c == '!'
+            && i > 0
+            && !inside_a_clean_quoted_region(&spans, i)
+            && !separator_escaped(lhs, i)
+            && let Some(prev) = lhs[..i].chars().next_back()
+            && (!matches!(prev, ',' | '!') || separator_escaped(lhs, i - prev.len_utf8()))
+            && !runs.iter().any(|&(_, end)| end == i)
+        {
+            candidates.push((i, i));
         }
     }
     candidates.sort_unstable();
@@ -2242,22 +1952,122 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
     for (start, resume) in candidates {
         let before = &lhs[..start];
         let after = &lhs[resume..];
-        // The run continues across this boundary if a comma sits on either side
-        // of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where the comma is
-        // its own token and both adjacent runs continue). Both glued candidates
-        // always pass this check, but for DIFFERENT reasons, and stating one
-        // reason for both was wrong once already: an OPENER candidate's `after`
-        // literally starts with `"`, while a CLOSER candidate's `after` starts
-        // with the next token's first byte, which is `,`-excluded at the push
-        // site instead. Neither `before` ends with `,` (excluded above).
-        if !before.ends_with(',') && !after.starts_with(',') {
-            // `after` starts right after the boundary - a non-whitespace char,
-            // a quote, or the string end - so the HOST half is trimmed. That
-            // holds exhaustively over the three candidate producers:
-            // whitespace-run candidates resume at the first non-whitespace char
-            // (or at a `\`), opener candidates resume at `"`, and closer
-            // candidates are excluded by `!next.is_whitespace()` above, the SAME
-            // predicate `unquoted_whitespace_runs` uses. An intermediate version
+        // The run continues across this boundary if an UNESCAPED comma sits on
+        // either side of it (`bob, ALL`, `bob ,ALL`) or IS it (`bob , ALL`, where
+        // the comma is its own token and both adjacent runs continue). Both
+        // glued candidates always pass this check, but for DIFFERENT reasons,
+        // and stating one reason for both was wrong once already: an OPENER
+        // candidate's `after` literally starts with `"`, while a CLOSER
+        // candidate's `after` starts with the next token's first byte, which is
+        // `,`-excluded at the push site instead.
+        //
+        // #675: `before` ending with a comma no longer settles it, and the
+        // sentence replaced here ("Neither `before` ends with `,`") is now
+        // false BY DESIGN -- since the opener guard began admitting an escaped
+        // one, that is exactly the candidate this filter must let through. An
+        // escaped `\,` is a literal comma inside ONE principal, so `alice\, h1`
+        // is a complete `User_List Host_List` pair that `visudo` accepts (rc 0,
+        // `User_List ["alice,"]` / `Host_List ["h1"]`, rs-oracle9 2026-08-19);
+        // rejecting its only candidate folded the line to `Malformed` and took
+        // the `NOPASSWD` grant with it. Asking `separator_escaped` is the
+        // SEPARATOR rule, so parity decides: `a\\, b` is an EVEN run, an
+        // unescaped comma, a continuing list, and a CORRECT `sudo-F01`.
+        //
+        // The `after` side needs no matching treatment, and that is exhaustive
+        // over the four candidate producers rather than merely untested: `after`
+        // can never BEGIN with an escaped comma. If `lhs[r]` were an escaped
+        // comma then the backslash run ending at `r - 1` has ODD length, so
+        // `unquoted_whitespace_runs` is inside its `escaped` prologue at `r` and
+        // closes no run there -- the last run end it can produce is `r - 1`, at
+        // the backslash itself. Opener candidates resume at `"`; closer
+        // candidates at `close + 1`, where `lhs[close]` is a one-byte `"`; `!`
+        // candidates at the `!`.
+        //
+        // A comma cannot be literal by being QUOTED at this site either, and
+        // again the omission is a proof: no candidate `start` is ever strictly
+        // inside a clean span (runs are emitted only outside one and terminate
+        // at the opening quote, opener candidates sit at pair starts, closer
+        // candidates one byte past a close, and the `!` scan tests
+        // `inside_a_clean_quoted_region` itself), so `lhs[start - 1]` being
+        // interior would force `start <= close`, which every producer excludes.
+        //
+        // `before.len() - 1` is evaluated only when `before` ends with `,`,
+        // which is one byte, so it is a char boundary; and `separator_escaped`
+        // reads only `s[..i]`, so asking it of `before` and of `lhs` at that
+        // index is the same question.
+        let before_comma_continues =
+            before.ends_with(',') && !separator_escaped(before, before.len() - 1);
+        if !before_comma_continues && !after.starts_with(',') {
+            // #701's postcondition. Every guard above decides where a boundary
+            // COULD be; this one asks whether the split it produces is a pair
+            // of principal lists at all. Its absence is why three producer-level
+            // sigil fixes each left `alice!` parsing as user `alice` / host `!`
+            // - a well-formed `UserSpec` carrying a passwordless-ALL grant, off
+            // a file `visudo` rc-1 rejects. Both halves are asked, because
+            // `! h1` is the same defect with the degenerate half on the USER
+            // side.
+            //
+            // A FILTER, not an abort: a rejected candidate falls through and the
+            // next one gets its turn. #702's round made it
+            // `return (lhs, "")` and that was a fail-open on a whole family of
+            // ACCEPTED lines - `! alice h1 = NOPASSWD: ALL` is `visudo` rc 0
+            // with user `alice` NEGATED and host `h1`, and the abort answered
+            // `sudo-F01`, suppressing every W/E lint on it per #668. The first
+            // candidate there is the blank run after the sigil, so `before` is
+            // `"!"`; the SECOND (`"! alice"` / `"h1"`) is the correct one.
+            //
+            // The abort's only advantage was rc-1 rows like `! " a`, where the
+            // second candidate used to land because `before` is `! "` and the
+            // `"` satisfied `holds_a_principal`. That was a workaround for
+            // #704, not an argument for the shape: with `"` and `,` excluded
+            // from the predicate the loop runs out on its own and returns
+            // `(lhs, "")` at the bottom. Measured, not argued - dropping the
+            // `"` exclusion turns `a_degenerate_second_candidate_is_not_a_
+            // boundary_either` RED while the rc-0 family stays green.
+            //
+            // The abort was justified by a verdict tally that is deliberately
+            // NOT repeated here. It counted disagreements as interchangeable
+            // units when the two error classes have opposite severity - a
+            // suppressed grant on a file sudo LOADS versus noise on one it
+            // refuses - and it was uncitable, living only in the comment that
+            // asserted it. `just sweep-sudoers` and its committed frontier file
+            // exist so a number like that never appears in a comment again.
+            if !holds_a_principal(before) || !holds_a_principal(after) {
+                continue;
+            }
+            // `after` starts right after the boundary. It used to carry a
+            // PROOF that the host half is therefore trimmed, over the four
+            // candidate producers. **That proof is false since #702** and is
+            // deleted rather than restated: narrowing the blank class means a
+            // closer candidate whose next char is VT or NBSP is now admitted,
+            // so `after` CAN begin with a whitespace character. Nothing
+            // downstream currently notices, and only because `comma_split`
+            // still trims wide - i.e. the invariant is upheld today by the very
+            // bug filed as #705. Whoever fixes #705 must re-derive this, not
+            // re-assert it.
+            //
+            // What remains true and is worth keeping: whitespace-run candidates
+            // resume at the first non-blank char (or at a `\`), opener
+            // candidates resume at `"`, and `!` candidates resume at the `!`
+            // itself.
+            //
+            // It said "three" until #699. The `!` scan has been a producer since
+            // `c153bc5`, which left this count stale; the "four" at the `after`
+            // proof above was then written fresh by #675 (`11f6ea0`), not
+            // updated at `c153bc5`. Verified with `git log -S` over that
+            // phrase AS OF `6abb10a`: it named `11f6ea0` and `6abb10a` only, and
+            // `c153bc5` contains no such count at all - an earlier version of
+            // this sentence credited it anyway.
+            //
+            // The "as of" is load-bearing, not pedantry. The sentence CONTAINS
+            // the phrase it searches for, so every commit editing it adds an
+            // occurrence and changes the answer: the citation falsified itself
+            // the moment it was written, and at HEAD the same command names
+            // three commits. A `git log -S` result belongs in a comment only
+            // pinned to a sha, or phrased over a substring the comment does not
+            // itself spell.
+            //
+            // An intermediate version
             // of the closer guard tested the BYTE with `u8::is_ascii_whitespace`,
             // which broke it for non-ASCII whitespace and swallowed a principal;
             // do not restore it.
@@ -2273,56 +2083,6 @@ fn split_user_list(lhs: &str) -> (&str, &str) {
         }
     }
     (lhs, "")
-}
-
-/// Byte ranges `(start, end)` of whitespace RUNS in `s` that sit OUTSIDE a
-/// genuinely CLOSED double-quoted span (see [`inside_a_clean_quoted_region`])
-/// and are not themselves consumed by a backslash escape.
-///
-/// A whitespace byte inside a CLOSED quote pair is part of the token, not a
-/// boundary; a `\` consumes exactly the next byte literally, whitespace or not
-/// -- the SEPARATOR-finding rule of the two in [`unescaped_quote_positions`],
-/// which is the right one here because this scan runs outside quoted spans
-/// (the spans themselves come from [`simple_quote_pairs`], which uses the
-/// quote-finding rule). Matches [`option_value_end`]'s unquoted half and the two
-/// top-level splitters). Deliberately uses [`simple_quote_pairs`]'s PAIRED quote
-/// detection rather than a live open/close toggle: an unrelated, unpaired `"` elsewhere in the same
-/// pre-`=` text (e.g. a malformed `%bad"group` principal, `f02_group_name_with_dquote_fires`)
-/// must not swallow every later whitespace boundary as "still inside quotes" -
-/// the same "unterminated quote must not suppress a real boundary" rule the
-/// two top-level splitters already enforce for `:` / `,`. Used by
-/// [`split_user_list`] (#538 gap B) to find the real
-/// `User_List`/`Host_List` boundary without splitting inside a quoted or
-/// escaped principal.
-fn unquoted_whitespace_runs(s: &str) -> Vec<(usize, usize)> {
-    let quotes = simple_quote_pairs(s);
-    let mut runs = Vec::new();
-    let mut escaped = false;
-    let mut run_start: Option<usize> = None;
-    for (i, c) in s.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            if let Some(start) = run_start.take() {
-                runs.push((start, i));
-            }
-            continue;
-        }
-        if c.is_whitespace() && !inside_a_clean_quoted_region(&quotes, i) {
-            if run_start.is_none() {
-                run_start = Some(i);
-            }
-        } else if let Some(start) = run_start.take() {
-            runs.push((start, i));
-        }
-    }
-    if let Some(start) = run_start.take() {
-        runs.push((start, s.len()));
-    }
-    runs
 }
 
 /// Split off the first whitespace-delimited word from `s`, returning
@@ -3459,11 +3219,14 @@ mod tests {
 
     #[test]
     fn quoted_close_paren_in_a_runas_principal_keeps_the_option_value_anchor() {
-        // WITNESS for this splitter's `runas_quotes` guard. The lint-level face of
-        // this arm is masked by #650 (`parse_cmnd_spec`'s `after_open.find(')')`
-        // truncates the runas token before the split can matter), so no CLI input
-        // observes it and its mutants survive the diff-scoped gate. Calling the
-        // splitter directly bypasses that masking.
+        // WITNESS for this splitter's `runas_quotes` guard. The lint-level face
+        // of this arm WAS masked by #650 (`parse_cmnd_spec`'s bare
+        // `after_open.find(')')` truncated the runas token before the split could
+        // matter), so no CLI input observed it and its mutants survived the
+        // diff-scoped gate. #650 is fixed and the masking is gone. This test is
+        // kept because calling the splitter directly still tests it in isolation
+        // from its callers, which is why it was the only witness available then
+        // and remains the sharpest one now.
         //
         // `alice ALL = (root,"a)b") CWD="/x,y" /bin/ls, NOPASSWD: /bin/su` is
         // `visudo -c -f -` rc 0 with TWO `Cmnd_Spec`s (sudo 1.9.17p2, 2026-08-02).

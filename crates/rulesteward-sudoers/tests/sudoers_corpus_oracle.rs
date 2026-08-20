@@ -385,8 +385,50 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// `accept-*` scenarios (`accept-escaped-hash-keeps-nopasswd`,
 /// `accept-even-backslash-run-before-hash`,
 /// `accept-odd-backslash-run-before-hash`) added 2026-08-19 with #649, the
-/// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18.
-/// 22 + 8 + 2 + 6 + 3 + 4 + 3 = 48.
+/// corpus's first backslash ESCAPES - see `PROVENANCE.md` section 18; 4 more
+/// (3 `accept-*` plus `reject-escaped-bang-principal`) added 2026-08-19 with
+/// the negation-sigil sweep #670/#671/#672 - see `PROVENANCE.md` section 19.
+/// A fifth was captured and then DROPPED: `alice ALL = (ro!ot) /bin/ls` is
+/// oracle-REJECT but `RuleSteward` rejects it at the LINT layer (`sudo-F02`),
+/// not the PARSE layer, and L1's `ours_rejects` keys on `LineKind::Malformed`.
+/// It belongs to the documented "not a command-token validator" class that is
+/// deliberately outside this corpus, so it is pinned by a unit test
+/// (`mid_token_bang_is_still_invalid`) instead of by a scenario. The same
+/// applies to the #650/#652 rc-1 rows (`%bad group ALL = ALL`, `(a>b)`,
+/// `("a b)`): all three are LINT-level rejects, so all three are unit tests
+/// rather than scenarios; then, all on 2026-08-19, 4 `accept-*` with #650/#652
+/// (`PROVENANCE.md` section 20), 5 with #675 of which 3 are `accept-*`
+/// (section 21), 4 `accept-*` with #699 (section 22) and 1 `reject-*` with #701
+/// (section 23). The per-issue counts are SCENARIOS; only #650/#652's and
+/// #699's happen to be all-accept, and an earlier version of this sentence
+/// applied the `accept-*` qualifier to every group and said "5 with #699",
+/// contradicting both its own addend below and the paragraph after it.
+/// 22 + 8 + 2 + 6 + 3 + 4 + 3 + 4 + 4 + 5 + 4 + 1 + 1 + 1 = 68.
+///
+/// The last is #676's `accept-even-run-glued-quote`, added by #702's follow-up.
+/// It is an ACCEPT scenario carrying an `L1_XFAIL` entry, which is unusual and
+/// deliberate: `visudo` accepts it and `RuleSteward` answers `sudo-F01`, so it
+/// is a real F01-verdict divergence rather than a projection one.
+///
+/// #701's single scenario is a `reject-*`, so it moves this floor and leaves
+/// `L3_CLEAN_FLOOR` alone: L3 compares accept scenarios only. It IS
+/// corpus-eligible, unlike #699's rejected parity control, because a
+/// `split_user_list` rc-1 row is a STRUCTURAL `sudo-F01` that L1 compares
+/// directly, where a runas rc-1 row is a LINT-level `sudo-F02` that L1's
+/// F01-verdict comparison cannot see.
+///
+/// #699 contributes FOUR, not five. Its parity control `(\\!root)` is `visudo`
+/// rc 1 but a LINT-level reject: `RuleSteward` answers `sudo-F02`, not `sudo-F01`,
+/// so L1's F01-verdict comparison fails on it. It belongs with the #650/#652
+/// rc-1 rows above as a unit test
+/// (`an_even_backslash_run_leaves_the_runas_sigil_unescaped`), not a scenario.
+/// The harness is what said so: staged as a scenario it failed L1 immediately
+/// rather than being reasoned about.
+///
+/// That running tally summed to 56 against a floor of 61 until #699 caught it:
+/// #675 bumped the CONSTANT, which the `assert_eq!` forces, and left the
+/// human-readable addends behind. The constant is self-enforcing and the tally
+/// is not, so the tally is the half that rots - update both in the same commit.
 ///
 /// THIS CONSTANT MUST BE BUMPED IN THE SAME COMMIT THAT ADDS A SCENARIO, and
 /// since 2026-08-03 the suite ENFORCES that rather than asking: the two
@@ -413,14 +455,18 @@ const SENTINEL: &str = "RS-DIFF-SUDOERS";
 /// Deleting one scenario fails (`found 47`) and the committed 48 passes. The
 /// bump is the enforcement working as designed, not a weakening: the equality
 /// is what MADE adding a scenario require touching this line.
-const SCENARIO_FLOOR: usize = 48;
+const SCENARIO_FLOOR: usize = 68;
 
 /// Named floor for L3's clean (non-xfailed, non-scoped-out) structural
 /// comparisons.
 ///
-/// DERIVED FROM A RUN, never computed. This is a ONE-SIDED floor: set too
-/// high it is unsatisfiable and blocks the implementer forever, set too low
-/// it silently weakens the differential, and both are defects. This constant
+/// DERIVED FROM A RUN, never computed. It was a ONE-SIDED floor until #699,
+/// which is the failure mode described next: set too high it is unsatisfiable
+/// and blocks the implementer forever, set too low it does not fail at all and
+/// silently stops binding, and both are defects. It is now an `assert_eq!` when
+/// this binary judges its own tree and a `>=` only under `RS_BRANCH_DIFF`; see
+/// the assertion site for why the carve-out is required and why L1's and L2's
+/// `>=` are not the same weakness. This constant
 /// was frozen at a value no contract-honouring implementation could reach (66
 /// against an achievable 60); that survived two full adversarial rounds
 /// because every reviewer asked "what WRONG implementation passes these
@@ -452,11 +498,61 @@ const SCENARIO_FLOOR: usize = 48;
 /// scenario changed classification, and it is worth understanding why before
 /// re-freezing.
 ///
-/// Cross-check, which AGREES with the measurement: **40** accept scenarios x 3
-/// targets = 120 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
-/// JSON) = 119 attempted; minus **21** xfail hits (the **7** `L3_XFAIL`
+/// Cross-check, which AGREES with the measurement: **56** accept scenarios x 3
+/// targets = 168 candidate pairs; minus 1 scoped-out (el8 `SELinux` invalid
+/// JSON) = 167 attempted; minus **51** xfail hits (the **17** `L3_XFAIL`
 /// scenarios x 3 targets, minus 0 scope-out/xfail overlap now that
-/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 98.
+/// `accept-selinux-role-type` has left `L3_XFAIL` - see that const) = 116.
+///
+/// 116 -> 116 for the THIRD time on this branch, and by now that is a property
+/// of how the lane works rather than a coincidence: every scenario it adds is an
+/// accept that carries an xfail, so +3 attempted and -3 hits cancel exactly. The
+/// RESULT is therefore the least informative figure here. Update the other five
+/// (55->56, 165->168, 164->167, 48->51, 16->17) in the same commit that adds the
+/// scenario; they are the only part of this cross-check that can disagree with
+/// the measurement, and a cross-check whose inputs go stale is not one.
+///
+/// 116 -> 116 is #702, and it is the CANCELLATION this const's warning below is
+/// about, happening for the second time on this branch. One accept scenario
+/// contributes +3 attempted and is itself an `L3_XFAIL` (#705), giving back
+/// exactly -3, so the RESULT does not move while FIVE figures do
+/// (54->55, 162->165, 161->164, 45->48, and the inner entry count 15->16).
+/// Nothing would have failed had they been left stale, since the equality is on
+/// the RESULT. They were updated in the same commit anyway, which is the only
+/// thing that keeps this cross-check able to cross-check.
+///
+/// 113 -> 116 is #699. FIVE figures move and so does the RESULT, because the
+/// face adds FOUR accept scenarios of which only THREE are xfailed: the fourth,
+/// `accept-escaped-bang-runas`, projects CLEAN (L3 covers users/hosts/commands
+/// and not the runas group) and is the whole net gain of +3. That is the
+/// non-cancellation, the opposite of #675's case immediately below.
+///
+/// 113 -> 113 is #675, and it is the CANCELLATION this const's own warning
+/// below is about, happening for real rather than hypothetically. Three accept
+/// scenarios contribute +9 attempted and all three are `L3_XFAIL`, giving back
+/// exactly -9, so the RESULT did not move while four of the five CROSS-CHECK
+/// figures did (47->50, 141->150, 140->149, 27->36), as did the inner
+/// `L3_XFAIL` entry count (9->12). "The five" means the five figures of the
+/// cross-check sentence above - accepts, pairs, attempted, xfail hits, result -
+/// and the entry count is an inner factor of the fourth, not a sixth member;
+/// the paragraph above counts it separately and says so. Those six numbers are
+/// the state as of #675 and are kept as history; the CURRENT ones are in the
+/// paragraph above. Nothing would have failed had they
+/// been left stale: the floor WAS a `>=` at the time and 113 still bound (it is
+/// an `assert_eq!` outside a branch differential since #699). They were updated
+/// in the same commit anyway, which is the only thing that keeps this
+/// cross-check able to cross-check. Measured, not computed: a floor of 9999
+/// failed with `expected >= 9999 clean L3 comparisons, got 113`, and that
+/// deliberately-failing run is also this assertion's positive control.
+///
+/// 98 -> 104 was the negation-sigil sweep: +3 accept scenarios contribute +9
+/// attempted, and one of the three (`accept-negated-quoted-principal`) is an
+/// `L3_XFAIL`, so it gives back 3, for a NET +6.
+///
+/// 104 -> 113 is #650/#652: +4 accept scenarios contribute +12 attempted, and
+/// one (`accept-quoted-host-space-group-subj`) is an `L3_XFAIL`, giving back 3,
+/// for a NET +9. Both figures moved again, which is the non-cancellation this
+/// const's own warning below is about.
 ///
 /// 95 -> 98 is #649's three escape scenarios: all three add +1 attempted per
 /// target, and only TWO of them are `L3_XFAIL`, so the third
@@ -480,7 +576,7 @@ const SCENARIO_FLOOR: usize = 48;
 /// `accept-timeout-option` contribute 3 targets each, while
 /// `accept-selinux-role-type` contributes only 2 because its el8 pair is
 /// scoped out of L3 entirely (9 + 2 = 11).
-const L3_CLEAN_FLOOR: usize = 98;
+const L3_CLEAN_FLOOR: usize = 116;
 
 /// Known `tuple_count` anchors: `(scenario_id, expected cvtsudoers
 /// User_Specs\[\] length)`, confirmed directly against the committed corpus
@@ -530,7 +626,27 @@ const TUPLE_COUNT_ANCHORS: &[(&str, usize)] = &[
 /// context-sensitive and belongs in `rulesteward-core`, not here. Drafted as
 /// a tracked issue (not filed) in `PROVENANCE.md`; do NOT fold this into
 /// #538 (unrelated defect, different crate).
-const L1_XFAIL: &[&str] = &["accept-negated-uid-subject"];
+/// Second entry added 2026-08-20 by #702's follow-up: `accept-even-run-glued-quote`.
+///
+/// `\\"h1" = NOPASSWD: ALL` is `visudo` rc 0 - an EVEN backslash run consumes
+/// itself, so the `"` that follows really does open a quoted region, and
+/// `cvtsudoers` reports user `\` / host `h1`. `simple_quote_pairs` asks
+/// `quote_is_escaped`, which is the INSIDE-a-string rule, at an OPENING
+/// position; it finds no pair, so there is no opener candidate, no closer and no
+/// `!`, and the line folds to `Malformed` with a false `sudo-F01`.
+///
+/// That is **#676** exactly - "`quote_is_escaped` applies the inside-a-string
+/// rule at the OPENER" - and its fix is face D, out of scope here.
+///
+/// It is entered now because #702 changed which members of the family are
+/// visible. `\\"<VT>"` and `\\"<NBSP>"` used to answer correctly, but only by
+/// accident: the wide whitespace predicate emitted a run at the exotic blank and
+/// that run was the line's ONLY candidate. Narrowing the blank class to sudo's
+/// `[[:blank:]]` removed the accident. The pure-ASCII members (`\\"h1"`,
+/// `\\"ax"`) were wrong at the fork point and are wrong now; nothing about the
+/// defect moved, only which spellings expose it. Recording the ASCII member is
+/// what makes that auditable rather than a silent behaviour change.
+const L1_XFAIL: &[&str] = &["accept-negated-uid-subject", "accept-even-run-glued-quote"];
 
 /// Known `-s`-vs-default divergences: see the module doc's L2 section and
 /// `PROVENANCE.md` section 5. Grounded in `man 8 visudo`'s own description of
@@ -672,8 +788,73 @@ const L3_XFAIL: &[(&str, Option<u32>)] = &[
     // Filed as #696, which asks for ONE ruling covering both this and #667's
     // quote retention: answering escapes differently from quotes would be worse
     // than either answer.
+    // Quote RETENTION on a NEGATED quoted principal, reached for the first time
+    // by the #670 scenario. Same class as the four rows above (the AST keeps the
+    // surrounding quotes, cvtsudoers reports the dequoted value, every
+    // structural field agreeing) - the sigil is simply carried along on the
+    // outside of the quotes. NOT a defect of the negation-sigil sweep: the
+    // divergence is #667's, and this scenario is the first input that puts a
+    // quoted principal and a sigil in the same token.
+    // Quote RETENTION on a HOST token, reached for the first time by the #652
+    // scenario. Same class as the rows above, different axis: the AST keeps the
+    // quotes around `"h c"` where cvtsudoers reports `h c`, with users,
+    // commands and arity all agreeing. NOT a defect of the #650/#652 fix - that
+    // fix is what makes this line parse at all instead of drawing a false
+    // sudo-F02.
+    ("accept-quoted-host-space-group-subj", Some(667)),
+    ("accept-negated-quoted-principal", Some(667)),
     ("accept-escaped-hash-keeps-nopasswd", Some(696)),
     ("accept-odd-backslash-run-before-hash", Some(696)),
+    // #675's three accept scenarios. The divergence is on the USERS axis and it
+    // is **#645 Face B**, NOT the quote/escape RETENTION of the rows above, so
+    // it carries a different issue number on purpose. Retention keeps the raw
+    // token intact and differs from `cvtsudoers` only by dequoting/unescaping;
+    // this one LOSES a byte. `comma_split` is a bare `s.split(',')`, so the user
+    // list text `alice\,` that #675's fix now correctly recovers is split on the
+    // ESCAPED comma, yielding `alice\` where cvtsudoers says `alice,`: the comma
+    // is gone and the backslash that escaped it is kept.
+    //
+    // NOT introduced by #675. Before that fix these three lines did not parse at
+    // all - they folded to `Malformed` and never reached L3 - so the corpus had
+    // never sampled an escaped comma in a principal. The fix moves them from
+    // "silently dropped, grant unevaluated" to "parsed, with a known member-split
+    // divergence", which is strictly better and now visible.
+    //
+    // TWO of these three are #645 Face B's acceptance signal: this harness FAILS
+    // an xfail entry whose projections match, so when face G lands
+    // `accept-escaped-comma-user-list` and `accept-escaped-comma-negated-host`
+    // cannot be left in place.
+    //
+    // `accept-escaped-comma-glued-quote` is NOT, and #699 corrected this comment
+    // to say so. It diverges on TWO axes - users by #645 Face B and hosts by
+    // #667 quote retention - so #645 landing leaves the #667 divergence and
+    // `matches` stays false. A two-axis entry announces neither of its fixes and
+    // has to be deleted by hand by whoever closes the SECOND one. The arm below
+    // already asserted both axes correctly; it was this list's own comment that
+    // described the row as though a single axis retired it.
+    ("accept-escaped-comma-user-list", Some(645)),
+    ("accept-escaped-comma-negated-host", Some(645)),
+    ("accept-escaped-comma-glued-quote", Some(645)),
+    // #699's escape-blind-sigil accepts. The users axis is ESCAPE RETENTION,
+    // so these carry #696 and not #645: `alice\!` and `alice!` are the same
+    // token modulo one consumed escape, where #645's rows LOSE the comma byte
+    // outright. The fourth #699 scenario, `accept-escaped-bang-runas`, is
+    // deliberately ABSENT: L3 projects users/hosts/commands and not the runas
+    // group, so its projections AGREE and an entry for it would fail.
+    ("accept-escaped-bang-run", Some(696)),
+    ("accept-escaped-bang-glued-quote", Some(696)),
+    ("accept-even-backslash-bang-boundary", Some(696)),
+    // #702's scenario. The divergence is DATA LOSS, not retention, so it carries
+    // its own number (#705) rather than #667's or #696's: `split_user_list` now
+    // correctly returns the NBSP as the host half, and the host-token layer
+    // below it throws the character away, leaving an EMPTY `Host_List` where
+    // `cvtsudoers` reports a one-character hostname. The VERDICT is right
+    // (`sudo-W01` reported, no false `sudo-F01`); only the structure is not.
+    ("accept-nbsp-host-principal", Some(705)),
+    // #676, the L3 half of the `L1_XFAIL` entry above: the line folds to
+    // `Malformed`, so our projection is EMPTY on every axis while `cvtsudoers`
+    // reports a complete user-spec.
+    ("accept-even-run-glued-quote", Some(676)),
 ];
 
 /// `(scenario_id, target)` pairs where `cvtsudoers -f json`'s stdout is KNOWN
@@ -815,6 +996,60 @@ fn read_target(root: &Path, id: &str, target: &str) -> OracleDoc {
         cvtsudoers_rc: field_rc("cvtsudoers"),
         cvtsudoers_stdout: field_str("cvtsudoers", "stdout"),
     }
+}
+
+/// Drop the FIRST backslash of each escape in an AST token, yielding what
+/// `cvtsudoers` reports for the same token.
+///
+/// This is the ESCAPE-RETENTION prediction, stated exactly. Deliberately NOT
+/// `replace("\\", "")`, which would also absorb a token where `RuleSteward` kept a
+/// backslash `cvtsudoers` never had, and NOT `trim_matches`, for the same reason
+/// the #667 arms refuse it: an over-wide unescape makes the assertion pass on
+/// divergences it was not written for.
+///
+/// Shared by the #696 command-token arm and #699's user-token arms. It was a
+/// local closure in the first of those until #699 needed the second; one
+/// concept gets one recognizer here for the same reason it does in the parser.
+fn unescape_one_token(c: &str) -> String {
+    let mut out = String::with_capacity(c.len());
+    let mut it = c.chars();
+    while let Some(ch) = it.next() {
+        if ch == '\\' {
+            // consume the escape, keep what it escaped
+            if let Some(next) = it.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Read a token's TRAILING backslash back as the escaped comma that
+/// `comma_split` consumed, which is the exact shape of #645 Face B.
+///
+/// `split_user_list` now correctly keeps `alice\,` as ONE `User_List` (#675),
+/// but `comma_split` is still a bare `s.split(',')`, so it splits on that
+/// ESCAPED comma and the trailing empty piece is filtered away: the member
+/// arrives as `alice\` where `cvtsudoers` reports `alice,`.
+///
+/// Deliberately narrow. It rewrites only a SINGLE trailing backslash and only
+/// into a comma - never `replace('\\', ",")`, which would also absorb a token
+/// where `RuleSteward` kept an interior backslash `cvtsudoers` never had, and
+/// never `trim_end_matches`, which would eat an even run. An even run is
+/// precisely the case where the comma was NOT escaped, the list really did
+/// continue, and the line is a `visudo` reject that never reaches L3 at all; an
+/// over-wide restore would make these arms pass on divergences they were not
+/// written for. Same discipline as `unwrap_one_pair` in the #667 arms.
+fn restore_split_comma(users: &[String]) -> Vec<String> {
+    users
+        .iter()
+        .map(|u| match u.strip_suffix('\\') {
+            Some(head) if !head.ends_with('\\') => format!("{head},"),
+            _ => u.clone(),
+        })
+        .collect()
 }
 
 /// Order-independent (multiset) equality: this test's own comparison, so
@@ -2031,7 +2266,7 @@ fn l2_strict_gate_matches_default_gate() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn l3_structure_projection_matches_cvtsudoers() {
-    let (root, _mode) = corpus_root();
+    let (root, mode) = corpus_root();
     let ids = scenarios(&root);
 
     let mut compared = 0usize;
@@ -2227,7 +2462,7 @@ fn l3_structure_projection_matches_cvtsudoers() {
                         // token - and an unbalanced principal quote is precisely
                         // what this defect family produces. `simple_quote_pairs`
                         // silently drops a trailing unmatched quote
-                        // (`chunks_exact(2)`), and an off-by-one in the very
+                        // (`as_chunks::<2>()`), and an off-by-one in the very
                         // guard #651 adds yields users `"ops team` with a clean
                         // host `web1`: tuple_count, hosts and commands all agree
                         // and `trim_matches` would have eaten the stray quote.
@@ -2257,6 +2492,98 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             cvt_proj.users
                         );
                     }
+                    "accept-quoted-host-space-group-subj" => {
+                        // Everything except the HOST tokens agrees; state that
+                        // first so a divergence that spreads is a FAILURE.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): quote retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.users, &cvt_proj.users)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a HOST-token divergence only; \
+                             users/commands must already agree. got ast users={:?} \
+                             commands={:?} cvt users={:?} commands={:?}",
+                            ast_proj.users,
+                            ast_proj.commands,
+                            cvt_proj.users,
+                            cvt_proj.commands
+                        );
+                        // Same one-balanced-pair unwrap the #667 arm below uses,
+                        // and deliberately no wider: `trim_matches` would also
+                        // absorb an UNBALANCED token, which is the shape a
+                        // mis-split produces and is exactly what must still fail.
+                        let unwrap_one_pair = |u: &str| -> String {
+                            let b = u.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                u[1..u.len() - 1].to_string()
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> =
+                            ast_proj.hosts.iter().map(|h| unwrap_one_pair(h)).collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 predicts the host lists agree once ONE \
+                             balanced quote pair is removed from each AST token; got ast={:?} \
+                             unwrapped={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            dequoted,
+                            cvt_proj.hosts
+                        );
+                    }
+                    "accept-negated-quoted-principal" => {
+                        // Everything except the user tokens agrees; state that
+                        // first so a divergence that spreads is a FAILURE here
+                        // rather than a silently wider xfail.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): quote retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a USER-token divergence only; \
+                             hosts/commands must already agree. got ast hosts={:?} \
+                             commands={:?} cvt hosts={:?} commands={:?}",
+                            ast_proj.hosts,
+                            ast_proj.commands,
+                            cvt_proj.hosts,
+                            cvt_proj.commands
+                        );
+                        // The predicted divergence, stated exactly: dropping ONE
+                        // balanced quote pair from INSIDE the leading sigil run
+                        // yields the cvtsudoers token. Deliberately not
+                        // `replace('"', "")` and not `trim_matches`, for the same
+                        // reason the #667 arm below refuses them: an over-wide
+                        // unquote passes on divergences it was not written for.
+                        let unwrap_inside_sigils = |u: &str| -> String {
+                            let sigils = u.len() - u.trim_start_matches('!').len();
+                            let (lead, rest) = u.split_at(sigils);
+                            let b = rest.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                format!("{lead}{}", &rest[1..rest.len() - 1])
+                            } else {
+                                u.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| unwrap_inside_sigils(u))
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the user lists agree once ONE \
+                             balanced quote pair is removed from inside each token's leading \
+                             sigil run; got ast={:?} unwrapped={:?} cvt={:?}",
+                            ast_proj.users,
+                            dequoted,
+                            cvt_proj.users
+                        );
+                    }
                     "accept-escaped-hash-keeps-nopasswd"
                     | "accept-odd-backslash-run-before-hash" => {
                         // ESCAPE retention, the sibling of #667's quote
@@ -2279,31 +2606,14 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             cvt_proj.users,
                             cvt_proj.hosts
                         );
-                        // The predicted divergence, stated exactly: dropping the
-                        // FIRST backslash of each run in the AST token yields
-                        // the cvtsudoers token. Deliberately NOT `replace("\\",
-                        // "")`, which would also absorb a token where RuleSteward
-                        // kept a backslash cvtsudoers never had, and NOT
-                        // `trim_matches`, for the same reason the #667 arm above
-                        // refuses it: an over-wide unescape makes the assertion
-                        // pass on divergences it was not written for.
-                        let unescape_one = |c: &str| -> String {
-                            let mut out = String::with_capacity(c.len());
-                            let mut it = c.chars();
-                            while let Some(ch) = it.next() {
-                                if ch == '\\' {
-                                    // consume the escape, keep what it escaped
-                                    if let Some(next) = it.next() {
-                                        out.push(next);
-                                    }
-                                } else {
-                                    out.push(ch);
-                                }
-                            }
-                            out
-                        };
-                        let unescaped: Vec<String> =
-                            ast_proj.commands.iter().map(|c| unescape_one(c)).collect();
+                        // The predicted divergence, stated exactly by
+                        // `unescape_one_token` (see that function for why it is
+                        // not a `replace` or a `trim_matches`).
+                        let unescaped: Vec<String> = ast_proj
+                            .commands
+                            .iter()
+                            .map(|c| unescape_one_token(c))
+                            .collect();
                         assert!(
                             sorted_eq(&unescaped, &cvt_proj.commands),
                             "L3 {id} ({target}): the escape-retention divergence predicts the \
@@ -2312,6 +2622,277 @@ fn l3_structure_projection_matches_cvtsudoers() {
                             ast_proj.commands,
                             unescaped,
                             cvt_proj.commands
+                        );
+                    }
+                    "accept-escaped-comma-user-list" | "accept-escaped-comma-negated-host" => {
+                        // #645 Face B, the MEMBER-SPLIT divergence #675's fix
+                        // makes visible. Everything except the user tokens
+                        // agrees; state that first so a divergence that spreads
+                        // is a FAILURE here rather than a silently wider xfail.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): the member split must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a USER-token divergence only; \
+                             hosts/commands must already agree. got ast hosts={:?} \
+                             commands={:?} cvt hosts={:?} commands={:?}",
+                            ast_proj.hosts,
+                            ast_proj.commands,
+                            cvt_proj.hosts,
+                            cvt_proj.commands
+                        );
+                        assert!(
+                            sorted_eq(&restore_split_comma(&ast_proj.users), &cvt_proj.users),
+                            "L3 {id} ({target}): #645 Face B predicts the user lists agree \
+                             once each AST token's TRAILING backslash is read back as the \
+                             escaped comma `comma_split` consumed; got ast={:?} restored={:?} \
+                             cvt={:?}",
+                            ast_proj.users,
+                            restore_split_comma(&ast_proj.users),
+                            cvt_proj.users
+                        );
+                    }
+                    "accept-escaped-comma-glued-quote" => {
+                        // The only row in the corpus diverging on TWO axes at
+                        // once: users by #645 Face B (member split, as above)
+                        // and hosts by #667 (quote retention, `"b"` vs `b`).
+                        // Both are stated exactly, and arity plus commands must
+                        // still agree.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): neither divergence may change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): commands must AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        assert!(
+                            sorted_eq(&restore_split_comma(&ast_proj.users), &cvt_proj.users),
+                            "L3 {id} ({target}): #645 Face B predicts the user lists agree \
+                             once each AST token's TRAILING backslash is read back as the \
+                             escaped comma `comma_split` consumed; got ast={:?} restored={:?} \
+                             cvt={:?}",
+                            ast_proj.users,
+                            restore_split_comma(&ast_proj.users),
+                            cvt_proj.users
+                        );
+                        // Same one-balanced-pair unwrap the #667 arms use, and
+                        // deliberately no wider, for the reason stated there.
+                        let unwrap_one_pair = |h: &str| -> String {
+                            let b = h.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                h[1..h.len() - 1].to_string()
+                            } else {
+                                h.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> =
+                            ast_proj.hosts.iter().map(|h| unwrap_one_pair(h)).collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 predicts the host lists agree once ONE \
+                             balanced quote pair is removed from each AST token; got ast={:?} \
+                             unwrapped={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            dequoted,
+                            cvt_proj.hosts
+                        );
+                    }
+                    "accept-escaped-bang-run" => {
+                        // #699, SINGLE axis: the escaped sigil survives in the
+                        // AST user token (`a\!`) where cvtsudoers consumed the
+                        // escape (`a!`). Hosts already agree - both sides say
+                        // `!h1` - which is what makes this the one #699 row
+                        // that RETIRES ITSELF the moment #696 lands, since the
+                        // harness fails an entry whose projections match.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): escape retention must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.hosts, &cvt_proj.hosts)
+                                && sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): this is a USER-token divergence only; \
+                             hosts/commands must already agree. got ast hosts={:?} \
+                             commands={:?} cvt hosts={:?} commands={:?}",
+                            ast_proj.hosts,
+                            ast_proj.commands,
+                            cvt_proj.hosts,
+                            cvt_proj.commands
+                        );
+                        let unescaped: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| unescape_one_token(u))
+                            .collect();
+                        assert!(
+                            sorted_eq(&unescaped, &cvt_proj.users),
+                            "L3 {id} ({target}): #696 predicts the user lists agree once each \
+                             AST token is unescaped once; got ast={:?} unescaped={:?} cvt={:?}",
+                            ast_proj.users,
+                            unescaped,
+                            cvt_proj.users
+                        );
+                    }
+                    "accept-escaped-bang-glued-quote" | "accept-even-backslash-bang-boundary" => {
+                        // #699, TWO axes at once: users by #696 (escape
+                        // retention) and hosts by #667 (quote retention). Both
+                        // are stated exactly, and arity plus commands must
+                        // still agree.
+                        //
+                        // NOT SELF-REMOVING, and saying so is the point. The
+                        // harness retires an entry whose projections MATCH, so
+                        // a single-axis entry is its own acceptance signal. A
+                        // two-axis one is not: #696 landing leaves the #667
+                        // divergence, and #667 landing leaves the #696 one, so
+                        // `matches` stays false either way and neither fix is
+                        // announced here. Whoever closes the SECOND of the two
+                        // must delete these entries by hand. The same is true
+                        // of `accept-escaped-comma-glued-quote` above, where it
+                        // went unstated until #699.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): neither divergence may change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): commands must AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        let unescaped: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| unescape_one_token(u))
+                            .collect();
+                        assert!(
+                            sorted_eq(&unescaped, &cvt_proj.users),
+                            "L3 {id} ({target}): #696 predicts the user lists agree once each \
+                             AST token is unescaped once; got ast={:?} unescaped={:?} cvt={:?}",
+                            ast_proj.users,
+                            unescaped,
+                            cvt_proj.users
+                        );
+                        // The host token may carry a LEADING negation run that
+                        // both sides keep (`!"h1"` vs `!h1`), so the sigils are
+                        // split off before the unwrap and put back after it.
+                        // Unwrapping through them would be the over-wide
+                        // dequote the #667 arms refuse.
+                        let unwrap_inside_sigils = |h: &str| -> String {
+                            let sigils = h.len() - h.trim_start_matches('!').len();
+                            let (pre, rest) = h.split_at(sigils);
+                            let b = rest.as_bytes();
+                            if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                format!("{pre}{}", &rest[1..rest.len() - 1])
+                            } else {
+                                h.to_string()
+                            }
+                        };
+                        let dequoted: Vec<String> = ast_proj
+                            .hosts
+                            .iter()
+                            .map(|h| unwrap_inside_sigils(h))
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted, &cvt_proj.hosts),
+                            "L3 {id} ({target}): #667 predicts the host lists agree once ONE \
+                             balanced quote pair is removed from inside any leading sigil run; \
+                             got ast={:?} unwrapped={:?} cvt={:?}",
+                            ast_proj.hosts,
+                            dequoted,
+                            cvt_proj.hosts
+                        );
+                    }
+                    "accept-nbsp-host-principal" => {
+                        // #705, stated exactly: users, commands and arity all
+                        // agree, and the HOST list is empty on our side where
+                        // cvtsudoers has exactly one entry. Asserting emptiness
+                        // rather than "differs" is what makes a divergence that
+                        // SPREADS fail here instead of widening silently.
+                        assert_eq!(
+                            ast_proj.tuple_count, cvt_proj.tuple_count,
+                            "L3 {id} ({target}): the lost host token must not change arity"
+                        );
+                        assert!(
+                            sorted_eq(&ast_proj.commands, &cvt_proj.commands),
+                            "L3 {id} ({target}): commands must AGREE; got ast={:?} cvt={:?}",
+                            ast_proj.commands,
+                            cvt_proj.commands
+                        );
+                        // Round 4 caught this arm's comment claiming it asserted
+                        // users when it did not: injecting a wrong users
+                        // projection left the test GREEN. Adding the assertion
+                        // immediately proved the row is TWO-axis, which both the
+                        // original comment and its repair called host-only - the
+                        // user token is `"a"` here and `a` there, i.e. #667
+                        // quote retention on top of #705's lost host token. An
+                        // unwritten assertion had been hiding a whole axis.
+                        let dequoted_users: Vec<String> = ast_proj
+                            .users
+                            .iter()
+                            .map(|u| {
+                                let b = u.as_bytes();
+                                if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
+                                    u[1..u.len() - 1].to_string()
+                                } else {
+                                    u.clone()
+                                }
+                            })
+                            .collect();
+                        assert!(
+                            sorted_eq(&dequoted_users, &cvt_proj.users),
+                            "L3 {id} ({target}): #667 predicts the user lists agree once ONE \
+                             balanced quote pair is removed; got ast={:?} dequoted={:?} \
+                             cvt={:?}",
+                            ast_proj.users,
+                            dequoted_users,
+                            cvt_proj.users
+                        );
+                        assert!(
+                            ast_proj.hosts.is_empty(),
+                            "L3 {id} ({target}): #705 predicts the host token is LOST, so \
+                             our host list is EMPTY; got ast={:?}. A non-empty list here \
+                             means #705 is fixed and this entry must be removed",
+                            ast_proj.hosts
+                        );
+                        assert_eq!(
+                            cvt_proj.hosts.len(),
+                            1,
+                            "L3 {id} ({target}): cvtsudoers reports exactly one host \
+                             (the non-blank whitespace principal); got {:?}",
+                            cvt_proj.hosts
+                        );
+                    }
+                    "accept-even-run-glued-quote" => {
+                        // #676. Our side did not parse a user-spec at all, so
+                        // EVERY projection axis is empty. Asserting emptiness
+                        // rather than "differs" is what makes this entry fail
+                        // the moment #676 lands, which is its acceptance signal.
+                        assert_eq!(
+                            ast_proj.tuple_count, 0,
+                            "L3 {id} ({target}): #676 predicts the line folds to Malformed, \
+                             so no user-spec is projected; got tuple_count={}",
+                            ast_proj.tuple_count
+                        );
+                        assert!(
+                            ast_proj.users.is_empty()
+                                && ast_proj.hosts.is_empty()
+                                && ast_proj.commands.is_empty(),
+                            "L3 {id} ({target}): #676 predicts EVERY axis is empty; got \
+                             users={:?} hosts={:?} commands={:?}. Anything non-empty means \
+                             the line now parses and this entry must be removed",
+                            ast_proj.users,
+                            ast_proj.hosts,
+                            ast_proj.commands
+                        );
+                        assert_eq!(
+                            cvt_proj.tuple_count, 1,
+                            "L3 {id} ({target}): cvtsudoers parses it as one user-spec"
                         );
                     }
                     other => panic!("unhandled L3_XFAIL scenario id {other:?}"),
@@ -2345,10 +2926,63 @@ fn l3_structure_projection_matches_cvtsudoers() {
     // `ids.len()` here would overstate what L3 actually compared.
     announce(compared);
 
-    assert!(
-        compared >= L3_CLEAN_FLOOR,
-        "expected >= {L3_CLEAN_FLOOR} clean L3 comparisons, got {compared}"
-    );
+    // `assert_eq!`, not `>=`, since #699 - but ONLY when this binary is judging
+    // its own tree. `compared` is fully determined by the committed corpus and
+    // the compiled-in xfail/scope-out tables, so equality is exactly as
+    // derivable as `SCENARIO_FLOOR`'s, and this constant had the one-directional
+    // failure mode that one was converted away from on 2026-08-03: a `>=` floor
+    // left too LOW does not fail, it silently stops binding, which is how this
+    // file's cross-check figures went stale through #651 while the RESULT stayed
+    // 95 and nothing complained.
+    //
+    // The carve-out is the same one `assert_scenario_cardinality` makes, for the
+    // same reason - see that function's doc comment, which explains it once.
+    // It must also be keyed the same way, on `CorpusMode::Fresh` AND the env
+    // var; keying on the variable alone let the constant be relaxed on the
+    // committed corpus, which is what the block below now prevents. Under a branch differential this
+    // binary replays ANOTHER TREE's corpus; #658 MANDATES that such a tree add
+    // scenarios, so equality would assert something this binary cannot know and
+    // would fail in `rs-branch-diff.sh`'s R2 run, surfacing as DISCRIMINATED on
+    // this test name with no content but "the constant moved".
+    //
+    // #699 shipped the equality WITHOUT this carve-out and #673 is where that
+    // belongs, since it already owns "three floors remain one-sided". Measured
+    // 2026-08-19: with one extra scenario and `RS_BRANCH_DIFF=1`, the un-carved
+    // version failed `expected exactly 116 clean L3 comparisons, got 119` while
+    // L1 and L2 passed - so L3 was the sole failure, which is precisely the
+    // false DISCRIMINATED signal. That run is also this branch's positive
+    // control for the carve-out.
+    //
+    // L1's and L2's surviving `>=` are NOT the same weakness and must be left
+    // alone: their floors are COMPUTED from `SCENARIO_FLOOR` rather than
+    // hand-maintained, so they cannot drift, and their `>=` is what keeps them
+    // branch-differential-safe.
+    // BOTH conditions, matching `assert_scenario_cardinality` exactly. It
+    // shipped keyed on the env var ALONE, which is not what that function does
+    // and not what its doc comment says ("the relaxation now follows the CALLER
+    // rather than the mere presence of an override"). Measured 2026-08-19 on the
+    // COMMITTED corpus with no override: with `L3_CLEAN_FLOOR` set to 100,
+    // `RS_BRANCH_DIFF=1` made a 16-count drift pass green while the sibling
+    // constant still failed. Nothing in the repo exports the variable today -
+    // `rs-branch-diff.sh` sets it per-command - so it was latent rather than
+    // live, and the guard that prevents it was already written 800 lines above.
+    if matches!(mode, CorpusMode::Fresh) && std::env::var_os("RS_BRANCH_DIFF").is_some() {
+        assert!(
+            compared >= L3_CLEAN_FLOOR,
+            "expected >= {L3_CLEAN_FLOOR} clean L3 comparisons in the overridden \
+             corpus, got {compared}. A branch differential replays ANOTHER TREE's \
+             corpus, which #658 requires to hold MORE scenarios than this binary \
+             was built with; fewer means it shrank below what this binary requires"
+        );
+    } else {
+        assert_eq!(
+            compared, L3_CLEAN_FLOOR,
+            "expected exactly {L3_CLEAN_FLOOR} clean L3 comparisons, got {compared}. \
+             A comparison LOST (a scenario reclassified, a new xfail entry) and one \
+             GAINED (a fix retiring an xfail) are both defects here; the equality is \
+             what makes the second one visible"
+        );
+    }
     assert_eq!(
         scope_out_confirmed,
         L3_EL8_INVALID_JSON_SCOPE_OUT.len(),

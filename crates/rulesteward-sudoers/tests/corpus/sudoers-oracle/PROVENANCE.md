@@ -699,6 +699,174 @@ Row 2 is deliberately NOT xfailed - measured 2026-08-19, its projections AGREE
 with `cvtsudoers`. The harness fails an xfail entry whose projections match, so
 listing it would hide a later real regression.
 
+### 19. The negation sigil, all four call sites (2026-08-19, #670 #671 #672)
+
+Four scenarios added alongside the negation-sigil sweep. `sudoers(5)` lets a
+leading `!` negate a principal; four places in the crate had an opinion about
+that and two of them were wrong.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-glued-bang-principal-boundary` | `alice!h1 = NOPASSWD: ALL` | rc 0; user `alice`, host `h1` NEGATED, `authenticate:false` |
+| `accept-negated-quoted-principal` | `ALL,!"svc acct" ALL = (ALL) ALL` | rc 0; users `ALL` + `svc acct` NEGATED, host `ALL`, runas `ALL` |
+| `accept-negated-runas-principal` | `alice ALL = (ALL,!root) /bin/ls` | rc 0; runasusers `ALL` + `root` NEGATED |
+| `reject-escaped-bang-principal` | `alice\!h1 = NOPASSWD: ALL` | **rc 1** |
+
+The fourth is the important one and it is a REJECT. An escaped `!` is not a
+principal boundary, so a boundary scan that ignored escapes would parse an
+invalid file as `alice\` / `!h1` and silently drop a correct `sudo-F01`. That
+is a lost TRUE POSITIVE rather than a fail-open - the mirror image of the rest
+of this class - and it is why `boundary.rs` gained a named separator-rule
+predicate (`separator_escaped`) instead of the `!` scan hand-rolling its own.
+Witnessed: removing that guard fails L1 on this scenario.
+
+**Grounded facts, all re-derived on this host 2026-08-19 against sudo 1.9.17p2
+and confirmed identical on el8/el9/el10:**
+
+- A **RUN** of leading sigils is legal, not just one: `(!!root)`, `alice!!h1`
+  and `!!alice ALL = ...` are all rc 0. #671's issue text proposed stripping a
+  SINGLE `!`, which would still have reported `(!!root)` as invalid; the fix
+  trims the run, matching `command_specs.rs`. A mutant using `strip_prefix`
+  SURVIVED the first test set, which is why the multi-sigil rows exist.
+- sudo COLLAPSES double negation rather than nesting it: `cvtsudoers` reports
+  `(!!root)` as plain `{"username":"root"}` with no `negated` flag.
+- A `!` after a comma CONTINUES the user list (`alice,!bob ALL = ...` is rc 0
+  with users `alice` + `bob` negated), so it is not a boundary either.
+- A `!` in the MIDDLE of a token really is invalid: `(ro!ot)` is rc 1.
+
+**A fifth scenario was captured and then DROPPED**, recorded here because the
+reason is a property of this corpus rather than of the change:
+`alice ALL = (ro!ot) /bin/ls` is oracle-REJECT, but RuleSteward rejects it at
+the LINT layer (`sudo-F02`), not the PARSE layer, and L1's `ours_rejects` keys
+on `LineKind::Malformed`. It belongs to the documented "not a command-token
+validator" class that is deliberately outside this corpus, so it is pinned by a
+unit test (`mid_token_bang_is_still_invalid`) instead. Adding an `L1_XFAIL` to
+accommodate it would have weakened L1 to fit a scenario that does not meet the
+reject tier's contract.
+
+`accept-negated-quoted-principal` is L3 xfail **#667**: the AST keeps the quotes
+around the negated principal (`!"svc acct"`) where `cvtsudoers` reports
+`!svc acct`, with every structural field agreeing. Same quote-RETENTION class as
+section 17's four rows; this is simply the first input that puts a sigil and a
+quoted principal in the same token.
+
+### 20. The runas boundary and the quoted-principal premise (2026-08-19, #650 #652)
+
+Four scenarios added alongside the #650/#652 fix. These two issues are one
+commit because #650 MASKED #652's runas face: `is_denylist_char` matched the `"`
+first and reported the quote as the invalid character, so fixing #650 alone
+would have UNMASKED a still-live false FATAL on `("r t")`.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-quoted-close-paren-in-runas` | `alice ALL = (root,"a)b") NOPASSWD: /bin/ls` | rc 0; runasusers `root` + `a)b` |
+| `accept-escaped-close-paren-in-runas` | `alice ALL = (root,a\)b) NOPASSWD: /bin/ls` | rc 0 |
+| `accept-quoted-host-space-group-subj` | `%grp "h c" = /bin/ls` | rc 0; host `h c` |
+| `accept-quoted-runas-principal-space` | `alice ALL = ("r t") /bin/ls` | rc 0; runasuser `r t` |
+
+**The measured fact that shaped the fix: quoting legitimises the WHOLE denylist,
+not just whitespace.** Re-derived on this host 2026-08-19 against sudo 1.9.17p2,
+every row rc 0:
+
+```
+alice ALL = ("a b") /bin/ls     alice ALL = ("a(b") /bin/ls
+alice ALL = ("a>b") /bin/ls     alice ALL = ("a!b") /bin/ls
+%grp "h(c" = /bin/ls            %grp "h>c" = /bin/ls
+```
+
+So the fix is not "ignore whitespace inside quotes" but the simpler and more
+honest "a CLEAN quoted region's interior is literal" - a single early return in
+`first_invalid_char`, and one guard on `check_group_subject`'s sub-case (a).
+`clean_double_quoted_interior` moved from `parser.rs` into `boundary.rs` to serve
+both, rather than either lint growing its own quote model.
+
+**Three rc-1 rows pin the other direction and are deliberately NOT scenarios.**
+All three are LINT-level rejects (`sudo-F02`), and L1's `ours_rejects` keys on
+`LineKind::Malformed`, so they would fail L1 the way the dropped
+`reject-mid-token-bang-runas` did in section 19. They live as unit tests in
+`tests/iss650_runas_boundary.rs`:
+
+| input | rc | why it must still fire |
+|---|---|---|
+| `%bad group ALL = ALL` | 1 | an UNQUOTED space really does split the group name |
+| `alice ALL = (a>b) /bin/ls` | 1 | an UNQUOTED denylist char is still invalid |
+| `alice ALL = ("a b) /bin/ls` | 1 | an UNTERMINATED quote is not a clean region |
+
+#652 states that without those rows the fix is satisfiable by DELETING the
+predicate outright, and #669's abandoned arity check broke the first of them.
+Both deletions were run as mutants and both are caught.
+
+`accept-quoted-host-space-group-subj` is L3 xfail **#667**: the AST keeps the
+quotes around `"h c"` where `cvtsudoers` reports `h c`. Same quote-RETENTION
+class as sections 17 and 19, on the HOSTS axis this time; its arm asserts that
+axis specifically so a divergence spreading to users or commands would fail.
+
+### 21. The escape-blind comma, all three faces (2026-08-19, #675)
+
+A backslash-escaped `\,` is a LITERAL comma inside ONE principal and does not
+continue a `User_List`. Three conjuncts in `split_user_list` re-decided that
+with bare predicates and got it wrong, so lines real sudo ACCEPTS folded to
+`Malformed`; per #668 a `Malformed` line is invisible to every W/E pass, making
+all three fail-opens that dropped a `NOPASSWD` grant with nothing said.
+
+All rows re-derived on `rs-oracle{8,9,10}` (sudo 1.9.17p2 on el9), stdin only,
+`--network=none`. **All three EL majors agree on every row**, so there is no
+per-target divergence to model here.
+
+| scenario | input | oracle |
+|---|---|---|
+| `accept-escaped-comma-user-list` | `alice\, h1 = NOPASSWD: /bin/ls` | rc 0; `User_List ["alice,"]` / `Host_List ["h1"]` |
+| `accept-escaped-comma-glued-quote` | `a\,"b" = NOPASSWD: ALL` | rc 0; `["a,"]` / `["b"]` |
+| `accept-escaped-comma-negated-host` | `a\,!h1 = NOPASSWD: ALL` | rc 0; `["a,"]` / `["h1"]` NEGATED |
+| `reject-unescaped-comma-no-host-list` | `alice, h1 = NOPASSWD: /bin/ls` | **rc 1** |
+| `reject-even-backslash-comma-continues` | `a\\, b = NOPASSWD: ALL` | **rc 1** |
+
+The two rejects are what make this a two-sided sweep rather than "stop looking
+at commas", and both fail for the RIGHT reason: visudo's caret lands on the `=`
+in each case, so the `User_List` continued across the comma and no host list
+remained. Neither is rejected for carrying an invalid username token, which is
+how a reject-side control on this surface usually goes wrong.
+
+`reject-even-backslash-comma-continues` is the PARITY control and the sharpest
+row in the set. The SEPARATOR escape rule counts a backslash RUN mod 2, so an
+EVEN run leaves the comma unescaped and the list really does continue. It is
+what separates `separator_escaped` from a naive `ends_with('\\')` check, which
+would call that comma escaped and convert a correct `sudo-F01` into silence.
+
+**Face C was not in #675's sibling sweep.** The issue lists six sites and marks
+the two comma conjuncts as "the last of that class in this function"; that was
+true when written and false by the time it was fixed, because `c153bc5` had
+since added a third one to the `!` boundary scan. It was found by the post-GREEN
+adversarial review of faces A and B and reported back to #675. On `a\,!h1` the
+`!` scan is the ONLY candidate producer, so an escape-BLIND conjunct there drops
+the grant outright.
+
+That sentence used to end "so unlike the opener guard's twin that site is
+redundant against nothing", and #699's review measured it false. What is
+load-bearing is the ESCAPE-AWARENESS, not the `,` member: making the conjunct
+escape-blind turns named tests RED at both sites, but deleting the `,` member
+outright leaves the whole suite green at both, because the continuation filter
+re-answers the comma axis downstream. The two sites are symmetric after all.
+
+**The three accepts are L3 xfail #645 Face B, not #667/#696.** The distinction is
+deliberate and is the reason they carry a different number from every retention
+row above: retention keeps the raw token intact and differs from `cvtsudoers`
+only by dequoting or unescaping, whereas `comma_split` (a bare `s.split(',')`)
+LOSES a byte - the recovered `alice\,` becomes the member `alice\`, comma gone,
+escaping backslash kept. Calling that retention would be a doc-truth defect.
+`accept-escaped-comma-glued-quote` is the corpus's only row diverging on TWO
+axes at once, users by #645 and hosts by #667, and its arm states both.
+
+None of this is introduced by #675: before the fix these three lines did not
+parse at all and never reached L3, which is why the corpus had never sampled an
+escaped comma in a principal. The entries are #645's acceptance signal, since
+this harness fails an xfail entry whose projections match.
+
+`L3_CLEAN_FLOOR` did NOT move (113 -> 113) while four of its five cross-check
+figures did. Three accepts add +9 attempted and all three are xfail, giving back
+-9 exactly. Nothing would have failed had the figures been left stale, which is
+the cancellation that const's own warning describes; they were updated anyway.
+
 ## Scenario list
 
 `accept-*` (oracle ACCEPTs on every target): `basic-all-grant`,
@@ -725,14 +893,228 @@ L3 xfail #667 - see section 17), `escaped-hash-keeps-nopasswd`,
 `odd-backslash-run-before-hash` (both added 2026-08-19 with #649; both L3 xfail
 #696, an escape-RETENTION divergence),
 `even-backslash-run-before-hash` (added 2026-08-19 with #649; the parity
-control, NOT xfailed - its projections agree - see section 18).
+control, NOT xfailed - its projections agree - see section 18),
+`glued-bang-principal-boundary`, `negated-runas-principal` (both added
+2026-08-19 with the negation-sigil sweep, neither xfailed),
+`negated-quoted-principal` (same sweep; L3 xfail #667 - see section 19),
+`quoted-close-paren-in-runas`, `escaped-close-paren-in-runas`,
+`quoted-runas-principal-space` (all three added 2026-08-19 with #650/#652, none
+xfailed), `quoted-host-space-group-subj` (same pair; L3 xfail #667 on the HOSTS
+axis - see section 20), `escaped-comma-user-list`,
+`escaped-comma-glued-quote`, `escaped-comma-negated-host` (all three added
+2026-08-19 with #675; all three L3 xfail **#645 Face B** on the USERS axis, and
+the glued-quote one ALSO diverges on hosts by #667 - see section 21),
+`escaped-bang-glued-quote`, `escaped-bang-run`, `escaped-bang-runas`,
+`even-backslash-bang-boundary` (all four added 2026-08-19 with #699; three carry
+an L3 xfail **#696** on the USERS axis and `escaped-bang-runas` is L3-CLEAN,
+because L3 projects users/hosts/commands and not the runas group - see
+section 22), `nbsp-host-principal` (added 2026-08-19 with #702; L3 xfail **#705**
+on the HOSTS axis - see section 24), `even-run-glued-quote` (added 2026-08-20; L1 **and** L3 xfail
+**#676** - see section 25).
 
 `reject-*` (oracle REJECTs on every target; each independently confirmed to
 also be a structural `sudo-F01` Malformed line in RuleSteward's own parser -
 i.e. a clean agreement, not a divergence): `no-equals-garbage`,
 `user-alias-bare`, `cmnd-alias-empty-members`, `defaults-bare`,
 `user-host-no-eq`, `defaults-scope-no-target`, `user-spec-empty-cmnd`,
-`equals-only` (the L1/L2 positive-control REJECT input).
+`equals-only` (the L1/L2 positive-control REJECT input), `escaped-bang-principal`
+(added 2026-08-19 with the negation-sigil sweep; see section 19),
+`unescaped-comma-no-host-list`, `even-backslash-comma-continues` (both added
+2026-08-19 with #675; the one-byte control and the PARITY control - see
+section 21), `lone-sigil-host-list` (added 2026-08-19 with #701 - see
+section 23).
+
+## 22. #699 - the escape-blind negation sigil
+
+Four accept scenarios, added 2026-08-19 with the #699 fix. Every row was derived
+on `rs-oracle{8,9,10}` by `capture_sudoers.sh` and independently re-derived by
+hand against `rs-oracle9` (sudo 1.9.17p2) before the fix was written.
+
+| scenario | input | visudo | cvtsudoers |
+|---|---|---|---|
+| `accept-escaped-bang-glued-quote` | `alice\!"h1" = NOPASSWD: ALL` | rc 0 | ONE user `alice!`, host `h1`, `authenticate:false` |
+| `accept-escaped-bang-run` | `a\!!h1 = NOPASSWD: ALL` | rc 0 | user `a!`, host `h1` NEGATED |
+| `accept-escaped-bang-runas` | `alice ALL = (\!root) /bin/ls` | rc 0 | runasuser `!root`, NOT negated |
+| `accept-even-backslash-bang-boundary` | `alice\\!"h1" = NOPASSWD: ALL` | rc 0 | user `alice\`, host `h1` NEGATED |
+
+**An escaped sigil is a CHARACTER, not a modifier.** Read those `cvtsudoers`
+columns for shape and not just for rc: the escape is consumed and the `!`
+survives inside the name (`alice!`, `a!`, `!root`). Three predicates in this
+crate read a bare `!` as a sigil without asking whether it was escaped, so the
+first two rows lost their boundary entirely - `Malformed`, and per #668 every
+W/E lint suppressed on a passwordless-ALL grant - and the third drew a false
+`sudo-F02`.
+
+**The fourth row is the PARITY control and it is an ACCEPT, not a reject.** The
+separator rule counts a backslash run mod 2, so `alice\\!` is an EVEN run, the
+`!` is a real sigil again, and the boundary moves from the quote to the `!`
+leaving the host negated. It is what separates `separator_escaped` from a naive
+`ends_with('\\')`; that mutant leaves this row RED.
+
+**A fifth was staged and then reclassified, by the harness rather than by
+argument.** `alice ALL = (\\!root) /bin/ls` is `visudo` rc **1** - the even run
+leaves a literal backslash, so the `!` is MID-token, the same reject as
+`(ro!ot)`. Note that this is the OPPOSITE verdict from the row above it on the
+same bytes, decided by grammar position. Staged as `reject-even-backslash-bang-runas`
+it failed L1 immediately: RuleSteward answers `sudo-F02`, not `sudo-F01`, so it
+is a LINT-level reject and belongs with the #650/#652 rc-1 rows as a unit test
+(`an_even_backslash_run_leaves_the_runas_sigil_unescaped` in
+`tests/iss699_escaped_sigil.rs`), not as a scenario. It was removed.
+
+**The three L3 xfails are #696 ESCAPE retention, not #645.** `alice\!` and
+`alice!` are the same token modulo one consumed escape, where #645's rows LOSE
+the comma byte outright; the distinction is the same one section 21 draws in the
+other direction. Two of the three - `accept-escaped-bang-glued-quote` and
+`accept-even-backslash-bang-boundary` - ALSO diverge on hosts by #667 quote
+retention, so like `accept-escaped-comma-glued-quote` they are **not
+self-removing**: whichever of #667 and #696 lands second must delete them by
+hand. `accept-escaped-bang-run` is single-axis and does retire itself.
+
+**Provenance of the defect.** Not shipped. `prev != '!'` does not exist at
+`a700c38` and appears at `c153bc5`, the #670/#671/#672 commit on this same
+branch: that commit closed three UNESCAPED-sigil fail-opens and opened this
+ESCAPED one. The face-C mutation gate ran over exactly this code and returned rc
+0 with 0 survivors, because `cargo mutants` has no delete-a-conjunct operator
+and a dropped guard inside a compound `&&` chain is invisible to it.
+
+## 23. #701 - a principal-list half of nothing but negation sigils
+
+One reject scenario, `reject-lone-sigil-host-list`, `alice! = NOPASSWD: ALL`.
+`visudo -c -f -` **rc 1** on all three targets (`rs-oracle{8,9,10}`; the hand
+re-derivation was on `rs-oracle9`, sudo 1.9.17p2, stdin, `--network=none`,
+2026-08-19). `rs-oracle8` ships sudo **1.9.5p2**, not 1.9.17p2 - sections 21 and
+22 scope the version to el9 and this one dropped the qualifier, which section 2
+exists specifically to prevent.
+
+`split_user_list` chose a boundary and never asked whether either half IS a
+principal list. This line parsed as user `alice` / host `!`, became a well-formed
+`UserSpec`, and RuleSteward reported `sudo-W01` - a passwordless-`ALL` grant -
+off a file real sudo REFUSES to load, while dropping the `sudo-F01` that
+correctly says the file is broken.
+
+**Two lane regressions, not inherited defects**, confirmed two-sided against
+binaries built at four revisions:
+
+| input | `a700c38` (fork) | `c153bc5` | `11f6ea0` | `6abb10a` |
+|---|---|---|---|---|
+| `alice!` | `sudo-F01` CORRECT | **`sudo-W01`** | `sudo-W01` | `sudo-W01` |
+| `a\!!` | `sudo-F01` CORRECT | `sudo-F01` | `sudo-F01` | **`sudo-W01`** |
+
+The `!` boundary scan does not exist at `a700c38`. So `c153bc5` (#670/#671/#672)
+introduced the first and `6abb10a` (#699) the second - each while fixing a
+different member of the same class.
+
+**Why one scenario and five unit tests.** The corpus row pins the shape at the L1
+layer; the discriminating set is wider than one row and lives in
+`tests/iss699_escaped_sigil.rs`: `alice!`, `alice!!`, `alice !`, `a\!!` and
+`! h1` are all rc 1, against controls `alice!h1`, `alice!!h1`, `a\!!h1`,
+`!!alice ALL` and `alice,!bob h1` which are all rc 0. The discriminator is
+whether a principal FOLLOWS the sigil - not escape parity, not sigil count.
+`! h1` is the one that puts the degenerate half on the USER side; a
+postcondition checking only the host half passes every other row and still fails
+it, and that is exactly what the `holds_a_principal(before)` mutant demonstrates.
+
+**Why no gate caught it.** `cargo mutants` has no insert-a-conjunct operator, and
+both rows are a MISSING conjunct, so the scoped gate returned rc 0 with 25
+mutants and 0 missed over exactly this code. Every `!`-bearing test in the crate
+put a principal after the sigil, and all four #699 scenarios are `accept-*`. It
+was found by the impl-AWARE adversarial reviewer and, independently, by the
+suppression lens in the same ATL round.
+
+**Deliberately still divergent:** `alice!"" = ...` is rc 1 and RuleSteward still
+reports `sudo-W01` on it. `""` holds a non-sigil character, so `holds_a_principal`
+passes it through. That is **#677**, which owns the empty-principal question;
+folding it in here risks the #669/#677 masking interaction this lane records as
+its sharpest hazard.
+
+## 24. #702 - sudo separates on `[[:blank:]]` only
+
+One accept scenario, `accept-nbsp-host-principal`, input `"a"<NBSP> = NOPASSWD: ALL`
+(U+00A0). `visudo -c -f -` **rc 0** on all three targets; `cvtsudoers -f json` on
+`rs-oracle9` (sudo 1.9.17p2) reports `User_List [{"username":"a"}]`,
+`Host_List [{"hostname":"\u00a0"}]`, `authenticate:false`, command `ALL`. The NBSP is
+the HOST NAME.
+
+sudo's `toke.l` discards `[[:blank:]]+` - space and tab - and nothing else. Every
+other whitespace character is an ordinary `WORD` byte. This crate asked
+`char::is_whitespace` in SIX places on the principal path, so one concept had six
+recognizers: the line trim in `classify_logical_line`, the user-spec segment
+splitter in `split_top_level_segments`, the LHS trim in `classify_user_spec`, and
+in `split_user_list` the entry trim, the closer guard and
+`unquoted_whitespace_runs`. All six now route through `is_sudoers_blank`.
+
+**Both failure directions were live, and the second is why this is a class fix
+rather than another patch:**
+
+* a line `visudo` ACCEPTS lost its `Host_List`, folded to `Malformed`, and per #668
+  every W/E lint on it was suppressed - a passwordless-`ALL` grant evaluated by
+  nothing.
+* #701's `holds_a_principal` used the NARROW class while the trims stayed WIDE, so
+  the trim ate the character that made a half a principal and the postcondition
+  then correctly rejected the remainder. Rows like `a!<VT>` and `ALL !<NBSP>` are
+  `visudo` rc 0, were CORRECT at `6abb10a`, and regressed at `360ca9c`. VT
+  (U+000B) and FF (U+000C) are pure ASCII, so this was never a Unicode corner.
+
+Four consecutive adversarial rounds on this lane each found one defect and all four
+were the same shape: two recognizers of one lexical concept disagreeing. Narrowing
+one created the next round's regression at the seam with the one beside it.
+
+**Two `boundary_substrate.rs` rows were RE-PINNED rather than deleted.**
+`"ab"<NBSP>,alice ALL` and `alice,<NBSP>"b c" ALL` are `visudo` **rc 1**, so no split
+of them is the correct one; those tests pinned an arbitrary internal answer that came
+from the recognizers disagreeing. Their new answers are recorded with the reasoning,
+their rc-1 status is restated, and an rc-0 control was ADDED to the first (it had
+none). Nothing oracle-anchored moved: RuleSteward reports `sudo-W01` on both before
+and after, which is #669's three-token gap and remains the live defect there.
+
+**Deliberately still divergent, and xfailed as #705:** the host-token layer BELOW
+`split_user_list` still discards the character, so this scenario's `Host_List`
+projects EMPTY where `cvtsudoers` has one entry. The verdict is correct; the
+structure is not. Routing `comma_split` as well moves it to `[""]` rather than to the
+NBSP, so at least one more recognizer remains - enumerated in #705 rather than
+guessed at here.
+
+## 25. #704 + the postcondition's shape, and #676 gaining a corpus row
+
+**One accept scenario, `accept-even-run-glued-quote`**, input `\\"h1" = NOPASSWD: ALL`.
+`visudo -c -f -` **rc 0** on all three targets; `cvtsudoers` reports user `\` and
+host `h1`. An EVEN backslash run consumes itself, so the `"` after it really does
+open a quoted region.
+
+RuleSteward answers `sudo-F01`. `simple_quote_pairs` asks `quote_is_escaped` - the
+INSIDE-a-string rule - at an OPENING position, finds no pair, and the line folds to
+`Malformed`. That is **#676** verbatim, and its fix (alternating the two escape
+rules) is face D and out of scope here. The scenario carries BOTH an `L1_XFAIL`
+entry (the F01-verdict divergence) and an `L3_XFAIL` entry (every projection axis
+empty), so it retires itself when #676 lands.
+
+**Why it is entered now rather than when #676 was filed.** #702 changed which
+members of the family are visible, and the change deserves to be on the record
+rather than discovered later. `\\"<VT>"` and `\\"<NBSP>"` answered CORRECTLY before
+#702 - but only by accident: the wide whitespace predicate emitted a run at the
+exotic blank, and that run was the line's only candidate. Narrowing the blank class
+to sudo's `[[:blank:]]` removed the accident. The pure-ASCII members (`\\"h1"`,
+`\\"ax"`) were wrong at the fork point and are wrong now. Nothing about the defect
+moved; only which spellings expose it. The scenario pins the ASCII member so the
+family is auditable instead of silently re-classified.
+
+**The postcondition is a FILTER again.** #702's round changed it to an abort
+(`return (lhs, "")` on a degenerate half) and that was a fail-open on a family of
+ACCEPTED lines: `! alice h1 = NOPASSWD: ALL` is rc 0 with user `alice` NEGATED and
+host `h1`, and the abort answered `sudo-F01`, suppressing every W/E lint per #668.
+sudo's `toke.l` discards `[[:blank:]]`, so `opuser: '!' opuser` binds a sigil across
+a blank; the first candidate's `before` is `"!"` and the SECOND is the correct one.
+The abort's only advantage - rc-1 rows like `! " a` - was a workaround for #704.
+
+**#704 is fixed, and NOT the way its own sketch proposed.** The sketch said to add
+`"` to the excluded character set. Grounding refutes that: `alice " "` and
+`alice "!"` are **rc 0** - a quoted span with any interior is a legal name - while
+`alice ""` is rc 1. So the predicate is "a character outside `{! , " blank}`, OR a
+quote pair with a NON-EMPTY interior". `a!:` is rc 1 and was already correct, so `:`
+is deliberately absent: the top-level `:` splits segments upstream of the predicate.
+
+Derived on `rs-oracle9` (sudo 1.9.17p2), stdin, `--network=none`, 2026-08-20.
+`rs-oracle8` ships sudo 1.9.5p2; the rc values above were confirmed on all three.
 
 ## Re-capturing
 

@@ -29,6 +29,7 @@
 //! surface so the leaf lints only EMIT diagnostics and never re-parse.
 
 pub mod ast;
+pub(crate) mod boundary;
 pub mod lints;
 // Differential-oracle adapter. Not a product feature: it is the
 // product side of `tests/sudoers_corpus_oracle.rs`, which checks this crate's

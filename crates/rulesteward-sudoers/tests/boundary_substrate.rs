@@ -405,29 +405,37 @@ fn quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group(
         2,
         "cvtsudoers reports two User_Specs; the h2 grant must not vanish"
     );
-    // 1 and not 2, and the missing one is NOT this arm's doing: `parse_cmnd_spec`
-    // locates the runas list's end with a bare `after_open.find(')')`, which stops at
-    // the QUOTED paren and truncates the token to `"a` (visible in the collateral
-    // `sudo-F02` text). That drops the FIRST group's grant, identically on the fork
-    // point and on HEAD, and is filed as #650. When #650 lands this becomes 2.
+    // 2 as of #650. This assertion read `1` until then, and the comment here
+    // said "when #650 lands this becomes 2" - so this is that co-edit, made in
+    // the same commit as the fix rather than chased afterwards as a regression.
+    //
+    // What was wrong: `parse_cmnd_spec` located the runas list's end with a bare
+    // `after_open.find(')')`, which stopped at the QUOTED paren and truncated
+    // the token to `"a` (visible in the collateral `sudo-F02` text), dropping
+    // the FIRST group's grant. It now routes through
+    // `boundary::unquoted_unescaped`, which skips a `)` that is quoted or
+    // escaped, so both groups' grants are reported.
     //
     // THIS test is the regression pin, and it pins via `f01_count` above rather
     // than via the count below: with the content guard removed from both `')'`
     // arms, it is the ONLY test in this file that fails, and it fails on
     // `f01_count` (`left: 1, right: 0`) -- the regression surfaces as a false
-    // FATAL, not as a missing grant. Measured by building that mutant, 2026-08-02.
-    assert_eq!(w05_count(src), 1, "h2's grant; group 1's is lost to #650");
+    // FATAL, not as a missing grant. Measured by building that mutant,
+    // 2026-08-02, and that property is unchanged by #650.
+    assert_eq!(w05_count(src), 2, "both groups' grants: group 1's and h2's");
 }
 
-/// The security property with #650's interference removed: only the SECOND host
-/// group carries a `NOPASSWD`, so the count cannot be satisfied by the first
-/// group's grant.
+/// The security property isolated from the first group entirely: only the
+/// SECOND host group carries a `NOPASSWD`, so the count cannot be satisfied by
+/// the first group's grant. (This doc said "with #650's interference removed"
+/// while #650 stood; it is fixed, and the isolation here was always a property
+/// of the INPUT - no NOPASSWD in group 1 - rather than of that defect.)
 ///
 /// NOT the regression pin, despite testing the property the regression violated.
 /// Its line has no tag colon in the first host group, and the tag colon is what
 /// makes a corrupted `tok_start` observable -- so a `')'` arm that loses its
-/// content guard leaves this test GREEN. Isolating it from #650 also isolated it
-/// from the defect. The pin is
+/// content guard leaves this test GREEN. Isolating it from the first group also
+/// isolated it from the defect. The pin is
 /// [`quoted_close_paren_in_a_runas_principal_does_not_swallow_the_next_host_group`].
 #[test]
 fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
@@ -438,9 +446,13 @@ fn quoted_close_paren_in_a_runas_principal_keeps_the_independent_h2_grant() {
 }
 
 /// The one-byte negative control: the same line with the `)` deleted from the
-/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES. The two
-/// lines still do not lint IDENTICALLY -- `w05_count` is 1 above and 2 here --
-/// because #650 truncates the first group's grant on the `a)b` spelling only.
+/// quoted principal. sudo treats `a)b` and `ab` alike as principal NAMES.
+///
+/// `w05_count` is 1 in the test above and 2 here, and this doc used to blame
+/// #650 for the difference. That was wrong, and #650's fix is what exposed it:
+/// the two INPUTS differ. The line above carries a plain `/bin/ls` in the first
+/// host group, so only h2's grant can be counted; this one carries `NOPASSWD:`
+/// in BOTH groups. Both counts are unchanged by the #650 fix.
 ///
 /// Green on the fork point as well, so a fix cannot pass by DISABLING the `')'`
 /// arm outright. It is blind to deletion of `depth > 0` on its own: this line
@@ -1095,7 +1107,37 @@ fn control_two_token_left_hand_sides_still_parse() {
 ///
 /// ASCII `0x0B` VERTICAL TAB is the same case without any multi-byte encoding.
 #[test]
-fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary() {
+fn a_non_ascii_whitespace_after_a_closing_quote_is_a_name_byte_not_a_separator() {
+    // The ASCII control FIRST, because it is the row whose verdict the oracle
+    // actually determines. `"ab" ,alice ALL = NOPASSWD: ALL` is `visudo` rc 0
+    // (rs-oracle9, 2026-08-19): a space then a comma still continues the user
+    // list. Added by #702; this test had no rc-0 row before, which is why the
+    // rows below could be re-pinned without anything noticing.
+    let s = only_spec("\"ab\" ,alice ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["\"ab\"".to_string(), "alice".to_string()],
+        "rc-0 control: a blank then a comma continues the USER list"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+
+    // The NBSP and VT rows. `visudo` rc **1** on both, so no split is the
+    // correct one and this pins only what the parser does.
+    //
+    // RE-PINNED by #702, and the change is the point rather than an accident.
+    // These used to assert `users == ["ab", alice]`. That answer came from the
+    // recognizers DISAGREEING: `unquoted_whitespace_runs` called U+00A0
+    // whitespace, so the comma landed at the start of `after` and the
+    // continuation filter fired. #702 gave the blank concept ONE recognizer
+    // (`is_sudoers_blank`, `' ' | '\t'`, which is sudo's `[[:blank:]]` and
+    // nothing else), so the NBSP is now an ordinary name byte on every code
+    // path, the boundary falls at the closing quote, and `<NBSP>,alice ALL`
+    // becomes the host half.
+    //
+    // Nothing oracle-anchored moved: the line is rc 1 either way, and
+    // RuleSteward reports `sudo-W01` on it BOTH before and after - a grant off
+    // a file real sudo refuses to load. THAT is the live defect on these rows
+    // and it belongs to #669's three-token gap, not here.
     for src in [
         "\"ab\"\u{a0},alice ALL = NOPASSWD: ALL\n",
         "\"ab\"\u{b},alice ALL = NOPASSWD: ALL\n",
@@ -1103,14 +1145,9 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
         let s = only_spec(src);
         assert_eq!(
             s.users,
-            vec!["\"ab\"".to_string(), "alice".to_string()],
-            "the comma continues the USER list even after a whitespace char outside \
-             `u8::is_ascii_whitespace`'s set: {src:?}"
-        );
-        assert_eq!(
-            s.host_groups[0].hosts,
-            vec!["ALL".to_string()],
-            "the host list must not swallow `alice`: {src:?}"
+            vec!["\"ab\"".to_string()],
+            "a non-blank whitespace char is a NAME byte, so the user list ends at \
+             the closing quote: {src:?}"
         );
     }
 }
@@ -1138,25 +1175,47 @@ fn a_non_ascii_whitespace_then_a_comma_after_a_closing_quote_is_not_a_boundary()
 /// rc 0 with `User_List [alice, "<0x0B>bob"]` (rs-oracle9, sudo 1.9.17p2,
 /// 2026-08-03).
 #[test]
-fn a_non_ascii_whitespace_before_an_opening_quote_is_not_a_boundary() {
+fn a_non_ascii_whitespace_before_an_opening_quote_is_a_name_byte_not_a_separator() {
+    // The ASCII-space control, correct on every sha and UNCHANGED by #702.
+    // This row is `visudo` rc 0 (the comma makes `alice, "b c"` a single
+    // `User_List`, so the LHS has two tokens), so unlike the two below its
+    // VERDICT is oracle-determined and its split is pinnable.
+    let s = only_spec("alice, \"b c\" ALL = NOPASSWD: ALL\n");
+    assert_eq!(
+        s.users,
+        vec!["alice".to_string(), "\"b c\"".to_string()],
+        "rc-0 control: the quoted USER principal must not be swallowed into the hosts"
+    );
+    assert_eq!(s.host_groups[0].hosts, vec!["ALL".to_string()]);
+
+    // The NBSP and VT rows, `visudo` rc **1** (three LHS tokens, #669's gap).
+    //
+    // RE-PINNED by #702, and this one deserves a plain statement rather than a
+    // quiet edit: the quoted principal `"b c"` IS now swallowed into the host
+    // half, which is literally what this test was written to prevent.
+    //
+    // It is not #651's defect returning. That one was the recognizers
+    // DISAGREEING - the byte-level opener guard did not see U+00A0 as
+    // whitespace while `unquoted_whitespace_runs` did, so a SPURIOUS candidate
+    // was pushed at the quote and beat a correct one. #702 gave the blank
+    // concept ONE recognizer (`is_sudoers_blank`), so every path now agrees
+    // that a non-blank whitespace char is a name byte; `alice,<NBSP>` is the
+    // user half and `"b c" ALL` the host half, consistently, from one rule.
+    //
+    // Nothing oracle-anchored moved. The line is rc 1 before and after, and
+    // RuleSteward reports `sudo-W01` on it before and after - a grant off a
+    // file real sudo refuses to load. That surviving false grant is the live
+    // defect on these rows (#669), and it is why the SPLIT here is arbitrary:
+    // there is no correct split of a line that does not parse.
     for src in [
         "alice,\u{a0}\"b c\" ALL = NOPASSWD: ALL\n",
         "alice,\u{b}\"b c\" ALL = NOPASSWD: ALL\n",
-        // The ASCII-space control, correct on every sha. This row is visudo
-        // rc 0 (two LHS tokens), so unlike the two above its VERDICT is
-        // pinnable too.
-        "alice, \"b c\" ALL = NOPASSWD: ALL\n",
     ] {
         let s = only_spec(src);
         assert_eq!(
             s.users,
-            vec!["alice".to_string(), "\"b c\"".to_string()],
-            "the quoted USER principal must not be swallowed into the hosts: {src:?}"
-        );
-        assert_eq!(
-            s.host_groups[0].hosts,
-            vec!["ALL".to_string()],
-            "the host list is exactly `ALL`: {src:?}"
+            vec!["alice".to_string()],
+            "the non-blank whitespace is a name byte, so the user half ends at it: {src:?}"
         );
     }
 }

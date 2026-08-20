@@ -311,9 +311,11 @@ plugin reviewers dispatched in PARALLEL with (1) - `comment-analyzer` for doc-tr
 gate. Step 1b adds a lens and cannot end the loop; only (1) and (2) decide dryness.
 
 **(3) THE BRANCH DIFFERENTIAL, `just diff-<lane>-branch <fork-point>` (#661), EVERY
-round and not once.** It is the only instrument in the loop whose evidence ACCUMULATES
-across rounds: (1) and (1b) draw a fresh adversary each time, so a DRY verdict measures
-that draw and not the code, which is exactly how session 9o certified a live fail-open.
+round and not once.** It is one of the two instruments in the loop whose evidence
+ACCUMULATES across rounds - the other is (4) below, which did not exist when this line
+was written and made "the only" false. (1) and (1b) draw a fresh adversary each time, so
+a DRY verdict measures that draw and not the code, which is exactly how session 9o
+certified a live fail-open.
 It answers what #658's corpus-growth gate leaves open - "would the corpus this branch
 ADDED have caught the bug this branch FIXED?" - by holding the corpus fixed and varying
 the binary. rc 0 clean, 1 regression, 2 cannot-compare; there is deliberately no rc 3.
@@ -322,6 +324,28 @@ line rather than a failure, because a round that did not touch the lane legitima
 none. This line exists because #661's own ancestor died of not being written down: the
 sweep lived inside a subagent's turn, nothing in the repo or the rules named it, and so
 it could not be re-run.
+
+**(4) THE INPUT SWEEP, `just sweep-<lane>` (epic #654), EVERY round.** The other three
+instruments all compare a FIXED set of inputs; this one varies the inputs, holding the
+ORACLE fixed and sweeping a generated TOKEN space, then comparing the measured
+divergence set against a COMMITTED frontier
+(`crates/rulesteward-<lane>/tests/corpus/sweep-frontier.txt`). Like (3) its evidence
+accumulates, and for the same reason: five ATL rounds on the sudoers boundary lane each
+built an exhaustive oracle differential by hand and then discarded it, and round 3's
+sweep already CONTAINED round 4's regression inputs.
+
+Two properties are load-bearing. **The buckets are never summed** - `FALSE-FATAL`
+(oracle accepts, we call it malformed), `MISSED-GRANT` (oracle accepts, we emit nothing,
+so a live passwordless-root grant goes unreported) and `FAIL-OPEN` (oracle rejects, we
+report a grant) are reported on separate lines, because a single agreement ratio is what
+let a round net a live CRITICAL out against a mass of low-severity rows. **A CLOSED
+divergence is also rc 1**: a row that now agrees means an issue was fixed and the
+committed evidence is stale. A TOKEN alphabet is what makes length 5 affordable, and
+length 5 is not optional - `sigil blank principal blank principal` cannot be written in
+four tokens, which is why every character-alphabet sweep this lane ran missed it.
+Not in `just ci` (needs docker and the oracle image); positive-controlled by
+`scripts/rs-sweep-test.sh`, which sabotages each guard and requires a named case to
+notice.
 
 **Step 1b's kill-switch verdict, recorded 2026-08-02 (#656): KEEP BOTH LENSES.** This
 was a trial with a documented re-check; the re-check has now happened and the trial is

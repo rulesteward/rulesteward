@@ -8,6 +8,8 @@ use rulesteward_core::{Diagnostic, Severity};
 use crate::ast::SudoersFile;
 use crate::lints::anchored;
 
+use crate::boundary::{clean_double_quoted_interior, separator_escaped};
+
 use super::shared::{is_denylist_char, is_malformed_gid_tail};
 
 /// Return the first Case-4(b) denylist char (`! ( ) > "`) or whitespace char
@@ -18,9 +20,60 @@ use super::shared::{is_denylist_char, is_malformed_gid_tail};
 /// only, so unlike a subject `%name` it can carry an internal space straight
 /// through to this check).
 fn first_invalid_char(token: &str) -> Option<char> {
-    token
-        .chars()
-        .find(|c| is_denylist_char(*c) || c.is_whitespace())
+    // #671: a LEADING `!` negates the principal and is legal sudoers, so it is
+    // trimmed before the denylist scan rather than reported as an invalid
+    // character. `alice ALL = (ALL,!root) /bin/ls` is `visudo` rc 0 with
+    // runasusers `ALL` + `root` NEGATED, and this predicate used to draw a
+    // FALSE `sudo-F02` on it.
+    //
+    // `trim_start_matches`, not `strip_prefix`: sudo accepts a RUN of sigils.
+    // Grounded 2026-08-19, all rc 0: `(!!root)`, `(!%wheel)`, `(root:!wheel)`.
+    // The issue proposed stripping a single `!`, which would still have
+    // reported `(!!root)` as invalid. This matches `command_specs.rs`'s
+    // `trim_start_matches('!')`, the call site that already had it right.
+    //
+    // Only the LEADING run is trimmed, and that is the whole point: a `!` in
+    // the MIDDLE of a token really is invalid (`(ro!ot)` is rc 1), so it must
+    // still be found. `mid_token_bang_is_still_invalid` pins that direction and
+    // is what stops the lazy repair of dropping `'!'` from the denylist.
+    let bare = token.trim_start_matches('!');
+    // #652 face B: a CLEAN quoted region's interior is a literal principal
+    // name, so neither the quotes nor anything they enclose is invalid.
+    //
+    // Grounded 2026-08-19, sudo 1.9.17p2, every row `visudo -c -f -` rc 0:
+    // `("a b")`, `("a(b")`, `("a>b")`, `("a!b")`. Quoting legitimises the WHOLE
+    // denylist, not just whitespace, which is why this returns early rather
+    // than filtering whitespace out of the scan.
+    //
+    // It DISCRIMINATES rather than deletes, which #652 asks for explicitly.
+    // Both directions are pinned: `(a>b)` is rc 1 and still fires, and
+    // `("a b)` - an UNTERMINATED quote, so not a clean region - is rc 1 and
+    // still fires because this returns `None` only for a closed pair.
+    if clean_double_quoted_interior(bare).is_some() {
+        return None;
+    }
+    // #699: a BACKSLASH-ESCAPED `!` is a literal character in the name, not a
+    // sigil, so the denylist must not match it. `alice ALL = (\!root) /bin/ls`
+    // is `visudo` rc 0 with runasuser `!root` and NO `negated` flag
+    // (rs-oracle9, 2026-08-19), and this scan used to draw a FALSE `sudo-F02`
+    // on it.
+    //
+    // It is asked of `!` ALONE, deliberately. The other four denylist chars are
+    // escape-blind in exactly the same way (`(a\>b)` is rc 0 with username
+    // `a>b`), but their repair has no parity subtlety and an unprobed
+    // whitespace half, so it is filed as #700 rather than folded in here. An
+    // admitted gap is auditable; a silently widened one is not.
+    //
+    // PARITY, not `ends_with`: `(\\!root)` is `visudo` rc **1**, because an
+    // EVEN run leaves a literal backslash and the `!` is then MID-token, the
+    // same reject as `(ro!ot)`. Widening the `trim_start_matches` above to
+    // swallow a preceding backslash, or asking a non-parity predicate here,
+    // turns that rc-1 file into a silent pass.
+    bare.char_indices()
+        .find(|&(i, c)| {
+            (is_denylist_char(c) || c.is_whitespace()) && !(c == '!' && separator_escaped(bare, i))
+        })
+        .map(|(_, c)| c)
 }
 
 /// #375 Rule 1: runas-position defects on a single `CmndSpec.runas` group.
