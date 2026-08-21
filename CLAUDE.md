@@ -229,7 +229,33 @@ Make use of /superpowers skills whenever feasible.
 - **Locked design decisions** are enumerated in spec §3 (19 of them). Do not re-litigate. If you find evidence contradicting one, surface it as `[QUESTION FOR USER]` and pause.
 - **Status:** deliberately NOT hardcoded here. A pinned version and backend list sat in this line from v0.1 through v0.7 without anyone noticing, in a file loaded into every session. Read it from the repo instead: shipped version = newest `git tag`, working version = `[workspace.package] version` in `Cargo.toml`, live backend set = `ls crates/`. The active milestone tracker is issue #499.
 - **Crate plan** (per spec §17.1): `rulesteward-core`, `-fapolicyd`, `-selinux`, `-auditd`, `-license`, `-sink`, `-cli`. Cargo workspace, `edition = "2024"`, `resolver = "3"`, MSRV `1.88` (workspace `rust-version`; dev/release stay on latest stable via `rust-toolchain.toml`).
-- **Locked crates:** parser `chumsky = "0.13"` + `ariadne = "0.6"`; LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
+- **Locked crates:** `ariadne = "0.6"` (diagnostics, workspace-wide); LMDB `heed = "0.22.1"`; CLI `clap = "4"` (derive); license (post-v0.1) `jsonwebtoken >= 10.3` with `rust_crypto`.
+- **`chumsky = "0.13"` is locked for FAPOLICYD ONLY, not workspace-wide.** This line
+  previously read "parser `chumsky = "0.13"`" with no scope, and that over-reach caused a
+  live contradiction: the spec scopes the lock inside section 6.2 "Rule grammar
+  implementation" (under "Module: rulesteward fapolicyd") and section 18's "Spike #6 -
+  parser crate choice", on the strength of a real chumsky-vs-nom bake-off (both parsed the
+  Fedora 44 corpus 54/54; chumsky won on column-precise diagnostics), while
+  `sudoers/parser.rs` cited "KISS per CLAUDE.md" to justify NOT using chumsky. The same
+  always-loaded file was the authority for and against. Spec section 3's 19 locked
+  decisions say nothing about parser crates.
+- **Ruling for sudoers (2026-08-20): chumsky must NOT own the sudoers LEXER.** sudo's real
+  tokenizer is a flex DFA with NINE declared start conditions (`plugins/sudoers/toke.l`),
+  maximal munch, and MULTIPLE escape grammars: four differ by token class alone (`WORD`
+  escapes all but TAB/NL, `ENVAR` all but CR/NL, `PATH` exactly `, : = SP TAB #`, `REGEX`
+  exactly `# $`), and more are scoped to start conditions - `GOTCMND` carries two that
+  differ in SEMANTICS, one passing the backslash through and one stripping it. Do not
+  quote a single count here; the point is that the applicable escape rule depends on
+  lexer state and token class, which no stateless predicate set can express.
+  chumsky's `choice`/`.or()` are
+  ordered-choice first-match, NOT longest-match, and it has no declarative equivalent of
+  start conditions - so emulating flex means hand-deriving rule order for every ambiguous
+  pair with no compiler error when it is wrong, recreating the exact silent-divergence
+  class in a new library. chumsky remains defensible for a later token-stream-to-AST
+  GRAMMAR stage, decided on its own evidence. Before adopting any lexer crate, note that
+  `lexgen` has the right API and the WRONG substrate (`Iterator<Item = char>`, so every
+  byte is UTF-8 decoded before matching, which is the `char::is_whitespace` defect encoded
+  into the foundation); `logos` is byte-capable with a real longest-match DFA.
 - **Distribution target:** `x86_64-unknown-linux-musl` static binary.
 - **License:** Engine Apache-2.0; rule templates BSD-3-Clause (separate repo).
 - **Commits are user-authored only. Never add `Co-Authored-By: Claude` or any AI-attribution trailer.** Branch + PR for every change; no commits to `main` directly.
@@ -291,6 +317,14 @@ docs tree. Load these when a milestone fans out 2+ independent features:
 - **Always-loaded rule:** `~/.claude/rules/parallel-orchestration.md` (global), with the
   `[ARCHITECTURE-HALT]` tier in `subagent-bubble-up.md` and the per-pipeline-vs-global
   skills mapping + mutation-adequacy gate in `engineering-chain.md`.
+  **`@`-import is NOT the test of what loads, and assuming it is cost a bad edit here on
+  2026-08-20.** `~/.claude/CLAUDE.md` `@`-imports five rules files, but the harness
+  delivers ALL of `~/.claude/rules/` into the session; `parallel-orchestration.md`,
+  `audit-subagent-discipline.md` and `skill-invocation-discipline.md` are loaded despite
+  not appearing in that list. Verify by looking for the file's own text in context, never
+  by reading the import list. The reverse error is the expensive one: it briefly relabelled
+  this line "not auto-loaded" and told future sessions to migrate rules out of a file that
+  loads fine.
 - **Session plans:** run `/rs-session-plan` to scaffold a new plan pre-wired to the
   protocol (do not hand-write the skeleton).
 - **Reviewer subagents** (`.claude/agents/`): `spec-reviewer`, `idiomatic-rust-reviewer`,
@@ -377,10 +411,56 @@ answer so the agent stops re-asking. A modal opened at 04:28 in session 9o asked
 this and was answered "Run the full ATL".)
 
 All route findings to the TEST-AUTHOR to STRENGTHEN tests (never weaken; the
-implementer only makes them green); loop until both come up clean. Never trust a DONE
-report (4a / PR #118: the gate caught a test-author over-claiming a kill twice, only the
-mandatory RE-RUN surfaced it). Same step applies in single-pipeline work (same person may
-author + impl).
+implementer only makes them green). Never trust a DONE report (4a / PR #118: the gate
+caught a test-author over-claiming a kill twice, only the mandatory RE-RUN surfaced it).
+Same step applies in single-pipeline work (same person may author + impl).
+
+**EXIT CONDITION. If the defect class is ENUMERABLE, prove it. Only otherwise loop to
+two consecutive dry rounds.** A class is enumerable when its inputs can be GENERATED
+exhaustively rather than sampled: every byte value in separator position x quote/escape
+context, every `match` arm x every registry, every call site of one primitive. For those
+the exit condition is instrument (4), `just sweep-<lane>`, reporting ZERO divergences
+across the full generated space with a NON-ZERO discrimination count on the success line.
+That is a PROOF over the class and it REPLACES the dry-round test; do not also demand dry
+rounds once it holds.
+
+A dry round is a SAMPLE, not a proof. Each round draws a FRESH adversary against a FROZEN
+corpus, so it measures that draw and not the code - which is exactly how session 9o
+declared round 3 dry and then found a regression in round-1 code during round 4 ("N dry
+rounds is N independent coin flips"). Against a class the code is still generating members
+of, N coin flips never converge.
+
+**On the non-enumerable path a dry round needs a THIRD clause, which is 9o's own proposed
+fix and is easy to drop by accident: the round's evidence must be CUMULATIVE.** Every
+input any PRIOR round proved divergent is in the committed offline corpus and was replayed
+this round. Without it the counter measures the corpus a round happened to draw rather
+than the code, which is the same defect as counting coin flips.
+`scripts/check-corpus-growth.sh` is the mechanical half: it fails a `src/` change that adds
+no corpus file, and its `# skip-corpus: <reason>` hatch is for changes where no input CAN
+discriminate (a semantically-identical refactor), never for "did not get round to it".
+
+**Before opening round N+1, ask whether the class is enumerable after all.** Two rounds
+finding the same SHAPE of defect means you are enumerating a set by sampling. The test:
+could you have predicted this finding from the last one? If yes, STOP looping and go build
+the exhaustive check - the loop is the wrong instrument, not one that needs more turns.
+The `is_sudoers_blank` surface is the worked example: five ATL rounds each rebuilt an
+exhaustive differential by hand and discarded it, and round 3's sweep already CONTAINED
+round 4's regression inputs.
+
+**FROZEN TESTS scope (operator ruling, 2026-08-20): the rule protects freestanding files
+under `tests/`, NOT `#[cfg(test)]` modules inside `src/`.** An embedded test module is
+implementation detail of the file it lives in and dies with that file; deleting it as part
+of replacing its parent is NOT an implementer weakening a frozen test. Everything under
+`tests/` stays frozen: strengthening is always allowed, weakening never is, and a
+genuinely-wrong test is escalated to the TEST-AUTHOR rather than edited.
+
+The ruling exists because `crates/rulesteward-sudoers/src/parser.rs` carries an embedded
+module of 66 tests that call internal functions directly, and that file is slated for
+wholesale replacement by a `toke.l`-ported lexer. Without the ruling an implementer would
+hit it mid-port and either stall or guess. Note the asymmetry that makes this safe: files
+under `tests/` compile as SEPARATE crates and can only reach the public surface, so they
+cannot couple to an internal primitive even by accident - which is why they survive a
+parser replacement and embedded modules do not.
 
 **Mutation gate, two layers:** the per-pipeline LOCAL gate (`cargo mutants` after GREEN,
 survivors route back to the test-author) is half of the Adversarial Testing Loop above and

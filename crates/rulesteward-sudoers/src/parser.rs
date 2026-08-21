@@ -20,8 +20,33 @@
 //! the file still lint (the F01 pass emits one Fatal per malformed line).
 //!
 //! # Design
-//! Hand-rolled (NOT chumsky), KISS per CLAUDE.md - the grammar is a line classifier
-//! plus a handful of field splitters, not a recursive grammar warranting a DSL.
+//! Hand-rolled, two-stage. **The rationale this comment used to give was wrong and
+//! is corrected here rather than deleted, because it drove three months of work.**
+//!
+//! It read: "KISS per CLAUDE.md - the grammar is a line classifier plus a handful
+//! of field splitters, not a recursive grammar warranting a DSL." Two problems.
+//! CLAUDE.md never said that (it locked chumsky, scoped to fapolicyd, so this
+//! comment cited the same file that appeared to say the opposite). And the
+//! characterisation is FALSE: sudo's own tokenizer is a flex DFA with NINE declared
+//! start conditions (`plugins/sudoers/toke.l`), maximal-munch matching, and
+//! MULTIPLE escape grammars - four differing by token class alone (`WORD`, `ENVAR`,
+//! `PATH`, `REGEX` each escape a different set), plus more scoped to start
+//! conditions, two of which differ in whether the backslash is passed through or
+//! stripped. The same byte means different things per state, so "a handful of
+//! field splitters" cannot express it -
+//! the correct answer to "is this a separator" DIFFERS BY STATE, and any single
+//! global predicate is therefore wrong somewhere.
+//!
+//! That is not a style critique: it is why widening a predicate fixes one state and
+//! breaks another, and narrowing breaks it back. See the narrow -> wide -> narrow
+//! oscillation recorded in `split_user_list`'s own comments, and the "recognizers of
+//! one concept disagreeing" note on `split_top_level_segments`.
+//!
+//! **Planned successor:** a byte-oriented lexer porting `toke.l`'s state machine,
+//! after which `boundary.rs` and these splitters are deleted whole. Do NOT "finish"
+//! the current design by unifying one more predicate across its call sites; that is
+//! the loop this comment is here to stop. chumsky is NOT the answer either - see
+//! CLAUDE.md's sudoers ruling for why ordered-choice cannot emulate maximal munch.
 
 use std::path::Path;
 

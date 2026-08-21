@@ -24,9 +24,19 @@
 //!   follow it until the next `Match` or EOF (positional, no delimiter).
 //!
 //! # Design
-//! Hand-rolled tokenizer (NOT chumsky), mirroring the auditd crate: the grammar
-//! is a flat keyword + argument list per line plus positional Match scoping.
-//! KISS per CLAUDE.md - no grammar DSL is warranted.
+//! Hand-rolled tokenizer: the grammar is a flat keyword + argument list per line
+//! plus positional `Match` scoping, so no grammar DSL is warranted - a claim about
+//! THIS grammar, not a general preference. (The "KISS per CLAUDE.md, mirroring the
+//! auditd crate" citation this replaces was doubly unsound: CLAUDE.md locked
+//! chumsky rather than forbidding it, scoped to fapolicyd, and "mirroring auditd"
+//! inherited a decision by analogy instead of re-deriving it for this grammar.)
+//!
+//! What makes the claim safe HERE, and is worth keeping explicit: this tokenizer
+//! is grounded on the real separator class rather than on a convenient default.
+//! It splits on ASCII whitespace, NOT Unicode `char::is_whitespace()`, verified
+//! against `sshd -T` on OpenSSH 10.2p1 - see the grounding comments on the
+//! algorithm-list splitter below. That is the discipline the sudoers backend
+//! lacked, and it is why this file is not on the lexer-port list.
 
 use std::iter::Peekable;
 use std::path::Path;
