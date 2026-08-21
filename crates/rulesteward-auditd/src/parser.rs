@@ -9,8 +9,22 @@
 //! - `rules.d/` concat in filename order: `augenrules(8)` \[VM\].
 //!
 //! # Design
-//! Simple whitespace-tokenizer (NOT chumsky): auditctl syntax is a flat flag list
-//! per line. KISS per CLAUDE.md -- no grammar DSL needed here.
+//! Simple whitespace-tokenizer. `auditctl` syntax is a flat flag list per line, so
+//! no grammar DSL is warranted here - a claim about THIS grammar, not a general
+//! preference. (The "KISS per CLAUDE.md" citation this replaces was wrong twice
+//! over: CLAUDE.md locked chumsky rather than forbidding it, and that lock is
+//! scoped to fapolicyd, so the file cited said neither of the things three
+//! backends cited it for.)
+//!
+//! **OPEN, not yet oracle-verified:** this parser splits with
+//! `str::split_whitespace()`, which is Unicode-aware, while a rules FILE reaches
+//! the kernel via `augenrules` -> `auditctl -R` -> `audit_strsplit`, which splits
+//! on the LITERAL SPACE BYTE only and treats quotes as literal. If that holds, a
+//! TAB-separated or NBSP-bearing rule line tokenizes differently here than in
+//! auditd itself - the same wide-vs-narrow separator-class divergence that made
+//! the sudoers backend a defect generator. Confirm against the `rs-oracle{8,9,10}`
+//! images before changing anything; `rulesteward-sshd/src/parser.rs` already
+//! resolved the equivalent question the other way and documents its grounding.
 
 use std::path::Path;
 
