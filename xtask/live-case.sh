@@ -78,6 +78,11 @@ echo "-- stderr --"; cat /tmp/rs.err
 [ -s /tmp/rs.out ] || fail "analyze emitted nothing for $(wc -l < /tmp/denials1.txt) denials"
 
 echo "== applying stdout verbatim (daemon live, as a user would) =="
+# The eval below is the test, not an oversight: a user pastes these lines into a
+# root shell, so the case does the same, and a quoting defect in shell_quote
+# shows up here as a failed or wrong command rather than being masked by an
+# argv call. The input is the tool's own stdout over filenames this case
+# created, on a --rm container or a VM whose /etc/fapolicyd is restored after.
 RULES=/etc/fapolicyd/rules.d/50-rulesteward.rules
 : > /tmp/suggested-paths.txt
 while IFS= read -r line; do
