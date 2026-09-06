@@ -25,11 +25,13 @@ gate() {
 # A first-party action at a mutable tag is somebody else's moving code running
 # with the job's token. Only a 40-hex commit sha pins what will run.
 #
-# Anchored at the YAML key, so a comment that names `uses:` is not a hit.
+# Anchored at both ends of the line, key to comment: a substring test would let
+# `uses: evil/x@v1 # uses: actions/checkout@<sha>` through, and a comment that
+# merely names `uses:` would count as a hit. The `path:line:` prefix is grep's.
 actions_are_pinned() {
     local hits
     hits="$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:' "$REPO/.github/workflows" |
-        grep -vE 'uses: actions/[a-z-]+@[0-9a-f]{40}' || true)"
+        grep -vE '^[^:]+:[0-9]+:[[:space:]]*-?[[:space:]]*uses:[[:space:]]*actions/[a-z-]+@[0-9a-f]{40}[[:space:]]*(#.*)?$' || true)"
     [ -z "$hits" ] || { printf '%s\n' "$hits" >&2; return 1; }
 }
 
