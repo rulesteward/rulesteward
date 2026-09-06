@@ -13,10 +13,6 @@
 # and nothing here reads a CI platform's variables -- which is what keeps
 # .github/ deletable. Callers spell the path: CI runs `./.tools/bin/just`, and
 # the justfile prepends the directory to PATH for the recipes.
-#
-# **.tools/bin converges to the list in main().** What is missing is installed,
-# what is not on the list is pruned. A directory that only ever gains entries
-# becomes whatever every past run left in it.
 
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -76,18 +72,9 @@ fetch() {
     printf '%s\n' "$file"
 }
 
-# A regular, executable file -- not merely something with the execute bit, which
-# every directory has.
-installed() {
-    [ -f "$TOOLS_BIN/$1" ] && [ -x "$TOOLS_BIN/$1" ]
-}
-
 install_one() {
     local tool="$1" version="$2" tmp file
-    if installed "$tool"; then
-        log "  $tool: already in .tools/bin"
-        return
-    fi
+    [ -x "$TOOLS_BIN/$tool" ] && { log "  $tool: already in .tools/bin"; return; }
     tmp="$TMP/$tool"; mkdir -p "$tmp"
     log "  $tool $version: downloading"
     file="$(fetch "$tool" "$version" "$tmp")"
@@ -96,16 +83,13 @@ install_one() {
     # cargo-deny nests under a versioned directory. `find -type f -name` covers
     # all three without hardcoding any of them.
     find "$tmp" -type f -name "$tool" -perm -u+x -exec mv {} "$TOOLS_BIN/$tool" \;
-    installed "$tool" || die "$tool: archive did not contain an executable named $tool"
+    [ -x "$TOOLS_BIN/$tool" ] || die "$tool: archive did not contain an executable named $tool"
 }
 
 main() {
     mkdir -p "$TOOLS_BIN"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local entry name file listed=""
-    # One list, read twice: once to install and once to decide what does not
-    # belong. `tool:version` is the same key digest() takes, so the two spell a
-    # pair the same way.
+    local entry
     local -a tools=(
         "just:$JUST_VERSION"
         "cargo-deny:$CARGO_DENY_VERSION"
@@ -115,18 +99,6 @@ main() {
     log "installing tools into .tools/bin"
     for entry in "${tools[@]}"; do
         install_one "${entry%%:*}" "${entry#*:}"
-        listed="$listed ${entry%%:*}"
-    done
-    # Only regular files, so any directory under .tools/bin is out of scope by
-    # construction.
-    for file in "$TOOLS_BIN"/*; do
-        [ -f "$file" ] || continue
-        name="${file##*/}"
-        case "$listed " in
-            *" $name "*) continue ;;
-        esac
-        log "  prune: $name"
-        rm -f "$file"
     done
     log "done"
 }
