@@ -33,7 +33,7 @@ pub fn syslog_format(conf: &[u8]) -> Option<Vec<String>> {
 /// `format_value`'s uid/gid branch dereferences `subj` with no NULL check on Rocky
 /// 9/10, which is a SIGSEGV; on Rocky 8 an empty gid set leaves the buffer
 /// unterminated, so the field carries heap bytes that can include a space and break
-/// field splitting. Either way the host is mis-configured and we say so.
+/// field splitting. Either way the host is misconfigured and we say so.
 pub fn hazardous_fields(fields: &[String]) -> Vec<&str> {
     fields
         .iter()
