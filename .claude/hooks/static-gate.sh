@@ -45,7 +45,7 @@ STATE="$REPO/.cache/static-gate.state"
 
 # What the pattern reaches: clippy and fmt over *.rs and the [lints] tables in
 # Cargo.toml, cargo-deny over Cargo.lock and deny.toml, typos over its
-# _typos.toml, workflows-carry-no-logic over .github/workflows/*.yml, shellcheck
+# _typos.toml, actions-are-pinned over .github/workflows/*.yml, shellcheck
 # over xtask/*.sh and .claude/hooks/*.sh, plus the justfile that runs all of it.
 # Enumerated through git so target/, .tools/ and .cache/ fall out of scope via
 # .gitignore rather than via a second list that would drift from it.

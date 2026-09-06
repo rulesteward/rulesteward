@@ -32,10 +32,9 @@
 # cargo-mutants' default tree copy cleanly, and the book recommends `--in-place`
 # for CI regardless.
 #
-# **The shard arrives in an environment variable rather than a flag.** The
-# workflows-carry-no-logic gate in xtask/lint.sh fullmatches every CI command
-# against `./.tools/bin/just [a-z][a-z-]*`, and `just mutants --shard 0/8` is not
-# that. A local run sets nothing and is unsharded.
+# **The shard arrives in an environment variable rather than a flag.** Nothing
+# requires that now; moving it to a flag means changing the argument parsing
+# below, which is a separate change. A local run sets nothing and is unsharded.
 
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

@@ -1,9 +1,10 @@
 name: ci
 
 # This file holds no logic. Every step is `./.tools/bin/just <recipe>` or the one
-# bootstrap script that installs `just` on a runner that has none, and every
-# action is pinned to a commit sha. xtask/lint.sh's workflows-carry-no-logic gate
-# rejects anything else, at both ends, so a chained command is rejected too.
+# bootstrap script that installs `just` on a runner that has none, so deleting
+# .github/ at a platform migration loses no mechanism. xtask/lint.sh's
+# actions-are-pinned gate rejects any `uses:` that is not a first-party action at
+# a 40-hex commit sha.
 
 on:
   push:
@@ -55,7 +56,7 @@ jobs:
       # which is exactly the two cases xtask/mutants.sh distinguishes.
       - env:
           MUTANTS_BASE: ${{ github.base_ref }}
-        run: ./.tools/bin/just mutants-diff
+        run: ./.tools/bin/just mutants --in-diff
 
   # The full run, sharded eight ways. Every shard enumerates the same mutant list
   # from identical arguments and takes its slice, so no argument here may differ
@@ -107,7 +108,7 @@ jobs:
           MUTANTS_STATS_5: ${{ needs.mutants.outputs.stats-5 }}
           MUTANTS_STATS_6: ${{ needs.mutants.outputs.stats-6 }}
           MUTANTS_STATS_7: ${{ needs.mutants.outputs.stats-7 }}
-        run: ./.tools/bin/just mutants-verdict
+        run: ./.tools/bin/just mutants --verdict
 
   # The tag path, and the only job that can write to the repository. Its
   # `permissions` block replaces the workflow-level `contents: read` for this job
