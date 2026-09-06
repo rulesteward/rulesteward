@@ -1,0 +1,8 @@
+# Hand-written. Everything here must be filtered out and produce no output.
+# rule=0 pairs with no-opinion and means NO RULE MATCHED. It is not rule index 0
+# and must never be parsed as a valid index. It cannot appear under --debug-deny
+# (process_event only logs once the result carries the DENY bit, which NO_OPINION
+# lacks), but full --debug and journald input both reach it.
+rule=0 dec=no-opinion perm=open auid=1000 pid=101 exe=/usr/bin/bash : path=/tmp/fine ftype=text/plain trust=1
+rule=3 dec=allow perm=open auid=1000 pid=102 exe=/usr/bin/bash : path=/tmp/fine ftype=text/plain trust=1
+09/06/26 00:14:12 [ [33mNOTICE ]: SHA256HASH is deprecated, please use filehash instead

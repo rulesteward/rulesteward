@@ -1,0 +1,32 @@
+[workspace]
+# One member today (D4). The module tree under src/fapolicyd/ is already shaped
+# like the eventual crate tree, so the split is a move, not a redesign.
+members = []
+
+[package]
+name = "rulesteward"
+version = "0.1.0"
+edition = "2024"
+description = "audit2why/audit2allow for host policy systems; fapolicyd is the first domain"
+repository = "https://github.com/rulesteward/rulesteward"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[features]
+# Sweeps the full 121-log corpus through the gitignored `research` symlink.
+# Off by default: the corpus lives in the private rulesteward-research repo.
+full-corpus = []
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# DESIGN.md section 3: diagnostics are returned as data, never printed. Deny, not
+# forbid, so the single sanctioned output site in main.rs can allow it locally.
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.release]
+strip = true

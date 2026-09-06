@@ -1,0 +1,4 @@
+--- exit 0 ---
+--- stdout ---
+--- stderr ---
+rulesteward: 250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record

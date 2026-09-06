@@ -1,0 +1,9 @@
+--- exit 0 ---
+--- stdout ---
+fapolicyd-cli --file add '/tmp/gaps/spaced bash'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/gaps/target'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/gaps/deleted'
+fapolicyd-cli --update
+--- stderr ---

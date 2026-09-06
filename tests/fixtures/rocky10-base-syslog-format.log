@@ -1,0 +1,45 @@
+# distro=rocky 10.2
+# fapolicyd_version=fapolicyd 1.4.5
+# nevra=fapolicyd-1.4.5-1.2.el10_2.x86_64
+# kernel=6.12.0-211.49.1.el10_2.x86_64
+# srpm=fapolicyd-1.4.5-1.2.el10_2.src.rpm
+# syslog_format=syslog_format = rule,dec,perm,auid,pid,exe,:,path,ftype,trust
+# rules_location=/etc/fapolicyd/rules.d
+# case=syslog-format
+
+### baseline (shipped default)
+### syslog_format = rule,dec,perm,auid,pid,exe,:,path,ftype,trust
+08/26/26 03:37:06 [ [34mDEBUG[0m ]: rule=13 dec=deny_audit perm=execute auid=1000 pid=266 exe=/usr/sbin/runuser : path=/tmp/untrusted-ls ftype=text/plain trust=0
+
+### reordered
+### syslog_format = dec,perm,rule,exe,pid,auid,:,trust,ftype,path
+08/26/26 03:37:13 [ [34mDEBUG[0m ]: dec=deny_audit perm=execute rule=13 exe=/usr/sbin/runuser pid=286 auid=1000 : trust=0 ftype=text/plain path=/tmp/untrusted-ls
+
+### minimal
+### syslog_format = dec,:,path
+08/26/26 03:37:20 [ [34mDEBUG[0m ]: dec=deny_audit : path=/tmp/untrusted-ls
+
+### maximal (every accepted field, trust on both sides)
+### syslog_format = rule,dec,perm,auid,uid,sessionid,pid,ppid,trust,gid,comm,exe,:,path,dir,device,ftype,trust,filehash,mode
+08/26/26 03:37:28 [ [34mDEBUG[0m ]: rule=13 dec=deny_audit perm=execute auid=1000 uid=1000 sessionid=9 pid=326 ppid=325 trust=1 gid=1000 comm=runuser exe=/usr/sbin/runuser : path=/tmp/untrusted-ls dir=/tmp/untrusted-ls device=? ftype=text/plain trust=0 filehash=309b3c9a3246361ec0338641aed3c14e7f91e23e7cf10de000c75135ba99fddd mode=?
+
+### maximal-legacy (sha256hash instead of filehash)
+### syslog_format = rule,dec,perm,auid,uid,sessionid,pid,ppid,trust,gid,comm,exe,:,path,dir,device,ftype,trust,sha256hash,mode
+08/26/26 03:37:35 [ [34mDEBUG[0m ]: rule=13 dec=deny_audit perm=execute auid=1000 uid=1000 sessionid=9 pid=346 ppid=345 trust=1 gid=1000 comm=runuser exe=/usr/sbin/runuser : path=/tmp/untrusted-ls dir=/tmp/untrusted-ls device=? ftype=text/plain trust=0 sha256hash=309b3c9a3246361ec0338641aed3c14e7f91e23e7cf10de000c75135ba99fddd mode=?
+
+### REJECTED: no colon
+### syslog_format = rule,dec,perm,exe,path
+--- daemon did not start; diagnostics: ---
+08/26/26 03:37:39 [ [31mERROR[0m ]: syslog_format does not have a ':'
+
+### REJECTED: unknown field
+### syslog_format = rule,dec,perm,bogus,:,path
+--- daemon did not start; diagnostics: ---
+08/26/26 03:37:42 [ [31mERROR[0m ]: Field bogus invalid for syslog_format
+
+### REJECTED: subject-side dir (past EXE in the enum)
+### syslog_format = rule,dec,perm,dir,:,path
+--- daemon did not start; diagnostics: ---
+08/26/26 03:37:45 [ [31mERROR[0m ]: dir cannot be used in syslog_format
+08/26/26 03:37:45 [ [31mERROR[0m ]: Field dir invalid for syslog_format
+

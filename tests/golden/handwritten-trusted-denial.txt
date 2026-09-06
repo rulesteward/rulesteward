@@ -1,0 +1,14 @@
+--- exit 0 ---
+--- stdout ---
+allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils
+allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils
+allow perm=open exe=/usr/bin/bash : path=/tmp/absent
+fapolicyd-cli --file add '/tmp/with space'
+fapolicyd-cli --update
+--- stderr ---
+rulesteward: line 19: no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default
+rulesteward: line 20: no trust= in this record and the path cannot be written in a rule (space or colon), so a trust entry is the only representable suggestion
+rulesteward: line 21: path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit
+rulesteward: line 22: trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted
+rulesteward: a rule placed in /etc/fapolicyd/rules.d/ has no effect on a host that still has a legacy /etc/fapolicyd/fapolicyd.rules, and the daemon logs nothing about it; check which file the daemon loads before adding the rule
+rulesteward: validate the rules file before reloading and check the daemon afterwards: fapolicyd-cli --reload-rules exits 0 even when the reload crashed the daemon or left it allowing everything
