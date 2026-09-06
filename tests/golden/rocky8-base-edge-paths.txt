@@ -1,0 +1,29 @@
+--- exit 0 ---
+--- stdout ---
+fapolicyd-cli --file add '/tmp/edge/plain'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/with space'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/a : b'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/eq=sign'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/colon:name'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/back\slash'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/uni-café-日本'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/quote'\''single'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/quote"double'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/#hash'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/edge/percent%20enc'
+fapolicyd-cli --update
+--- stderr ---
+rulesteward: line 14: path contains a control byte (0x09), which cannot be written as a fapolicyd.trust record; emitting nothing
+rulesteward: line 17: path contains a control byte (0x0a), which cannot be written as a fapolicyd.trust record; emitting nothing
+rulesteward: line 22: record truncated at the 511-byte cap; emitting nothing, because path= is a prefix of the real path (x2)
+rulesteward: line 23: path= is ?? — the daemon could not encode the real path, so there is nothing to add to the trust database

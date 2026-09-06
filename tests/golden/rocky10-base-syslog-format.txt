@@ -1,0 +1,6 @@
+--- exit 0 ---
+--- stdout ---
+fapolicyd-cli --file add '/tmp/untrusted-ls'
+fapolicyd-cli --update
+--- stderr ---
+rulesteward: line 20: cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path

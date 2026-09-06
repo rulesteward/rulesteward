@@ -135,6 +135,28 @@ domain does not justify an abstraction. Adding a second domain should mean
 adding a module and one match arm, and that is all the future-proofing worth
 buying now.
 
+### Amended at implementation time: one crate, six modules
+
+v1 ships **one** crate whose module tree is exactly the crate tree above:
+
+```
+src/main.rs            bin - the ONLY fs/io/env/clock
+src/fapolicyd/mod.rs   the seam that becomes crates/fapolicyd/
+src/fapolicyd/{model,parse,conf,policy,emit,analyze}.rs
+```
+
+Six manifests to enforce a boundary that one crate can state as a lint is a cost
+without a matching benefit while there is one domain. `Cargo.toml` carries
+`unsafe_code = "forbid"` and `clippy::print_stdout`/`print_stderr = "deny"`
+crate-wide, which is *stricter* than the per-crate scheme above because it also
+covers `main.rs`; the binary writes through `io::stdout().lock()` at one site
+rather than holding an escape hatch. `[workspace]` is declared from the first
+commit so members can be added without restructuring.
+
+The intended end state is a top-level `fapolicyd/` crate holding the domain
+subcrates. Splitting then is a move, not a redesign, because the module names and
+the dependency direction already match.
+
 ---
 
 ## 4. The record model
@@ -261,7 +283,7 @@ D1's ladder. It degrades; it never fails the run.
    `--conf <path>` overrides the location. `--no-conf` disables the read — which
    is necessary when analysing a log captured on a different host, because
    validating against the wrong host's format is worse than validating against
-   none.
+   none. `--no-conf` also disables step 3, so step 4 is then the only test.
 
 2. **Expect the default read to fail for an ordinary user.** The packaged
    `/etc/fapolicyd` is mode `750 root:fapolicyd` (`daemon-config.md:60`), so any
@@ -269,7 +291,9 @@ D1's ladder. It degrades; it never fails the run.
    diagnostic. Never exit on this.
 
 3. **With a format in hand:** a field named in `syslog_format` but absent from
-   the record is truncation.
+   the record is truncation. Only the first 21 names count — `MAX_SYSLOG_FIELDS`
+   — because the daemon never emits the rest (§4), and a `:` that falls past the
+   cap means every record is subject-side only, which is not truncation.
 
 4. **Without one:** a record whose payload sits at the 511-byte boundary is
    truncation. `WB_SIZE` is 512 with `working_buffer[WB_SIZE-1] = 0`, and the cap
@@ -294,16 +318,27 @@ host means *"would have been denied"*, which is a materially different statement
 from *"was blocked"* — and the record itself cannot tell you which
 (`daemon-config.md:56`).
 
+**`uid` or `gid` in `syslog_format` is a host hazard, reported from the conf
+read.** `format_value`'s uid/gid list branch dereferences `subj` with no NULL
+check, which a unit test shows dying on SIGSEGV on Rocky 9/10; Rocky 8 cannot
+reach that branch and instead leaves the buffer unterminated, so the field
+carries heap bytes (`syslog-format.md:66`). A live daemon with `gid` in the
+format stayed up under probe, so this is a warning, not a refusal. The tool
+reports it once per run and continues.
+
 **Unrecognisable field names mean the daemon needs a restart.** After a failed
 rules reload, `destroy_rules` frees every field name while leaving `num_fields`
 non-zero, so `log_it` reads each field *name* from freed memory. Values survive
 and names do not, producing `<garbage>=deny_audit`. The garbage differs per
-release and per run, so it cannot be matched on, and it can contain a newline —
-on Rocky 8 the corrupted record split across several lines, one field per line
-(`log-format.md:289`). This is the one case where output is not reliably one
-record per line. The daemon in this state is fully operational and **allowing
-everything**, so the right report is "restart the daemon", never "the stream went
-quiet".
+release and per run, so it cannot be matched on. The daemon in this state is
+fully operational and **allowing everything**, so the right report is "restart
+the daemon", never "the stream went quiet". An earlier claim that the Rocky 8
+record split across several lines is retracted at `log-format.md:301`: every one
+of the 416 post-reload records is on its own line, so one record per line holds
+here too (`emitter-constraints.md:67` still carries the stale text). The garbage
+reliably contains control or high bytes, which is what the tool tests for; it
+runs that test **before** the `dec=` filter, because a record whose names are
+gone reads as `no-opinion` and would otherwise be dropped in silence.
 
 ---
 
@@ -319,6 +354,22 @@ whose trust state is simply unknown.
 | `1` | trusted, so a rule denied it | scoped allow rule |
 | `9` | trust attribute unavailable | diagnostic only, emit nothing |
 | absent | `trust` not in `syslog_format` | rule, with a warning |
+| any, `path=??` | the daemon could not encode the path (§4) | diagnostic only, emit nothing |
+| any, control byte in a value to be emitted | newline or tab in the true path | diagnostic only, emit nothing |
+| `1`, path contains a space or `:` | unrepresentable in a rule (§8.1) | diagnostic only, emit nothing |
+| absent, path contains a space or `:` | unrepresentable in a rule (§8.1) | trust entry instead |
+
+The last four rows were added at implementation time. `path=??` and the control
+byte are refusals: a control byte splits the emitted line, breaking §9's promise
+of bare pipe-safe stdout, and cannot be a `fapolicyd.trust` record. A space in a
+path is fine for a trust entry, because the trust file is parsed right to left
+(`trust-db.md:78`), and only rules refuse it.
+
+**The rule v1 emits** is `allow perm=<perm> exe=<exe> : path=<path>`, with `all`
+on the subject side when `exe=` is absent or `?`. Every attribute emitted must
+have carried a real value in that record, because an attribute the event cannot
+supply makes the rule broader, not narrower (§8.1). Rules are keyed on
+`(perm, exe, path)`; trust entries on `path` alone.
 
 Object trust is `obj ? (obj->val ? 1 : 0) : 9` (`log-format.md:189`). The
 `absent` row matters more than it looks: the *compiled* default `syslog_format`
@@ -500,9 +551,10 @@ expensive to retrofit:
 - **No aliases or shortenings of `fapolicyd`**, so a future domain cannot collide
   with a prefix people got used to typing.
 - **Domain-specific flags hang off the domain, not the root.** `--conf` and
-  `--no-conf` (§6) belong to `fapolicyd`. v1 defines **no global flags** — it has
-  no genuinely cross-domain option yet. Reserve the root for `--help` and
-  `--version`.
+  `--no-conf` (§6) belong to `fapolicyd`, declared there and accepted before or
+  after the action, so a second action inherits them. v1 defines **no global
+  flags** — it has no genuinely cross-domain option yet. Reserve the root for
+  `--help` and `--version`.
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added
@@ -510,7 +562,11 @@ later:
 
 - results on stdout as bare lines, pipe-safe, no commentary
 - diagnostics on stderr
-- exit `0` success, `1` usage or I/O error, `2` input consumed but unparseable
+- exit `0` success, `1` usage or I/O error, `2` input consumed but unparseable.
+  "Unparseable" means non-comment input arrived and no line yielded a single
+  `name=value` field. A log full of allow records parses fine and exits `0`
+  with nothing to suggest; usage errors are `1`, and `--help`/`--version` are
+  `0`, so clap's own exit-2-on-usage default is remapped.
 
 What the root does **not** promise is the shape of those lines. That is each
 domain's business; for `fapolicyd` it is rules and `fapolicyd-cli` commands.
@@ -544,11 +600,31 @@ record, the subject/object `trust` disagreement, the `dec=,:,path` minimal
 format, the no-colon record from §4, a `uid=` list, and the `sh_set` round trip
 from §8.2.
 
-**One coupling problem to solve at implementation time.** The fixtures live in a
-private repository behind a gitignored symlink, so public CI cannot see them.
-The two options are vendoring a redacted subset into this repo, or gating those
-tests behind a feature flag that is off by default. Decide before writing the
-first golden test, not after.
+**The coupling problem, settled.** The fixtures live in a private repository
+behind a gitignored symlink, so public CI cannot see them. Both options are
+taken, because they answer different questions:
+
+- **Vendored subset**, `tests/fixtures/`, one capture per parser hazard, kept in
+  sync by `xtask/sync-fixtures.sh` (`--check` fails on drift), plus hand-written
+  cases for shapes no capture has as a clean record: the `dec,:,path` minimal
+  format, the not-a-denial set, the 21-field no-colon record with duplicate
+  names, and a `trust=1` / `trust`-absent pair. Golden tests over these run in
+  public CI on every PR, including from forks. A sweep of all 121 logs found
+  nothing sensitive to redact: no IPs, no home paths, no usernames, identity
+  numeric only. The `# kernel=` and `# nevra=` headers are kept verbatim — the
+  Rocky 8 log records the *host* kernel because the guest ran nested, which is
+  itself a finding.
+- **Full corpus**, behind `--features full-corpus`, reached through the symlink,
+  local only. It has no expected output; it asserts that no capture panics, none
+  exits outside 0/1/2, no denial record is dropped without a diagnostic, and
+  every stdout line is something a user can paste.
+
+Choosing the vendored slice is not cosmetic. The corrupted-record log's garbage
+field names are in its **last** 416 records, so a fixture capped from the front
+vendors only the clean prefix and tests nothing; the sync script takes that one
+from the tail for exactly this reason. Lines starting with `#` are comments to
+the tool, so a research capture whose interesting record only appears inside a
+`# record:` annotation is not a fixture; the record is copied out by hand.
 
 ---
 

@@ -1,0 +1,22 @@
+# Hand-written. No capture holds a clean trust=1 denial: producing one needs a rule
+# that denies a file the trust database already knows, and every harvested run either
+# denied an untrusted file (trust=0) or allowed a trusted one. Rocky 8 framing, which
+# is no framing at all, so the records are the payload.
+#
+# The six records are the whole of D12 and §7's rule arms, in order:
+#   1,2 trust=1, same path, two perms -> two rules, because a rule is scoped by perm
+#       and one trust entry would be the wrong answer for an already-trusted file.
+#   3   trust absent -> a rule plus the "no trust= in this record" note.
+#   4   trust absent and a space in the path -> the rule parser has no quoting, so
+#       this falls back to a trust entry, which is parsed right to left and does not
+#       care about the space.
+#   5   trust=1 and a space in the path -> nothing safe to emit at all: the rule is
+#       unrepresentable and widening trust on a trusted file is not an answer.
+#   6   trust=? -> unavailable, not untrusted; the diagnostic must print the ? it saw
+#       rather than the 9 the daemon usually writes.
+rule=16 dec=deny_audit perm=execute auid=1000 pid=308 exe=/usr/bin/bash : path=/usr/bin/coreutils ftype=application/x-executable trust=1
+rule=16 dec=deny_audit perm=open auid=1000 pid=309 exe=/usr/bin/bash : path=/usr/bin/coreutils ftype=application/x-executable trust=1
+rule=13 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/tmp/absent ftype=text/plain
+rule=13 dec=deny_audit perm=open auid=1000 pid=2 exe=/usr/bin/bash : path=/tmp/with\ space ftype=text/plain
+rule=13 dec=deny_audit perm=execute auid=1000 pid=3 exe=/usr/bin/bash : path=/tmp/spaced\ trusted ftype=text/plain trust=1
+rule=13 dec=deny_audit perm=execute auid=1000 pid=4 exe=/usr/bin/bash : path=/tmp/odd ftype=text/plain trust=?

@@ -1,0 +1,24 @@
+# distro=rocky 8.10
+# fapolicyd_version=allow_filesystem_mark is unsupported on this kernel - ignoring
+# nevra=fapolicyd-1.3.2-1.el8.x86_64
+# kernel=6.12.0-211.50.1.el10_2.x86_64
+# srpm=fapolicyd-1.3.2-1.el8.src.rpm
+# syslog_format=syslog_format = rule,dec,perm,auid,pid,exe,:,path,ftype,trust
+# rules_location=/etc/fapolicyd/rules.d
+# case=edge-paths
+rule=13 dec=deny_audit perm=execute auid=1000 pid=700 exe=/usr/sbin/runuser : path=/tmp/edge/plain ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=703 exe=/usr/sbin/runuser : path=/tmp/edge/with\ space ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=706 exe=/usr/sbin/runuser : path=/tmp/edge/a\ :\ b ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=709 exe=/usr/sbin/runuser : path=/tmp/edge/eq=sign ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=712 exe=/usr/sbin/runuser : path=/tmp/edge/colon:name ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=715 exe=/usr/sbin/runuser : path=/tmp/edge/tab\011here ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=718 exe=/usr/sbin/runuser : path=/tmp/edge/back\\slash ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=721 exe=/usr/sbin/runuser : path=/tmp/edge/uni-café-日本 ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=724 exe=/usr/sbin/runuser : path=/tmp/edge/nl\012line ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=727 exe=/usr/sbin/runuser : path=/tmp/edge/quote\'single ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=730 exe=/usr/sbin/runuser : path=/tmp/edge/quote\"double ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=733 exe=/usr/sbin/runuser : path=/tmp/edge/#hash ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=736 exe=/usr/sbin/runuser : path=/tmp/edge/percent%20enc ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=739 exe=/usr/sbin/runuser : path=/tmp/edge/LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN/OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO/PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+rule=13 dec=deny_audit perm=execute auid=1000 pid=742 exe=/usr/sbin/runuser : path=?? ftype=text/plain trust=0
+rule=13 dec=deny_audit perm=execute auid=1000 pid=745 exe=/usr/sbin/runuser : path=/tmp/edge/hi-short/ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé/ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé

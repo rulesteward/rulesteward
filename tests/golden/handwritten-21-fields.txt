@@ -1,0 +1,4 @@
+--- exit 0 ---
+--- stdout ---
+--- stderr ---
+rulesteward: line 12: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)

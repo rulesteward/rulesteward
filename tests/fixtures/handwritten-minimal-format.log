@@ -1,0 +1,6 @@
+# Hand-written, not from the corpus: no capture runs with a minimal syslog_format.
+# syslog_format = dec,:,path
+# A parser that rejects this is rejecting well-formed input. The daemon starts on
+# this config, and the record has no perm=, no exe=, no trust= and no rule=.
+dec=deny_audit : path=/tmp/untrusted-ls
+dec=deny_audit : path=/tmp/untrusted-cat
