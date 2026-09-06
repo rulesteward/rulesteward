@@ -116,10 +116,11 @@ discard_mutant_seeds() {
 #
 # `--baseline=skip` because the `check` job already proved the suite passes on an
 # unmutated tree, and skipping it means an explicit `--timeout`: the baseline run
-# is what derives the per-mutant timeout otherwise. 120 s is the test phase only,
-# and the suite takes about 5 s on 16 cores; one mutant on this tree
-# (`parse.rs`, `replace += with -=`) loops forever and costs its shard the whole
-# timeout, which is why the default is not larger.
+# is what derives the per-mutant timeout otherwise. 60 s covers the test phase
+# only, and the suite takes about 5 s on 16 cores and under 15 s on a hosted
+# runner. A handful of mutants on this tree stop a byte-walking loop advancing
+# and cost their shard the whole timeout each, under the memory cap that
+# xtask/limit-memory.sh applies, which is why the default is not larger.
 run_shard() {
     local spec="$1" k n compact
     [[ "$spec" =~ ^([0-9]+)/([0-9]+)$ ]] ||
@@ -137,7 +138,7 @@ run_shard() {
     # read_outcomes below.
     cargo mutants --in-place \
         --shard "$k/$n" --sharding round-robin \
-        --baseline=skip --timeout "${MUTANTS_TIMEOUT:-120}" || true
+        --baseline=skip --timeout "${MUTANTS_TIMEOUT:-60}" || true
     discard_mutant_seeds
 
     [ -f "$OUTCOMES" ] || die "no $OUTCOMES -- shard $spec produced no outcomes at all"
@@ -239,9 +240,22 @@ write_baseline() {
     log "wrote docs/mutation-baseline.json: missed $missed of $total"
 }
 
+# Every cargo test a mutant run spawns goes through xtask/limit-memory.sh,
+# which caps its address space. The variable is cargo's per-target `runner`
+# setting spelled as an environment variable, so it reaches the `cargo test`
+# cargo-mutants runs without a .cargo/config.toml that would also bind
+# `just test`. See the runner script for the measurement behind it.
+limit_test_memory() {
+    local host
+    host="$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')"
+    [ -n "$host" ] || die "rustc -vV printed no host triple"
+    export "CARGO_TARGET_${host}_RUNNER=$REPO/xtask/limit-memory.sh"
+}
+
 main() {
     need jq
     cd "$REPO"
+    limit_test_memory
 
     case "${1:-}" in
         --verdict)   verdict; return ;;
