@@ -8,6 +8,7 @@ name: ci
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -107,3 +108,23 @@ jobs:
           MUTANTS_STATS_6: ${{ needs.mutants.outputs.stats-6 }}
           MUTANTS_STATS_7: ${{ needs.mutants.outputs.stats-7 }}
         run: ./.tools/bin/just mutants-verdict
+
+  # The tag path, and the only job that can write to the repository. Its
+  # `permissions` block replaces the workflow-level `contents: read` for this job
+  # alone; every other job keeps the read-only token. `needs` means a tag whose
+  # tests or musl build fail publishes nothing.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, musl]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: ./xtask/install-tools.sh
+      - run: ./.tools/bin/just release
+      # gh reads GH_TOKEN and nothing else; scoped to the one step that calls it.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.tools/bin/just publish

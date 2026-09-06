@@ -53,3 +53,11 @@ mutants-diff:
 # Sums the eight shards' job outputs and applies the ratchet.
 mutants-verdict:
     ./xtask/mutants.sh --verdict
+
+# The release artifact: musl build, tarball and SHA256SUMS into dist/.
+release:
+    ./xtask/release.sh build
+
+# Uploads what `release` built. Needs a tag ref, so it is the CI job's recipe.
+publish:
+    ./xtask/release.sh publish

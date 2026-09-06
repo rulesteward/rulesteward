@@ -1,4 +1,5 @@
 [toolchain]
 channel = "1.98.0"
-components = ["rustfmt", "clippy"]
+# rust-analyzer: the official rust-analyzer-lsp plugin runs a bare `rust-analyzer`, and rustup puts it on PATH with rustfmt and clippy.
+components = ["rustfmt", "clippy", "rust-analyzer"]
 targets = ["x86_64-unknown-linux-musl"]
