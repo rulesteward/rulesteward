@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/static-gate.sh\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/session-probe.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/worktree-create.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(UPDATE_GOLDEN=1 cargo test:*)",
+      "Bash(UPDATE_GOLDEN=1 just:*)",
+      "Bash(env UPDATE_GOLDEN=1:*)",
+      "Bash(./xtask/mutants.sh --write-baseline:*)",
+      "Bash(xtask/mutants.sh --write-baseline:*)",
+      "Bash(bash xtask/mutants.sh --write-baseline:*)",
+      "Bash(just mutants --write-baseline:*)"
+    ]
+  }
+}
