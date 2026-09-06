@@ -141,6 +141,9 @@ main() {
     gate "workflows carry no logic" workflows_carry_no_logic
     gate "ignore carries a reason"  ignore_carries_a_reason
     gate "shellcheck"               shell_scripts_are_clean
+    # The only gate over the strings users read; fixtures and goldens are
+    # excluded because they are verbatim daemon bytes with deliberate corruption.
+    gate "typos"                    typos
 
     if [ ${#failed[@]} -gt 0 ]; then
         die "${#failed[@]} gate(s) failed: ${failed[*]}"

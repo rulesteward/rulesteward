@@ -1,0 +1,12 @@
+[files]
+# Verbatim daemon captures with deliberate corruption; spell-checking them is noise.
+extend-exclude = ["tests/fixtures/*.log", "tests/golden/*.txt"]
+
+[default.extend-words]
+# fapolicyd vocabulary. A key mapping to itself marks the word always valid.
+subj = "subj"
+obj = "obj"
+ftype = "ftype"
+# A legitimate spelling that typos' dictionary rewrites to "unparsable". It is
+# the word DESIGN.md section 9 and the exit-code contract use; keep it.
+unparseable = "unparseable"
