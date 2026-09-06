@@ -25,7 +25,7 @@ pub struct Outcome {
 ///    A commented-out example carries a `]: ` of its own, so stripping first turns a
 ///    comment into live input — which is how a trust entry once came out of a
 ///    `# record: ...` line in the research capture.
-/// 2. strip the prefix, then ANSI, because the 511-byte cap applies to the payload.
+/// 2. strip the framing prefix, because the 511-byte cap applies to the payload.
 /// 3. drop the once-per-daemon-start deprecation notice.
 /// 4. parse.
 /// 5. no fields at all is prose, not a record: it counts as content but not as parsed,
@@ -79,13 +79,13 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
             continue;
         }
 
-        let payload = parse::strip_ansi(parse::strip_prefix(raw));
-        if parse::is_noise(&payload) {
+        let payload = parse::strip_prefix(raw);
+        if parse::is_noise(payload) {
             continue;
         }
         content += 1;
 
-        let record = parse::parse(&payload);
+        let record = parse::parse(payload);
         let names: Vec<&[u8]> = record
             .subject
             .iter()

@@ -4,10 +4,10 @@
 # `just test` and `cargo run` are never under it.
 #
 # Why: a mutant that stops a byte-walking loop advancing (`i += 1` to
-# `i *= 1` in strip_ansi, and the same shape in unescape) keeps pushing to a
-# Vec forever. On the 31 GB development box the 22 s test timeout fires first
-# and records a timeout; on a 16 GB hosted runner the process exhausts memory
-# in about a minute and the VM itself is killed -- measured as "the runner has
+# `i *= 1` in unescape) keeps pushing to a Vec forever. On the 31 GB
+# development box the 22 s test timeout fires first and records a timeout;
+# on a 16 GB hosted runner the process exhausts memory in about a minute
+# and the VM itself is killed -- measured as "the runner has
 # received a shutdown signal" on shards 2 to 6 of every run, while 0, 1 and 7
 # passed. Under this cap the allocation fails, Rust aborts, and the mutant is
 # caught in seconds instead of taking the runner down.
