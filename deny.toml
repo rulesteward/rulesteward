@@ -1,0 +1,33 @@
+# deny.toml
+[graph]
+targets = [
+  { triple = "x86_64-unknown-linux-musl" },
+  { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[licenses]
+# rulesteward is GPL-3.0-or-later and is itself a workspace member, so it is
+# allowed here too. MIT and Apache-2.0 are one-way compatible into GPLv3.
+# Unicode-3.0 is required by unicode-ident's AND clause.
+allow = ["GPL-3.0-or-later", "MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.93
+# Off by default in 0.20.2: without it the re-check due when proptest's dev-only
+# subtree lands would pass without ever reading that subtree.
+include-dev = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "deny"   # achievable at 22 crates; relax to "warn" with a reason
+wildcards = "deny"
+# Same reason as [licenses] include-dev: the duplicate-version check must see the
+# proptest dev subtree, which it does not by default.
+multiple-versions-include-dev = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

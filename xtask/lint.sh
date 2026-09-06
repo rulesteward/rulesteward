@@ -134,6 +134,10 @@ main() {
     # so the default clippy run never reads it. A gate that quietly passes
     # because it did not run is worse than no gate.
     gate "clippy (full-corpus)"     cargo clippy --all-targets --features full-corpus -- -D warnings
+    # Licences, advisories, bans and sources. It never compiles, and it clones
+    # the RustSec database once per run rather than per check. cargo-audit is
+    # rejected: it reads the same database this already reads.
+    gate "cargo deny"               cargo deny check
     gate "workflows carry no logic" workflows_carry_no_logic
     gate "ignore carries a reason"  ignore_carries_a_reason
     gate "shellcheck"               shell_scripts_are_clean
