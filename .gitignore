@@ -1,3 +1,10 @@
-.claude
+# .claude/ is agent state except for the configuration this repo ships, so the
+# directory is ignored and the two tracked paths are negated back in.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 /research
 /target
+/.tools
+/.cache
+/mutants.out*

@@ -1,9 +1,17 @@
 name: ci
 
+# This file holds no logic. Every step is `./.tools/bin/just <recipe>` or the one
+# bootstrap script that installs `just` on a runner that has none, and every
+# action is pinned to a commit sha. xtask/lint.sh's workflows-carry-no-logic gate
+# rejects anything else, at both ends, so a chained command is rejected too.
+
 on:
   push:
     branches: [master]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,23 +19,22 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # rust-toolchain.toml pins the channel, the components and the musl target.
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --locked
+      - run: ./xtask/install-tools.sh
+      - run: ./.tools/bin/just lint
+      - run: ./.tools/bin/just test
 
   musl:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      # No musl-tools install: rustc's self-contained musl links this tree, which is
-      # pure Rust plus clap. Verified locally on 2026-09-06 with no .cargo/config.toml
-      # and no musl-gcc involved. If a C-linking dependency ever lands, this job is
-      # where it will show up first.
-      - run: cargo build --release --target x86_64-unknown-linux-musl
-      - name: the binary must be static
-        run: |
-          ldd target/x86_64-unknown-linux-musl/release/rulesteward 2>&1 \
-            | grep -q 'statically linked'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # No musl-tools install: rustc's self-contained musl links this tree, which
+      # is pure Rust plus clap. If a C-linking dependency ever lands, this job is
+      # where it will show up first. xtask/musl.sh carries the `ldd` assertion
+      # that the binary really is statically linked.
+      - run: ./xtask/install-tools.sh
+      - run: ./.tools/bin/just musl
