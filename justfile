@@ -39,3 +39,17 @@ corpus:
 # The musl release build, plus the assertion that the binary is static.
 musl:
     ./xtask/musl.sh
+
+# Mutation testing. Unsharded and judged against docs/mutation-baseline.json;
+# MUTANTS_SHARD=k/8 runs one shard and judges nothing, which is what CI does.
+mutants *ARGS:
+    ./xtask/mutants.sh {{ARGS}}
+
+# The absolute gate on changed code. Its own recipe because the workflow gate
+# fullmatches `just <recipe>` and will not take an argument.
+mutants-diff:
+    ./xtask/mutants.sh --in-diff
+
+# Sums the eight shards' job outputs and applies the ratchet.
+mutants-verdict:
+    ./xtask/mutants.sh --verdict

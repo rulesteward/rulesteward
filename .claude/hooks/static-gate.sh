@@ -33,9 +33,11 @@ IFS=$'\n\t'
 REPO="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$REPO"
 
-# The worktree's own pinned tools, the same prepend the justfile does. A worktree
-# built by worktree-create.sh has `just` here and nowhere else.
-PATH="$REPO/.tools/bin:$PATH"
+# The worktree's own pinned tools, the same prepend the justfile does, and
+# rustup's cargo. The hook runs in the harness's environment, not a login
+# shell, and on this box ~/.cargo/bin is on neither: measured, the first live
+# Stop failed with "cargo is not installed" before this line existed.
+PATH="$REPO/.tools/bin:$HOME/.cargo/bin:$PATH"
 export PATH
 
 # .cache/ is gitignored and does not exist on a fresh clone.

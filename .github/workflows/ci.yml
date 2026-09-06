@@ -38,3 +38,72 @@ jobs:
       # that the binary really is statically linked.
       - run: ./xtask/install-tools.sh
       - run: ./.tools/bin/just musl
+
+  # The absolute gate on changed code, on pull requests and on master pushes
+  # alike. `fetch-depth: 0` because the script diffs against the base branch on a
+  # pull request and against HEAD^ on a push, and a shallow clone has neither.
+  mutants-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - run: ./xtask/install-tools.sh
+      # github.base_ref is the base branch on a pull request and empty on a push,
+      # which is exactly the two cases xtask/mutants.sh distinguishes.
+      - env:
+          MUTANTS_BASE: ${{ github.base_ref }}
+        run: ./.tools/bin/just mutants-diff
+
+  # The full run, sharded eight ways. Every shard enumerates the same mutant list
+  # from identical arguments and takes its slice, so no argument here may differ
+  # between shards. `fail-fast: false` because one shard's survivors are not a
+  # reason to stop measuring the other seven.
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    # Each matrix job sets only its own key. vcows-deploy measured that GitHub
+    # keeps the non-empty value across a matrix, while the documentation says
+    # later jobs overwrite outputs; if that stops holding, the verdict's
+    # sum-equals-list assertion is what catches it, loudly, rather than a quietly
+    # smaller and better-looking set of numbers.
+    outputs:
+      stats-0: ${{ steps.mutants.outputs.stats-0 }}
+      stats-1: ${{ steps.mutants.outputs.stats-1 }}
+      stats-2: ${{ steps.mutants.outputs.stats-2 }}
+      stats-3: ${{ steps.mutants.outputs.stats-3 }}
+      stats-4: ${{ steps.mutants.outputs.stats-4 }}
+      stats-5: ${{ steps.mutants.outputs.stats-5 }}
+      stats-6: ${{ steps.mutants.outputs.stats-6 }}
+      stats-7: ${{ steps.mutants.outputs.stats-7 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: ./xtask/install-tools.sh
+      - id: mutants
+        env:
+          MUTANTS_SHARD: ${{ matrix.shard }}/8
+        run: ./.tools/bin/just mutants
+
+  # The ratchet, applied to the sum. No shard holds the answer.
+  mutants-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: mutants
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: ./xtask/install-tools.sh
+      - env:
+          MUTANTS_STATS_0: ${{ needs.mutants.outputs.stats-0 }}
+          MUTANTS_STATS_1: ${{ needs.mutants.outputs.stats-1 }}
+          MUTANTS_STATS_2: ${{ needs.mutants.outputs.stats-2 }}
+          MUTANTS_STATS_3: ${{ needs.mutants.outputs.stats-3 }}
+          MUTANTS_STATS_4: ${{ needs.mutants.outputs.stats-4 }}
+          MUTANTS_STATS_5: ${{ needs.mutants.outputs.stats-5 }}
+          MUTANTS_STATS_6: ${{ needs.mutants.outputs.stats-6 }}
+          MUTANTS_STATS_7: ${{ needs.mutants.outputs.stats-7 }}
+        run: ./.tools/bin/just mutants-verdict
