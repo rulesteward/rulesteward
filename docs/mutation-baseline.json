@@ -1,0 +1,5 @@
+{
+  "missed": 11,
+  "total": 224,
+  "note": "Hand-edited; the reason for every change lives in the commit body, never in a regenerate. First measured 2026-09-06 on a 16-core box, 4 jobs, 5m26s: 198 caught, 11 missed, 5 unviable, 10 timeouts. The 11 are comparison and boolean flips in strip_ansi, parse, fields, is_corrupt_field_name, escaped and policy::rule; the timeouts are += mutations that make byte-walking loops never advance."
+}

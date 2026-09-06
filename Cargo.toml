@@ -34,3 +34,9 @@ print_stderr = "deny"
 
 [profile.release]
 strip = true
+
+# cargo-mutants rebuilds lib, bin and every test binary once per mutant, and
+# nothing debugs a mutant, so the debug info is pure rebuild cost.
+[profile.mutants]
+inherits = "test"
+debug = "none"

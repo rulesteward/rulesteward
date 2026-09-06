@@ -1,0 +1,7 @@
+# Scalar keys: the CLI wins. List keys: config is appended to the CLI.
+exclude_re = [
+  "src/main.rs",                      # argument plumbing; clap owns the contract
+  "replace .* with String::new\\(\\)",
+]
+profile = "mutants"
+timeout_multiplier = 5.0
