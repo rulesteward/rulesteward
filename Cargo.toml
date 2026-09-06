@@ -14,6 +14,10 @@ license = "GPL-3.0-or-later"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 
+[dev-dependencies]
+# Bounded property testing on the parser. Dev-only: never in the shipped binary.
+proptest = "1.11"
+
 [features]
 # Sweeps the full 121-log corpus through the gitignored `research` symlink.
 # Off by default: the corpus lives in the private rulesteward-research repo.
