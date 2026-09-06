@@ -64,6 +64,16 @@ worse than no sweep. Make it with `ln -s ../rulesteward-research research`; a
 worktree gets one from `.claude/hooks/worktree-create.sh`, and the SessionStart
 probe says so when it is missing.
 
+## `just live` never runs the STIG remediation on a VM
+
+`xtask/live-case.sh` has a `denyall` variant and no `stig` one, on purpose. On
+Rocky 8 the SSG remediation removes a `systemctl mask` and starts an
+**enforcing** daemon through systemd; it also pulls the newest `kernel-core`
+and makes it the default boot entry. Measured 2026-09-06. Its whole observable
+effect on a default install is `deny perm=any all : all` as the last rule,
+which the shipped `allow perm=open all : all` shadows, so `denyall` writes that
+one rule by hand and the denial set is identical to the real STIG's.
+
 ## Three tiers, and a local green is not a CI green
 
 The `check` recipe in the `justfile` carries the split: the `Stop` hook runs
@@ -89,6 +99,7 @@ one is re-deriving settled work.
 | `just check` | `lint` plus the suite; run before pushing |
 | `just corpus` | The full 121-log sweep through the `research` symlink |
 | `just musl` | The musl release build plus the static-binary assertion |
+| `just live <8\|9\|10> [vm] [base\|denyall]` | The binary against a live fapolicyd in a rootful container or on a VM (`xtask/live.sh`); local-only |
 | `./xtask/install-tools.sh` | Installs the pinned `just`, `cargo-deny`, `cargo-mutants` and `typos` into `.tools/bin`; run directly, never through `just` |
 | `./xtask/sync-fixtures.sh` | Re-vendor the fixtures out of `research`; `--check` reports drift |
 

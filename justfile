@@ -36,6 +36,12 @@ check: lint test
 corpus:
     cargo test --locked --features full-corpus
 
+# The live acceptance run: the musl binary against a real fapolicyd on a rootful
+# Rocky container, or on a VM with `vm` as the second argument. Local-only, like
+# `corpus`; reports land in target/live/.
+live VER *ARGS:
+    ./xtask/live.sh {{VER}} {{ARGS}}
+
 # The musl release build, plus the assertion that the binary is static.
 musl:
     ./xtask/musl.sh
