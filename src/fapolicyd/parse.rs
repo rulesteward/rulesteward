@@ -200,6 +200,7 @@ fn find(buf: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::fapolicyd::model::get;
+    use proptest::prelude::*;
 
     #[test]
     fn strips_debug_prefix_by_anchor_not_width() {
@@ -352,5 +353,59 @@ mod tests {
             r.subject_get(b"exe"),
             Some(b"/tmp/gaps/spaced bash".to_vec())
         );
+    }
+
+    /// The forward direction of `unescape`, written independently from the daemon's
+    /// escaper as `unescape`'s doc comment describes it: the ten `sh_set` bytes take a
+    /// backslash, every byte below 32 becomes a backslash and three octal digits, and
+    /// everything else is raw. Writing the rule twice is what makes the round trip
+    /// evidence — a shared helper would only prove the code agrees with itself. The
+    /// reverse property (`escape(unescape(v)) == v`) is not valid, because `unescape`
+    /// is not injective: `\x` and `x` both yield `x`.
+    fn escape(value: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &b in value {
+            if br#""'`$\!()| "#.contains(&b) {
+                out.push(b'\\');
+                out.push(b);
+            } else if b < 0x20 {
+                out.push(b'\\');
+                out.push(b'0' + (b >> 6));
+                out.push(b'0' + ((b >> 3) & 7));
+                out.push(b'0' + (b & 7));
+            } else {
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2048))]
+
+        /// No input, however malformed, may panic the pipeline. Every result is
+        /// discarded: the property is the absence of a panic, not the value.
+        #[test]
+        fn parse_never_panics(v in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let _ = strip_prefix(&v);
+            let _ = strip_ansi(&v);
+            let _ = is_noise(&v);
+            let _ = is_corrupt_field_name(&v);
+            let _ = is_denial(&parse(&v));
+        }
+
+        /// Every branch of `unescape` consumes at least as many bytes as it emits.
+        #[test]
+        fn unescape_never_grows(v in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            prop_assert!(unescape(&v).len() <= v.len());
+        }
+
+        // D5: the survey read `\400`..`\777` aliasing through `n as u8` on 4b06bb8. On
+        // this tree only `\000`..`\037` decode and the fold is `u8`, so the aliasing is
+        // unreachable; this property and `octal_decoding_stops_at_037` pin that.
+        #[test]
+        fn unescape_inverts_escape(v in proptest::collection::vec(any::<u8>(), 0..512)) {
+            prop_assert_eq!(unescape(&escape(&v)), v);
+        }
     }
 }

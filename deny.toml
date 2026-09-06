@@ -26,6 +26,10 @@ wildcards = "deny"
 # Same reason as [licenses] include-dev: the duplicate-version check must see the
 # proptest dev subtree, which it does not by default.
 multiple-versions-include-dev = true
+# dev-only: getrandom. proptest 1.11 pulls both 0.3.4 (via rand_core 0.9) and 0.4.3
+# (via tempfile 3.27); neither is reachable from the shipped binary and neither
+# version is ours to unify. Skipped by name so every other duplicate still denies.
+skip = [{ crate = "getrandom", reason = "dev-only, two versions inside proptest's subtree" }]
 
 [sources]
 unknown-registry = "deny"
