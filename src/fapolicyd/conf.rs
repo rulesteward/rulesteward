@@ -30,18 +30,6 @@ pub fn syslog_format(conf: &[u8]) -> Option<Vec<String>> {
     None
 }
 
-/// `format_value`'s uid/gid branch dereferences `subj` with no NULL check on Rocky
-/// 9/10, which is a SIGSEGV; on Rocky 8 an empty gid set leaves the buffer
-/// unterminated, so the field carries heap bytes that can include a space and break
-/// field splitting. Either way the host is misconfigured and we say so.
-pub fn hazardous_fields(fields: &[String]) -> Vec<&str> {
-    fields
-        .iter()
-        .filter(|f| *f == "uid" || *f == "gid")
-        .map(String::as_str)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,11 +51,5 @@ mod tests {
     #[test]
     fn commented_out_key_does_not_count() {
         assert!(syslog_format(b"#syslog_format = dec,:,path\n").is_none());
-    }
-
-    #[test]
-    fn flags_uid_and_gid_as_host_hazards() {
-        let f = syslog_format(b"syslog_format = rule,dec,uid,gid,:,path\n").unwrap();
-        assert_eq!(hazardous_fields(&f), vec!["uid", "gid"]);
     }
 }

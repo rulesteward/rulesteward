@@ -1,9 +1,9 @@
 //! The pipeline. Pure: bytes in, bytes and diagnostics out.
 
+use super::emit;
 use super::model::{self, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
-use super::{conf, emit};
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
@@ -40,7 +40,14 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
     let mut out = Outcome::default();
 
     if let Some(fields) = syslog_format {
-        for f in conf::hazardous_fields(fields) {
+        // `format_value`'s uid/gid branch dereferences `subj` with no NULL check on
+        // Rocky 9/10, which is a SIGSEGV; on Rocky 8 an empty gid set leaves the buffer
+        // unterminated, so the field carries heap bytes that can include a space and
+        // break field splitting. Either way the host is misconfigured and we say so.
+        for f in fields
+            .iter()
+            .filter(|f| matches!(f.as_str(), "uid" | "gid"))
+        {
             out.diagnostics.push(Diagnostic {
                 line: None,
                 msg: format!(
@@ -259,6 +266,19 @@ mod tests {
     /// The shipped format names `trust`; this record stops at `ftype`.
     const SHORT: &[u8] =
         b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/tmp/x ftype=text/plain\n";
+
+    #[test]
+    fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
+        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")));
+        assert_eq!(o.diagnostics.len(), 2, "{}", stderr(&o));
+        assert!(
+            o.diagnostics.iter().all(|d| d.line.is_none()),
+            "{}",
+            stderr(&o)
+        );
+        assert!(o.diagnostics[0].msg.contains("uid="), "{}", stderr(&o));
+        assert!(o.diagnostics[1].msg.contains("gid="), "{}", stderr(&o));
+    }
 
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
