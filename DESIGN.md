@@ -495,7 +495,11 @@ fails to start on next boot (`emitter-constraints.md:14`).
   (`emitter-constraints.md:79`). And there is no CLI way to check what loaded —
   `fapolicyd-cli --list` does not parse rules at all, it echoes lines with a
   counter and will happily print an attribute the parser dropped
-  (`edge-cases.md:121`).
+  (`edge-cases.md:121`). The same note also says the file must sort before the
+  file holding the rule that denied, because `rules.d/` merges in filename order
+  and the first match wins: measured 2026-09-06 on Rocky 8, 9 and 10, a rule at
+  `50-` was inert against a `30-patterns.rules` denial and the identical file at
+  `00-` took effect.
 
 ### 8.2 Quoting
 
@@ -630,7 +634,11 @@ the tool, so a research capture whose interesting record only appears inside a
 
 ## 11. Parked for v2
 
-- audit2why: the `fagenrules` merge order and mapping `rule=N` back to a rule
+- audit2why, in two parts:
+  - mapping `rule=N` to the `rules.d/` file it came from and recommending a
+    filename for the emitted rule (#11, the v2 half of it)
+  - refusing to suggest at all for a `pattern=` or subject-only rule, such as the
+    shipped `pattern=ld_so` deny (#10)
 - journald input
 - `--apply`
 - JSON output
