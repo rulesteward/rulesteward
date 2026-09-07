@@ -28,19 +28,18 @@ pub fn render(s: &Suggestion) -> Vec<u8> {
         // supply has to become: a guessed one would be skipped at match time and make
         // the rule broader than written.
         Suggestion::Rule { perm, exe, path } => {
-            let mut out = b"allow perm=".to_vec();
-            out.extend_from_slice(perm);
-            match exe {
-                Some(exe) => {
-                    out.extend_from_slice(b" exe=");
-                    out.extend_from_slice(exe);
-                }
-                None => out.extend_from_slice(b" all"),
-            }
-            out.extend_from_slice(b" : path=");
-            out.extend_from_slice(path);
-            out.push(b'\n');
-            out
+            let subj = exe
+                .as_ref()
+                .map_or(b" all".to_vec(), |e| [b" exe=", e.as_slice()].concat());
+            [
+                b"allow perm=",
+                perm.as_slice(),
+                &subj,
+                b" : path=",
+                path,
+                b"\n",
+            ]
+            .concat()
         }
     }
 }

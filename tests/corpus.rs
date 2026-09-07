@@ -43,7 +43,7 @@ fn every_capture_is_either_acted_on_or_explained() {
         let denials = input
             .split(|&b| b == b'\n')
             .filter(|l| !l.trim_ascii_start().starts_with(b"#"))
-            .filter(|l| find(l, b"dec=deny").is_some())
+            .filter(|l| l.windows(8).any(|w| w == b"dec=deny"))
             .count();
 
         let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
@@ -94,11 +94,4 @@ fn every_capture_is_either_acted_on_or_explained() {
         logs.len(),
         failures.join("\n")
     );
-}
-
-fn find(buf: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > buf.len() {
-        return None;
-    }
-    (0..=buf.len() - needle.len()).find(|&i| buf[i..].starts_with(needle))
 }

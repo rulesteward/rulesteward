@@ -8,5 +8,5 @@
 # names it has already used, so the record has duplicate keys, no ` : ` separator and
 # therefore no object side and no path=. The right answer is a diagnostic, not a
 # suggestion. The ANSI bytes in the level prefix are real bytes, not the two-character
-# spelling, so strip_ansi is exercised on the way in.
+# spelling, and they sit ahead of the `]: ` anchor, so strip_prefix drops them.
 09/06/26 00:14:12 [ [34mDEBUG[0m ]: rule=2 dec=deny_audit perm=open auid=1000 sessionid=49 pid=1284 ppid=1283 trust=1 comm=runuser exe=/usr/sbin/runuser rule=2 dec=deny_audit perm=open auid=1000 sessionid=49 pid=1284 ppid=1283 trust=1 comm=runuser exe=/usr/sbin/runuser rule=2

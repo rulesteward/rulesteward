@@ -1,8 +1,3 @@
-[workspace]
-# One member today (D4). The module tree under src/fapolicyd/ is already shaped
-# like the eventual crate tree, so the split is a move, not a redesign.
-members = []
-
 [package]
 name = "rulesteward"
 version = "0.1.0"

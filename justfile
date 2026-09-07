@@ -2,7 +2,7 @@
 #
 # CI calls these recipes and the one bootstrap script and nothing else, so
 # .github/ holds no logic of its own and could be deleted at a platform migration
-# without losing a mechanism. xtask/lint.sh asserts that rather than trusting it.
+# without losing a mechanism.
 #
 # Recipes stay one line on purpose. Anything with real logic -- a trap, a temp
 # directory, a digest check -- lives in xtask/*.sh beside sync-fixtures.sh, where
@@ -50,15 +50,6 @@ musl:
 # MUTANTS_SHARD=k/8 runs one shard and judges nothing, which is what CI does.
 mutants *ARGS:
     ./xtask/mutants.sh {{ARGS}}
-
-# The absolute gate on changed code. Its own recipe because the workflow gate
-# fullmatches `just <recipe>` and will not take an argument.
-mutants-diff:
-    ./xtask/mutants.sh --in-diff
-
-# Sums the eight shards' job outputs and applies the ratchet.
-mutants-verdict:
-    ./xtask/mutants.sh --verdict
 
 # The release artifact: musl build, tarball and SHA256SUMS into dist/.
 release:

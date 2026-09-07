@@ -22,26 +22,6 @@ pub fn strip_prefix(line: &[u8]) -> &[u8] {
     }
 }
 
-/// Remove ANSI SGR sequences. The daemon colourises the log level, not the payload,
-/// but the escapes sit inside the region we measure for truncation.
-pub fn strip_ansi(line: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(line.len());
-    let mut i = 0;
-    while i < line.len() {
-        if line[i] == 0x1b && line.get(i + 1) == Some(&b'[') {
-            i += 2;
-            while i < line.len() && !(0x40..=0x7e).contains(&line[i]) {
-                i += 1;
-            }
-            i += 1; // the final byte
-        } else {
-            out.push(line[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
 /// `dec=` is the only reliable denial test; "it appeared in the stream" is not one.
 /// A default install emits only `deny_audit`, but a corpus with plain `deny`,
 /// `deny_syslog` and `deny_log` rules produces all four, and full `--debug` carries
@@ -223,12 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn strips_ansi() {
-        let coloured = b"[ \x1b[34mDEBUG\x1b[0m ]: rule=1";
-        assert_eq!(strip_ansi(coloured), b"[ DEBUG ]: rule=1");
-    }
-
-    #[test]
     fn splits_subject_from_object() {
         let r = parse(b"rule=1 dec=deny_audit exe=/usr/bin/bash : path=/tmp/x trust=0");
         assert_eq!(get(&r.subject, b"exe"), Some(b"/usr/bin/bash".to_vec()));
@@ -388,7 +362,6 @@ mod tests {
         #[test]
         fn parse_never_panics(v in proptest::collection::vec(any::<u8>(), 0..4096)) {
             let _ = strip_prefix(&v);
-            let _ = strip_ansi(&v);
             let _ = is_noise(&v);
             let _ = is_corrupt_field_name(&v);
             let _ = is_denial(&parse(&v));
