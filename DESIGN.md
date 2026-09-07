@@ -318,6 +318,21 @@ host means *"would have been denied"*, which is a materially different statement
 from *"was blocked"* — and the record itself cannot tell you which
 (`daemon-config.md:56`).
 
+**A permissive capture reports the pre-exec image after a denied exec.** Every
+record a process emits after a *denied* execute still carries the old image as
+`exe=`: the daemon's subject cache holds it until the exec is permitted, and
+permissive mode never permits it. Measured 2026-09-06 on Rocky 8 (1.3.2), 9 and
+10 (1.4.5), in containers and on VMs: running the loader as `tester` through
+`runuser` logged `exe=/usr/sbin/runuser` on the loader's execute denial and on
+the 9 to 23 opens that followed; once the execute was allowed, the same opens
+logged `exe=/usr/lib64/ld-linux-x86-64.so.2`, and every
+`allow perm=open exe=/usr/sbin/runuser : path=...` rule v1 had emitted stopped
+matching. A `Rule` derived from such a record is scoped to the wrong `exe`:
+applying it clears the execute denial and a fresh set of denials appears under
+the new one. v1 emits the record's own `exe` and does not rewrite it (§7: every
+emitted attribute carried that value in the record), so the answer is to re-run
+on the next capture. Parked as #12.
+
 **`uid` or `gid` in `syslog_format` is a host hazard, reported from the conf
 read.** `format_value`'s uid/gid list branch dereferences `subj` with no NULL
 check, which a unit test shows dying on SIGSEGV on Rocky 9/10; Rocky 8 cannot
@@ -639,6 +654,9 @@ the tool, so a research capture whose interesting record only appears inside a
     filename for the emitted rule (#11, the v2 half of it)
   - refusing to suggest at all for a `pattern=` or subject-only rule, such as the
     shipped `pattern=ld_so` deny (#10)
+- rewriting `exe=` for records that follow a denied exec of the same `pid`
+  (#12); needs #10 first, because under the shipped `pattern=ld_so` deny no
+  `exe` would resolve anything
 - journald input
 - `--apply`
 - JSON output
