@@ -138,7 +138,7 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
         });
     }
 
-    // D12: both warnings belong to the run, not to a line, and both describe ways a
+    // D12: these warnings belong to the run, not to a line, and each describes a way a
     // rule silently does nothing on a real host.
     if rules_emitted {
         out.diagnostics.push(Diagnostic {
@@ -154,6 +154,15 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
             msg: "validate the rules file before reloading and check the daemon \
                   afterwards: fapolicyd-cli --reload-rules exits 0 even when the reload \
                   crashed the daemon or left it allowing everything"
+                .into(),
+        });
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            msg: "the file must sort before the file holding the rule that denied: rules.d/ \
+                  is merged in filename order and the first match wins, so a rule at 50- \
+                  never reaches a denial from 30-patterns.rules; rule=N in the record is \
+                  that rule's position in compiled.rules with %set lines dropped, and \
+                  fagenrules --check shows the merged order"
                 .into(),
         });
     }
@@ -374,7 +383,7 @@ mod tests {
         b"dec=deny_audit perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls trust=1\n";
 
     #[test]
-    fn a_trusted_denial_emits_a_rule_and_both_host_notices() {
+    fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
         let o = analyze(TRUSTED, None);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
@@ -383,6 +392,7 @@ mod tests {
         let text = stderr(&o);
         assert!(text.contains("rules.d/ has no effect"), "{text}");
         assert!(text.contains("--reload-rules exits 0"), "{text}");
+        assert!(text.contains("sort before"), "{text}");
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
             "the notices belong to the run, not to a line: {text}"
