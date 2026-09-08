@@ -18,8 +18,13 @@ build() {
     ./xtask/musl.sh
     local tag="${GITHUB_REF_NAME:-$(git describe --tags --always)}"
     mkdir -p dist
-    tar -czf "dist/rulesteward-$tag-x86_64-unknown-linux-musl.tar.gz" \
-        -C target/x86_64-unknown-linux-musl/release rulesteward
+    # Pin every field tar and gzip would otherwise take from the filesystem or
+    # the clock: --mtime the member timestamp, --owner/--group/--numeric-owner
+    # the ownership, --sort=name the member order, gzip -n the header timestamp
+    # and name (#18).
+    tar --mtime=@0 --owner=0 --group=0 --numeric-owner --sort=name \
+        -C target/x86_64-unknown-linux-musl/release -cf - rulesteward \
+        | gzip -n > "dist/rulesteward-$tag-x86_64-unknown-linux-musl.tar.gz"
     (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
 }
 
