@@ -203,6 +203,16 @@ mod tests {
     }
 
     #[test]
+    fn journal_short_double_prefix_yields_the_same_record() {
+        // journalctl -o short on Rocky 9/10, measured 2026-09-08 (#19): journalctl's
+        // own prefix ahead of the daemon's. strip_prefix cuts at the FIRST `]: ` and
+        // fields() drops the leftover date and level as tokens without an `=`.
+        let short = b"Sep 08 07:03:28 rocky9-box fapolicyd[75381]: 09/08/2026 07:03:28 [ DEBUG ]: rule=13 dec=deny_audit perm=execute auid=1000 pid=75399 exe=/usr/sbin/runuser : path=/tmp/live/probe-grep ftype=application/x-executable trust=0";
+        let bare = b"rule=13 dec=deny_audit perm=execute auid=1000 pid=75399 exe=/usr/sbin/runuser : path=/tmp/live/probe-grep ftype=application/x-executable trust=0";
+        assert_eq!(parse(strip_prefix(short)), parse(bare));
+    }
+
+    #[test]
     fn splits_subject_from_object() {
         let r = parse(b"rule=1 dec=deny_audit exe=/usr/bin/bash : path=/tmp/x trust=0");
         assert_eq!(get(&r.subject, b"exe"), Some(b"/usr/bin/bash".to_vec()));

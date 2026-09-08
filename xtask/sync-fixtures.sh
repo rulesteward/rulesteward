@@ -34,6 +34,7 @@ FIXTURES=(
   "rocky8-base-edge-paths.log:all"                             # escaping, path=??, 511 cap
   "rocky8-base-gaps.log:all"                                   # Rocky 8: no prefix at all
   "rocky9-base-gaps.log:all"                                   # Rocky 9 framing, same shape as 10
+  "rocky9-journal-live-vm-short.log:all"                       # journalctl -o short: double prefix
   "rocky10-base-gaps.log:all"                                  # ANSI prefix, spaces in paths
   "rocky10-base-syslog-format.log:all"                         # subject trust=1, object trust=0
   "rocky10-base-syslog-framing-syslog-raw.log:head:200"        # syslog framing, daemon PID
