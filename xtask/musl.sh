@@ -16,6 +16,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TARGET=x86_64-unknown-linux-musl
 cd "$REPO"
+
+# Registry crates carry their absolute source path into panic locations, and
+# `strip = true` removes debug info but not file!() strings. Map both roots to
+# fixed names so CI and a local checkout produce the same bytes (#18).
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$REPO=/src"
+
 cargo build --release --target "$TARGET"
 
 bin="target/$TARGET/release/rulesteward"
