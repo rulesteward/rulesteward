@@ -12,6 +12,11 @@
 # fp_setup_stig: on Rocky 8 the SSG remediation removes a systemd mask and
 # starts an ENFORCING daemon. The `denyall` variant is the STIG's whole
 # observable effect, written by hand.
+#
+# The `journal` variant is VM-only and replaces fp_start and both apply passes:
+# it runs the daemon under systemd with a --debug-deny drop-in and captures the
+# same denials through every journalctl output mode, to settle how the tool
+# reads a journal capture rather than a redirected stderr log.
 set -u
 # shellcheck source=/dev/null
 source /harvest/lib.sh
@@ -50,6 +55,68 @@ trigger() {
     as_tester /lib64/ld-linux-x86-64.so.2 /usr/bin/grep -c x /etc/hostname
     command sleep 4
 }
+
+if [ "${HARVEST_VARIANT:-base}" = "journal" ]; then
+    [ "${VM_RUN:-}" = 1 ] || fail "journal variant needs systemd: VM only"
+    # An enforcing daemon started through systemd locks the host, and unlike
+    # fp_start there is no --permissive on the command line to fall back on.
+    grep -qE '^permissive\s*=\s*1' /etc/fapolicyd/fapolicyd.conf ||
+        fail "permissive is not 1; refusing systemctl start"
+
+    mkdir -p /etc/systemd/system/fapolicyd.service.d
+    # --debug-deny skips become_daemon() (fapolicyd.c guards it with
+    # `if (!debug_mode)`), so the shipped Type=forking unit would wait for a
+    # parent that never exits and kill the daemon on timeout. Type=simple, no
+    # PIDFile, and ExecStart cleared before it is reset -- only Type=oneshot
+    # accepts more than one ExecStart, so appending a second one would fail.
+    printf '[Service]\nType=simple\nPIDFile=\nExecStart=\nExecStart=/usr/sbin/fapolicyd --debug-deny\n' \
+        > /etc/systemd/system/fapolicyd.service.d/rulesteward.conf
+    systemctl daemon-reload
+
+    # `@<seconds>` is systemd's epoch timestamp form (systemd.time(7)); it
+    # bounds every journalctl read below to this run.
+    SINCE=@$(date +%s)
+    systemctl start fapolicyd || fail "systemctl start"
+    for _ in $(seq 1 300); do
+        journalctl -u fapolicyd --since="$SINCE" -o cat | grep -q "Starting to listen" && break
+        systemctl is-active -q fapolicyd || fail "daemon died before listening"
+        command sleep 2
+    done
+    journalctl -u fapolicyd --since="$SINCE" -o cat | grep -q "Starting to listen" ||
+        fail "daemon never listened"
+
+    echo "== unit =="
+    systemctl show fapolicyd -p Type -p MainPID -p StandardOutput -p StandardError -p SyslogLevelPrefix
+
+    trigger
+    command sleep 4
+
+    J="/out/${FIXTURE_NAME:-live}.journal"
+    journalctl -u fapolicyd --since="$SINCE" -o short    > "$J.short"
+    journalctl -u fapolicyd --since="$SINCE" -o short -a > "$J.short-a"
+    journalctl -u fapolicyd --since="$SINCE" -o cat      > "$J.cat"
+    journalctl -u fapolicyd --since="$SINCE" -o cat -a   > "$J.cat-a"
+    journalctl -u fapolicyd --since="$SINCE" -o json     > "$J.json"
+    # rsyslog is installed on all three VMs, so the same records land here too.
+    [ -f /var/log/messages ] && cp /var/log/messages "/out/${FIXTURE_NAME:-live}.messages"
+
+    # Q5: does the tool read a journal capture the way it reads the stderr log?
+    for m in cat cat-a; do
+        echo "== rulesteward fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf < journal.$m =="
+        $RS fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf \
+            < "$J.$m" > /tmp/rs.out 2> /tmp/rs.err
+        echo "exit=$?"
+        echo "-- stdout --"; cat /tmp/rs.out
+        echo "-- stderr --"; cat /tmp/rs.err
+    done
+    echo "== denials in journal.cat-a =="; grep -c 'dec=deny' "$J.cat-a"
+
+    systemctl stop fapolicyd
+    for f in "$J.short" "$J.short-a" "$J.cat" "$J.cat-a" "$J.json"; do
+        [ -s "$f" ] || fail "empty capture $f"
+    done
+    echo "PASS"; exit 0
+fi
 
 PID=$(fp_start /tmp/deny.log) || fail fp_start
 # fp_start stops waiting after 120 s but still returns the pid. A VM start

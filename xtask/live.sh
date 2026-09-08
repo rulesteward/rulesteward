@@ -2,8 +2,11 @@
 # The live acceptance run: the musl binary against a real fapolicyd, on a rootful
 # Rocky container or on a Rocky VM over ssh.
 #
-#   xtask/live.sh <8|9|10> [base|denyall]        container
-#   xtask/live.sh <8|9|10> vm [base|denyall]     VM, host `rockyN` from ~/.ssh/config
+#   xtask/live.sh <8|9|10> [base|denyall]                container
+#   xtask/live.sh <8|9|10> vm [base|denyall|journal]     VM, host `rockyN` from ~/.ssh/config
+#
+# `journal` runs the daemon under systemd with a --debug-deny drop-in and
+# captures every journalctl output mode; it needs systemd, so it is VM-only.
 #
 # Local-only, like `just corpus`: it needs rootful podman (fanotify needs
 # CAP_SYS_ADMIN in the initial user namespace, so rootless cannot work) or a
@@ -19,12 +22,13 @@
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall]}"
+VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall|journal]}"
 shift
 MODE=container
 [ "${1:-}" = "vm" ] && { MODE=vm; shift; }
 VARIANT="${1:-base}"
-case "$VARIANT" in base|denyall) ;; *) die "variant is base or denyall, not $VARIANT" ;; esac
+case "$VARIANT" in base|denyall|journal) ;; *) die "variant is base, denyall or journal, not $VARIANT" ;; esac
+[ "$VARIANT" = journal ] && [ "$MODE" = container ] && die "journal needs systemd: use  live.sh $VER vm journal"
 
 LIB="$REPO/research/docs/harvest/lib.sh"
 [ -f "$LIB" ] || die "research/docs/harvest/lib.sh is missing: make the symlink with  ln -s ../rulesteward-research research"
@@ -76,6 +80,12 @@ ssh_ "
   sudo flock -n $LOCK env FIXTURE_NAME='$NAME' HARVEST_VARIANT='$VARIANT' HARVEST_ARG='' \
        VM_RUN=1 timeout 1800 bash /harvest/case.sh
   rc=\$?
+  # The journal variant's systemd drop-in, removed whether or not the case got
+  # that far: stop first, so the unit systemd stops is the one it started.
+  sudo systemctl stop fapolicyd 2>/dev/null
+  sudo rm -f /etc/systemd/system/fapolicyd.service.d/rulesteward.conf
+  sudo rmdir /etc/systemd/system/fapolicyd.service.d 2>/dev/null
+  sudo systemctl daemon-reload
   sudo pkill -9 -x fapolicyd 2>/dev/null
   # Copy THEN swap: a restore that rm -rf's first and fails on the copy leaves
   # the host with no /etc/fapolicyd at all.
@@ -91,13 +101,19 @@ ssh_ "
 RC=$?
 set -e
 ssh_ 'sudo cat /out/*.log' > "$OUT/$NAME.log" || true
+# Everything else the case wrote -- the journal variant's captures -- pulled the
+# same way staging pushed, before the /out cleanup below.
+rm -rf "${OUT:?}/$NAME" && mkdir -p "$OUT/$NAME"
+ssh_ 'sudo tar -C /out -cf - .' | tar -C "$OUT/$NAME" -xf - || true
 
 # Assert the restore, do not assume it.
 if ssh_ 'sudo test -d /etc/fapolicyd/rules.d && ! sudo test -d /etc/fapolicyd/rules.d.off &&
          ! sudo test -f /etc/fapolicyd/rules.d/00-rulesteward.rules &&
          ! sudo test -f /etc/fapolicyd/rules.d/50-rulesteward.rules &&
-         ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules' \
-   && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null'; then
+         ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules &&
+         ! sudo test -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf' \
+   && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null' \
+   && ! ssh_ 'systemctl is-active -q fapolicyd'; then
     ssh_ "sudo rm -rf $ORIG /harvest /out"
     log "   restore asserted on $HOST"
 else
