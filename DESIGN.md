@@ -34,7 +34,8 @@ It reads fapolicyd denial records on stdin and writes fapolicyd rules or
 **Non-goals for v1**, named so re-entry is cheap:
 
 - no `rules.d` or `compiled.rules` reading, and therefore no audit2why (§2, D3)
-- no journald or auditd input
+- no journald API or auditd input; `journalctl` output on stdin is covered by
+  §5
 - no `--apply`; the tool never mutates anything
 - no RPM awareness
 - no generalisation beyond the exact path in the record
@@ -82,8 +83,8 @@ leading prefix, strips ANSI escapes, and filters on `dec=` beginning with
 syslog text, at the cost of one prefix-stripping stage that has to exist anyway
 because Rocky 8 and Rocky 9/10 do not frame the same way (`differences.md:91`).
 
-Journald is out. It is a second input path with its own framing and its own
-process access, and it buys nothing that a pipe does not.
+Journald needs no second input path: `journalctl -o cat` on stdin is the
+daemon's stderr verbatim (§5).
 
 ### D3 — the audit2why half is out of v1
 
@@ -253,6 +254,23 @@ rsyslog timestamp, a hostname, and `fapolicyd[<PID>]: ` — and that PID is the
 NOTICE per daemon start, unconditionally, regardless of the user's rules
 (`log-format.md:265`). It is not a denial and not a problem to report.
 
+**The journal carries the same bytes.** Under `--debug-deny` the daemon's
+stderr reaches the journal as `_TRANSPORT=stdout`, `PRIORITY=6`, one record per
+line, with no `[N blob data]` on any release (measured 2026-09-08,
+`log-format.md` "journald"). The recommended invocation is
+
+```
+journalctl -u fapolicyd -o cat | rulesteward fapolicyd analyze \
+  --conf /etc/fapolicyd/fapolicyd.conf
+```
+
+because `-o cat` is the daemon's stderr verbatim. `-a` is not needed: `cat`
+equals `cat -a`. `-o short` puts journalctl's own prefix ahead of the daemon's
+on Rocky 9/10 and parses anyway, because the anchor above cuts at the *first*
+`]: ` and the leftover date and level are tokens without an `=`. `-o json` is
+not a line format — `MESSAGE` becomes a byte array when a record carries an
+escape byte — so do not pipe it.
+
 **Filter on `dec=` beginning with `deny`.** "It appeared in the stream" is not a
 denial test. A default install emits only `deny_audit`, but a corpus with plain
 `deny`, `deny_syslog` and `deny_log` rules produces all four, and full `--debug`
@@ -261,8 +279,8 @@ additionally carries `dec=no-opinion` records that are **not** denials
 matched* — it is not rule index 0, and must never be parsed as a valid index.
 It cannot appear in `--debug-deny` at all: `process_event()` only logs once the
 result carries the DENY bit, which `NO_OPINION` lacks. It becomes reachable the
-moment full `--debug` or journald input is added, which is why the filter is
-written now rather than when it is needed.
+moment full `--debug` is added, which is why the filter is written now rather
+than when it is needed.
 
 **Records are one per line.** Newlines inside values become `\012`
 (`log-format.md:96`). There is exactly one exception, and it is §6's corrupted
@@ -271,7 +289,10 @@ record.
 **Do not add a syslog input mode expecting it to be useful.** Only decisions
 carrying the syslog bit reach `/var/log/messages`: `deny_audit` and bare `deny`
 produce **nothing** there (`log-format.md:231`) — and `deny_audit` is the
-default. Recorded here so the discovery is not made twice.
+default. What does appear in `/var/log/messages` under `--debug-deny` is
+rsyslog's `imjournal` copying the journal back out, escapes rendered as `#033`,
+so the route to those records is the journal above and not the syslog bit.
+Recorded here so the discovery is not made twice.
 
 ---
 
@@ -657,7 +678,6 @@ the tool, so a research capture whose interesting record only appears inside a
 - rewriting `exe=` for records that follow a denied exec of the same `pid`
   (#12); needs #10 first, because under the shipped `pattern=ld_so` deny no
   `exe` would resolve anything
-- journald input
 - `--apply`
 - JSON output
 - generalisation beyond exact paths (`dir=` prefix suggestions)
