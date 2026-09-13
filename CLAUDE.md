@@ -86,8 +86,8 @@ a green `just check` as a green pipeline.
 Commit subjects are imperative and sentence-length; the body says what was
 **measured** and corrects prior wrong claims by name. No `Co-Authored-By`
 trailer, ever. Tooling that was already investigated and rejected -- with
-measurements -- is written up in `docs/research/tooling-2026-09-06.md` in the
-`rulesteward-research` repo. Read the rejection before reopening it; re-proposing
+measurements -- is documented in the private research repo. Read the rejection
+before reopening it; re-proposing
 one is re-deriving settled work.
 
 ## Commands
