@@ -20,7 +20,16 @@ cd "$REPO"
 # Registry crates carry their absolute source path into panic locations, and
 # `strip = true` removes debug info but not file!() strings. Map both roots to
 # fixed names so CI and a local checkout produce the same bytes (#18).
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$REPO=/src"
+#
+# The host `cc` still drives the link, but `-fuse-ld=lld` with `-B` makes it pick
+# the `ld.lld` the toolchain ships, so the linker is pinned by rust-toolchain.toml
+# like rustc and the crt objects. Without it the host `ld` decides the section
+# layout, and v0.2.0 measured 64 bytes and a `.plt.got` between EL10 and
+# ubuntu-latest (#18). `-Clink-self-contained=+linker` is the same thing and is
+# unstable in 1.98.0; switch when it stabilises.
+sysroot="$(rustc --print sysroot)"
+host="$(rustc -vV | sed -n 's/^host: //p')"
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$REPO=/src -Clink-arg=-fuse-ld=lld -Clink-arg=-B$sysroot/lib/rustlib/$host/bin/gcc-ld"
 
 cargo build --release --target "$TARGET"
 
@@ -32,3 +41,5 @@ case "$out" in
     *"statically linked"*) log "$bin: statically linked" ;;
     *) die "$bin is not statically linked: $out" ;;
 esac
+# In the CI log this is the sum a local build at the same commit compares against (#18).
+log "$(sha256sum "$bin")"
