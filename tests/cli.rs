@@ -221,3 +221,69 @@ fn a_missing_conf_degrades_with_a_diagnostic_and_never_exits() {
     assert!(err.contains("511-byte"), "should name the fallback: {err}");
     assert!(out.contains("--file add"), "should still emit: {out}");
 }
+
+/// #10, end to end: the rules file is found beside the conf, `rule=5` resolves to the
+/// shipped `pattern=ld_so` deny, and every record it denied is refused.
+#[test]
+fn a_conf_finds_the_rules_beside_it_and_refuses_the_subject_side_rule() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    );
+    let input = std::fs::read(fixture).expect("read fixture");
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], &input);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "fapolicyd-cli --file add '/tmp/live/probe-grep'\n\
+         fapolicyd-cli --update\n\
+         fapolicyd-cli --file add '/tmp/live/probe-lib.so'\n\
+         fapolicyd-cli --update\n",
+        "stderr: {err}"
+    );
+    assert!(
+        !out.contains("/etc/hostname"),
+        "the trust add issue #10 is about: {out}"
+    );
+    assert!(!out.contains("allow perm="), "{out}");
+    // Nothing is truncated, the conf names a syslog_format, the rules read succeeds and
+    // no rule is suggested, so the refusal is the only thing left to say.
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("rule=5"), "{err}");
+    assert!(err.contains("pattern=ld_so"), "{err}");
+}
+
+#[test]
+fn no_conf_skips_the_rules_read_too() {
+    // One flag governs both reads, which is also the golden tests' premise.
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    );
+    let input = std::fs::read(fixture).expect("read fixture");
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "analyze"], &input);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("/etc/hostname"), "{out}");
+}
+
+#[test]
+fn the_legacy_rules_file_wins_over_compiled_rules() {
+    // The daemon opens fapolicyd.rules first and falls back only when that open fails,
+    // so rule 1 here is the legacy file's ld_so deny and not compiled.rules' allow —
+    // which would instead have emitted the trust add plus a mismatch note.
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/legacy/fapolicyd.conf"
+    );
+    let denial = b"rule=1 dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x trust=0\n";
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], denial);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.is_empty(), "the legacy rule 1 refuses: {out}");
+    // The two reads are independent: the conf itself does not exist.
+    assert!(err.contains("cannot read"), "{err}");
+    assert!(err.contains("fapolicyd.conf"), "{err}");
+}

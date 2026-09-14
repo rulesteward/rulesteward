@@ -33,7 +33,11 @@ const ABSENT_NOTE: &str = "no trust= in this record, so the trust-vs-rule decisi
 /// Subject trust never reaches here. It takes a different path, `subj ? subj->uval : 0`,
 /// and has no sentinel — an unavailable subject trust prints as `0`, indistinguishable
 /// from genuinely untrusted. No branch may depend on telling those apart.
-pub fn decide(record: &Record) -> Decision {
+///
+/// `exe_override` is §6's stale `exe=`: the path of a preceding denied exec by the same
+/// pid, which is the image the emitted rule has to be scoped to. `None` means "use the
+/// record's own", which is every other case.
+pub fn decide(record: &Record, exe_override: Option<&[u8]>) -> Decision {
     let Some(path) = record.object_get(b"path") else {
         return Decision::Explain(
             "record carries no path=; nothing to act on (this is a syslog_format \
@@ -72,7 +76,7 @@ pub fn decide(record: &Record) -> Decision {
                 note: None,
             }
         }
-        Trust::Trusted => rule(record, path, Arm::Trusted),
+        Trust::Trusted => rule(record, path, Arm::Trusted, exe_override),
         // The value is displayed, not compared: `from_object` maps every non-0/1 value
         // here, so hard-coding `9` would misreport a `trust=?` record.
         Trust::Unavailable => Decision::Explain(format!(
@@ -80,7 +84,7 @@ pub fn decide(record: &Record) -> Decision {
              file's trust state is unknown rather than untrusted",
             String::from_utf8_lossy(trust.as_deref().unwrap_or_default())
         )),
-        Trust::Absent => rule(record, path, Arm::TrustAbsent),
+        Trust::Absent => rule(record, path, Arm::TrustAbsent, exe_override),
     }
 }
 
@@ -89,7 +93,7 @@ pub fn decide(record: &Record) -> Decision {
 /// Refusals live here and not in `emit` because they change the decision, not the
 /// rendering: on an unrepresentable path the `trust`-absent arm still has a legal
 /// answer, and the trusted arm has none.
-fn rule(record: &Record, path: Vec<u8>, arm: Arm) -> Decision {
+fn rule(record: &Record, path: Vec<u8>, arm: Arm, exe_override: Option<&[u8]>) -> Decision {
     let note = match arm {
         Arm::Trusted => None,
         Arm::TrustAbsent => Some(ABSENT_NOTE.to_string()),
@@ -143,10 +147,16 @@ fn rule(record: &Record, path: Vec<u8>, arm: Arm) -> Decision {
     // Absent, `?` or unrepresentable means no subject constraint at all, which renders
     // as `all`. A wrong `exe=` would be worse: the evaluator skips a constraint it
     // cannot match, so a broken one silently widens the rule.
-    let exe = record.subject_get(b"exe").filter(|e| {
+    // The override goes through the same filter as a logged value, so a substituted
+    // exe with a space, a colon or a control byte becomes `all` — never the stale
+    // logged one, which is known wrong.
+    let logged = exe_override
+        .map(<[u8]>::to_vec)
+        .or_else(|| record.subject_get(b"exe"));
+    let exe = logged.filter(|e| {
         !e.is_empty()
             && !matches!(e.as_slice(), b"?" | b"??")
-            && !e.iter().any(|b| *b == b' ' || *b == b':' || *b < 0x20)
+            && !e.iter().any(|b| *b <= b' ' || *b == b':')
     });
 
     Decision::Emit {
@@ -165,7 +175,7 @@ mod tests {
     use crate::fapolicyd::parse;
 
     fn decide_line(line: &[u8]) -> Decision {
-        decide(&parse::parse(line))
+        decide(&parse::parse(line), None)
     }
 
     fn emitted(d: &Decision) -> (&Suggestion, Option<&str>) {
@@ -267,6 +277,23 @@ mod tests {
             }
         );
         assert!(note.is_some());
+    }
+
+    #[test]
+    fn an_exe_that_cannot_be_written_in_a_rule_becomes_all_even_when_overridden() {
+        let record =
+            parse::parse(b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x trust=1");
+        let exe_of = |o: &[u8]| match decide(&record, Some(o)) {
+            Decision::Emit {
+                suggestion: Suggestion::Rule { exe, .. },
+                ..
+            } => exe,
+            _ => panic!("expected a rule"),
+        };
+        assert_eq!(exe_of(b"/tmp/a b"), None, "a space ends the token");
+        assert_eq!(exe_of(b"/tmp/a:b"), None, "a colon is the side separator");
+        assert_eq!(exe_of(b"/tmp/a\x01b"), None, "a control byte");
+        assert_eq!(exe_of(b"/tmp/ab"), Some(b"/tmp/ab".to_vec()));
     }
 
     #[test]

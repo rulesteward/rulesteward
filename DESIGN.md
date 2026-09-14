@@ -326,6 +326,15 @@ D1's ladder. It degrades; it never fails the run.
    guess, not a partial suggestion. The failure being prevented is emitting
    `--file add` for a prefix of a real path.
 
+**The same conf read locates the rules file.** `open_file()` opens
+`/etc/fapolicyd/fapolicyd.rules` and falls back to
+`/etc/fapolicyd/compiled.rules` only when that open fails (`rule-files.md`), so
+the tool reads them in that order out of the conf's own directory and never
+merges `rules.d/`, which the daemon never opens either. `--no-conf` disables
+this read along with the other one. A failed read is a note and the run
+continues with the v1 decision; there is no unparsable case, because every line
+that is not blank, `#` or `%set` is a rule by definition.
+
 Three further input hazards belong in the same layer.
 
 **`--check-config` is not a validity oracle.** It validates `fapolicyd.conf`
@@ -350,9 +359,12 @@ logged `exe=/usr/lib64/ld-linux-x86-64.so.2`, and every
 `allow perm=open exe=/usr/sbin/runuser : path=...` rule v1 had emitted stopped
 matching. A `Rule` derived from such a record is scoped to the wrong `exe`:
 applying it clears the execute denial and a fresh set of denials appears under
-the new one. v1 emits the record's own `exe` and does not rewrite it (§7: every
-emitted attribute carried that value in the record), so the answer is to re-run
-on the next capture. Parked as #12.
+the new one. The tool rewrites it: a record whose `pid` and `exe` match a preceding
+denied `perm=execute` of P is scoped to `exe=P`, and every such line carries a
+stderr note naming P. The exec record itself and the companion open of P keep
+the logged `exe` — once the exec is permitted neither of them is logged at all,
+which pass 3 of `fixtures/live/rocky10-base-live-vm.log` shows directly. Fixed
+in #12.
 
 **`uid` or `gid` in `syslog_format` is a host hazard, reported from the conf
 read.** `format_value`'s uid/gid list branch dereferences `subj` with no NULL
@@ -401,10 +413,22 @@ of bare pipe-safe stdout, and cannot be a `fapolicyd.trust` record. A space in a
 path is fine for a trust entry, because the trust file is parsed right to left
 (`trust-db.md:78`), and only rules refuse it.
 
+**A subject-side rule refuses before the table is reached.** When the rules file
+is available and a record's `rule=N` names a `deny*` rule whose object side is
+exactly `all` and whose subject side names anything beyond `perm=` and `all` —
+the shipped `deny_audit perm=any pattern=ld_so : all` is the case that matters —
+the denial is a property of the subject and nothing this tool can emit will
+resolve it. Every arm of the table is skipped, `trust=0` included: suggesting
+`fapolicyd-cli --file add /etc/hostname` for a loader denial is advice a careful
+user should refuse (#10).
+
 **The rule v1 emits** is `allow perm=<perm> exe=<exe> : path=<path>`, with `all`
 on the subject side when `exe=` is absent or `?`. Every attribute emitted must
 have carried a real value in that record, because an attribute the event cannot
-supply makes the rule broader, not narrower (§8.1). Rules are keyed on
+supply makes the rule broader, not narrower (§8.1) — with one exception, §6's
+stale `exe=`: after a denied `perm=execute` of P by the same `pid` and `exe`,
+the emitted `exe=` is P, which carried a real value in that pid's exec record in
+the same log, and every substituted line carries a stderr note naming it (#12). Rules are keyed on
 `(perm, exe, path)`; trust entries on `path` alone.
 
 Object trust is `obj ? (obj->val ? 1 : 0) : 9` (`log-format.md:189`). The
@@ -489,6 +513,9 @@ fails to start on next boot (`emitter-constraints.md:14`).
   succeeded and nothing more (`emitter-constraints.md:22`).
 - **Every attribute is advisory, so never rely on one to narrow a rule** unless
   it has been seen carrying a value in a real denial record for that event class.
+  The substituted `exe=` of §6 meets that test through the exec record of the
+  same pid, and is filtered exactly like a logged one: if it cannot be written
+  in a rule it becomes `all`, never the stale value.
   The evaluator is fail-open by construction: `check_subject` and `check_object`
   both skip a constraint whose value the event could not supply, so an
   unavailable attribute makes the rule *broader*, never narrower
@@ -670,14 +697,8 @@ the tool, so a research capture whose interesting record only appears inside a
 
 ## 11. Parked for v2
 
-- audit2why, in two parts:
-  - mapping `rule=N` to the `rules.d/` file it came from and recommending a
-    filename for the emitted rule (#11, the v2 half of it)
-  - refusing to suggest at all for a `pattern=` or subject-only rule, such as the
-    shipped `pattern=ld_so` deny (#10)
-- rewriting `exe=` for records that follow a denied exec of the same `pid`
-  (#12); needs #10 first, because under the shipped `pattern=ld_so` deny no
-  `exe` would resolve anything
+- audit2why: mapping `rule=N` to the `rules.d/` file it came from and
+  recommending a filename for the emitted rule (#11, the v2 half of it)
 - `--apply`
 - JSON output
 - generalisation beyond exact paths (`dir=` prefix suggestions)

@@ -10,6 +10,7 @@ pub mod emit;
 pub mod model;
 pub mod parse;
 pub mod policy;
+pub mod rules;
 
 pub use analyze::analyze;
 

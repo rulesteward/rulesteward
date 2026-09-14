@@ -4,6 +4,8 @@ use super::emit;
 use super::model::{self, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
+use super::rules;
+use std::collections::HashMap;
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
@@ -35,8 +37,16 @@ pub struct Outcome {
 ///    it — reporting silence from a daemon that is allowing everything.
 /// 7. the denial filter, from the parsed subject side.
 /// 8. truncation, which decides whether the record may be acted on at all.
-/// 9. the policy decision, then emission and deduplication.
-pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
+/// 9. the `rule=` lookup, which can refuse the record outright (§7).
+/// 10. the policy decision, then emission and deduplication.
+///
+/// `rules` is `None` when there is no rules file — no `--conf`, or the read failed —
+/// which is v1's behaviour exactly.
+pub fn analyze(
+    input: &[u8],
+    syslog_format: Option<&[String]>,
+    rules: Option<&[rules::Rule]>,
+) -> Outcome {
     let mut out = Outcome::default();
 
     if let Some(fields) = syslog_format {
@@ -69,6 +79,12 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
     // match different rules and the emitted rule depends on the perm.
     let mut seen: Vec<Suggestion> = Vec::new();
     let mut rules_emitted = false;
+    // Records naming a rule the file does not have, or one that is an allow: either
+    // says the rules file is not this log's, and both are reported once for the run.
+    let mut unmatched = 0usize;
+    // §6's stale `exe=`, keyed by the pid bytes as logged. One run is one capture, so
+    // it is never reset, and it dies with the loop.
+    let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
 
     for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
         let line = Some(i + 1);
@@ -111,10 +127,63 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
             continue;
         }
 
-        match policy::decide(&record) {
+        // Unconditionally and first, so the pid map is maintained even for records the
+        // rule lookup below goes on to refuse.
+        let stale = stale_exe(&mut execs, &record);
+
+        if let Some(rules) = rules {
+            match record
+                .subject_get(b"rule")
+                .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
+                // rule=0 is "no rule matched" and is never an index (§5).
+                .filter(|n| *n != 0)
+                .map(|n| (n, rules::find(rules, n)))
+            {
+                Some((n, Some(r))) if r.refuses() => {
+                    out.diagnostics.push(Diagnostic {
+                        line,
+                        msg: format!(
+                            "rule={n} is subject-side ({}): it constrains the process, not the \
+                             file, so no path rule and no trust entry can resolve this denial; \
+                             emitting nothing",
+                            r.text
+                        ),
+                    });
+                    continue;
+                }
+                Some((_, Some(r))) if !r.decision.starts_with("deny") => unmatched += 1,
+                Some((_, None)) => unmatched += 1,
+                // A deny rule that does not refuse, or a record with no `rule=` field at
+                // all. The second is not a mismatch: the compiled default syslog_format
+                // does name `rule`, but a host conf that drops it would otherwise make
+                // every record a mismatch.
+                _ => {}
+            }
+        }
+
+        match policy::decide(&record, stale.as_deref()) {
             Decision::Emit { suggestion, note } => {
                 if let Some(msg) = note {
                     out.diagnostics.push(Diagnostic { line, msg });
+                }
+                // A `TrustFile` carries no exe, so the note would be noise there.
+                if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
+                    let pid =
+                        String::from_utf8_lossy(&record.subject_get(b"pid").unwrap_or_default())
+                            .into_owned();
+                    let execed = String::from_utf8_lossy(execed).into_owned();
+                    let logged =
+                        String::from_utf8_lossy(&record.subject_get(b"exe").unwrap_or_default())
+                            .into_owned();
+                    out.diagnostics.push(Diagnostic {
+                        line,
+                        msg: format!(
+                            "exe= is stale: pid {pid} was denied perm=execute of {execed}, and \
+                             the daemon keeps the pre-exec image until that exec is permitted; \
+                             the emitted rule is scoped to exe={execed} and not to the logged \
+                             exe={logged}"
+                        ),
+                    });
                 }
                 if seen.contains(&suggestion) {
                     continue;
@@ -134,6 +203,17 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
                 "{corrupt} records have unreadable field names: the daemon failed a rules \
                  reload and is now running with NO rules, allowing everything. Restart it. \
                  Nothing below can be trusted as a denial record"
+            ),
+        });
+    }
+
+    if unmatched > 0 {
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            msg: format!(
+                "the rules file does not match this log: {unmatched} record(s) name a rule= the \
+                 file does not contain, or one that is an allow rule; those records were \
+                 analysed without it"
             ),
         });
     }
@@ -173,6 +253,39 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
     // full of allow records is a successful run with nothing to suggest.
     out.consumed_but_unparseable = content > 0 && parsed == 0;
     out
+}
+
+/// DESIGN.md §6's stale `exe=`: the image a later record's rule must be scoped to, or
+/// `None`.
+///
+/// Substitute when the record has the same `pid` and the same `exe` as a preceding
+/// denied `perm=execute` of P, and is neither that exec record nor an access to P
+/// itself. Last exec denial per pid wins.
+fn stale_exe(execs: &mut HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>, record: &Record) -> Option<Vec<u8>> {
+    // Rocky 9/10 render an unavailable pid as `0`, ambiguous with a real zero, and
+    // Rocky 8 as `-2`. An unavailable pid is not a process identity and may not key a
+    // substitution across two unrelated processes.
+    let pid = record
+        .subject_get(b"pid")
+        .filter(|p| !matches!(p.as_slice(), b"0" | b"-2" | b"?"))?;
+    let exe = record.subject_get(b"exe")?;
+    let path = record.object_get(b"path");
+
+    if record.subject_get(b"perm").as_deref() == Some(b"execute") {
+        if let Some(p) = path {
+            execs.insert(pid, (exe, p));
+        }
+        // The exec record itself keeps the exe it was logged with: once the exec is
+        // permitted it is not logged at all, so there is nothing to rewrite it to.
+        return None;
+    }
+    let (pre_exec, execed) = execs.get(&pid)?;
+    // So does the companion open of the exec'd path, for the same reason.
+    (exe == *pre_exec && path.as_deref() != Some(execed.as_slice())).then(|| execed.clone())
+    // ponytail: pids are matched as logged, so a pid reused after the denied exec
+    // inside one capture inherits the substitution. The same-exe test is the guard —
+    // the reusing process has to be running the same image for it to fire. Key on
+    // (pid, ppid, auid) or add a record-count window only if a capture ever shows it.
 }
 
 /// Steps 3 and 4 of DESIGN.md §6's ladder. `Some(reason)` means do not emit.
@@ -278,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
-        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")));
+        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None);
         assert_eq!(o.diagnostics.len(), 2, "{}", stderr(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -292,7 +405,7 @@ mod tests {
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(SHORT, Some(&f));
+        let o = analyze(SHORT, Some(&f), None);
         assert!(o.stdout.is_empty(), "must emit nothing when truncated");
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1));
@@ -308,12 +421,12 @@ mod tests {
         // Step 4 is the fallback, not a cross-check: this record is nowhere near the
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
-        let o = analyze(SHORT, None);
+        let o = analyze(SHORT, None, None);
         assert!(!stderr(&o).contains("truncated"), "{}", stderr(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
-        let o = analyze(&whole, None);
+        let o = analyze(&whole, None, None);
         assert!(o.diagnostics.is_empty(), "{}", stderr(&o));
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
     }
@@ -327,7 +440,7 @@ mod tests {
         assert!(f.len() > MAX_SYSLOG_FIELDS);
         let record = b"rule=1 dec=deny_audit perm=open auid=1000 sessionid=1 pid=1 ppid=1 \
                        trust=1 comm=bash exe=/usr/bin/bash\n";
-        let o = analyze(record, Some(&f));
+        let o = analyze(record, Some(&f), None);
         assert!(
             !stderr(&o).contains("truncated"),
             "not truncated: {}",
@@ -341,7 +454,7 @@ mod tests {
         let mut record = head.to_vec();
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
-        let o = analyze(&record, None);
+        let o = analyze(&record, None, None);
         assert!(o.stdout.is_empty());
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert!(
@@ -356,7 +469,7 @@ mod tests {
         let mut input = SHORT.to_vec();
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(&input, Some(&f));
+        let o = analyze(&input, Some(&f), None);
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
         assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", stderr(&o));
@@ -368,7 +481,7 @@ mod tests {
         // make this line indistinguishable from a live denial.
         let input = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
-        let o = analyze(input, None);
+        let o = analyze(input, None, None);
         assert!(
             o.stdout.is_empty(),
             "{}",
@@ -384,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
-        let o = analyze(TRUSTED, None);
+        let o = analyze(TRUSTED, None, None);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
@@ -402,7 +515,7 @@ mod tests {
     #[test]
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
-        let o = analyze(&input, None);
+        let o = analyze(&input, None, None);
         assert_eq!(o.stdout.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
@@ -414,7 +527,7 @@ mod tests {
             .unwrap()
             .replace("perm=execute", "perm=open");
         let input = [TRUSTED, open.as_bytes()].concat();
-        let o = analyze(&input, None);
+        let o = analyze(&input, None, None);
         assert_eq!(
             String::from_utf8(o.stdout).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
@@ -425,12 +538,155 @@ mod tests {
     #[test]
     fn a_denial_with_no_trust_field_emits_a_rule_and_says_why() {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
-        let o = analyze(input, None);
+        let o = analyze(input, None, None);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
         );
         let text = stderr(&o);
         assert!(text.contains("line 1: no trust= in this record"), "{text}");
+    }
+
+    /// The shipped `pattern=ld_so` deny, alone, at its real number.
+    fn ld_so() -> Vec<rules::Rule> {
+        vec![rules::Rule::new(
+            5,
+            "deny_audit perm=any pattern=ld_so : all",
+        )]
+    }
+
+    #[test]
+    fn a_subject_side_rule_refuses_in_every_trust_arm() {
+        // The refusal sits BEFORE the decision table, so no arm of it runs — including
+        // `trust=0`, which is the /etc/hostname trust add issue #10 is about.
+        for tail in ["trust=0", "trust=1", ""] {
+            let input = format!(
+                "rule=5 dec=deny_audit perm=open pid=1 exe=/usr/sbin/runuser : \
+                 path=/etc/hostname {tail}\n"
+            );
+            let o = analyze(input.as_bytes(), None, Some(&ld_so()));
+            assert!(
+                o.stdout.is_empty(),
+                "{tail}: {}",
+                String::from_utf8_lossy(&o.stdout)
+            );
+            let text = stderr(&o);
+            assert!(text.contains("pattern=ld_so"), "{tail}: {text}");
+            assert!(text.contains("rule=5 is subject-side"), "{tail}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
+        let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&ld_so()));
+        assert_eq!(
+            String::from_utf8(o.stdout.clone()).unwrap(),
+            "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
+        );
+        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert_eq!(o.diagnostics[0].line, None);
+        assert!(
+            o.diagnostics[0].msg.contains("does not match this log"),
+            "{}",
+            stderr(&o)
+        );
+    }
+
+    #[test]
+    fn an_allow_rule_for_a_denial_record_counts_as_a_mismatch() {
+        // A denial record's rule= is a deny rule by construction, so landing on an
+        // allow is the same evidence as landing on nothing.
+        let rules = vec![rules::Rule::new(
+            3,
+            "allow perm=open exe=/usr/bin/rpm : all",
+        )];
+        let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&rules));
+        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
+        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert!(
+            o.diagnostics[0].msg.contains("does not match this log"),
+            "{}",
+            stderr(&o)
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_rule_field_is_not_a_mismatch() {
+        // A host conf whose syslog_format drops `rule` would otherwise report every
+        // record as a mismatch.
+        let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&ld_so()));
+        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
+        assert!(!stderr(&o).contains("does not match"), "{}", stderr(&o));
+    }
+
+    const LOADER: &str = "/usr/lib64/ld-linux-x86-64.so.2";
+
+    #[test]
+    fn records_after_a_denied_exec_are_scoped_to_the_exec_d_path() {
+        // The fixture's shape: the loader's execute denial, the companion open of the
+        // loader, a further open under the same pid and exe, and an unrelated pid.
+        let input = format!(
+            "dec=deny_audit perm=execute pid=75414 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n\
+             dec=deny_audit perm=open pid=999 exe=/usr/sbin/runuser : path=/usr/bin/sed trust=1\n"
+        );
+        let o = analyze(input.as_bytes(), None, None);
+        assert_eq!(
+            String::from_utf8(o.stdout.clone()).unwrap(),
+            format!(
+                "allow perm=execute exe=/usr/sbin/runuser : path={LOADER}\n\
+                 allow perm=open exe=/usr/sbin/runuser : path={LOADER}\n\
+                 allow perm=open exe={LOADER} : path=/usr/bin/grep\n\
+                 allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/sed\n"
+            )
+        );
+        let text = stderr(&o);
+        assert_eq!(
+            text.matches("exe= is stale").count(),
+            1,
+            "one substituted line, one note: {text}"
+        );
+        assert!(text.contains("line 3: exe= is stale"), "{text}");
+    }
+
+    #[test]
+    fn an_unavailable_pid_never_matches() {
+        // Rocky 9/10 log an unavailable pid as `0`, which is not a process identity.
+        let input = format!(
+            "dec=deny_audit perm=execute pid=0 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=0 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n"
+        );
+        let o = analyze(input.as_bytes(), None, None);
+        assert!(
+            String::from_utf8(o.stdout.clone())
+                .unwrap()
+                .contains("allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/grep"),
+            "{}",
+            String::from_utf8_lossy(&o.stdout)
+        );
+        assert!(!stderr(&o).contains("exe= is stale"), "{}", stderr(&o));
+    }
+
+    #[test]
+    fn a_substituted_exe_that_cannot_be_written_becomes_all() {
+        // The override goes THROUGH the exe filter, so an unwritable one is `all` and
+        // never the stale logged value, which is known wrong.
+        let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
+        let o = analyze(input, None, None);
+        let text = String::from_utf8(o.stdout.clone()).unwrap();
+        assert!(
+            text.contains("allow perm=open all : path=/usr/bin/grep"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("/usr/sbin/runuser : path=/usr/bin/grep"),
+            "{text}"
+        );
     }
 }
