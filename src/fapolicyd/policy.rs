@@ -150,14 +150,14 @@ fn rule(record: &Record, path: Vec<u8>, arm: Arm, exe_override: Option<&[u8]>) -
     // The override goes through the same filter as a logged value, so a substituted
     // exe with a space, a colon or a control byte becomes `all` — never the stale
     // logged one, which is known wrong.
-    let exe = exe_override
+    let logged = exe_override
         .map(<[u8]>::to_vec)
-        .or_else(|| record.subject_get(b"exe"))
-        .filter(|e| {
-            !e.is_empty()
-                && !matches!(e.as_slice(), b"?" | b"??")
-                && !e.iter().any(|b| *b == b' ' || *b == b':' || *b < 0x20)
-        });
+        .or_else(|| record.subject_get(b"exe"));
+    let exe = logged.filter(|e| {
+        !e.is_empty()
+            && !matches!(e.as_slice(), b"?" | b"??")
+            && !e.iter().any(|b| *b <= b' ' || *b == b':')
+    });
 
     Decision::Emit {
         suggestion: Suggestion::Rule { perm, exe, path },
@@ -277,6 +277,23 @@ mod tests {
             }
         );
         assert!(note.is_some());
+    }
+
+    #[test]
+    fn an_exe_that_cannot_be_written_in_a_rule_becomes_all_even_when_overridden() {
+        let record =
+            parse::parse(b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x trust=1");
+        let exe_of = |o: &[u8]| match decide(&record, Some(o)) {
+            Decision::Emit {
+                suggestion: Suggestion::Rule { exe, .. },
+                ..
+            } => exe,
+            _ => panic!("expected a rule"),
+        };
+        assert_eq!(exe_of(b"/tmp/a b"), None, "a space ends the token");
+        assert_eq!(exe_of(b"/tmp/a:b"), None, "a colon is the side separator");
+        assert_eq!(exe_of(b"/tmp/a\x01b"), None, "a control byte");
+        assert_eq!(exe_of(b"/tmp/ab"), Some(b"/tmp/ab".to_vec()));
     }
 
     #[test]
