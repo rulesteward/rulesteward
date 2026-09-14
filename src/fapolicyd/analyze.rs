@@ -4,6 +4,7 @@ use super::emit;
 use super::model::{self, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
+use super::rules;
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
@@ -35,8 +36,16 @@ pub struct Outcome {
 ///    it — reporting silence from a daemon that is allowing everything.
 /// 7. the denial filter, from the parsed subject side.
 /// 8. truncation, which decides whether the record may be acted on at all.
-/// 9. the policy decision, then emission and deduplication.
-pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
+/// 9. the `rule=` lookup, which can refuse the record outright (§7).
+/// 10. the policy decision, then emission and deduplication.
+///
+/// `rules` is `None` when there is no rules file — no `--conf`, or the read failed —
+/// which is v1's behaviour exactly.
+pub fn analyze(
+    input: &[u8],
+    syslog_format: Option<&[String]>,
+    rules: Option<&[rules::Rule]>,
+) -> Outcome {
     let mut out = Outcome::default();
 
     if let Some(fields) = syslog_format {
@@ -69,6 +78,9 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
     // match different rules and the emitted rule depends on the perm.
     let mut seen: Vec<Suggestion> = Vec::new();
     let mut rules_emitted = false;
+    // Records naming a rule the file does not have, or one that is an allow: either
+    // says the rules file is not this log's, and both are reported once for the run.
+    let mut unmatched = 0usize;
 
     for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
         let line = Some(i + 1);
@@ -111,6 +123,36 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
             continue;
         }
 
+        if let Some(rules) = rules {
+            match record
+                .subject_get(b"rule")
+                .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
+                // rule=0 is "no rule matched" and is never an index (§5).
+                .filter(|n| *n != 0)
+                .map(|n| (n, rules::find(rules, n)))
+            {
+                Some((n, Some(r))) if r.refuses() => {
+                    out.diagnostics.push(Diagnostic {
+                        line,
+                        msg: format!(
+                            "rule={n} is subject-side ({}): it constrains the process, not the \
+                             file, so no path rule and no trust entry can resolve this denial; \
+                             emitting nothing",
+                            r.text
+                        ),
+                    });
+                    continue;
+                }
+                Some((_, Some(r))) if !r.decision.starts_with("deny") => unmatched += 1,
+                Some((_, None)) => unmatched += 1,
+                // A deny rule that does not refuse, or a record with no `rule=` field at
+                // all. The second is not a mismatch: the compiled default syslog_format
+                // does name `rule`, but a host conf that drops it would otherwise make
+                // every record a mismatch.
+                _ => {}
+            }
+        }
+
         match policy::decide(&record) {
             Decision::Emit { suggestion, note } => {
                 if let Some(msg) = note {
@@ -134,6 +176,17 @@ pub fn analyze(input: &[u8], syslog_format: Option<&[String]>) -> Outcome {
                 "{corrupt} records have unreadable field names: the daemon failed a rules \
                  reload and is now running with NO rules, allowing everything. Restart it. \
                  Nothing below can be trusted as a denial record"
+            ),
+        });
+    }
+
+    if unmatched > 0 {
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            msg: format!(
+                "the rules file does not match this log: {unmatched} record(s) name a rule= the \
+                 file does not contain, or one that is an allow rule; those records were \
+                 analysed without it"
             ),
         });
     }
@@ -278,7 +331,7 @@ mod tests {
 
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
-        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")));
+        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None);
         assert_eq!(o.diagnostics.len(), 2, "{}", stderr(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -292,7 +345,7 @@ mod tests {
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(SHORT, Some(&f));
+        let o = analyze(SHORT, Some(&f), None);
         assert!(o.stdout.is_empty(), "must emit nothing when truncated");
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1));
@@ -308,12 +361,12 @@ mod tests {
         // Step 4 is the fallback, not a cross-check: this record is nowhere near the
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
-        let o = analyze(SHORT, None);
+        let o = analyze(SHORT, None, None);
         assert!(!stderr(&o).contains("truncated"), "{}", stderr(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
-        let o = analyze(&whole, None);
+        let o = analyze(&whole, None, None);
         assert!(o.diagnostics.is_empty(), "{}", stderr(&o));
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
     }
@@ -327,7 +380,7 @@ mod tests {
         assert!(f.len() > MAX_SYSLOG_FIELDS);
         let record = b"rule=1 dec=deny_audit perm=open auid=1000 sessionid=1 pid=1 ppid=1 \
                        trust=1 comm=bash exe=/usr/bin/bash\n";
-        let o = analyze(record, Some(&f));
+        let o = analyze(record, Some(&f), None);
         assert!(
             !stderr(&o).contains("truncated"),
             "not truncated: {}",
@@ -341,7 +394,7 @@ mod tests {
         let mut record = head.to_vec();
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
-        let o = analyze(&record, None);
+        let o = analyze(&record, None, None);
         assert!(o.stdout.is_empty());
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert!(
@@ -356,7 +409,7 @@ mod tests {
         let mut input = SHORT.to_vec();
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(&input, Some(&f));
+        let o = analyze(&input, Some(&f), None);
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
         assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", stderr(&o));
@@ -368,7 +421,7 @@ mod tests {
         // make this line indistinguishable from a live denial.
         let input = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
-        let o = analyze(input, None);
+        let o = analyze(input, None, None);
         assert!(
             o.stdout.is_empty(),
             "{}",
@@ -384,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
-        let o = analyze(TRUSTED, None);
+        let o = analyze(TRUSTED, None, None);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
@@ -402,7 +455,7 @@ mod tests {
     #[test]
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
-        let o = analyze(&input, None);
+        let o = analyze(&input, None, None);
         assert_eq!(o.stdout.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
@@ -414,7 +467,7 @@ mod tests {
             .unwrap()
             .replace("perm=execute", "perm=open");
         let input = [TRUSTED, open.as_bytes()].concat();
-        let o = analyze(&input, None);
+        let o = analyze(&input, None, None);
         assert_eq!(
             String::from_utf8(o.stdout).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
@@ -425,12 +478,89 @@ mod tests {
     #[test]
     fn a_denial_with_no_trust_field_emits_a_rule_and_says_why() {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
-        let o = analyze(input, None);
+        let o = analyze(input, None, None);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
         );
         let text = stderr(&o);
         assert!(text.contains("line 1: no trust= in this record"), "{text}");
+    }
+
+    /// The shipped `pattern=ld_so` deny, alone, at its real number.
+    fn ld_so() -> Vec<rules::Rule> {
+        vec![rules::Rule::new(
+            5,
+            "deny_audit perm=any pattern=ld_so : all",
+        )]
+    }
+
+    #[test]
+    fn a_subject_side_rule_refuses_in_every_trust_arm() {
+        // The refusal sits BEFORE the decision table, so no arm of it runs — including
+        // `trust=0`, which is the /etc/hostname trust add issue #10 is about.
+        for tail in ["trust=0", "trust=1", ""] {
+            let input = format!(
+                "rule=5 dec=deny_audit perm=open pid=1 exe=/usr/sbin/runuser : \
+                 path=/etc/hostname {tail}\n"
+            );
+            let o = analyze(input.as_bytes(), None, Some(&ld_so()));
+            assert!(
+                o.stdout.is_empty(),
+                "{tail}: {}",
+                String::from_utf8_lossy(&o.stdout)
+            );
+            let text = stderr(&o);
+            assert!(text.contains("pattern=ld_so"), "{tail}: {text}");
+            assert!(text.contains("rule=5 is subject-side"), "{tail}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
+        let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&ld_so()));
+        assert_eq!(
+            String::from_utf8(o.stdout.clone()).unwrap(),
+            "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
+        );
+        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert_eq!(o.diagnostics[0].line, None);
+        assert!(
+            o.diagnostics[0].msg.contains("does not match this log"),
+            "{}",
+            stderr(&o)
+        );
+    }
+
+    #[test]
+    fn an_allow_rule_for_a_denial_record_counts_as_a_mismatch() {
+        // A denial record's rule= is a deny rule by construction, so landing on an
+        // allow is the same evidence as landing on nothing.
+        let rules = vec![rules::Rule::new(
+            3,
+            "allow perm=open exe=/usr/bin/rpm : all",
+        )];
+        let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&rules));
+        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
+        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert!(
+            o.diagnostics[0].msg.contains("does not match this log"),
+            "{}",
+            stderr(&o)
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_rule_field_is_not_a_mismatch() {
+        // A host conf whose syslog_format drops `rule` would otherwise report every
+        // record as a mismatch.
+        let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
+        let o = analyze(input, None, Some(&ld_so()));
+        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
+        assert!(!stderr(&o).contains("does not match"), "{}", stderr(&o));
     }
 }

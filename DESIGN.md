@@ -326,6 +326,15 @@ D1's ladder. It degrades; it never fails the run.
    guess, not a partial suggestion. The failure being prevented is emitting
    `--file add` for a prefix of a real path.
 
+**The same conf read locates the rules file.** `open_file()` opens
+`/etc/fapolicyd/fapolicyd.rules` and falls back to
+`/etc/fapolicyd/compiled.rules` only when that open fails (`rule-files.md`), so
+the tool reads them in that order out of the conf's own directory and never
+merges `rules.d/`, which the daemon never opens either. `--no-conf` disables
+this read along with the other one. A failed read is a note and the run
+continues with the v1 decision; there is no unparsable case, because every line
+that is not blank, `#` or `%set` is a rule by definition.
+
 Three further input hazards belong in the same layer.
 
 **`--check-config` is not a validity oracle.** It validates `fapolicyd.conf`
@@ -400,6 +409,15 @@ byte are refusals: a control byte splits the emitted line, breaking §9's promis
 of bare pipe-safe stdout, and cannot be a `fapolicyd.trust` record. A space in a
 path is fine for a trust entry, because the trust file is parsed right to left
 (`trust-db.md:78`), and only rules refuse it.
+
+**A subject-side rule refuses before the table is reached.** When the rules file
+is available and a record's `rule=N` names a `deny*` rule whose object side is
+exactly `all` and whose subject side names anything beyond `perm=` and `all` —
+the shipped `deny_audit perm=any pattern=ld_so : all` is the case that matters —
+the denial is a property of the subject and nothing this tool can emit will
+resolve it. Every arm of the table is skipped, `trust=0` included: suggesting
+`fapolicyd-cli --file add /etc/hostname` for a loader denial is advice a careful
+user should refuse (#10).
 
 **The rule v1 emits** is `allow perm=<perm> exe=<exe> : path=<path>`, with `all`
 on the subject side when `exe=` is absent or `?`. Every attribute emitted must
@@ -670,11 +688,8 @@ the tool, so a research capture whose interesting record only appears inside a
 
 ## 11. Parked for v2
 
-- audit2why, in two parts:
-  - mapping `rule=N` to the `rules.d/` file it came from and recommending a
-    filename for the emitted rule (#11, the v2 half of it)
-  - refusing to suggest at all for a `pattern=` or subject-only rule, such as the
-    shipped `pattern=ld_so` deny (#10)
+- audit2why: mapping `rule=N` to the `rules.d/` file it came from and
+  recommending a filename for the emitted rule (#11, the v2 half of it)
 - rewriting `exe=` for records that follow a denied exec of the same `pid`
   (#12); needs #10 first, because under the shipped `pattern=ld_so` deny no
   `exe` would resolve anything

@@ -110,16 +110,21 @@ fn run_fapolicyd_analyze(conf: Option<PathBuf>, no_conf: bool) -> ExitCode {
 
     // D1's ladder, step 1 and 2 (DESIGN.md §6). The read lives here so the libraries
     // stay pure; they receive an already-parsed field list or nothing at all.
-    let (syslog_format, conf_note) = if no_conf {
-        (None, None)
+    let (syslog_format, conf_note, rules, rules_note) = if no_conf {
+        (None, None, None, None)
     } else {
-        read_syslog_format(conf.as_deref())
+        let (f, fnote) = read_syslog_format(conf.as_deref());
+        let (r, rnote) = read_rules(conf.as_deref());
+        (f, fnote, r, rnote)
     };
 
-    let outcome = fapolicyd::analyze(&input, syslog_format.as_deref());
+    let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref());
 
     let mut err = std::io::stderr().lock();
     if let Some(note) = conf_note {
+        let _ = writeln!(err, "rulesteward: {note}");
+    }
+    if let Some(note) = rules_note {
         let _ = writeln!(err, "rulesteward: {note}");
     }
     for d in &outcome.diagnostics {
@@ -168,4 +173,54 @@ fn read_syslog_format(conf: Option<&std::path::Path>) -> (Option<Vec<String>>, O
             )),
         ),
     }
+}
+
+/// The daemon's `open_file()`: /etc/fapolicyd/fapolicyd.rules first, compiled.rules
+/// only when that open fails (research `rule-files.md`). Both from the conf's own
+/// directory, because that is where the daemon's are. rules.d/ is never read — the
+/// daemon never opens it either.
+///
+/// Nothing here is a failure and everything is a note: the packaged /etc/fapolicyd is
+/// mode 750 root:fapolicyd, so this read failing is the ordinary case. There is also no
+/// unparsable case, because every line that is not blank, `#` or `%set` is a rule.
+fn read_rules(
+    conf: Option<&std::path::Path>,
+) -> (Option<Vec<fapolicyd::rules::Rule>>, Option<String>) {
+    let path = conf.unwrap_or(std::path::Path::new(fapolicyd::DEFAULT_CONF_PATH));
+    let dir = path.parent().unwrap_or(std::path::Path::new(""));
+    let legacy = dir.join("fapolicyd.rules");
+    let compiled = dir.join("compiled.rules");
+
+    // `or_else` on the read and not on an existence test: the daemon's precedence is
+    // "the first open that succeeds", so an unreadable fapolicyd.rules falls through
+    // exactly as it does for the daemon. fapolicyd-cli --list instead refuses when both
+    // exist; we mirror the daemon, because the rule=N in the record came from it.
+    let (which, bytes) = match std::fs::read(&legacy) {
+        Ok(bytes) => (&legacy, bytes),
+        Err(_) => match std::fs::read(&compiled) {
+            Ok(bytes) => (&compiled, bytes),
+            Err(e) => {
+                return (
+                    None,
+                    Some(format!(
+                        "cannot read {} or {} ({e}); rule= will not be checked against a rule",
+                        legacy.display(),
+                        compiled.display()
+                    )),
+                );
+            }
+        },
+    };
+
+    let rules = fapolicyd::rules::parse(&bytes);
+    if rules.is_empty() {
+        return (
+            None,
+            Some(format!(
+                "{} contains no rules; rule= will not be checked against a rule",
+                which.display()
+            )),
+        );
+    }
+    (Some(rules), None)
 }
