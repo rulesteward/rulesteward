@@ -5,6 +5,7 @@ use super::model::{self, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
+use std::collections::HashMap;
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
@@ -81,6 +82,9 @@ pub fn analyze(
     // Records naming a rule the file does not have, or one that is an allow: either
     // says the rules file is not this log's, and both are reported once for the run.
     let mut unmatched = 0usize;
+    // §6's stale `exe=`, keyed by the pid bytes as logged. One run is one capture, so
+    // it is never reset, and it dies with the loop.
+    let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
 
     for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
         let line = Some(i + 1);
@@ -123,6 +127,10 @@ pub fn analyze(
             continue;
         }
 
+        // Unconditionally and first, so the pid map is maintained even for records the
+        // rule lookup below goes on to refuse.
+        let stale = stale_exe(&mut execs, &record);
+
         if let Some(rules) = rules {
             match record
                 .subject_get(b"rule")
@@ -153,10 +161,29 @@ pub fn analyze(
             }
         }
 
-        match policy::decide(&record) {
+        match policy::decide(&record, stale.as_deref()) {
             Decision::Emit { suggestion, note } => {
                 if let Some(msg) = note {
                     out.diagnostics.push(Diagnostic { line, msg });
+                }
+                // A `TrustFile` carries no exe, so the note would be noise there.
+                if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
+                    let pid =
+                        String::from_utf8_lossy(&record.subject_get(b"pid").unwrap_or_default())
+                            .into_owned();
+                    let execed = String::from_utf8_lossy(execed).into_owned();
+                    let logged =
+                        String::from_utf8_lossy(&record.subject_get(b"exe").unwrap_or_default())
+                            .into_owned();
+                    out.diagnostics.push(Diagnostic {
+                        line,
+                        msg: format!(
+                            "exe= is stale: pid {pid} was denied perm=execute of {execed}, and \
+                             the daemon keeps the pre-exec image until that exec is permitted; \
+                             the emitted rule is scoped to exe={execed} and not to the logged \
+                             exe={logged}"
+                        ),
+                    });
                 }
                 if seen.contains(&suggestion) {
                     continue;
@@ -226,6 +253,39 @@ pub fn analyze(
     // full of allow records is a successful run with nothing to suggest.
     out.consumed_but_unparseable = content > 0 && parsed == 0;
     out
+}
+
+/// DESIGN.md §6's stale `exe=`: the image a later record's rule must be scoped to, or
+/// `None`.
+///
+/// Substitute when the record has the same `pid` and the same `exe` as a preceding
+/// denied `perm=execute` of P, and is neither that exec record nor an access to P
+/// itself. Last exec denial per pid wins.
+fn stale_exe(execs: &mut HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>, record: &Record) -> Option<Vec<u8>> {
+    // Rocky 9/10 render an unavailable pid as `0`, ambiguous with a real zero, and
+    // Rocky 8 as `-2`. An unavailable pid is not a process identity and may not key a
+    // substitution across two unrelated processes.
+    let pid = record
+        .subject_get(b"pid")
+        .filter(|p| !matches!(p.as_slice(), b"0" | b"-2" | b"?"))?;
+    let exe = record.subject_get(b"exe")?;
+    let path = record.object_get(b"path");
+
+    if record.subject_get(b"perm").as_deref() == Some(b"execute") {
+        if let Some(p) = path {
+            execs.insert(pid, (exe, p));
+        }
+        // The exec record itself keeps the exe it was logged with: once the exec is
+        // permitted it is not logged at all, so there is nothing to rewrite it to.
+        return None;
+    }
+    let (pre_exec, execed) = execs.get(&pid)?;
+    // So does the companion open of the exec'd path, for the same reason.
+    (exe == *pre_exec && path.as_deref() != Some(execed.as_slice())).then(|| execed.clone())
+    // ponytail: pids are matched as logged, so a pid reused after the denied exec
+    // inside one capture inherits the substitution. The same-exe test is the guard —
+    // the reusing process has to be running the same image for it to fire. Key on
+    // (pid, ppid, auid) or add a record-count window only if a capture ever shows it.
 }
 
 /// Steps 3 and 4 of DESIGN.md §6's ladder. `Some(reason)` means do not emit.
@@ -562,5 +622,71 @@ mod tests {
         let o = analyze(input, None, Some(&ld_so()));
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
         assert!(!stderr(&o).contains("does not match"), "{}", stderr(&o));
+    }
+
+    const LOADER: &str = "/usr/lib64/ld-linux-x86-64.so.2";
+
+    #[test]
+    fn records_after_a_denied_exec_are_scoped_to_the_exec_d_path() {
+        // The fixture's shape: the loader's execute denial, the companion open of the
+        // loader, a further open under the same pid and exe, and an unrelated pid.
+        let input = format!(
+            "dec=deny_audit perm=execute pid=75414 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n\
+             dec=deny_audit perm=open pid=999 exe=/usr/sbin/runuser : path=/usr/bin/sed trust=1\n"
+        );
+        let o = analyze(input.as_bytes(), None, None);
+        assert_eq!(
+            String::from_utf8(o.stdout.clone()).unwrap(),
+            format!(
+                "allow perm=execute exe=/usr/sbin/runuser : path={LOADER}\n\
+                 allow perm=open exe=/usr/sbin/runuser : path={LOADER}\n\
+                 allow perm=open exe={LOADER} : path=/usr/bin/grep\n\
+                 allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/sed\n"
+            )
+        );
+        let text = stderr(&o);
+        assert_eq!(
+            text.matches("exe= is stale").count(),
+            1,
+            "one substituted line, one note: {text}"
+        );
+        assert!(text.contains("line 3: exe= is stale"), "{text}");
+    }
+
+    #[test]
+    fn an_unavailable_pid_never_matches() {
+        // Rocky 9/10 log an unavailable pid as `0`, which is not a process identity.
+        let input = format!(
+            "dec=deny_audit perm=execute pid=0 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
+             dec=deny_audit perm=open pid=0 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n"
+        );
+        let o = analyze(input.as_bytes(), None, None);
+        assert!(
+            String::from_utf8(o.stdout.clone())
+                .unwrap()
+                .contains("allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/grep"),
+            "{}",
+            String::from_utf8_lossy(&o.stdout)
+        );
+        assert!(!stderr(&o).contains("exe= is stale"), "{}", stderr(&o));
+    }
+
+    #[test]
+    fn a_substituted_exe_that_cannot_be_written_becomes_all() {
+        // The override goes THROUGH the exe filter, so an unwritable one is `all` and
+        // never the stale logged value, which is known wrong.
+        let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
+        let o = analyze(input, None, None);
+        let text = String::from_utf8(o.stdout.clone()).unwrap();
+        assert!(
+            text.contains("allow perm=open all : path=/usr/bin/grep"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("/usr/sbin/runuser : path=/usr/bin/grep"),
+            "{text}"
+        );
     }
 }
