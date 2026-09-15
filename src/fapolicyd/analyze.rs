@@ -251,10 +251,13 @@ pub fn analyze(
 
 /// D12's third note: where the emitted rule has to be placed for it to be reached.
 ///
-/// With `rules.d/` in hand and a `rule=` to look up, the note names the real file and a
-/// real filename. Without either — `--no-conf`, a legacy `fapolicyd.rules`, a host with
-/// no `rules.d/`, or records that carry no `rule=` — it falls back to the generic
-/// sentence, which is what every run said before the files could be read.
+/// With `rules.d/` in hand and a `rule=` to look up, the note leads with the filename to
+/// create and names the file it has to sort before. An unprefixed file sorts last, so
+/// the recommendation there is one past the last numbered prefix rather than nothing.
+/// The remaining cases lead with "none recommended" and name the constraint: a `0-`
+/// prefix, `rules.d/` disagreeing with `compiled.rules`, or no `rules.d/` read at all --
+/// `--no-conf`, a legacy `fapolicyd.rules`, or records that carry no `rule=`. How
+/// `rules.d/` merges is the same on every run and lives in `analyze --help` instead.
 ///
 /// The earliest file wins: a name that sorts before it sorts before all of them.
 fn placement_note(
@@ -263,11 +266,8 @@ fn placement_note(
     denied: &[usize],
 ) -> String {
     let Some(compiled) = compiled.filter(|_| !rules_d.is_empty() && !denied.is_empty()) else {
-        return "the file must sort before the file holding the rule that denied: rules.d/ \
-                is merged in filename order and the first match wins, so a rule at 50- \
-                never reaches a denial from 30-patterns.rules; rule=N in the record is \
-                that rule's position in compiled.rules with %set lines dropped, and \
-                fagenrules --check shows the merged order"
+        return "new file: none recommended (rules.d/ not read: --no-conf, legacy \
+                fapolicyd.rules, or unreadable)"
             .into();
     };
 
@@ -275,12 +275,10 @@ fn placement_note(
         .iter()
         .map(|&n| (n, rules_d::locate(rules_d, compiled, n)))
         .collect();
-    if let Some((n, _)) = located.iter().find(|(_, at)| at.is_none()) {
-        return format!(
-            "rules.d/ does not match compiled.rules at rule={n}: rules.d/ has changed since \
-             fagenrules last ran, so the file that denied cannot be named; run fagenrules \
-             --check before placing a file, and no filename is recommended here"
-        );
+    if located.iter().any(|(_, at)| at.is_none()) {
+        return "new file: none recommended (rules.d/ changed since fagenrules ran; run \
+                fagenrules, recapture, rerun)"
+            .into();
     }
 
     let earliest = located.iter().filter_map(|&(_, at)| at).min().unwrap_or(0);
@@ -291,19 +289,14 @@ fn placement_note(
         .map(|(n, _)| n.to_string())
         .collect();
     let subject = match numbers.as_slice() {
-        [one] => format!("rule={one} is"),
-        many => format!("rules {} are", many.join(", ")),
+        [one] => format!("rule={one}"),
+        many => format!("rules {}", many.join(", ")),
     };
-    match rules_d::recommend(name) {
-        Some(before) => format!(
-            "{subject} in rules.d/{name}: rules.d/ is merged in filename order and the first \
-             match wins, so the new file must sort before it; name it {before}"
-        ),
-        None => format!(
-            "{subject} in rules.d/{name}: rules.d/ is merged in filename order and the first \
-             match wins, so the new file must sort before it, and {name} has no numeric \
-             prefix to sort before"
-        ),
+    match rules_d::recommend(rules_d, earliest) {
+        Some(before) => {
+            format!("new file: rules.d/{before} (sorts before {name}, {subject})")
+        }
+        None => format!("new file: none recommended (nothing sorts before {name}, {subject})"),
     }
 }
 
@@ -555,7 +548,7 @@ mod tests {
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
         let text = stderr(&o);
-        assert!(text.contains("sort before"), "{text}");
+        assert!(text.contains("new file:"), "{text}");
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
             "the note belongs to the run, not to a line: {text}"
@@ -636,8 +629,28 @@ mod tests {
         let o = analyze(input, None, Some(&rules), &[]);
         let text = stderr(&o);
         assert!(o.stdout.starts_with(b"allow perm=execute"), "{text}");
-        assert!(text.contains("30-patterns.rules"), "generic note: {text}");
+        assert!(text.contains("not read"), "generic note: {text}");
         assert!(!text.contains("does not match"), "{text}");
+    }
+
+    #[test]
+    fn an_unprefixed_file_is_named_a_filename_not_declined() {
+        // `local.rules` sorts last of all, so any numbered name sorts before it.
+        let rule = rules::Rule::new(1, "deny_audit perm=execute all : all");
+        let rules_d = vec![rules_d::File {
+            name: "local.rules".into(),
+            rules: vec![rule.clone()],
+        }];
+        let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/gaps/trusted-ls trust=1\n";
+        let o = analyze(input, None, Some(&[rule]), &rules_d);
+        let text = stderr(&o);
+        assert!(
+            text.contains(
+                "new file: rules.d/1-rulesteward.rules (sorts before local.rules, rule=1)"
+            ),
+            "{text}"
+        );
     }
 
     #[test]

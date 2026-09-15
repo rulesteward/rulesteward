@@ -306,11 +306,11 @@ fn the_placement_note_names_the_rules_d_file_and_a_filename_before_it() {
         "stderr: {err}"
     );
     assert!(
-        err.contains("rule=13 is in rules.d/90-deny-execute.rules"),
+        err.contains("new file: rules.d/89-rulesteward.rules"),
         "{err}"
     );
-    assert!(err.contains("must sort before"), "{err}");
-    assert!(err.contains("89-rulesteward.rules"), "{err}");
+    assert!(err.contains("sorts before 90-deny-execute.rules"), "{err}");
+    assert!(err.contains("rule=13"), "{err}");
     assert!(
         !err.contains("30-patterns.rules"),
         "the canned example is gone: {err}"
@@ -333,11 +333,9 @@ fn rules_d_disagreeing_with_compiled_rules_recommends_no_filename() {
         out.starts_with("allow perm=execute"),
         "still emitted: {out}"
     );
-    assert!(
-        err.contains("does not match compiled.rules at rule=13"),
-        "{err}"
-    );
-    assert!(err.contains("fagenrules --check"), "{err}");
+    assert!(err.contains("none recommended"), "{err}");
+    assert!(err.contains("changed since fagenrules ran"), "{err}");
+    assert!(err.contains("recapture"), "{err}");
     assert!(
         !err.contains("-rulesteward.rules"),
         "no filename may be named: {err}"

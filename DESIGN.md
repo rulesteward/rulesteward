@@ -580,9 +580,10 @@ fails to start on next boot (`emitter-constraints.md:14`).
   and the first match wins: measured 2026-09-06 on Rocky 8, 9 and 10, a rule at
   `50-` was inert against a `30-patterns.rules` denial and the identical file at
   `00-` took effect. With `rules.d/` readable that note names the file `rule=N`
-  is in and recommends `<NN-1>-rulesteward.rules` from its prefix; with no
-  prefix to decrement, or with `rules.d/` disagreeing with `compiled.rules`, it
-  names the constraint and no filename.
+  is in and recommends `<NN-1>-rulesteward.rules` from its prefix, or one past
+  the last numbered file when it has none; with a `0-` prefix, or with
+  `rules.d/` disagreeing with `compiled.rules`, it names the constraint and no
+  filename.
 
 ### 8.2 Quoting
 
