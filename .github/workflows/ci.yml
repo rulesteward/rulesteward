@@ -124,6 +124,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: ./xtask/install-tools.sh
+      # Unpinned on purpose: install-tools.sh pins what decides the bytes of the
+      # binary, and rpmbuild only wraps a binary it never touches.
+      - run: sudo apt-get update && sudo apt-get install -y rpm
       - run: ./.tools/bin/just release
       # gh reads GH_TOKEN and nothing else; scoped to the one step that calls it.
       - env:
