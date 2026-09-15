@@ -1,0 +1,2 @@
+allow perm=open exe=/usr/bin/rpm : all
+allow perm=open exe=/usr/bin/python3.9 comm=dnf : all

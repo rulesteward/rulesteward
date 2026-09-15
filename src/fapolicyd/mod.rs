@@ -11,6 +11,7 @@ pub mod model;
 pub mod parse;
 pub mod policy;
 pub mod rules;
+pub mod rules_d;
 
 pub use analyze::analyze;
 

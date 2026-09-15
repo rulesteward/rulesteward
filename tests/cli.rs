@@ -287,3 +287,59 @@ fn the_legacy_rules_file_wins_over_compiled_rules() {
     assert!(err.contains("cannot read"), "{err}");
     assert!(err.contains("fapolicyd.conf"), "{err}");
 }
+
+/// #30, end to end: the rule that denied is looked up in the split `rules.d/`, and the
+/// suggested filename sorts before the file holding it.
+const DENIED_BY_13: &[u8] = b"rule=13 dec=deny_audit perm=execute auid=1000 pid=1 \
+exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable trust=1\n";
+
+#[test]
+fn the_placement_note_names_the_rules_d_file_and_a_filename_before_it() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out, "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n",
+        "stderr: {err}"
+    );
+    assert!(
+        err.contains("rule=13 is in rules.d/90-deny-execute.rules"),
+        "{err}"
+    );
+    assert!(err.contains("must sort before"), "{err}");
+    assert!(err.contains("89-rulesteward.rules"), "{err}");
+    assert!(
+        !err.contains("30-patterns.rules"),
+        "the canned example is gone: {err}"
+    );
+}
+
+#[test]
+fn rules_d_disagreeing_with_compiled_rules_recommends_no_filename() {
+    // drifted/rules.d/ holds 13 rules and its 13th is not compiled.rules' 13th, which
+    // is what a host looks like when fagenrules has not run since rules.d/ changed.
+    // The merged order in hand is not the one that produced `rule=13`, so naming a
+    // file from it would be a guess.
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/drifted/fapolicyd.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("allow perm=execute"),
+        "still emitted: {out}"
+    );
+    assert!(
+        err.contains("does not match compiled.rules at rule=13"),
+        "{err}"
+    );
+    assert!(err.contains("fagenrules --check"), "{err}");
+    assert!(
+        !err.contains("-rulesteward.rules"),
+        "no filename may be named: {err}"
+    );
+}

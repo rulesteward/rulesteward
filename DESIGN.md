@@ -85,17 +85,24 @@ because Rocky 8 and Rocky 9/10 do not frame the same way (`differences.md:91`).
 Journald needs no second input path: `journalctl -o cat` on stdin is the
 daemon's stderr verbatim (§5).
 
-### D3 — the rules file is read the daemon's way; fagenrules is deferred
+### D3 — the rules file is read the daemon's way; rules.d is read for its order, fagenrules never runs
 
 The daemon never reads `rules.d/` — it reads `/etc/fapolicyd/fapolicyd.rules`
 first and only falls back to `compiled.rules` (`matching-semantics.md:167`).
-The tool reads the same file the same way, out of the conf's own directory,
-and never merges `rules.d/` (§6). What that read buys in v1 is the subject-side
-refusal in §7: a `rule=N` that names a subject-only `deny*` rule stops every
-suggestion. What it does not buy is naming the `rules.d/` file a rule came
-from, because that means reproducing `fagenrules`: its `ls -1v` natural sort,
-its rule that an unprefixed file sorts last, and its fatal `%set`
-redefinition. That is deferred, not refused (§11).
+The tool resolves `rule=N` against the same file the same way, out of the
+conf's own directory, and never merges `rules.d/` into it (§6). What that read
+buys is the subject-side refusal in §7: a `rule=N` that names a subject-only
+`deny*` rule stops every suggestion.
+
+`rules.d/` is read for one further purpose, and only when `compiled.rules` was
+the file that won: to say which component file holds `rule=N`, so the emitted
+rule can be given a filename that sorts before it. That needs `fagenrules`'
+order and nothing else of it — the `ls -1v` natural sort and unprefixed files
+sorting last — because the merged set is checked back against `compiled.rules`
+by rule text rather than trusted. A disagreement means `fagenrules` has not run
+since `rules.d/` changed, so the order in hand is not the one that produced the
+record, and then no file and no filename are named at all. The fatal `%set`
+redefinition stays out: nothing here writes a component file.
 
 What survives into v1 is the warning. A rule written into `rules.d/` on a host
 that still has a legacy monolithic `fapolicyd.rules` has **zero effect and
@@ -335,7 +342,11 @@ the tool reads them in that order out of the conf's own directory and never
 merges `rules.d/`, which the daemon never opens either. `--no-conf` disables
 this read along with the other one. A failed read is a note and the run
 continues with the v1 decision; there is no unparsable case, because every line
-that is not blank, `#` or `%set` is a rule by definition.
+that is not blank, `#` or `%set` is a rule by definition. When `compiled.rules`
+is the file that won, the `rules.d/` beside it is read as well — never as rules
+to resolve `rule=N` against, only as the merge order that says which component
+file holds it (D3). That read is all-or-nothing and silent: any error is an
+empty merge and the generic placement note.
 
 Three further input hazards belong in the same layer.
 
@@ -550,10 +561,10 @@ fails to start on next boot (`emitter-constraints.md:14`).
   changes evaluation** (`matching-semantics.md:92`).
 - **Emit a trailing newline.** On Rocky 8 a `rules.d/` component file that does
   not end with a newline has its last line glued to the next file's first
-  (`emitter-constraints.md:241`). The rest of §10 there — `ls -1v` natural sort
-  so `2-x` precedes `10-x`, unprefixed files sorting last, and a `%set`
-  redefinition being fatal, so never emit a `%languages` definition — matters
-  only once something installs rather than suggests, and is parked with D3 (§11).
+  (`emitter-constraints.md:241`). Of the rest of §10 there, the `ls -1v` natural
+  sort — `2-x` before `10-x`, unprefixed files last — is what D3 reproduces to
+  name a file; a `%set` redefinition being fatal, so never emit a `%languages`
+  definition, matters only once something installs rather than suggests.
 - **Warn about `rules.d/`.** Emit the D3 warning with any rule: on a host with a
   legacy `/etc/fapolicyd/fapolicyd.rules`, a rule dropped into `rules.d/` is
   inert with no diagnostic, even after `fagenrules` runs
@@ -564,7 +575,10 @@ fails to start on next boot (`emitter-constraints.md:14`).
   file holding the rule that denied, because `rules.d/` merges in filename order
   and the first match wins: measured 2026-09-06 on Rocky 8, 9 and 10, a rule at
   `50-` was inert against a `30-patterns.rules` denial and the identical file at
-  `00-` took effect.
+  `00-` took effect. With `rules.d/` readable that note names the file `rule=N`
+  is in and recommends `<NN-1>-rulesteward.rules` from its prefix; with no
+  prefix to decrement, or with `rules.d/` disagreeing with `compiled.rules`, it
+  names the constraint and no filename.
 
 ### 8.2 Quoting
 
@@ -699,8 +713,6 @@ the tool, so a research capture whose interesting record only appears inside a
 
 ## 11. Parked for v2
 
-- audit2why: mapping `rule=N` to the `rules.d/` file it came from and
-  recommending a filename for the emitted rule (#11, the v2 half of it)
 - `--apply`
 - JSON output
 - generalisation beyond exact paths (`dir=` prefix suggestions)

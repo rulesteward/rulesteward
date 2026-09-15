@@ -1,0 +1,1 @@
+allow perm=any all : ftype=text/x-shellscript

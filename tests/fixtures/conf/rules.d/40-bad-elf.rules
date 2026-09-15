@@ -1,0 +1,1 @@
+deny_audit perm=any all : ftype=application/x-bad-elf
