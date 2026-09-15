@@ -60,8 +60,29 @@ enum Domain {
 #[derive(Subcommand)]
 enum FapolicydAction {
     /// Read denial records on stdin, write rules and fapolicyd-cli commands on stdout.
+    // The two D12 advisories are the same on every run, so they are printed by
+    // `--help` and not on stderr beside the rule (DESIGN.md §8.1).
+    #[command(after_long_help = ANALYZE_AFTER_LONG_HELP)]
     Analyze,
 }
+
+/// `--help` only, never `-h`: standing advice, not a usage reminder.
+const ANALYZE_AFTER_LONG_HELP: &str = "\
+Before adding the rule:
+  A rule placed in /etc/fapolicyd/rules.d/ has no effect on a host that still
+  has a legacy /etc/fapolicyd/fapolicyd.rules, and the daemon logs nothing about
+  it. Check which file the daemon loads first.
+
+  Validate the rules file before reloading and check the daemon afterwards:
+  fapolicyd-cli --reload-rules exits 0 even when the reload crashed the daemon or
+  left it allowing everything.
+
+Where the rule goes:
+  rules.d/ is merged in filename order (natural sort, `ls -1v`: 2- before 10-,
+  unprefixed files last) and the first match wins, so the new file must sort
+  before the file holding the rule that denied. rule=N in a record is that rule's
+  position in compiled.rules with %set lines dropped, and fagenrules --check
+  shows the merged order.";
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {

@@ -523,7 +523,9 @@ fails to start on next boot (`emitter-constraints.md:14`).
   afterwards.** `fapolicyd-cli --reload-rules` reports `Fapolicyd was notified`
   and exit 0 both when the reload segfaults the daemon and when it leaves a
   daemon up that answers ALLOW to everything. Exit 0 means the FIFO write
-  succeeded and nothing more (`emitter-constraints.md:22`).
+  succeeded and nothing more (`emitter-constraints.md:22`). Like the `rules.d/`
+  warning, this text lives in `rulesteward fapolicyd analyze --help` rather than
+  on every run.
 - **Every attribute is advisory, so never rely on one to narrow a rule** unless
   it has been seen carrying a value in a real denial record for that event class.
   The substituted `exe=` of §6 meets that test through the exec record of the
@@ -571,7 +573,9 @@ fails to start on next boot (`emitter-constraints.md:14`).
   (`emitter-constraints.md:79`). And there is no CLI way to check what loaded —
   `fapolicyd-cli --list` does not parse rules at all, it echoes lines with a
   counter and will happily print an attribute the parser dropped
-  (`edge-cases.md:121`). The same note also says the file must sort before the
+  (`edge-cases.md:121`). That warning is standing advice rather than a finding
+  about the input, so it is printed by `rulesteward fapolicyd analyze --help`
+  and not on every run. The same note also says the file must sort before the
   file holding the rule that denied, because `rules.d/` merges in filename order
   and the first match wins: measured 2026-09-06 on Rocky 8, 9 and 10, a rule at
   `50-` was inert against a `30-patterns.rules` denial and the identical file at
