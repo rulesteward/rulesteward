@@ -5,6 +5,7 @@ use super::model::{self, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
+use super::rules_d;
 use std::collections::HashMap;
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
@@ -41,11 +42,14 @@ pub struct Outcome {
 /// 10. the policy decision, then emission and deduplication.
 ///
 /// `rules` is `None` when there is no rules file — no `--conf`, or the read failed —
-/// which is v1's behaviour exactly.
+/// which is v1's behaviour exactly. `rules_d` is empty for the same reasons and also
+/// whenever the legacy `fapolicyd.rules` won the read, because then the merge order in
+/// `rules.d/` is not the order that produced the record's `rule=`.
 pub fn analyze(
     input: &[u8],
     syslog_format: Option<&[String]>,
     rules: Option<&[rules::Rule]>,
+    rules_d: &[rules_d::File],
 ) -> Outcome {
     let mut out = Outcome::default();
 
@@ -79,6 +83,9 @@ pub fn analyze(
     // match different rules and the emitted rule depends on the perm.
     let mut seen: Vec<Suggestion> = Vec::new();
     let mut rules_emitted = false;
+    // The `rule=` of every record that produced a rule, deduplicated: the placement
+    // note has to name the file those rules have to be merged ahead of.
+    let mut denied: Vec<usize> = Vec::new();
     // Records naming a rule the file does not have, or one that is an allow: either
     // says the rules file is not this log's, and both are reported once for the run.
     let mut unmatched = 0usize;
@@ -131,14 +138,16 @@ pub fn analyze(
         // rule lookup below goes on to refuse.
         let stale = stale_exe(&mut execs, &record);
 
+        // rule=0 is "no rule matched" and is never an index (§5). Parsed here rather
+        // than inside the lookup below because the placement note needs the number
+        // whether or not there is a rules file to resolve it against.
+        let n = record
+            .subject_get(b"rule")
+            .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
+            .filter(|n| *n != 0);
+
         if let Some(rules) = rules {
-            match record
-                .subject_get(b"rule")
-                .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
-                // rule=0 is "no rule matched" and is never an index (§5).
-                .filter(|n| *n != 0)
-                .map(|n| (n, rules::find(rules, n)))
-            {
+            match n.map(|n| (n, rules::find(rules, n))) {
                 Some((n, Some(r))) if r.refuses() => {
                     out.diagnostics.push(Diagnostic {
                         line,
@@ -188,7 +197,12 @@ pub fn analyze(
                 if seen.contains(&suggestion) {
                     continue;
                 }
-                rules_emitted |= matches!(suggestion, Suggestion::Rule { .. });
+                if matches!(suggestion, Suggestion::Rule { .. }) {
+                    rules_emitted = true;
+                    if let Some(n) = n.filter(|n| !denied.contains(n)) {
+                        denied.push(n);
+                    }
+                }
                 out.stdout.extend_from_slice(&emit::render(&suggestion));
                 seen.push(suggestion);
             }
@@ -238,12 +252,7 @@ pub fn analyze(
         });
         out.diagnostics.push(Diagnostic {
             line: None,
-            msg: "the file must sort before the file holding the rule that denied: rules.d/ \
-                  is merged in filename order and the first match wins, so a rule at 50- \
-                  never reaches a denial from 30-patterns.rules; rule=N in the record is \
-                  that rule's position in compiled.rules with %set lines dropped, and \
-                  fagenrules --check shows the merged order"
-                .into(),
+            msg: placement_note(rules_d, rules, &denied),
         });
     }
 
@@ -253,6 +262,64 @@ pub fn analyze(
     // full of allow records is a successful run with nothing to suggest.
     out.consumed_but_unparseable = content > 0 && parsed == 0;
     out
+}
+
+/// D12's third note: where the emitted rule has to be placed for it to be reached.
+///
+/// With `rules.d/` in hand and a `rule=` to look up, the note names the real file and a
+/// real filename. Without either — `--no-conf`, a legacy `fapolicyd.rules`, a host with
+/// no `rules.d/`, or records that carry no `rule=` — it falls back to the generic
+/// sentence, which is what every run said before the files could be read.
+///
+/// The earliest file wins: a name that sorts before it sorts before all of them.
+fn placement_note(
+    rules_d: &[rules_d::File],
+    compiled: Option<&[rules::Rule]>,
+    denied: &[usize],
+) -> String {
+    let Some(compiled) = compiled.filter(|_| !rules_d.is_empty() && !denied.is_empty()) else {
+        return "the file must sort before the file holding the rule that denied: rules.d/ \
+                is merged in filename order and the first match wins, so a rule at 50- \
+                never reaches a denial from 30-patterns.rules; rule=N in the record is \
+                that rule's position in compiled.rules with %set lines dropped, and \
+                fagenrules --check shows the merged order"
+            .into();
+    };
+
+    let located: Vec<(usize, Option<usize>)> = denied
+        .iter()
+        .map(|&n| (n, rules_d::locate(rules_d, compiled, n)))
+        .collect();
+    if let Some((n, _)) = located.iter().find(|(_, at)| at.is_none()) {
+        return format!(
+            "rules.d/ does not match compiled.rules at rule={n}: rules.d/ has changed since \
+             fagenrules last ran, so the file that denied cannot be named; run fagenrules \
+             --check before placing a file, and no filename is recommended here"
+        );
+    }
+
+    let earliest = located.iter().filter_map(|&(_, at)| at).min().unwrap_or(0);
+    let name = &rules_d[earliest].name;
+    let numbers: Vec<String> = located
+        .iter()
+        .filter(|&&(_, at)| at == Some(earliest))
+        .map(|(n, _)| n.to_string())
+        .collect();
+    let subject = match numbers.as_slice() {
+        [one] => format!("rule={one} is"),
+        many => format!("rules {} are", many.join(", ")),
+    };
+    match rules_d::recommend(name) {
+        Some(before) => format!(
+            "{subject} in rules.d/{name}: rules.d/ is merged in filename order and the first \
+             match wins, so the new file must sort before it; name it {before}"
+        ),
+        None => format!(
+            "{subject} in rules.d/{name}: rules.d/ is merged in filename order and the first \
+             match wins, so the new file must sort before it, and {name} has no numeric \
+             prefix to sort before"
+        ),
+    }
 }
 
 /// DESIGN.md §6's stale `exe=`: the image a later record's rule must be scoped to, or
@@ -391,7 +458,7 @@ mod tests {
 
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
-        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None);
+        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None, &[]);
         assert_eq!(o.diagnostics.len(), 2, "{}", stderr(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -405,7 +472,7 @@ mod tests {
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(SHORT, Some(&f), None);
+        let o = analyze(SHORT, Some(&f), None, &[]);
         assert!(o.stdout.is_empty(), "must emit nothing when truncated");
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1));
@@ -421,12 +488,12 @@ mod tests {
         // Step 4 is the fallback, not a cross-check: this record is nowhere near the
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
-        let o = analyze(SHORT, None, None);
+        let o = analyze(SHORT, None, None, &[]);
         assert!(!stderr(&o).contains("truncated"), "{}", stderr(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
-        let o = analyze(&whole, None, None);
+        let o = analyze(&whole, None, None, &[]);
         assert!(o.diagnostics.is_empty(), "{}", stderr(&o));
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
     }
@@ -440,7 +507,7 @@ mod tests {
         assert!(f.len() > MAX_SYSLOG_FIELDS);
         let record = b"rule=1 dec=deny_audit perm=open auid=1000 sessionid=1 pid=1 ppid=1 \
                        trust=1 comm=bash exe=/usr/bin/bash\n";
-        let o = analyze(record, Some(&f), None);
+        let o = analyze(record, Some(&f), None, &[]);
         assert!(
             !stderr(&o).contains("truncated"),
             "not truncated: {}",
@@ -454,7 +521,7 @@ mod tests {
         let mut record = head.to_vec();
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
-        let o = analyze(&record, None, None);
+        let o = analyze(&record, None, None, &[]);
         assert!(o.stdout.is_empty());
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert!(
@@ -469,7 +536,7 @@ mod tests {
         let mut input = SHORT.to_vec();
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(&input, Some(&f), None);
+        let o = analyze(&input, Some(&f), None, &[]);
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
         assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", stderr(&o));
@@ -481,7 +548,7 @@ mod tests {
         // make this line indistinguishable from a live denial.
         let input = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
-        let o = analyze(input, None, None);
+        let o = analyze(input, None, None, &[]);
         assert!(
             o.stdout.is_empty(),
             "{}",
@@ -497,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
-        let o = analyze(TRUSTED, None, None);
+        let o = analyze(TRUSTED, None, None, &[]);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
@@ -515,7 +582,7 @@ mod tests {
     #[test]
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
-        let o = analyze(&input, None, None);
+        let o = analyze(&input, None, None, &[]);
         assert_eq!(o.stdout.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
@@ -527,7 +594,7 @@ mod tests {
             .unwrap()
             .replace("perm=execute", "perm=open");
         let input = [TRUSTED, open.as_bytes()].concat();
-        let o = analyze(&input, None, None);
+        let o = analyze(&input, None, None, &[]);
         assert_eq!(
             String::from_utf8(o.stdout).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
@@ -538,7 +605,7 @@ mod tests {
     #[test]
     fn a_denial_with_no_trust_field_emits_a_rule_and_says_why() {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
-        let o = analyze(input, None, None);
+        let o = analyze(input, None, None, &[]);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
@@ -564,7 +631,7 @@ mod tests {
                 "rule=5 dec=deny_audit perm=open pid=1 exe=/usr/sbin/runuser : \
                  path=/etc/hostname {tail}\n"
             );
-            let o = analyze(input.as_bytes(), None, Some(&ld_so()));
+            let o = analyze(input.as_bytes(), None, Some(&ld_so()), &[]);
             assert!(
                 o.stdout.is_empty(),
                 "{tail}: {}",
@@ -577,10 +644,24 @@ mod tests {
     }
 
     #[test]
+    fn a_resolved_rule_with_no_rules_d_keeps_the_generic_placement_note() {
+        // A legacy host, or an unreadable rules.d/: compiled.rules resolved rule=1, but
+        // no merge order was read, so the note may name neither a file nor a drift.
+        let rules = vec![rules::Rule::new(1, "deny_audit perm=execute all : all")];
+        let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/gaps/trusted-ls trust=1\n";
+        let o = analyze(input, None, Some(&rules), &[]);
+        let text = stderr(&o);
+        assert!(o.stdout.starts_with(b"allow perm=execute"), "{text}");
+        assert!(text.contains("30-patterns.rules"), "generic note: {text}");
+        assert!(!text.contains("does not match"), "{text}");
+    }
+
+    #[test]
     fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
         let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()));
+        let o = analyze(input, None, Some(&ld_so()), &[]);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
@@ -604,7 +685,7 @@ mod tests {
         )];
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&rules));
+        let o = analyze(input, None, Some(&rules), &[]);
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
         assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
         assert!(
@@ -619,7 +700,7 @@ mod tests {
         // A host conf whose syslog_format drops `rule` would otherwise report every
         // record as a mismatch.
         let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()));
+        let o = analyze(input, None, Some(&ld_so()), &[]);
         assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
         assert!(!stderr(&o).contains("does not match"), "{}", stderr(&o));
     }
@@ -636,7 +717,7 @@ mod tests {
              dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n\
              dec=deny_audit perm=open pid=999 exe=/usr/sbin/runuser : path=/usr/bin/sed trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None);
+        let o = analyze(input.as_bytes(), None, None, &[]);
         assert_eq!(
             String::from_utf8(o.stdout.clone()).unwrap(),
             format!(
@@ -662,7 +743,7 @@ mod tests {
             "dec=deny_audit perm=execute pid=0 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
              dec=deny_audit perm=open pid=0 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None);
+        let o = analyze(input.as_bytes(), None, None, &[]);
         assert!(
             String::from_utf8(o.stdout.clone())
                 .unwrap()
@@ -678,7 +759,7 @@ mod tests {
         // The override goes THROUGH the exe filter, so an unwritable one is `all` and
         // never the stale logged value, which is known wrong.
         let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
-        let o = analyze(input, None, None);
+        let o = analyze(input, None, None, &[]);
         let text = String::from_utf8(o.stdout.clone()).unwrap();
         assert!(
             text.contains("allow perm=open all : path=/usr/bin/grep"),

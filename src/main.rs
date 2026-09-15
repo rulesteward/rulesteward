@@ -110,15 +110,22 @@ fn run_fapolicyd_analyze(conf: Option<PathBuf>, no_conf: bool) -> ExitCode {
 
     // D1's ladder, step 1 and 2 (DESIGN.md §6). The read lives here so the libraries
     // stay pure; they receive an already-parsed field list or nothing at all.
-    let (syslog_format, conf_note, rules, rules_note) = if no_conf {
-        (None, None, None, None)
+    let (syslog_format, conf_note, rules, rules_note, rules_d) = if no_conf {
+        (None, None, None, None, Vec::new())
     } else {
         let (f, fnote) = read_syslog_format(conf.as_deref());
-        let (r, rnote) = read_rules(conf.as_deref());
-        (f, fnote, r, rnote)
+        let (r, rnote, compiled) = read_rules(conf.as_deref());
+        // Only when compiled.rules won. A legacy fapolicyd.rules is what the daemon
+        // enforced, so whatever rules.d/ holds is not where that rule= came from.
+        let d = if compiled {
+            fapolicyd::rules_d::files(read_rules_d(conf.as_deref()))
+        } else {
+            Vec::new()
+        };
+        (f, fnote, r, rnote, d)
     };
 
-    let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref());
+    let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref(), &rules_d);
 
     let mut err = std::io::stderr().lock();
     if let Some(note) = conf_note {
@@ -175,19 +182,27 @@ fn read_syslog_format(conf: Option<&std::path::Path>) -> (Option<Vec<String>>, O
     }
 }
 
+/// The directory the daemon keeps its rules in: the conf's own, because that is where
+/// the daemon's are.
+fn conf_dir(conf: Option<&std::path::Path>) -> std::path::PathBuf {
+    conf.unwrap_or(std::path::Path::new(fapolicyd::DEFAULT_CONF_PATH))
+        .parent()
+        .unwrap_or(std::path::Path::new(""))
+        .to_path_buf()
+}
+
 /// The daemon's `open_file()`: /etc/fapolicyd/fapolicyd.rules first, compiled.rules
-/// only when that open fails (research `rule-files.md`). Both from the conf's own
-/// directory, because that is where the daemon's are. rules.d/ is never read — the
-/// daemon never opens it either.
+/// only when that open fails (research `rule-files.md`). The daemon never opens
+/// rules.d/ either, so the third element is "compiled.rules won", which is the only
+/// case where reading rules.d/ says anything about the rule that denied.
 ///
 /// Nothing here is a failure and everything is a note: the packaged /etc/fapolicyd is
 /// mode 750 root:fapolicyd, so this read failing is the ordinary case. There is also no
 /// unparsable case, because every line that is not blank, `#` or `%set` is a rule.
 fn read_rules(
     conf: Option<&std::path::Path>,
-) -> (Option<Vec<fapolicyd::rules::Rule>>, Option<String>) {
-    let path = conf.unwrap_or(std::path::Path::new(fapolicyd::DEFAULT_CONF_PATH));
-    let dir = path.parent().unwrap_or(std::path::Path::new(""));
+) -> (Option<Vec<fapolicyd::rules::Rule>>, Option<String>, bool) {
+    let dir = conf_dir(conf);
     let legacy = dir.join("fapolicyd.rules");
     let compiled = dir.join("compiled.rules");
 
@@ -195,10 +210,10 @@ fn read_rules(
     // "the first open that succeeds", so an unreadable fapolicyd.rules falls through
     // exactly as it does for the daemon. fapolicyd-cli --list instead refuses when both
     // exist; we mirror the daemon, because the rule=N in the record came from it.
-    let (which, bytes) = match std::fs::read(&legacy) {
-        Ok(bytes) => (&legacy, bytes),
+    let (which, bytes, won) = match std::fs::read(&legacy) {
+        Ok(bytes) => (&legacy, bytes, false),
         Err(_) => match std::fs::read(&compiled) {
-            Ok(bytes) => (&compiled, bytes),
+            Ok(bytes) => (&compiled, bytes, true),
             Err(e) => {
                 return (
                     None,
@@ -207,6 +222,7 @@ fn read_rules(
                         legacy.display(),
                         compiled.display()
                     )),
+                    false,
                 );
             }
         },
@@ -220,7 +236,31 @@ fn read_rules(
                 "{} contains no rules; rule= will not be checked against a rule",
                 which.display()
             )),
+            false,
         );
     }
-    (Some(rules), None)
+    (Some(rules), None, won)
+}
+
+/// Every `rules.d/` component file beside the conf, in whatever order the directory
+/// yields them, for `rules_d::files` to filter and sort. Not the daemon's read — the
+/// daemon never opens these — but fagenrules' input, which is what says which file a
+/// `rule=` came from.
+///
+/// Any error is an empty merge and no note: the directory is mode 750 like the rest of
+/// /etc/fapolicyd, and a host that cannot be told which file denied still gets the
+/// generic placement note. Nothing here is worth a second line of stderr.
+fn read_rules_d(conf: Option<&std::path::Path>) -> Vec<(String, Vec<u8>)> {
+    let Ok(entries) = std::fs::read_dir(conf_dir(conf).join("rules.d")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            Some((
+                e.file_name().into_string().ok()?,
+                std::fs::read(e.path()).ok()?,
+            ))
+        })
+        .collect()
 }
