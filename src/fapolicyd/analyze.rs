@@ -232,24 +232,9 @@ pub fn analyze(
         });
     }
 
-    // D12: these warnings belong to the run, not to a line, and each describes a way a
-    // rule silently does nothing on a real host.
+    // D12: this note belongs to the run, not to a line. The two standing advisories
+    // that used to sit beside it are input-independent and live in `analyze --help`.
     if rules_emitted {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            msg: "a rule placed in /etc/fapolicyd/rules.d/ has no effect on a host that \
-                  still has a legacy /etc/fapolicyd/fapolicyd.rules, and the daemon logs \
-                  nothing about it; check which file the daemon loads before adding the \
-                  rule"
-                .into(),
-        });
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            msg: "validate the rules file before reloading and check the daemon \
-                  afterwards: fapolicyd-cli --reload-rules exits 0 even when the reload \
-                  crashed the daemon or left it allowing everything"
-                .into(),
-        });
         out.diagnostics.push(Diagnostic {
             line: None,
             msg: placement_note(rules_d, rules, &denied),
@@ -570,12 +555,10 @@ mod tests {
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
         let text = stderr(&o);
-        assert!(text.contains("rules.d/ has no effect"), "{text}");
-        assert!(text.contains("--reload-rules exits 0"), "{text}");
         assert!(text.contains("sort before"), "{text}");
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
-            "the notices belong to the run, not to a line: {text}"
+            "the note belongs to the run, not to a line: {text}"
         );
     }
 

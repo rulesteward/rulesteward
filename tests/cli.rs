@@ -343,3 +343,17 @@ fn rules_d_disagreeing_with_compiled_rules_recommends_no_filename() {
         "no filename may be named: {err}"
     );
 }
+
+/// #39: the two input-independent D12 advisories left the run output, so `--help` is
+/// the only place they still exist. `-h` does not carry them, by design.
+#[test]
+fn analyze_help_carries_the_two_standing_advisories() {
+    let (code, out, err) = run(&["fapolicyd", "analyze", "--help"], b"");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("legacy /etc/fapolicyd/fapolicyd.rules"),
+        "{out}"
+    );
+    assert!(out.contains("--reload-rules exits 0"), "{out}");
+    assert!(out.contains("first match wins"), "{out}");
+}
