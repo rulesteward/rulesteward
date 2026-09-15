@@ -51,7 +51,12 @@ musl:
 mutants *ARGS:
     ./xtask/mutants.sh {{ARGS}}
 
-# The release artifact: musl build, tarball and SHA256SUMS into dist/.
+# The RPM alone, without the tarball or the sums, so a live-acceptance run can
+# install the package it will ship.
+rpm:
+    ./xtask/release.sh rpm
+
+# The release artifacts: musl build, tarball, RPM and SHA256SUMS into dist/.
 release:
     ./xtask/release.sh build
 
