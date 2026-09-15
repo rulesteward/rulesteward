@@ -33,7 +33,6 @@ It reads fapolicyd denial records on stdin and writes fapolicyd rules or
 
 **Non-goals for v1**, named so re-entry is cheap:
 
-- no `rules.d` or `compiled.rules` reading, and therefore no audit2why (§2, D3)
 - no journald API or auditd input; `journalctl` output on stdin is covered by
   §5
 - no `--apply`; the tool never mutates anything
@@ -86,14 +85,17 @@ because Rocky 8 and Rocky 9/10 do not frame the same way (`differences.md:91`).
 Journald needs no second input path: `journalctl -o cat` on stdin is the
 daemon's stderr verbatim (§5).
 
-### D3 — the audit2why half is out of v1
+### D3 — the rules file is read the daemon's way; fagenrules is deferred
 
-Explaining *which rule* denied means reading the loaded rules, and the daemon
-never reads `rules.d/` — it reads `/etc/fapolicyd/fapolicyd.rules` first and
-only falls back to `compiled.rules` (`matching-semantics.md:167`). Reproducing
-what actually loaded therefore means reproducing `fagenrules`: its `ls -1v`
-natural sort, its rule that an unprefixed file sorts last, and its fatal
-`%set` redefinition. That is a subsystem, not a feature.
+The daemon never reads `rules.d/` — it reads `/etc/fapolicyd/fapolicyd.rules`
+first and only falls back to `compiled.rules` (`matching-semantics.md:167`).
+The tool reads the same file the same way, out of the conf's own directory,
+and never merges `rules.d/` (§6). What that read buys in v1 is the subject-side
+refusal in §7: a `rule=N` that names a subject-only `deny*` rule stops every
+suggestion. What it does not buy is naming the `rules.d/` file a rule came
+from, because that means reproducing `fagenrules`: its `ls -1v` natural sort,
+its rule that an unprefixed file sorts last, and its fatal `%set`
+redefinition. That is deferred, not refused (§11).
 
 What survives into v1 is the warning. A rule written into `rules.d/` on a host
 that still has a legacy monolithic `fapolicyd.rules` has **zero effect and
