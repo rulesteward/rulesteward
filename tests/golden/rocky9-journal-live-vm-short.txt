@@ -32,6 +32,4 @@ fapolicyd-cli --file add '/etc/hostname'
 fapolicyd-cli --update
 --- stderr ---
 rulesteward: line 53: exe= is stale: pid 75414 was denied perm=execute of /usr/lib64/ld-linux-x86-64.so.2, and the daemon keeps the pre-exec image until that exec is permitted; the emitted rule is scoped to exe=/usr/lib64/ld-linux-x86-64.so.2 and not to the logged exe=/usr/sbin/runuser (x16)
-rulesteward: a rule placed in /etc/fapolicyd/rules.d/ has no effect on a host that still has a legacy /etc/fapolicyd/fapolicyd.rules, and the daemon logs nothing about it; check which file the daemon loads before adding the rule
-rulesteward: validate the rules file before reloading and check the daemon afterwards: fapolicyd-cli --reload-rules exits 0 even when the reload crashed the daemon or left it allowing everything
-rulesteward: the file must sort before the file holding the rule that denied: rules.d/ is merged in filename order and the first match wins, so a rule at 50- never reaches a denial from 30-patterns.rules; rule=N in the record is that rule's position in compiled.rules with %set lines dropped, and fagenrules --check shows the merged order
+rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)

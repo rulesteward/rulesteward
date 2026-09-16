@@ -306,11 +306,11 @@ fn the_placement_note_names_the_rules_d_file_and_a_filename_before_it() {
         "stderr: {err}"
     );
     assert!(
-        err.contains("rule=13 is in rules.d/90-deny-execute.rules"),
+        err.contains("new file: rules.d/89-rulesteward.rules"),
         "{err}"
     );
-    assert!(err.contains("must sort before"), "{err}");
-    assert!(err.contains("89-rulesteward.rules"), "{err}");
+    assert!(err.contains("sorts before 90-deny-execute.rules"), "{err}");
+    assert!(err.contains("rule=13"), "{err}");
     assert!(
         !err.contains("30-patterns.rules"),
         "the canned example is gone: {err}"
@@ -333,13 +333,25 @@ fn rules_d_disagreeing_with_compiled_rules_recommends_no_filename() {
         out.starts_with("allow perm=execute"),
         "still emitted: {out}"
     );
-    assert!(
-        err.contains("does not match compiled.rules at rule=13"),
-        "{err}"
-    );
-    assert!(err.contains("fagenrules --check"), "{err}");
+    assert!(err.contains("none recommended"), "{err}");
+    assert!(err.contains("changed since fagenrules ran"), "{err}");
+    assert!(err.contains("recapture"), "{err}");
     assert!(
         !err.contains("-rulesteward.rules"),
         "no filename may be named: {err}"
     );
+}
+
+/// #39: the two input-independent D12 advisories left the run output, so `--help` is
+/// the only place they still exist. `-h` does not carry them, by design.
+#[test]
+fn analyze_help_carries_the_two_standing_advisories() {
+    let (code, out, err) = run(&["fapolicyd", "analyze", "--help"], b"");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("legacy /etc/fapolicyd/fapolicyd.rules"),
+        "{out}"
+    );
+    assert!(out.contains("--reload-rules exits 0"), "{out}");
+    assert!(out.contains("first match wins"), "{out}");
 }

@@ -92,18 +92,32 @@ pub fn locate(files: &[File], compiled: &[Rule], n: usize) -> Option<usize> {
     None
 }
 
-/// The filename to suggest so the new file sorts before `name`: its leading digit run
-/// minus one, zero-padded to the same width. `None` when there is no digit prefix, or
-/// it is already `0`, because then nothing can be recommended that sorts before it.
-pub fn recommend(name: &str) -> Option<String> {
+/// The leading digit run of `name` as a value and its width, or `None` when the name
+/// does not start with digits.
+fn prefix(name: &str) -> Option<(u64, usize)> {
     let digits = &name[..name
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(name.len())];
-    let before = digits.parse::<u64>().ok()?.checked_sub(1)?;
-    Some(format!(
-        "{before:0width$}-rulesteward.rules",
-        width = digits.len()
-    ))
+    Some((digits.parse().ok()?, digits.len()))
+}
+
+/// The filename to suggest so the new file sorts before `files[at]`.
+///
+/// With a digit prefix: that prefix minus one, zero-padded to the same width. `None`
+/// when the prefix is already `0`, because nothing sorts before it. With no prefix the
+/// file sorts last of all, so anything numbered sorts before it: one past the largest
+/// prefix in `files`, which shadows the fewest existing rules, or `1-` when nothing is
+/// numbered.
+pub fn recommend(files: &[File], at: usize) -> Option<String> {
+    let (before, width) = match prefix(&files.get(at)?.name) {
+        Some((n, width)) => (n.checked_sub(1)?, width),
+        None => files
+            .iter()
+            .filter_map(|f| prefix(&f.name))
+            .max()
+            .map_or((1, 1), |(n, width)| (n.saturating_add(1), width)),
+    };
+    Some(format!("{before:0width$}-rulesteward.rules"))
 }
 
 #[cfg(test)]
@@ -251,18 +265,17 @@ mod tests {
 
     #[test]
     fn the_recommended_name_keeps_the_prefix_width() {
-        assert_eq!(
-            recommend("90-deny-execute.rules").as_deref(),
-            Some("89-rulesteward.rules")
-        );
-        assert_eq!(
-            recommend("010-x.rules").as_deref(),
-            Some("009-rulesteward.rules")
-        );
-        assert_eq!(
-            recommend("1-x.rules").as_deref(),
-            Some("0-rulesteward.rules")
-        );
+        let f = files(named(&[
+            "90-deny-execute.rules",
+            "010-x.rules",
+            "1-x.rules",
+        ]));
+        assert_eq!(f[2].name, "90-deny-execute.rules");
+        assert_eq!(recommend(&f, 2).as_deref(), Some("89-rulesteward.rules"));
+        assert_eq!(f[1].name, "010-x.rules");
+        assert_eq!(recommend(&f, 1).as_deref(), Some("009-rulesteward.rules"));
+        assert_eq!(f[0].name, "1-x.rules");
+        assert_eq!(recommend(&f, 0).as_deref(), Some("0-rulesteward.rules"));
     }
 
     #[test]
@@ -274,9 +287,25 @@ mod tests {
     }
 
     #[test]
-    fn nothing_can_be_recommended_before_zero_or_before_no_prefix() {
-        assert_eq!(recommend("00-first.rules"), None);
-        assert_eq!(recommend("0-first.rules"), None);
-        assert_eq!(recommend("local.rules"), None);
+    fn zero_declines_and_an_unprefixed_file_takes_one_past_the_last_number() {
+        let zero = files(named(&["00-first.rules", "0-first.rules"]));
+        assert_eq!(recommend(&zero, 0), None, "nothing sorts before 0-");
+        assert_eq!(recommend(&zero, 1), None);
+
+        // An unprefixed file sorts last, so one past the largest prefix sorts before it
+        // and after every numbered file.
+        let mixed = files(named(&[
+            "90-deny-execute.rules",
+            "95-allow-open.rules",
+            "local.rules",
+        ]));
+        assert_eq!(mixed[2].name, "local.rules");
+        assert_eq!(
+            recommend(&mixed, 2).as_deref(),
+            Some("96-rulesteward.rules")
+        );
+
+        let none = files(named(&["local.rules", "zz.rules"]));
+        assert_eq!(recommend(&none, 0).as_deref(), Some("1-rulesteward.rules"));
     }
 }
