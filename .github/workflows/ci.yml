@@ -69,27 +69,24 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    # Each matrix job sets only its own key. vcows-deploy measured that GitHub
-    # keeps the non-empty value across a matrix, while the documentation says
-    # later jobs overwrite outputs; if that stops holding, the verdict's
-    # sum-equals-list assertion is what catches it, loudly, rather than a quietly
-    # smaller and better-looking set of numbers.
-    outputs:
-      stats-0: ${{ steps.mutants.outputs.stats-0 }}
-      stats-1: ${{ steps.mutants.outputs.stats-1 }}
-      stats-2: ${{ steps.mutants.outputs.stats-2 }}
-      stats-3: ${{ steps.mutants.outputs.stats-3 }}
-      stats-4: ${{ steps.mutants.outputs.stats-4 }}
-      stats-5: ${{ steps.mutants.outputs.stats-5 }}
-      stats-6: ${{ steps.mutants.outputs.stats-6 }}
-      stats-7: ${{ steps.mutants.outputs.stats-7 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: ./xtask/install-tools.sh
-      - id: mutants
-        env:
+      - env:
           MUTANTS_SHARD: ${{ matrix.shard }}/8
         run: ./.tools/bin/just mutants
+      # One artifact per shard, replacing eight declared `stats-N` job outputs
+      # the verdict mapped to eight environment variables. The verdict's
+      # sum-equals-list assertion stays regardless: it catches a shard that
+      # tested nothing, which no transport can.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-stats-${{ matrix.shard }}
+          path: .cache/mutants-stats/shard-${{ matrix.shard }}.json
+          # The counters land under .cache, and files inside a hidden directory
+          # are excluded by default.
+          include-hidden-files: true
+          if-no-files-found: error
 
   # The ratchet, applied to the sum. No shard holds the answer.
   mutants-verdict:
@@ -99,16 +96,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: ./xtask/install-tools.sh
-      - env:
-          MUTANTS_STATS_0: ${{ needs.mutants.outputs.stats-0 }}
-          MUTANTS_STATS_1: ${{ needs.mutants.outputs.stats-1 }}
-          MUTANTS_STATS_2: ${{ needs.mutants.outputs.stats-2 }}
-          MUTANTS_STATS_3: ${{ needs.mutants.outputs.stats-3 }}
-          MUTANTS_STATS_4: ${{ needs.mutants.outputs.stats-4 }}
-          MUTANTS_STATS_5: ${{ needs.mutants.outputs.stats-5 }}
-          MUTANTS_STATS_6: ${{ needs.mutants.outputs.stats-6 }}
-          MUTANTS_STATS_7: ${{ needs.mutants.outputs.stats-7 }}
-        run: ./.tools/bin/just mutants --verdict
+      # The eight shard artifacts merged back into the one directory
+      # xtask/mutants.sh reads.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutants-stats-*
+          merge-multiple: true
+          path: .cache/mutants-stats
+      - run: ./.tools/bin/just mutants --verdict
 
   # The tag path, and the only job that can write to the repository. Its
   # `permissions` block replaces the workflow-level `contents: read` for this job
