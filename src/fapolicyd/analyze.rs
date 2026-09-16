@@ -162,7 +162,7 @@ pub fn analyze(
             .filter(|n| *n != 0);
 
         if let Some(rules) = rules {
-            match n.map(|n| (n, rules::find(rules, n))) {
+            match n.map(|n| (n, n.checked_sub(1).and_then(|i| rules.get(i)))) {
                 Some((n, Some(r))) if r.refuses() => {
                     out.diagnostics.push(Diagnostic {
                         line,
@@ -673,12 +673,16 @@ mod tests {
         assert!(text.contains("line 1: no trust= in this record"), "{text}");
     }
 
-    /// The shipped `pattern=ld_so` deny, alone, at its real number.
+    /// The shipped `pattern=ld_so` deny at its real position: the first five rules of a
+    /// default Rocky 9 set, so `rule=5` indexes the deny and not one of its neighbours.
     fn ld_so() -> Vec<rules::Rule> {
-        vec![rules::Rule::new(
-            5,
-            "deny_audit perm=any pattern=ld_so : all",
-        )]
+        rules::parse(
+            b"allow perm=any uid=0 : dir=/var/tmp/\n\
+              allow perm=any uid=0 trust=1 : all\n\
+              allow perm=open exe=/usr/bin/rpm : all\n\
+              allow perm=open exe=/usr/bin/python3.9 comm=dnf : all\n\
+              deny_audit perm=any pattern=ld_so : all\n",
+        )
     }
 
     #[test]
@@ -707,7 +711,7 @@ mod tests {
     fn a_resolved_rule_with_no_rules_d_keeps_the_generic_placement_note() {
         // A legacy host, or an unreadable rules.d/: compiled.rules resolved rule=1, but
         // no merge order was read, so the note may name neither a file nor a drift.
-        let rules = vec![rules::Rule::new(1, "deny_audit perm=execute all : all")];
+        let rules = vec![rules::Rule::new("deny_audit perm=execute all : all")];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
         let o = analyze(input, None, Some(&rules), &[]);
@@ -720,7 +724,7 @@ mod tests {
     #[test]
     fn an_unprefixed_file_is_named_a_filename_not_declined() {
         // `local.rules` sorts last of all, so any numbered name sorts before it.
-        let rule = rules::Rule::new(1, "deny_audit perm=execute all : all");
+        let rule = rules::Rule::new("deny_audit perm=execute all : all");
         let rules_d = vec![rules_d::File {
             name: "local.rules".into(),
             rules: vec![rule.clone()],
@@ -760,10 +764,11 @@ mod tests {
     fn an_allow_rule_for_a_denial_record_counts_as_a_mismatch() {
         // A denial record's rule= is a deny rule by construction, so landing on an
         // allow is the same evidence as landing on nothing.
-        let rules = vec![rules::Rule::new(
-            3,
-            "allow perm=open exe=/usr/bin/rpm : all",
-        )];
+        let rules = rules::parse(
+            b"allow perm=any uid=0 : dir=/var/tmp/\n\
+              allow perm=any uid=0 trust=1 : all\n\
+              allow perm=open exe=/usr/bin/rpm : all\n",
+        );
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&rules), &[]);
