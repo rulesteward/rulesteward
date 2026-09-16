@@ -156,8 +156,16 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
     let (syslog_format, conf_note, rules, rules_note, rules_d) = if no_conf {
         (None, None, None, None, Vec::new())
     } else {
-        let (f, fnote) = read_syslog_format(conf.as_deref());
-        let (r, rnote, compiled) = read_rules(conf.as_deref());
+        let (f, fnote) = match read_syslog_format(conf.as_deref()) {
+            Ok(fields) => (Some(fields), None),
+            Err(note) => (None, Some(note)),
+        };
+        // Every `Err` from `read_rules` is a read that produced no rules at all, which
+        // is the same thing as compiled.rules not winning.
+        let (r, rnote, compiled) = match read_rules(conf.as_deref()) {
+            Ok((rules, won)) => (Some(rules), None, won),
+            Err(note) => (None, Some(note), false),
+        };
         // Only when compiled.rules won. A legacy fapolicyd.rules is what the daemon
         // enforced, so whatever rules.d/ holds is not where that rule= came from.
         let d = if compiled {
@@ -213,29 +221,23 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
     })
 }
 
-/// Returns the parsed `syslog_format` field list, plus a note when the read failed.
+/// Returns the parsed `syslog_format` field list, or a note when the read failed.
 /// A failed read is never fatal: §6 step 2 expects `Permission denied` for any user
 /// outside the `fapolicyd` group, because /etc/fapolicyd is mode 750 root:fapolicyd.
-fn read_syslog_format(conf: Option<&std::path::Path>) -> (Option<Vec<String>>, Option<String>) {
+fn read_syslog_format(conf: Option<&std::path::Path>) -> Result<Vec<String>, String> {
     let path = conf.unwrap_or(std::path::Path::new(fapolicyd::DEFAULT_CONF_PATH));
     match std::fs::read(path) {
         Ok(bytes) => match fapolicyd::conf::syslog_format(&bytes) {
-            Some(fields) => (Some(fields), None),
-            None => (
-                None,
-                Some(format!(
-                    "{} names no syslog_format; falling back to the 511-byte truncation test",
-                    path.display()
-                )),
-            ),
-        },
-        Err(e) => (
-            None,
-            Some(format!(
-                "cannot read {} ({e}); falling back to the 511-byte truncation test",
+            Some(fields) => Ok(fields),
+            None => Err(format!(
+                "{} names no syslog_format; falling back to the 511-byte truncation test",
                 path.display()
             )),
-        ),
+        },
+        Err(e) => Err(format!(
+            "cannot read {} ({e}); falling back to the 511-byte truncation test",
+            path.display()
+        )),
     }
 }
 
@@ -250,15 +252,15 @@ fn conf_dir(conf: Option<&std::path::Path>) -> std::path::PathBuf {
 
 /// The daemon's `open_file()`: /etc/fapolicyd/fapolicyd.rules first, compiled.rules
 /// only when that open fails (research `rule-files.md`). The daemon never opens
-/// rules.d/ either, so the third element is "compiled.rules won", which is the only
-/// case where reading rules.d/ says anything about the rule that denied.
+/// rules.d/ either, so the bool beside the rules is "compiled.rules won", which is the
+/// only case where reading rules.d/ says anything about the rule that denied.
 ///
 /// Nothing here is a failure and everything is a note: the packaged /etc/fapolicyd is
 /// mode 750 root:fapolicyd, so this read failing is the ordinary case. There is also no
 /// unparsable case, because every line that is not blank, `#` or `%set` is a rule.
 fn read_rules(
     conf: Option<&std::path::Path>,
-) -> (Option<Vec<fapolicyd::rules::Rule>>, Option<String>, bool) {
+) -> Result<(Vec<fapolicyd::rules::Rule>, bool), String> {
     let dir = conf_dir(conf);
     let legacy = dir.join("fapolicyd.rules");
     let compiled = dir.join("compiled.rules");
@@ -272,31 +274,23 @@ fn read_rules(
         Err(_) => match std::fs::read(&compiled) {
             Ok(bytes) => (&compiled, bytes, true),
             Err(e) => {
-                return (
-                    None,
-                    Some(format!(
-                        "cannot read {} or {} ({e}); rule= will not be checked against a rule",
-                        legacy.display(),
-                        compiled.display()
-                    )),
-                    false,
-                );
+                return Err(format!(
+                    "cannot read {} or {} ({e}); rule= will not be checked against a rule",
+                    legacy.display(),
+                    compiled.display()
+                ));
             }
         },
     };
 
     let rules = fapolicyd::rules::parse(&bytes);
     if rules.is_empty() {
-        return (
-            None,
-            Some(format!(
-                "{} contains no rules; rule= will not be checked against a rule",
-                which.display()
-            )),
-            false,
-        );
+        return Err(format!(
+            "{} contains no rules; rule= will not be checked against a rule",
+            which.display()
+        ));
     }
-    (Some(rules), None, won)
+    Ok((rules, won))
 }
 
 /// Every `rules.d/` component file beside the conf, in whatever order the directory
