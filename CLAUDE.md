@@ -40,12 +40,13 @@ needs printing gets returned to `main` instead of printed where it was found, an
 `run_fapolicyd` writes it as a `#` comment on stdout ahead of the artifact it
 explains -- stderr is for errors only.
 
-## `UPDATE_GOLDEN=1`, then read the diff
+## `cargo insta accept`, then read the diff
 
-`tests/golden.rs` says it: a golden test that gets blessed unread is just a
-changelog. Regenerate with `UPDATE_GOLDEN=1 cargo test`, read the whole diff, and
-only then commit. The command is in `permissions.deny` in
-`.claude/settings.json`, so an agent cannot run it -- ask the developer to.
+`tests/golden.rs` says it: a snapshot that gets blessed unread is just a
+changelog. `cargo test` writes every changed expectation to
+`tests/snapshots/*.snap.new`; `cargo insta review` or `cargo insta accept` blesses
+them once the whole diff has been read. Those commands are in `permissions.deny`
+in `.claude/settings.json`, so an agent cannot run them -- ask the developer to.
 
 ## The reload-probe fixture is the tail of its capture, not the head
 

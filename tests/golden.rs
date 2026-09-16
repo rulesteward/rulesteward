@@ -7,11 +7,12 @@
 //! `--no-conf` on every run: without it the tool would read the host's
 //! /etc/fapolicyd/fapolicyd.conf and the results would differ per machine.
 //!
-//! Rewrite the expectations with `UPDATE_GOLDEN=1 cargo test`. Read the diff before
-//! you commit it; a golden test that gets blessed unread is just a changelog.
+//! `cargo test` writes the changed expectations as `.snap.new`; they are accepted
+//! with `cargo insta accept` after reading the diff. A snapshot that gets blessed
+//! unread is just a changelog.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Both actions, one report. They are two artifacts out of one pass, so a golden that
@@ -52,43 +53,13 @@ fn run(fixture: &Path) -> Vec<u8> {
 
 #[test]
 fn fixtures_match_their_goldens() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let update = std::env::var_os("UPDATE_GOLDEN").is_some();
-
-    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(dir.join("fixtures"))
-        .expect("fixtures dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "log"))
-        .collect();
-    fixtures.sort();
-    assert!(
-        !fixtures.is_empty(),
-        "no fixtures; run xtask/sync-fixtures.sh"
-    );
-
-    let mut failures = Vec::new();
-    for fixture in &fixtures {
-        let name = fixture.file_stem().unwrap().to_string_lossy().into_owned();
-        let golden = dir.join("golden").join(format!("{name}.txt"));
-        let actual = run(fixture);
-
-        if update {
-            std::fs::write(&golden, &actual).expect("write golden");
-            continue;
-        }
-
-        match std::fs::read(&golden) {
-            Ok(expected) if expected == actual => {}
-            Ok(expected) => failures.push(format!(
-                "{name}: output changed\n--- expected ---\n{}\n--- actual ---\n{}",
-                String::from_utf8_lossy(&expected),
-                String::from_utf8_lossy(&actual)
-            )),
-            Err(_) => failures.push(format!(
-                "{name}: no golden file; run UPDATE_GOLDEN=1 cargo test"
-            )),
-        }
-    }
-
-    assert!(failures.is_empty(), "\n\n{}", failures.join("\n\n"));
+    // `glob!` runs every fixture and reports every mismatch in one run; it panics
+    // on its own when the pattern matches nothing, so an empty fixture dir cannot
+    // pass. Run `xtask/sync-fixtures.sh` if that happens.
+    insta::glob!("fixtures/*.log", |fixture| {
+        let report = String::from_utf8(run(fixture)).expect(
+            "fixture output is UTF-8; use assert_binary_snapshot! if a raw-byte fixture arrives",
+        );
+        insta::assert_snapshot!(report);
+    });
 }

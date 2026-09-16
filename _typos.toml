@@ -1,6 +1,6 @@
 [files]
 # Verbatim daemon captures with deliberate corruption; spell-checking them is noise.
-extend-exclude = ["tests/fixtures/*.log", "tests/golden/*.txt"]
+extend-exclude = ["tests/fixtures/*.log", "tests/snapshots/*.snap"]
 
 [default.extend-words]
 # fapolicyd vocabulary. A key mapping to itself marks the word always valid.

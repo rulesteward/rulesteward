@@ -36,9 +36,11 @@
   },
   "permissions": {
     "deny": [
-      "Bash(UPDATE_GOLDEN=1 cargo test:*)",
-      "Bash(UPDATE_GOLDEN=1 just:*)",
-      "Bash(env UPDATE_GOLDEN=1:*)",
+      "Bash(cargo insta accept:*)",
+      "Bash(cargo insta test:*)",
+      "Bash(INSTA_UPDATE=always:*)",
+      "Bash(env INSTA_UPDATE=always:*)",
+      "Bash(INSTA_FORCE_PASS=1:*)",
       "Bash(./xtask/mutants.sh --write-baseline:*)",
       "Bash(xtask/mutants.sh --write-baseline:*)",
       "Bash(bash xtask/mutants.sh --write-baseline:*)",

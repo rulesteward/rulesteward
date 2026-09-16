@@ -1,3 +1,8 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky8-base-gaps.log
+---
 --- rules exit 0 ---
 # rulesteward: 3 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
 --- trust exit 0 ---
