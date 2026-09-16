@@ -1,3 +1,8 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky9-journal-live-vm-short.log
+---
 --- rules exit 0 ---
 # rulesteward: line 53: exe= is stale: pid 75414 was denied perm=execute of /usr/lib64/ld-linux-x86-64.so.2, and the daemon keeps the pre-exec image until that exec is permitted; the emitted rule is scoped to exe=/usr/lib64/ld-linux-x86-64.so.2 and not to the logged exe=/usr/sbin/runuser (x16)
 # rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)

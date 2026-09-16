@@ -1,3 +1,8 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/handwritten-21-fields.log
+---
 --- rules exit 0 ---
 # rulesteward: line 12: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)
 --- trust exit 0 ---

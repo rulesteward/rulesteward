@@ -1,3 +1,8 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky10-base-syslog-framing-syslog-raw.log
+---
 --- rules exit 0 ---
 # rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
 # rulesteward: 12 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input

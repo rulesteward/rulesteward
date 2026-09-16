@@ -1,3 +1,8 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky8-base-edge-paths.log
+---
 --- rules exit 0 ---
 # rulesteward: line 14: path contains a control byte (0x09), which cannot be written as a fapolicyd.trust record; emitting nothing
 # rulesteward: line 17: path contains a control byte (0x0a), which cannot be written as a fapolicyd.trust record; emitting nothing

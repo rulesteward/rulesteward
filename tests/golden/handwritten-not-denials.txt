@@ -1,3 +1,0 @@
---- rules exit 0 ---
---- trust exit 0 ---
---- stderr ---

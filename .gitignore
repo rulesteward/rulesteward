@@ -9,3 +9,4 @@
 /.cache
 /mutants.out*
 /dist
+*.snap.new

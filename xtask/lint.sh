@@ -80,7 +80,7 @@ main() {
     gate "actions are pinned"       actions_are_pinned
     gate "ignore carries a reason"  ignore_carries_a_reason
     gate "shellcheck"               shell_scripts_are_clean
-    # The only gate over the strings users read; fixtures and goldens are
+    # The only gate over the strings users read; fixtures and snapshots are
     # excluded because they are verbatim daemon bytes with deliberate corruption.
     gate "typos"                    typos
 
