@@ -17,55 +17,35 @@
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-JUST_VERSION=1.46.0
-CARGO_DENY_VERSION=0.20.2
-CARGO_MUTANTS_VERSION=27.1.0
-TYPOS_VERSION=1.50.1
-
-# tool:version -> sha256 of the artifact url() names.
+# One row per tool: name, version, sha256 of the tarball, tarball URL. Bumping a
+# tool is one row. Each project spells its own tag and target triple, so the URL
+# is written out rather than templated; cargo-mutants is the gnu build because
+# it is the only linux asset it publishes -- the other three are musl.
 #
-# just and cargo-deny are publisher checksums, taken from just's SHA256SUMS and
-# from cargo-deny's per-asset .sha256 file at the pinned tag. Refreshing one
-# means fetching that file again, not trusting a download.
+# just and cargo-deny digests are publisher checksums, taken from just's
+# SHA256SUMS and from cargo-deny's per-asset .sha256 file at the pinned tag.
+# Refreshing one means fetching that file again, not trusting a download.
 #
 # cargo-mutants and typos publish no checksums of any kind, so those two digests
 # are SELF-COMPUTED: downloaded once, sha256sum'd, and committed here. That is
 # weaker than a publisher digest -- it pins what was downloaded on one day rather
 # than what the publisher says it shipped -- and still stronger than an
 # unverified download on every run.
-digest() {
-    case "$1" in
-        just:1.46.0)          echo 79966e6e353f535ee7d1c6221641bcc8e3381c55b0d0a6dc6e54b34f9db36eaa ;;
-        cargo-deny:0.20.2)    echo 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f ;;
-        cargo-mutants:27.1.0) echo dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e ;; # self-computed
-        typos:1.50.1)         echo edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e ;; # self-computed
-        *) die "no pinned digest for $1 -- add it beside the others" ;;
-    esac
-}
-
-# Each project spells its own tag and target triple; there is no pattern to
-# factor out. cargo-mutants is the gnu build because it is the only linux asset
-# it publishes -- the other three are musl.
-url() {
-    case "$1" in
-        just)          echo "https://github.com/casey/just/releases/download/${2}/just-${2}-x86_64-unknown-linux-musl.tar.gz" ;;
-        cargo-deny)    echo "https://github.com/EmbarkStudios/cargo-deny/releases/download/${2}/cargo-deny-${2}-x86_64-unknown-linux-musl.tar.gz" ;;
-        cargo-mutants) echo "https://github.com/sourcefrog/cargo-mutants/releases/download/v${2}/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz" ;;
-        typos)         echo "https://github.com/crate-ci/typos/releases/download/v${2}/typos-v${2}-x86_64-unknown-linux-musl.tar.gz" ;;
-    esac
-}
+TOOLS=(
+    "just          1.46.0 79966e6e353f535ee7d1c6221641bcc8e3381c55b0d0a6dc6e54b34f9db36eaa https://github.com/casey/just/releases/download/1.46.0/just-1.46.0-x86_64-unknown-linux-musl.tar.gz"
+    "cargo-deny    0.20.2 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz"
+    "cargo-mutants 27.1.0 dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz" # self-computed
+    "typos         1.50.1 edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e https://github.com/crate-ci/typos/releases/download/v1.50.1/typos-v1.50.1-x86_64-unknown-linux-musl.tar.gz" # self-computed
+)
 
 # Verified download into the scratch dir. The check is `sha256sum -c -` rather
 # than a string compare, so a truncated download fails here instead of unpacking
 # into something surprising.
 fetch() {
-    local tool="$1" version="$2" dest="$3" want src file
+    local want="$1" src="$2" dest="$3" file
     # Here rather than in main(): a box that already carries all four tools never
     # reaches this function and should not be refused for lacking curl.
     need curl
-    want="$(digest "${tool}:${version}")"
-    src="$(url "$tool" "$version")"
-    [ -n "$src" ] || die "$tool: no download URL -- add a case arm to url()"
     file="$dest/$(basename "$src")"
     curl -fsSL --retry 3 -o "$file" "$src"
     echo "${want}  ${file}" | sha256sum -c - >/dev/null
@@ -73,11 +53,11 @@ fetch() {
 }
 
 install_one() {
-    local tool="$1" version="$2" tmp file
+    local tool="$1" version="$2" want="$3" src="$4" tmp file
     [ -x "$TOOLS_BIN/$tool" ] && { log "  $tool: already in .tools/bin"; return; }
     tmp="$TMP/$tool"; mkdir -p "$tmp"
     log "  $tool $version: downloading"
-    file="$(fetch "$tool" "$version" "$tmp")"
+    file="$(fetch "$want" "$src" "$tmp")"
     tar -xzf "$file" -C "$tmp"
     # cargo-mutants unpacks a bare binary, typos and just unpack flat under ./,
     # cargo-deny nests under a versioned directory. `find -type f -name` covers
@@ -89,16 +69,12 @@ install_one() {
 main() {
     mkdir -p "$TOOLS_BIN"
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    local entry
-    local -a tools=(
-        "just:$JUST_VERSION"
-        "cargo-deny:$CARGO_DENY_VERSION"
-        "cargo-mutants:$CARGO_MUTANTS_VERSION"
-        "typos:$TYPOS_VERSION"
-    )
+    local row
     log "installing tools into .tools/bin"
-    for entry in "${tools[@]}"; do
-        install_one "${entry%%:*}" "${entry#*:}"
+    for row in "${TOOLS[@]}"; do
+        # Unquoted on purpose: the row is four space-separated words by construction.
+        # shellcheck disable=SC2086
+        install_one $row
     done
     log "done"
 }
