@@ -42,6 +42,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASELINE="$REPO/docs/mutation-baseline.json"
 OUTCOMES="$REPO/mutants.out/outcomes.json"
+# One file per shard: written by run_shard, read by --verdict. In CI each shard
+# uploads its file as an artifact and the verdict job downloads all eight back
+# into this directory.
+STATS="$REPO/.cache/mutants-stats"
 
 # The four counters plus the count of mutants generated. `outcomes.json` is
 # documented as subject to change, so this is one jq expression that a format
@@ -145,13 +149,11 @@ run_shard() {
     compact="$(jq -ec '{missed, caught, unviable, timeout}' "$OUTCOMES")" ||
         die "could not read $OUTCOMES -- cargo-mutants' outcome format moved"
 
-    # A job output rather than an artifact: the account's artifact storage quota is
-    # shared across repositories and recalculated only every 6 to 12 hours, and a
-    # hundred bytes of counters fit the 1 MB per-job output budget with room over.
-    # One `jq -c` and one line: a step output is a `name=value` pair a newline ends.
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then
-        printf 'stats-%s=%s\n' "$k" "$compact" >> "$GITHUB_OUTPUT"
-    fi
+    # An artifact rather than a job output: a job output has to be declared once
+    # per shard in the workflow and read back under a second name in the verdict,
+    # so the shard count lived in three places. An artifact is named once, here.
+    mkdir -p "$STATS"
+    printf '%s\n' "$compact" > "$STATS/shard-$k.json"
     log "shard $k: $compact"
 }
 
@@ -193,19 +195,19 @@ in_diff() {
     log "no survivors in changed code ($timeout hung)"
 }
 
-# Sum a sharded run and judge the sum. The shard jobs share nothing but these
-# environment variables, so this is where a sharded pipeline gets its verdict.
+# Sum a sharded run and judge the sum. The shard jobs share nothing but the file
+# each one uploads, so this is where a sharded pipeline gets its verdict.
 verdict() {
-    local k var val stats="" sums missed caught unviable timeout total sum
+    local k f val stats="" sums missed caught unviable timeout total sum
 
     for k in 0 1 2 3 4 5 6 7; do
-        var="MUTANTS_STATS_$k"
-        val="${!var:-}"
-        # Diagnosed rather than skipped: an empty output is a cancelled or crashed
+        f="$STATS/shard-$k.json"
+        # Diagnosed rather than skipped: a missing file is a cancelled or crashed
         # shard, and skipping it would leave a smaller, better-looking sum.
-        [ -n "$val" ] || die "$var is empty -- shard $k reported nothing, and a missing shard is not a pass"
+        [ -s "$f" ] || die "$f is missing or empty -- shard $k reported nothing, and a missing shard is not a pass"
+        val="$(cat "$f")"
         jq -e 'type == "object"' >/dev/null <<<"$val" ||
-            die "$var is not a JSON object: $val"
+            die "$f is not a JSON object: $val"
         stats+="$val"$'\n'
     done
 
