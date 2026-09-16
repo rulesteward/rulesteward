@@ -7,9 +7,10 @@
 #   ./xtask/mutants.sh --verdict        sum the eight shards' numbers and judge the sum
 #   ./xtask/mutants.sh --write-baseline record what is there now as accepted
 #
-# **`cargo mutants` exits 2 whenever any mutant survives.** That is an absolute
-# verdict and useless as a gate on its own: it is red from the first run and stays
-# red, because no pipeline can fix a survivor -- only someone writing a test can.
+# **`cargo mutants` exits 2 whenever any mutant survives, and 3 whenever one hangs,
+# and 3 wins when both happen.** Exit 2 is an absolute verdict and useless as a gate
+# on its own: it is red from the first run and stays red, because no pipeline can fix
+# a survivor -- only someone writing a test can.
 # An always-red gate is muted within a month and green by neglect thereafter. So
 # docs/mutation-baseline.json holds what has been looked at and accepted, and the
 # full run fails only on what is *new*. A ratchet, not a floor.
@@ -173,14 +174,23 @@ in_diff() {
         log "empty diff -- nothing to mutate"
         return 0
     fi
-    # Its exit status *is* the verdict here: on changed code the answer is zero
-    # survivors, not a ratchet. Measured on 27.1.0: a diff that touches no
-    # production code prints "No mutants to filter" and exits 0, so a test-only or
-    # comment-only change needs no special case.
-    local status=0
+    # The `missed` count *is* the verdict here: on changed code the answer is zero
+    # survivors, not a ratchet.
+    local status=0 missed caught unviable timeout total out
     cargo mutants --in-place --in-diff "$diff" || status=$?
     discard_mutant_seeds
-    return "$status"
+    # 0 is also "No mutants to filter" (27.1.0), which a test-only or comment-only
+    # change gets, and which writes no outcomes to read.
+    [ "$status" -ne 0 ] || return 0
+    # 2 is survivors, 3 is timeouts and 3 wins when both occur, so the status alone
+    # cannot say whether anything survived. The counter can. A hung mutant broke
+    # the program and is not a survivor; judge and the shards already treat it so.
+    case "$status" in 2|3) ;; *) die "cargo mutants exited $status" ;; esac
+    out="$(read_outcomes)"
+    read -r missed caught unviable timeout total <<<"$out"
+    report "$missed" "$caught" "$unviable" "$timeout" "$total"
+    [ "$missed" -eq 0 ] || die "$missed mutant(s) in changed code that no test notices"
+    log "no survivors in changed code ($timeout hung)"
 }
 
 # Sum a sharded run and judge the sum. The shard jobs share nothing but these
