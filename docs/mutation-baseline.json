@@ -1,5 +1,5 @@
 {
-  "missed": 9,
-  "total": 194,
-  "note": "Hand-edited; the reason for every change lives in the commit body, never in a regenerate. Measured 2026-09-06 by the eight-shard CI run on PR #15 after strip_ansi was deleted: 179 caught, 9 missed, 5 unviable, 1 timeout. The 9 are comparison and boolean flips in parse, fields, is_corrupt_field_name, escaped and policy::rule; the timeout is a += mutation that stops unescape's byte-walking loop advancing."
+  "missed": 5,
+  "total": 386,
+  "note": "Hand-edited; the reason for every change lives in the commit body, never in a regenerate. Measured 2026-09-16 by the eight-shard CI run 35121466524 on PR #66: 349 caught, 5 missed, 10 unviable, 22 timeouts. The 5 are comparison and arithmetic flips in parse, fields, is_corrupt_field_name and escaped; the 22 timeouts are cursor mutants that stop a byte-walking loop advancing, 21 in rules_d's filevercmp port and one in unescape."
 }

@@ -16,45 +16,145 @@ pub struct File {
     pub rules: Vec<Rule>,
 }
 
-/// fagenrules' `ls -1v`: digit runs compare as numbers, so `2-` precedes `10-`, and a
-/// digit run sorts before a non-digit one, so an unprefixed file lands last.
-///
-/// Equal numeric value falls back to the raw run, which orders `010-` after `10-`.
-/// That is a guess at `filevercmp`, not a reproduction of it: leading-zero collisions
-/// are not a shipped case and emulating the whole of it would buy nothing.
-fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
-    while !a.is_empty() && !b.is_empty() {
-        let (ra, rest_a) = run(a);
-        let (rb, rest_b) = run(b);
-        let ord = match (ra[0].is_ascii_digit(), rb[0].is_ascii_digit()) {
-            (true, true) => number(ra).cmp(&number(rb)).then_with(|| ra.cmp(rb)),
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            (false, false) => ra.cmp(rb),
-        };
-        if ord != Ordering::Equal {
-            return ord;
-        }
-        (a, b) = (rest_a, rest_b);
+/// GNU `filevercmp`, which is the order `ls -1v` gives fagenrules: a port of gnulib's
+/// `lib/filevercmp.c`. `order`, `file_prefixlen` and `verrevcmp` keep the names and the
+/// semantics of their C originals, and the C is the reference for any question about
+/// them. What they do not keep is its pair of integer cursors: each walks a slice that
+/// every step shortens instead, so no loop here can be made to stand still. A cursor a
+/// mutation stops advancing hangs the suite rather than failing it, and a hang is a
+/// timeout, which is a mutant nothing can kill. Comparisons are ASCII-only, as there.
+fn filevercmp(a: &[u8], b: &[u8]) -> Ordering {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Less,
+        (false, true) => return Ordering::Greater,
+        (false, false) => {}
     }
-    a.len().cmp(&b.len())
+    // `.`, `..` and every other dotfile sort ahead of the rest, in that order.
+    if a[0] == b'.' {
+        if b[0] != b'.' {
+            return Ordering::Less;
+        }
+        match (a.len() == 1, b.len() == 1) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            (false, false) => {}
+        }
+        match (a[1] == b'.' && a.len() == 2, b[1] == b'.' && b.len() == 2) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            (false, false) => {}
+        }
+    } else if b[0] == b'.' {
+        return Ordering::Greater;
+    }
+    // First pass over the names without their extensions; only a tie there, and only
+    // when at least one name has an extension, re-runs over the whole of both.
+    let (aprefix, bprefix) = (file_prefixlen(a), file_prefixlen(b));
+    let one_pass_only = aprefix == a.len() && bprefix == b.len();
+    let result = verrevcmp(&a[..aprefix], &b[..bprefix]);
+    if result != Ordering::Equal || one_pass_only {
+        result
+    } else {
+        verrevcmp(a, b)
+    }
 }
 
-/// The leading run of digits, or of non-digits, and what follows it.
-fn run(s: &[u8]) -> (&[u8], &[u8]) {
-    let digit = s[0].is_ascii_digit();
-    s.split_at(
-        s.iter()
-            .position(|c| c.is_ascii_digit() != digit)
-            .unwrap_or(s.len()),
-    )
+/// A digit, and the end of the name: the two classes `verrevcmp` steers on.
+const DIGIT: (u8, u8) = (2, 0);
+const END: (u8, u8) = (1, 0);
+
+/// The sort class of the first byte of `s`, as a rank that compares
+/// lexicographically: the C's `-2 < -1 < 0 < letter < letter + 256` with the numbers
+/// replaced by classes. An empty `s` is the end of the name, which the C reaches by
+/// letting its cursor step one past the last byte.
+fn order(s: &[u8]) -> (u8, u8) {
+    match s.first() {
+        Some(b'~') => (0, 0),
+        None => END,
+        Some(&c) if c.is_ascii_digit() => DIGIT,
+        Some(&c) if c.is_ascii_alphabetic() => (3, c),
+        Some(&c) => (4, c),
+    }
 }
 
-/// A run too long for a `u64` sorts last among digit runs rather than panicking; no
-/// filename has 20 digits of prefix, and a wrong order there beats an abort.
-fn number(digits: &[u8]) -> u64 {
-    String::from_utf8_lossy(digits).parse().unwrap_or(u64::MAX)
+/// The length of the name up to its file extensions -- the trailing `.` groups that
+/// start with a letter or `~`, so `.tar.gz` and `.~1~` are cut and `a..a` is not.
+fn file_prefixlen(s: &[u8]) -> usize {
+    let mut prefixlen = 0;
+    let mut skip_to = 0;
+    for i in 0..s.len() {
+        // Bytes inside an extension run do not extend the prefix. Everything after
+        // the last one does, which is why the extensions are skipped and not stopped
+        // at: `zz.0` keeps its `.0`, `zz.0.txt` does not keep its `.txt`.
+        if i < skip_to {
+            continue;
+        }
+        prefixlen = i + 1;
+        skip_to = prefixlen + extensions_len(&s[prefixlen..]);
+    }
+    prefixlen
+}
+
+/// The run of extensions at the front of `s`: each is a `.`, then a letter or `~`,
+/// then any run of letters, digits and `~`.
+fn extensions_len(s: &[u8]) -> usize {
+    let mut rest = s;
+    // The pattern consumes the `.` and the byte after it, so every pass shortens
+    // `rest` by at least two and the loop cannot be made to stand still.
+    while let [b'.', c, tail @ ..] = rest {
+        if !(c.is_ascii_alphabetic() || *c == b'~') {
+            break;
+        }
+        let body = tail
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric() || **c == b'~')
+            .count();
+        rest = &tail[body..];
+    }
+    s.len() - rest.len()
+}
+
+/// The version comparison itself: the two names give up a byte at a time while their
+/// classes agree, and a digit run on both sides at once compares as a number instead.
+fn verrevcmp(mut s1: &[u8], mut s2: &[u8]) -> Ordering {
+    loop {
+        let (c1, c2) = (order(s1), order(s2));
+        // The C's non-digit loop, one pass of it: a run of digits is only a number
+        // when the other side is on one too, or has ended. `0x` against `ax` compares
+        // its `0` as a digit, and only `a0` against `a` drops the zero.
+        if !([DIGIT, END].contains(&c1) && [DIGIT, END].contains(&c2)) {
+            if c1 != c2 {
+                return c1.cmp(&c2);
+            }
+            // Equal classes below `DIGIT` mean the same byte on both sides, so
+            // neither has ended and both have one to give.
+            (s1, s2) = (&s1[1..], &s2[1..]);
+            continue;
+        }
+        let ((d1, r1), (d2, r2)) = (digits(s1), digits(s2));
+        // Leading zeros are gone, so the longer run is the larger number, and equal
+        // lengths decide on the first digit that differs.
+        let by_number = d1.len().cmp(&d2.len()).then_with(|| d1.cmp(d2));
+        if by_number != Ordering::Equal {
+            return by_number;
+        }
+        if (r1.len(), r2.len()) == (s1.len(), s2.len()) {
+            // Neither side had a digit or a zero to give, so both have ended: the C's
+            // outer loop condition, and what makes every pass through this one either
+            // return or shorten a name.
+            return Ordering::Equal;
+        }
+        (s1, s2) = (r1, r2);
+    }
+}
+
+/// The leading digit run of `s` without its leading zeros, and what follows the run.
+fn digits(s: &[u8]) -> (&[u8], &[u8]) {
+    let s = &s[s.iter().take_while(|c| **c == b'0').count()..];
+    s.split_at(s.iter().take_while(|c| c.is_ascii_digit()).count())
 }
 
 /// Drops anything not named `*.rules` -- fagenrules' own filter -- then sorts and
@@ -65,7 +165,12 @@ pub fn files(named: Vec<(String, Vec<u8>)>) -> Vec<File> {
         .into_iter()
         .filter(|(name, _)| name.ends_with(".rules"))
         .collect();
-    named.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+    // The byte-order tie-break is `ls`'s own: coreutils falls back to `strcmp` when
+    // filevercmp calls two names equal, which is what keeps `01-a` before `1-a`.
+    named.sort_by(|a, b| {
+        let (a, b) = (a.0.as_bytes(), b.0.as_bytes());
+        filevercmp(a, b).then_with(|| a.cmp(b))
+    });
     named
         .into_iter()
         .map(|(name, bytes)| File {
@@ -281,9 +386,171 @@ mod tests {
     #[test]
     fn a_name_that_is_a_prefix_of_another_sorts_first_and_an_equal_name_ties() {
         // Both exhaust one side of the comparison; the loop must stop there.
-        assert_eq!(natural_cmp("10", "10-a"), Ordering::Less);
-        assert_eq!(natural_cmp("10-a", "10"), Ordering::Greater);
-        assert_eq!(natural_cmp("10-a.rules", "10-a.rules"), Ordering::Equal);
+        assert_eq!(filevercmp(b"10", b"10-a"), Ordering::Less);
+        assert_eq!(filevercmp(b"10-a", b"10"), Ordering::Greater);
+        assert_eq!(filevercmp(b"10-a.rules", b"10-a.rules"), Ordering::Equal);
+    }
+
+    /// gnulib's `tests/test-filevercmp.c`, its `examples` array verbatim: a list
+    /// already in filevercmp order, `\1` and all. The C test's own `filenvercmp`
+    /// pass replaces those bytes with NUL, which no filename can hold, so only the
+    /// `filevercmp` half is ported.
+    const GNULIB_EXAMPLES: &[&[u8]] = &[
+        b"",
+        b".",
+        b"..",
+        b".0",
+        b".9",
+        b".A",
+        b".Z",
+        b".a~",
+        b".a",
+        b".b~",
+        b".b",
+        b".z",
+        b".zz~",
+        b".zz",
+        b".zz.~1~",
+        b".zz.0",
+        b".\x01",
+        b".\x01.txt",
+        b".\x01x",
+        b".\x01x\x01",
+        b".\x01.0",
+        b"0",
+        b"9",
+        b"A",
+        b"Z",
+        b"a~",
+        b"a",
+        b"a.b~",
+        b"a.b",
+        b"a.bc~",
+        b"a.bc",
+        b"a+",
+        b"a.",
+        b"a..a",
+        b"a.+",
+        b"b~",
+        b"b",
+        b"gcc-c++-10.fc9.tar.gz",
+        b"gcc-c++-10.fc9.tar.gz.~1~",
+        b"gcc-c++-10.fc9.tar.gz.~2~",
+        b"gcc-c++-10.8.12-0.7rc2.fc9.tar.bz2",
+        b"gcc-c++-10.8.12-0.7rc2.fc9.tar.bz2.~1~",
+        b"glibc-2-0.1.beta1.fc10.rpm",
+        b"glibc-common-5-0.2.beta2.fc9.ebuild",
+        b"glibc-common-5-0.2b.deb",
+        b"glibc-common-11b.ebuild",
+        b"glibc-common-11-0.6rc2.ebuild",
+        b"libstdc++-0.5.8.11-0.7rc2.fc10.tar.gz",
+        b"libstdc++-4a.fc8.tar.gz",
+        b"libstdc++-4.10.4.20040204svn.rpm",
+        b"libstdc++-devel-3.fc8.ebuild",
+        b"libstdc++-devel-3a.fc9.tar.gz",
+        b"libstdc++-devel-8.fc8.deb",
+        b"libstdc++-devel-8.6.2-0.4b.fc8",
+        b"nss_ldap-1-0.2b.fc9.tar.bz2",
+        b"nss_ldap-1-0.6rc2.fc8.tar.gz",
+        b"nss_ldap-1.0-0.1a.tar.gz",
+        b"nss_ldap-10beta1.fc8.tar.gz",
+        b"nss_ldap-10.11.8.6.20040204cvs.fc10.ebuild",
+        b"z",
+        b"zz~",
+        b"zz",
+        b"zz.~1~",
+        b"zz.0",
+        b"zz.0.txt",
+        b"\x01",
+        b"\x01.txt",
+        b"\x01x",
+        b"\x01x\x01",
+        b"\x01.0",
+        b"#\x01.b#",
+        b"#.b#",
+    ];
+
+    /// The same file's `equals` sets: within a set every name compares equal.
+    const GNULIB_EQUALS: &[&[&[u8]]] = &[
+        &[b"a", b"a0", b"a0000"],
+        &[
+            b"a\x01c-27.txt",
+            b"a\x01c-027.txt",
+            b"a\x01c-00000000000000000000000000000000000000000000000000000027.txt",
+        ],
+        &[
+            b".a\x01c-27.txt",
+            b".a\x01c-027.txt",
+            b".a\x01c-00000000000000000000000000000000000000000000000000000027.txt",
+        ],
+        &[b"a\x01c-", b"a\x01c-0", b"a\x01c-00"],
+        &[b".a\x01c-", b".a\x01c-0", b".a\x01c-00"],
+        &[b"a\x01c-0.txt", b"a\x01c-00.txt"],
+        &[b".a\x01c-1\x01.txt", b".a\x01c-001\x01.txt"],
+    ];
+
+    #[test]
+    fn the_gnulib_example_list_is_already_in_order() {
+        let mut sorted = GNULIB_EXAMPLES.to_vec();
+        sorted.sort_by(|a, b| filevercmp(a, b));
+        assert_eq!(sorted, GNULIB_EXAMPLES, "{} vectors", GNULIB_EXAMPLES.len());
+        // Every pair, both directions, as the C test's O(n^2) pass is: no two of
+        // these compare equal, and a comparator that disagrees with itself one way
+        // round is what an adjacent-pairs sweep would miss.
+        for (i, a) in GNULIB_EXAMPLES.iter().enumerate() {
+            for b in &GNULIB_EXAMPLES[i + 1..] {
+                assert_eq!(
+                    (filevercmp(a, b), filevercmp(b, a)),
+                    (Ordering::Less, Ordering::Greater),
+                    "{:?} sorts before {:?}, both ways round",
+                    String::from_utf8_lossy(a),
+                    String::from_utf8_lossy(b)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_gnulib_equal_set_compares_equal_both_ways() {
+        for set in GNULIB_EQUALS {
+            for a in *set {
+                for b in *set {
+                    assert_eq!(
+                        filevercmp(a, b),
+                        Ordering::Equal,
+                        "{:?} vs {:?}",
+                        String::from_utf8_lossy(a),
+                        String::from_utf8_lossy(b)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_order_is_the_one_ls_1v_gives() {
+        // Measured on coreutils 9.5: `touch` these seven names in an empty directory
+        // and `ls -1v` prints them in exactly this order.
+        assert_eq!(
+            order(&[
+                "1-a.rules",
+                "01-a.rules",
+                "010-x.rules",
+                "10-x.rules",
+                "2-a.rules",
+                "local.rules",
+                "zz.rules",
+            ]),
+            [
+                "01-a.rules",
+                "1-a.rules",
+                "2-a.rules",
+                "010-x.rules",
+                "10-x.rules",
+                "local.rules",
+                "zz.rules",
+            ]
+        );
     }
 
     #[test]
