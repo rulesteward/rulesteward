@@ -7,11 +7,10 @@
 //! shows replacement characters in a diagnostic and nothing else changes. Do not
 //! "fix" this to bytes; there is nothing downstream that would use them.
 
-/// One rule of the compiled set, in the daemon's own numbering.
+/// One rule of the compiled set. Its position in the slice is the daemon's own
+/// numbering: the `rule=` a record carries is 1-based, so rule `n` is index `n - 1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// 1-based, the `rule=` a record carries.
-    pub number: usize,
     /// The line as written, trimmed. Only ever quoted in a diagnostic.
     pub text: String,
     /// The first token: `allow`, `deny`, `deny_audit`, `deny_syslog`, `deny_log`.
@@ -37,19 +36,15 @@ pub fn parse(file: &[u8]) -> Vec<Rule> {
         if line.is_empty() || line.starts_with('#') || line.starts_with('%') {
             continue;
         }
-        rules.push(Rule::new(rules.len() + 1, line));
+        rules.push(Rule::new(line));
     }
     rules
-}
-
-pub fn find(rules: &[Rule], number: usize) -> Option<&Rule> {
-    rules.iter().find(|r| r.number == number)
 }
 
 impl Rule {
     /// No unescaping anywhere: the rule language has no escape mechanism and no
     /// quoting, so `%set` references and `pattern=` values are stored literally.
-    pub(crate) fn new(number: usize, line: &str) -> Rule {
+    pub(crate) fn new(line: &str) -> Rule {
         let line = line.trim();
         let mut tokens = line.split_whitespace().map(str::to_string);
         let decision = tokens.next().unwrap_or_default();
@@ -59,7 +54,6 @@ impl Rule {
             None => (rest, None),
         };
         Rule {
-            number,
             text: line.to_string(),
             decision,
             subject,
@@ -115,37 +109,33 @@ allow perm=open all : all
     fn the_rocky9_ruleset_numbers_fourteen_rules() {
         let r = parse(ROCKY9);
         assert_eq!(r.len(), 14, "the daemon logged `Loaded 14 rules`");
-        assert_eq!(r[0].number, 1, "the comment and the %set consume no number");
-        assert_eq!(r[0].text, "allow perm=any uid=0 : dir=/var/tmp/");
+        assert_eq!(
+            r[0].text, "allow perm=any uid=0 : dir=/var/tmp/",
+            "the comment and the %set consume no position"
+        );
     }
 
     #[test]
     fn the_ld_so_deny_is_rule_five_not_six() {
         let r = parse(ROCKY9);
+        assert_eq!(r[4].text, "deny_audit perm=any pattern=ld_so : all");
         assert_eq!(
-            find(&r, 5).unwrap().text,
-            "deny_audit perm=any pattern=ld_so : all"
-        );
-        assert_eq!(
-            find(&r, 8).unwrap().text,
+            r[7].text,
             "deny_audit perm=open all : ftype=application/x-sharedlib"
         );
-        assert_eq!(
-            find(&r, 13).unwrap().text,
-            "deny_audit perm=execute all : all"
-        );
+        assert_eq!(r[12].text, "deny_audit perm=execute all : all");
     }
 
     #[test]
     fn only_the_subject_side_rule_refuses() {
-        for r in parse(ROCKY9) {
-            assert_eq!(r.refuses(), r.number == 5, "rule {}: {}", r.number, r.text);
+        for (i, r) in parse(ROCKY9).iter().enumerate() {
+            assert_eq!(r.refuses(), i == 4, "rule {}: {}", i + 1, r.text);
         }
     }
 
     #[test]
     fn an_original_format_rule_never_refuses() {
-        let r = Rule::new(1, "deny_audit perm=any pattern=ld_so");
+        let r = Rule::new("deny_audit perm=any pattern=ld_so");
         assert_eq!(r.object, None);
         assert!(
             !r.refuses(),
@@ -155,11 +145,11 @@ allow perm=open all : all
 
     #[test]
     fn an_allow_rule_never_refuses() {
-        assert!(!Rule::new(3, "allow perm=open exe=/usr/bin/rpm : all").refuses());
+        assert!(!Rule::new("allow perm=open exe=/usr/bin/rpm : all").refuses());
     }
 
     #[test]
     fn an_exe_only_deny_refuses() {
-        assert!(Rule::new(1, "deny perm=execute exe=/usr/bin/foo : all").refuses());
+        assert!(Rule::new("deny perm=execute exe=/usr/bin/foo : all").refuses());
     }
 }

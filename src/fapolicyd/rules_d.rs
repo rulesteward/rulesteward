@@ -188,9 +188,10 @@ pub fn locate(files: &[File], compiled: &[Rule], n: usize) -> Option<usize> {
     let mut merged = 0usize;
     for (i, file) in files.iter().enumerate() {
         // `parse` renumbers from 1 inside every file, so the daemon's number is an
-        // offset into this file's vec and never a `rules::find` on it.
+        // offset into this file's vec and never an index into the merged set.
         if let Some(within) = n.checked_sub(merged + 1).filter(|w| *w < file.rules.len()) {
-            return (file.rules[within].text == rules::find(compiled, n)?.text).then_some(i);
+            let at = n.checked_sub(1).and_then(|j| compiled.get(j))?;
+            return (file.rules[within].text == at.text).then_some(i);
         }
         merged += file.rules.len();
     }
