@@ -1,13 +1,17 @@
---- exit 0 ---
---- stdout ---
+--- rules exit 0 ---
+# rulesteward: line 19: no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default
+# rulesteward: line 21: path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit
+# rulesteward: line 22: trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils
 allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils
 allow perm=open exe=/usr/bin/bash : path=/tmp/absent
+--- trust exit 0 ---
+# rulesteward: line 20: no trust= in this record and the path cannot be written in a rule (space or colon), so a trust entry is the only representable suggestion
+# rulesteward: line 21: path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit
+# rulesteward: line 22: trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted
+# rulesteward: 3 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
 fapolicyd-cli --file add '/tmp/with space'
 fapolicyd-cli --update
 --- stderr ---
-rulesteward: line 19: no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default
-rulesteward: line 20: no trust= in this record and the path cannot be written in a rule (space or colon), so a trust entry is the only representable suggestion
-rulesteward: line 21: path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit
-rulesteward: line 22: trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted
-rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)

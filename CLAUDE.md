@@ -36,7 +36,9 @@ is a test failure and not a style discussion.
 `src/main.rs` is the one place permitted to touch fs, io, env or the clock, and
 `read_syslog_format`, `read_rules` and `read_rules_d` there are the only file reads in
 the tree. A diagnostic that
-needs printing gets returned to `main` instead of printed where it was found.
+needs printing gets returned to `main` instead of printed where it was found, and
+`run_fapolicyd` writes it as a `#` comment on stdout ahead of the artifact it
+explains -- stderr is for errors only.
 
 ## `UPDATE_GOLDEN=1`, then read the diff
 

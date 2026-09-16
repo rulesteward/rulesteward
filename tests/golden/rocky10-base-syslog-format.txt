@@ -1,6 +1,8 @@
---- exit 0 ---
---- stdout ---
+--- rules exit 0 ---
+# rulesteward: line 20: cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+--- trust exit 0 ---
+# rulesteward: line 20: cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path
 fapolicyd-cli --file add '/tmp/untrusted-ls'
 fapolicyd-cli --update
 --- stderr ---
-rulesteward: line 20: cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path

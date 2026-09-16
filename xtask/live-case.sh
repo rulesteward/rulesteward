@@ -102,12 +102,14 @@ if [ "${HARVEST_VARIANT:-base}" = "journal" ]; then
 
     # Q5: does the tool read a journal capture the way it reads the stderr log?
     for m in cat cat-a; do
-        echo "== rulesteward fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf < journal.$m =="
-        $RS fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf \
-            < "$J.$m" > /tmp/rs.out 2> /tmp/rs.err
-        echo "exit=$?"
-        echo "-- stdout --"; cat /tmp/rs.out
-        echo "-- stderr --"; cat /tmp/rs.err
+        for action in rules trust; do
+            echo "== rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf < journal.$m =="
+            $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
+                < "$J.$m" > /tmp/rs.out 2> /tmp/rs.err
+            echo "exit=$?"
+            echo "-- stdout --"; cat /tmp/rs.out
+            echo "-- stderr --"; cat /tmp/rs.err
+        done
     done
     echo "== denials in journal.cat-a =="; grep -c 'dec=deny' "$J.cat-a"
 
@@ -134,17 +136,25 @@ echo "== pass 1 denials =="
 tail -n +$((MARK+1)) /tmp/deny.log | grep 'dec=deny' | tee /tmp/denials1.txt
 echo "count=$(wc -l < /tmp/denials1.txt)"
 
-echo "== rulesteward fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf =="
-tail -n +$((MARK+1)) /tmp/deny.log \
-    | $RS fapolicyd analyze --conf /etc/fapolicyd/fapolicyd.conf >/tmp/rs.out 2>/tmp/rs.err
-RC=$?
-echo "exit=$RC"
-echo "-- stdout --"; cat /tmp/rs.out
-echo "-- stderr --"; cat /tmp/rs.err
-[ "$RC" -eq 0 ] || fail "analyze exited $RC"
-[ -s /tmp/rs.out ] || fail "analyze emitted nothing for $(wc -l < /tmp/denials1.txt) denials"
+# Two artifacts, two runs of the same pass over the same input: the rules.d fragment
+# and the trust commands go to different places and are applied differently below.
+for action in rules trust; do
+    echo "== rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf =="
+    tail -n +$((MARK+1)) /tmp/deny.log \
+        | $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
+            >"/tmp/rs.$action" 2>/tmp/rs.err
+    RC=$?
+    echo "exit=$RC"
+    echo "-- stdout --"; cat "/tmp/rs.$action"
+    echo "-- stderr --"; cat /tmp/rs.err
+    [ "$RC" -eq 0 ] || fail "$action exited $RC"
+    # stderr carries errors only, so anything on it here is a failure of the run.
+    [ -s /tmp/rs.err ] && fail "$action wrote to stderr"
+done
+grep -qE '^(allow|fapolicyd-cli) ' /tmp/rs.rules /tmp/rs.trust ||
+    fail "nothing emitted for $(wc -l < /tmp/denials1.txt) denials"
 
-echo "== applying stdout verbatim (daemon live, as a user would) =="
+echo "== applying both artifacts verbatim (daemon live, as a user would) =="
 # The eval below is the test, not an oversight: a user pastes these lines into a
 # root shell, so the case does the same, and a quoting defect in shell_quote
 # shows up here as a failed or wrong command rather than being masked by an
@@ -154,6 +164,9 @@ RULES=/etc/fapolicyd/rules.d/50-rulesteward.rules
 : > /tmp/suggested-paths.txt
 while IFS= read -r line; do
     case "$line" in
+        # Diagnostics ride on stdout as comments now. A user keeps them as the
+        # fragment's header; this case only applies the lines that do something.
+        "#"*) ;;
         "fapolicyd-cli --file add "*)
             eval "$line" || echo "  (--file add exited $?)"
             eval "printf '%s\n' ${line#fapolicyd-cli --file add }" >> /tmp/suggested-paths.txt ;;
@@ -164,7 +177,7 @@ while IFS= read -r line; do
             printf '%s\n' "${line##* : path=}" >> /tmp/suggested-paths.txt ;;
         *) echo "UNEXPECTED LINE: $line" ;;
     esac
-done < /tmp/rs.out
+done < <(cat /tmp/rs.rules /tmp/rs.trust)
 if [ -f "$RULES" ]; then
     fagenrules; echo "fagenrules exit=$?"
     timeout 60 fapolicyd-cli --reload-rules; echo "--reload-rules exit=$?"

@@ -1,15 +1,12 @@
---- exit 0 ---
---- stdout ---
+--- rules exit 0 ---
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 12 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/grep
 allow perm=open exe=/usr/bin/bash : path=/usr/bin/grep
 allow perm=execute exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2
 allow perm=open exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2
-fapolicyd-cli --file add '/etc/ld.so.cache'
-fapolicyd-cli --update
 allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libpcre2-8.so.0.13.0
 allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libc.so.6
-fapolicyd-cli --file add '/var/log/all.log'
-fapolicyd-cli --update
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sleep
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/stat
 allow perm=open exe=/usr/bin/bash : path=/usr/bin/sleep
@@ -35,12 +32,6 @@ allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libaudit.so.1.0.0
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libeconf.so.0.6.2
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libm.so.6
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap-ng.so.0.0.0
-fapolicyd-cli --file add '/etc/authselect/nsswitch.conf'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/etc/passwd'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/etc/pam.d/runuser'
-fapolicyd-cli --update
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_rootok.so
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libselinux.so.1
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpcre2-8.so.0.13.0
@@ -48,28 +39,14 @@ allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_keyinit.so
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_limits.so
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_unix.so
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcrypt.so.2.0.0
-fapolicyd-cli --file add '/etc/pam.d/other'
-fapolicyd-cli --update
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_deny.so
-fapolicyd-cli --file add '/etc/group'
-fapolicyd-cli --update
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libnss_systemd.so.2
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap.so.2.69
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libgcc_s-14-20251022.so.1
-fapolicyd-cli --file add '/etc/security/limits.conf'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/etc/login.defs'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/usr/share/zoneinfo/Etc/UTC'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/probe/actor'
-fapolicyd-cli --update
 allow perm=execute exe=/usr/sbin/runuser : path=/usr/bin/coreutils
 allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/coreutils
 allow perm=execute exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
-fapolicyd-cli --file add '/probe/obj'
-fapolicyd-cli --update
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/tail
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/head
 allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sed
@@ -81,5 +58,30 @@ allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libselinux.so.1
 allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libc.so.6
 allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libattr.so.1.1.2502
 allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libpcre2-8.so.0.13.0
+--- trust exit 0 ---
+# rulesteward: 57 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+fapolicyd-cli --file add '/etc/ld.so.cache'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/var/log/all.log'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/authselect/nsswitch.conf'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/passwd'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/pam.d/runuser'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/pam.d/other'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/group'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/security/limits.conf'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/login.defs'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/usr/share/zoneinfo/Etc/UTC'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/probe/actor'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/probe/obj'
+fapolicyd-cli --update
 --- stderr ---
-rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)

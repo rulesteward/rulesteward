@@ -32,6 +32,15 @@ fn run(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 const DENIAL: &[u8] =
     b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
 
+/// §6 step 2: the packaged /etc/fapolicyd is 750 root:fapolicyd, so a conf read failing
+/// is the ordinary case. Two tests run it, for the degradation and for the stream.
+const MISSING_CONF: [&str; 4] = [
+    "fapolicyd",
+    "trust",
+    "--conf",
+    "/nonexistent/fapolicyd.conf",
+];
+
 #[test]
 fn no_arguments_lists_the_domains_and_exits_1() {
     let (code, _, err) = run(&[], b"");
@@ -41,20 +50,18 @@ fn no_arguments_lists_the_domains_and_exits_1() {
 
 #[test]
 fn there_is_no_bare_action_form() {
-    // `rulesteward analyze` must never become an alias, or the domain slot is spent.
-    let (code, _, _) = run(&["analyze"], b"");
-    assert_eq!(code, 1);
+    // `rulesteward rules` must never become an alias, or the domain slot is spent.
+    for bad in ["rules", "trust"] {
+        let (code, _, _) = run(&[bad], b"");
+        assert_eq!(code, 1, "{bad} must not be a bare action");
+    }
 }
 
 #[test]
 fn the_domain_cannot_be_abbreviated() {
     // clap v4 defaults infer_subcommands to false. If someone turns it on, a future
     // domain starting with "fap" collides with a prefix people got used to typing.
-    for bad in [
-        ["fapo", "analyze"],
-        ["fap", "analyze"],
-        ["fapolicy", "analyze"],
-    ] {
+    for bad in [["fapo", "rules"], ["fap", "rules"], ["fapolicy", "trust"]] {
         let (code, _, _) = run(&bad, b"");
         assert_eq!(code, 1, "{bad:?} must not resolve to fapolicyd");
     }
@@ -62,8 +69,12 @@ fn the_domain_cannot_be_abbreviated() {
 
 #[test]
 fn the_action_is_not_spelled_the_other_way() {
-    let (code, _, _) = run(&["fapolicyd", "analyse"], b"");
-    assert_eq!(code, 1);
+    // `analyze` was the v0.3.0-unreleased action and is now two. It is a usage error
+    // and never an alias for either of them, because §9 forbids aliases.
+    for bad in ["analyse", "analyze"] {
+        let (code, _, _) = run(&["fapolicyd", bad], b"");
+        assert_eq!(code, 1, "{bad} must be a usage error");
+    }
 }
 
 #[test]
@@ -72,10 +83,10 @@ fn conf_and_no_conf_are_mutually_exclusive() {
     // action — including one on each side, which is the ordering clap's own
     // `conflicts_with` does not catch. All four have to be rejected.
     for args in [
-        ["fapolicyd", "--no-conf", "--conf", "/dev/null", "analyze"],
-        ["fapolicyd", "analyze", "--no-conf", "--conf", "/dev/null"],
-        ["fapolicyd", "--no-conf", "analyze", "--conf", "/dev/null"],
-        ["fapolicyd", "--conf", "/dev/null", "analyze", "--no-conf"],
+        ["fapolicyd", "--no-conf", "--conf", "/dev/null", "rules"],
+        ["fapolicyd", "rules", "--no-conf", "--conf", "/dev/null"],
+        ["fapolicyd", "--no-conf", "trust", "--conf", "/dev/null"],
+        ["fapolicyd", "--conf", "/dev/null", "trust", "--no-conf"],
     ] {
         let (code, _, err) = run(&args, b"");
         assert_eq!(code, 1, "{args:?} should be a usage error");
@@ -85,9 +96,9 @@ fn conf_and_no_conf_are_mutually_exclusive() {
 
 #[test]
 fn the_domain_flags_are_accepted_before_the_action() {
-    // D9: `--conf`/`--no-conf` belong to `fapolicyd`, not to `analyze`, so this form
+    // D9: `--conf`/`--no-conf` belong to `fapolicyd`, not to the action, so this form
     // has to work as well as the trailing one.
-    let (code, out, _) = run(&["fapolicyd", "--no-conf", "analyze"], DENIAL);
+    let (code, out, _) = run(&["fapolicyd", "--no-conf", "trust"], DENIAL);
     assert_eq!(code, 0);
     assert_eq!(
         out,
@@ -109,13 +120,17 @@ fn a_conf_turns_a_missing_field_into_a_truncation_refusal() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/conf/default.conf"
     );
-    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], NO_TRUST);
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "rules"], NO_TRUST);
     assert_eq!(code, 0, "a truncated record is not a failed run: {err}");
-    assert!(out.is_empty(), "nothing may be emitted: {out}");
-    assert!(err.contains("truncated"), "{err}");
+    assert!(!out.contains("allow "), "nothing may be emitted: {out}");
+    assert!(err.is_empty(), "a refusal is not an error: {err}");
     assert!(
-        err.contains("trust="),
-        "should name the missing field: {err}"
+        out.contains("# rulesteward: line 1: record truncated"),
+        "{out}"
+    );
+    assert!(
+        out.contains("trust="),
+        "should name the missing field: {out}"
     );
 }
 
@@ -123,10 +138,17 @@ fn a_conf_turns_a_missing_field_into_a_truncation_refusal() {
 fn the_same_record_without_a_conf_falls_through_to_the_rule_arm() {
     // §6 step 4 is the only test left, and 92 bytes is nowhere near the 511-byte cap,
     // so the record reads as whole and `trust` absent means D12's rule.
-    let (code, out, err) = run(&["fapolicyd", "--no-conf", "analyze"], NO_TRUST);
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "rules"], NO_TRUST);
     assert_eq!(code, 0);
-    assert_eq!(out, "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n");
-    assert!(err.contains("no trust= in this record"), "{err}");
+    assert!(
+        out.ends_with("allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"),
+        "{out}"
+    );
+    assert!(err.is_empty(), "{err}");
+    assert!(
+        out.contains("# rulesteward: line 1: no trust= in this record"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -136,7 +158,7 @@ fn a_commented_out_example_record_is_not_analysed() {
     // stripping first turned one of them into a trust entry.
     let commented = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit \
 perm=open exe=/usr/bin/x : path=/etc/login.defs trust=0\n";
-    let (code, out, _) = run(&["fapolicyd", "--no-conf", "analyze"], commented);
+    let (code, out, _) = run(&["fapolicyd", "--no-conf", "rules"], commented);
     assert_eq!(code, 0, "a file of comments is not unparseable input");
     assert!(out.is_empty(), "a comment is not a record: {out}");
 }
@@ -147,7 +169,7 @@ fn a_denial_under_a_path_containing_deprecated_is_still_emitted() {
     // anchor on both words — `deprecated` alone also matches /opt/deprecated.
     let denial = b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash \
 : path=/opt/deprecated/x trust=0\n";
-    let (code, out, _) = run(&["fapolicyd", "--no-conf", "analyze"], denial);
+    let (code, out, _) = run(&["fapolicyd", "--no-conf", "trust"], denial);
     assert_eq!(code, 0);
     assert_eq!(
         out,
@@ -168,7 +190,7 @@ fn help_and_version_are_successes_not_usage_errors() {
 
 #[test]
 fn a_good_capture_exits_0_with_bare_lines_on_stdout() {
-    let (code, out, _) = run(&["fapolicyd", "analyze", "--no-conf"], DENIAL);
+    let (code, out, _) = run(&["fapolicyd", "trust", "--no-conf"], DENIAL);
     assert_eq!(code, 0);
     assert_eq!(
         out,
@@ -179,7 +201,7 @@ fn a_good_capture_exits_0_with_bare_lines_on_stdout() {
 #[test]
 fn unparseable_input_exits_2() {
     let (code, out, _) = run(
-        &["fapolicyd", "analyze", "--no-conf"],
+        &["fapolicyd", "rules", "--no-conf"],
         b"not a record\nnor this\n",
     );
     assert_eq!(code, 2);
@@ -192,14 +214,14 @@ fn a_log_with_no_denials_is_a_success_not_a_parse_failure() {
     // could not read, and an allow record reads perfectly well.
     let allow =
         b"rule=3 dec=allow perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/tmp/x trust=1\n";
-    let (code, out, _) = run(&["fapolicyd", "analyze", "--no-conf"], allow);
+    let (code, out, _) = run(&["fapolicyd", "rules", "--no-conf"], allow);
     assert_eq!(code, 0);
     assert!(out.is_empty());
 }
 
 #[test]
 fn empty_input_is_a_success() {
-    let (code, out, _) = run(&["fapolicyd", "analyze", "--no-conf"], b"");
+    let (code, out, _) = run(&["fapolicyd", "rules", "--no-conf"], b"");
     assert_eq!(code, 0);
     assert!(out.is_empty());
 }
@@ -208,18 +230,15 @@ fn empty_input_is_a_success() {
 fn a_missing_conf_degrades_with_a_diagnostic_and_never_exits() {
     // §6 step 2: the packaged /etc/fapolicyd is 750 root:fapolicyd, so this read
     // failing is the ordinary case, not an error condition.
-    let (code, out, err) = run(
-        &[
-            "fapolicyd",
-            "analyze",
-            "--conf",
-            "/nonexistent/fapolicyd.conf",
-        ],
-        DENIAL,
-    );
+    let (code, out, err) = run(&MISSING_CONF, DENIAL);
     assert_eq!(code, 0, "a failed conf read must not fail the run");
-    assert!(err.contains("511-byte"), "should name the fallback: {err}");
+    assert!(
+        out.contains("# rulesteward: cannot read /nonexistent/fapolicyd.conf"),
+        "the note is a comment on stdout: {out}"
+    );
+    assert!(out.contains("511-byte"), "should name the fallback: {out}");
     assert!(out.contains("--file add"), "should still emit: {out}");
+    assert!(err.is_empty(), "{err}");
 }
 
 /// #10, end to end: the rules file is found beside the conf, `rule=5` resolves to the
@@ -235,26 +254,32 @@ fn a_conf_finds_the_rules_beside_it_and_refuses_the_subject_side_rule() {
         "/tests/fixtures/rocky9-journal-live-vm-short.log"
     );
     let input = std::fs::read(fixture).expect("read fixture");
-    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], &input);
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "trust"], &input);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(
-        out,
-        "fapolicyd-cli --file add '/tmp/live/probe-grep'\n\
-         fapolicyd-cli --update\n\
-         fapolicyd-cli --file add '/tmp/live/probe-lib.so'\n\
-         fapolicyd-cli --update\n",
-        "stderr: {err}"
+    assert!(
+        out.ends_with(
+            "fapolicyd-cli --file add '/tmp/live/probe-grep'\n\
+             fapolicyd-cli --update\n\
+             fapolicyd-cli --file add '/tmp/live/probe-lib.so'\n\
+             fapolicyd-cli --update\n"
+        ),
+        "{out}"
     );
     assert!(
-        !out.contains("/etc/hostname"),
+        !out.contains("path=/etc/hostname"),
         "the trust add issue #10 is about: {out}"
     );
     assert!(!out.contains("allow perm="), "{out}");
+    assert!(err.is_empty(), "{err}");
     // Nothing is truncated, the conf names a syslog_format, the rules read succeeds and
-    // no rule is suggested, so the refusal is the only thing left to say.
-    assert_eq!(err.lines().count(), 1, "{err}");
-    assert!(err.contains("rule=5"), "{err}");
-    assert!(err.contains("pattern=ld_so"), "{err}");
+    // no rule is suggested, so the refusal is the only comment left to write.
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("# ")).count(),
+        1,
+        "{out}"
+    );
+    assert!(out.contains("rule=5"), "{out}");
+    assert!(out.contains("pattern=ld_so"), "{out}");
 }
 
 #[test]
@@ -265,9 +290,9 @@ fn no_conf_skips_the_rules_read_too() {
         "/tests/fixtures/rocky9-journal-live-vm-short.log"
     );
     let input = std::fs::read(fixture).expect("read fixture");
-    let (code, out, err) = run(&["fapolicyd", "--no-conf", "analyze"], &input);
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "trust"], &input);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("/etc/hostname"), "{out}");
+    assert!(out.contains("--file add '/etc/hostname'"), "{out}");
 }
 
 #[test]
@@ -280,12 +305,14 @@ fn the_legacy_rules_file_wins_over_compiled_rules() {
         "/tests/fixtures/conf/legacy/fapolicyd.conf"
     );
     let denial = b"rule=1 dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x trust=0\n";
-    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], denial);
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "rules"], denial);
     assert_eq!(code, 0, "{err}");
-    assert!(out.is_empty(), "the legacy rule 1 refuses: {out}");
+    assert!(!out.contains("allow "), "the legacy rule 1 refuses: {out}");
+    assert!(!out.contains("--file add"), "{out}");
     // The two reads are independent: the conf itself does not exist.
-    assert!(err.contains("cannot read"), "{err}");
-    assert!(err.contains("fapolicyd.conf"), "{err}");
+    assert!(out.contains("# rulesteward: cannot read"), "{out}");
+    assert!(out.contains("fapolicyd.conf"), "{out}");
+    assert!(err.is_empty(), "{err}");
 }
 
 /// #30, end to end: the rule that denied is looked up in the split `rules.d/`, and the
@@ -299,21 +326,21 @@ fn the_placement_note_names_the_rules_d_file_and_a_filename_before_it() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/conf/default.conf"
     );
-    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], DENIED_BY_13);
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "rules"], DENIED_BY_13);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(
-        out, "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n",
-        "stderr: {err}"
+    assert!(
+        out.ends_with("allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"),
+        "{out}"
     );
     assert!(
-        err.contains("new file: rules.d/89-rulesteward.rules"),
-        "{err}"
+        out.contains("new file: rules.d/89-rulesteward.rules"),
+        "{out}"
     );
-    assert!(err.contains("sorts before 90-deny-execute.rules"), "{err}");
-    assert!(err.contains("rule=13"), "{err}");
+    assert!(out.contains("sorts before 90-deny-execute.rules"), "{out}");
+    assert!(out.contains("rule=13"), "{out}");
     assert!(
-        !err.contains("30-patterns.rules"),
-        "the canned example is gone: {err}"
+        !out.contains("30-patterns.rules"),
+        "the canned example is gone: {out}"
     );
 }
 
@@ -327,26 +354,23 @@ fn rules_d_disagreeing_with_compiled_rules_recommends_no_filename() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/conf/drifted/fapolicyd.conf"
     );
-    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "analyze"], DENIED_BY_13);
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "rules"], DENIED_BY_13);
     assert_eq!(code, 0, "{err}");
+    assert!(out.contains("allow perm=execute"), "still emitted: {out}");
+    assert!(out.contains("none recommended"), "{out}");
+    assert!(out.contains("changed since fagenrules ran"), "{out}");
+    assert!(out.contains("recapture"), "{out}");
     assert!(
-        out.starts_with("allow perm=execute"),
-        "still emitted: {out}"
-    );
-    assert!(err.contains("none recommended"), "{err}");
-    assert!(err.contains("changed since fagenrules ran"), "{err}");
-    assert!(err.contains("recapture"), "{err}");
-    assert!(
-        !err.contains("-rulesteward.rules"),
-        "no filename may be named: {err}"
+        !out.contains("-rulesteward.rules"),
+        "no filename may be named: {out}"
     );
 }
 
 /// #39: the two input-independent D12 advisories left the run output, so `--help` is
 /// the only place they still exist. `-h` does not carry them, by design.
 #[test]
-fn analyze_help_carries_the_two_standing_advisories() {
-    let (code, out, err) = run(&["fapolicyd", "analyze", "--help"], b"");
+fn rules_help_carries_the_two_standing_advisories() {
+    let (code, out, err) = run(&["fapolicyd", "rules", "--help"], b"");
     assert_eq!(code, 0, "{err}");
     assert!(
         out.contains("legacy /etc/fapolicyd/fapolicyd.rules"),
@@ -354,4 +378,75 @@ fn analyze_help_carries_the_two_standing_advisories() {
     );
     assert!(out.contains("--reload-rules exits 0"), "{out}");
     assert!(out.contains("first match wins"), "{out}");
+}
+
+// The four §9 promises of the split, one test each: what `rules` writes, what `trust`
+// writes, that each names the other, and that stderr is empty in all of it.
+
+#[test]
+fn rules_stdout_is_a_rules_d_fragment() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "rules"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    for line in out.lines() {
+        assert!(
+            line.starts_with("# ") || line.starts_with("allow "),
+            "not a rules.d line: {line}"
+        );
+    }
+    assert!(out.contains("# rulesteward: new file: rules.d/"), "{out}");
+}
+
+#[test]
+fn trust_stdout_is_commands_and_comments() {
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "trust"], DENIAL);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    for line in out.lines() {
+        assert!(
+            line.starts_with("# ") || line.starts_with("fapolicyd-cli "),
+            "not a trust line: {line}"
+        );
+    }
+    assert!(out.contains("fapolicyd-cli --update"), "{out}");
+}
+
+#[test]
+fn a_record_needing_trust_is_named_in_the_rules_output() {
+    // DENIAL is trust=0, so `rules` has nothing to write for it. Saying so is how a
+    // user who only ran `rules` learns the other action exists.
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "rules"], DENIAL);
+    assert_eq!(code, 0, "{err}");
+    assert!(!out.contains("allow "), "{out}");
+    assert!(
+        out.contains(
+            "1 untrusted path(s) need a trust entry, not a rule: run \
+                      rulesteward fapolicyd trust on the same input"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn errors_are_the_only_thing_on_stderr() {
+    // A failed conf read is a diagnostic and not an error, so it is a comment on
+    // stdout and stderr stays empty. Only usage and I/O go the other way.
+    let (_, out, err) = run(&MISSING_CONF, DENIAL);
+    assert!(err.is_empty(), "a diagnostic is not an error: {err}");
+    assert!(out.contains("# rulesteward: cannot read"), "{out}");
+
+    let (code, _, err) = run(
+        &["fapolicyd", "--no-conf", "--conf", "/dev/null", "rules"],
+        b"",
+    );
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("--no-conf"),
+        "the flag conflict is an error: {err}"
+    );
+    assert!(!err.starts_with("# "), "errors are not comments: {err}");
 }

@@ -14,30 +14,39 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Both actions, one report. They are two artifacts out of one pass, so a golden that
+/// pinned only one of them would let the other drift unwatched. The single `stderr`
+/// section carries both runs' stderr and is expected to be empty: §9 puts errors there
+/// and nothing else, and a fixture on stdin produces no error.
 fn run(fixture: &Path) -> Vec<u8> {
     let input = std::fs::read(fixture).expect("read fixture");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
-        .args(["fapolicyd", "analyze", "--no-conf"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn rulesteward");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(&input)
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("wait");
-
     let mut report = Vec::new();
-    report.extend_from_slice(format!("--- exit {} ---\n", out.status.code().unwrap()).as_bytes());
-    report.extend_from_slice(b"--- stdout ---\n");
-    report.extend_from_slice(&out.stdout);
+    let mut errors = Vec::new();
+    for action in ["rules", "trust"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
+            .args(["fapolicyd", action, "--no-conf"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn rulesteward");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(&input)
+            .expect("write stdin");
+        let out = child.wait_with_output().expect("wait");
+
+        report.extend_from_slice(
+            format!("--- {action} exit {} ---\n", out.status.code().unwrap()).as_bytes(),
+        );
+        report.extend_from_slice(&out.stdout);
+        errors.extend_from_slice(&out.stderr);
+    }
     report.extend_from_slice(b"--- stderr ---\n");
-    report.extend_from_slice(&out.stderr);
+    report.extend_from_slice(&errors);
     report
 }
 
