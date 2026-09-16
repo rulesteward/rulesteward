@@ -6,7 +6,7 @@ use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
 use super::rules_d;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
@@ -95,7 +95,7 @@ pub fn analyze(
     let mut trust_emitted = 0usize;
     // The `rule=` of every record that produced a rule, deduplicated: the placement
     // note has to name the file those rules have to be merged ahead of.
-    let mut denied: Vec<usize> = Vec::new();
+    let mut denied: BTreeSet<usize> = BTreeSet::new();
     // Records naming a rule the file does not have, or one that is an allow: either
     // says the rules file is not this log's, and both are reported once for the run.
     let mut unmatched = 0usize;
@@ -229,8 +229,8 @@ pub fn analyze(
                 }
                 if matches!(suggestion, Suggestion::Rule { .. }) {
                     rules_emitted += 1;
-                    if let Some(n) = n.filter(|n| !denied.contains(n)) {
-                        denied.push(n);
+                    if let Some(n) = n {
+                        denied.insert(n);
                     }
                 } else {
                     trust_emitted += 1;
@@ -330,7 +330,7 @@ pub fn analyze(
 fn placement_note(
     rules_d: &[rules_d::File],
     compiled: Option<&[rules::Rule]>,
-    denied: &[usize],
+    denied: &BTreeSet<usize>,
 ) -> String {
     let Some(compiled) = compiled.filter(|_| !rules_d.is_empty() && !denied.is_empty()) else {
         return "new file: none recommended (rules.d/ not read: --no-conf, legacy \
