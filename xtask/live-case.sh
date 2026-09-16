@@ -160,7 +160,17 @@ echo "== applying both artifacts verbatim (daemon live, as a user would) =="
 # shows up here as a failed or wrong command rather than being masked by an
 # argv call. The input is the tool's own stdout over filenames this case
 # created, on a --rm container or a VM whose /etc/fapolicyd is restored after.
-RULES=/etc/fapolicyd/rules.d/50-rulesteward.rules
+# The fragment goes where the tool's own placement note says it should; 50- is
+# the fallback for "none recommended".
+RULES=$(grep -om1 'rules.d/[0-9]*-rulesteward.rules' /tmp/rs.rules)
+if [ -n "$RULES" ]; then
+    WHENCE="from the placement note"
+else
+    RULES=rules.d/50-rulesteward.rules
+    WHENCE="the fallback, no file recommended"
+fi
+RULES=/etc/fapolicyd/$RULES
+echo "== rules file: $RULES ($WHENCE) =="
 : > /tmp/suggested-paths.txt
 while IFS= read -r line; do
     case "$line" in
