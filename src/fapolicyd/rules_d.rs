@@ -52,23 +52,24 @@ fn filevercmp(a: &[u8], b: &[u8]) -> Ordering {
     let (aprefix, bprefix) = (file_prefixlen(a), file_prefixlen(b));
     let one_pass_only = aprefix == a.len() && bprefix == b.len();
     let result = verrevcmp(&a[..aprefix], &b[..bprefix]);
-    if result != 0 || one_pass_only {
-        result.cmp(&0)
+    if result != Ordering::Equal || one_pass_only {
+        result
     } else {
-        verrevcmp(a, b).cmp(&0)
+        verrevcmp(a, b)
     }
 }
 
-/// The sort class of the byte at `pos`: end of string first, then `~`, then every
-/// digit as one class, then letters by their own value, then everything else above
-/// every letter. `pos` may be one past the end, which is how the caller detects it.
-fn order(s: &[u8], pos: usize) -> i32 {
+/// The sort class of the byte at `pos`, as a rank that compares lexicographically:
+/// the C's `-2 < -1 < 0 < letter < letter + 256` with the numbers replaced by classes,
+/// because arithmetic on a rank only invites mutants no order can tell apart. `pos`
+/// may be one past the end, which is how the caller detects the end of a string.
+fn order(s: &[u8], pos: usize) -> (u8, u8) {
     match s.get(pos) {
-        None => -1,
-        Some(&c) if c.is_ascii_digit() => 0,
-        Some(&c) if c.is_ascii_alphabetic() => i32::from(c),
-        Some(b'~') => -2,
-        Some(&c) => i32::from(c) + i32::from(u8::MAX) + 1,
+        Some(b'~') => (0, 0),
+        None => (1, 0),
+        Some(&c) if c.is_ascii_digit() => (2, 0),
+        Some(&c) if c.is_ascii_alphabetic() => (3, c),
+        Some(&c) => (4, c),
     }
 }
 
@@ -95,12 +96,14 @@ fn file_prefixlen(s: &[u8]) -> usize {
 
 /// The version comparison itself: non-digit runs compare by `order` byte for byte,
 /// digit runs compare as numbers with leading zeros dropped, and a longer digit run
-/// wins outright. Negative, zero or positive like its C original.
-fn verrevcmp(s1: &[u8], s2: &[u8]) -> i32 {
+/// wins outright.
+fn verrevcmp(s1: &[u8], s2: &[u8]) -> Ordering {
     let (s1_len, s2_len) = (s1.len(), s2.len());
     let (mut s1_pos, mut s2_pos) = (0usize, 0usize);
     while s1_pos < s1_len || s2_pos < s2_len {
-        let mut first_diff = 0;
+        // The C's `first_diff`: the first digit that differed in the run being
+        // compared, which only decides once the two runs turn out equally long.
+        let mut first_diff = None;
         // Either side may step one past its end here; `order` is what reports that,
         // so every index below stays behind an explicit bounds test.
         while (s1_pos < s1_len && !s1[s1_pos].is_ascii_digit())
@@ -108,7 +111,7 @@ fn verrevcmp(s1: &[u8], s2: &[u8]) -> i32 {
         {
             let (s1_c, s2_c) = (order(s1, s1_pos), order(s2, s2_pos));
             if s1_c != s2_c {
-                return s1_c - s2_c;
+                return s1_c.cmp(&s2_c);
             }
             s1_pos += 1;
             s2_pos += 1;
@@ -124,23 +127,26 @@ fn verrevcmp(s1: &[u8], s2: &[u8]) -> i32 {
             && s1[s1_pos].is_ascii_digit()
             && s2[s2_pos].is_ascii_digit()
         {
-            if first_diff == 0 {
-                first_diff = i32::from(s1[s1_pos]) - i32::from(s2[s2_pos]);
+            if first_diff.is_none() {
+                first_diff = match s1[s1_pos].cmp(&s2[s2_pos]) {
+                    Ordering::Equal => None,
+                    diff => Some(diff),
+                };
             }
             s1_pos += 1;
             s2_pos += 1;
         }
         if s1_pos < s1_len && s1[s1_pos].is_ascii_digit() {
-            return 1;
+            return Ordering::Greater;
         }
         if s2_pos < s2_len && s2[s2_pos].is_ascii_digit() {
-            return -1;
+            return Ordering::Less;
         }
-        if first_diff != 0 {
-            return first_diff;
+        if let Some(diff) = first_diff {
+            return diff;
         }
     }
-    0
+    Ordering::Equal
 }
 
 /// Drops anything not named `*.rules` -- fagenrules' own filter -- then sorts and
@@ -480,15 +486,19 @@ mod tests {
         let mut sorted = GNULIB_EXAMPLES.to_vec();
         sorted.sort_by(|a, b| filevercmp(a, b));
         assert_eq!(sorted, GNULIB_EXAMPLES, "{} vectors", GNULIB_EXAMPLES.len());
-        // Strict, as the C test's O(n^2) pass is: no two of these compare equal.
-        for pair in GNULIB_EXAMPLES.windows(2) {
-            assert_eq!(
-                filevercmp(pair[0], pair[1]),
-                Ordering::Less,
-                "{:?} must sort before {:?}",
-                String::from_utf8_lossy(pair[0]),
-                String::from_utf8_lossy(pair[1])
-            );
+        // Every pair, both directions, as the C test's O(n^2) pass is: no two of
+        // these compare equal, and a comparator that disagrees with itself one way
+        // round is what an adjacent-pairs sweep would miss.
+        for (i, a) in GNULIB_EXAMPLES.iter().enumerate() {
+            for b in &GNULIB_EXAMPLES[i + 1..] {
+                assert_eq!(
+                    (filevercmp(a, b), filevercmp(b, a)),
+                    (Ordering::Less, Ordering::Greater),
+                    "{:?} sorts before {:?}, both ways round",
+                    String::from_utf8_lossy(a),
+                    String::from_utf8_lossy(b)
+                );
+            }
         }
     }
 
