@@ -108,8 +108,7 @@ ssh_ 'sudo tar -C /out -cf - .' | tar -C "$OUT/$NAME" -xf - || true
 
 # Assert the restore, do not assume it.
 if ssh_ 'sudo test -d /etc/fapolicyd/rules.d && ! sudo test -d /etc/fapolicyd/rules.d.off &&
-         ! sudo test -f /etc/fapolicyd/rules.d/00-rulesteward.rules &&
-         ! sudo test -f /etc/fapolicyd/rules.d/50-rulesteward.rules &&
+         ! sudo find /etc/fapolicyd/rules.d -name "*-rulesteward.rules" | grep -q . &&
          ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules &&
          ! sudo test -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf' \
    && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null' \
