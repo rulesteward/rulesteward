@@ -17,13 +17,12 @@ pub fn render(s: &Suggestion) -> Vec<u8> {
     match s {
         // `--file add` alone writes a text file and contacts no daemon; taking effect
         // on a running daemon requires the following `--update`. Always emit both.
-        Suggestion::TrustFile { path } => {
-            let q = shell_quote(path);
-            let mut out = b"fapolicyd-cli --file add ".to_vec();
-            out.extend_from_slice(&q);
-            out.extend_from_slice(b"\nfapolicyd-cli --update\n");
-            out
-        }
+        Suggestion::TrustFile { path } => [
+            b"fapolicyd-cli --file add ".as_slice(),
+            &shell_quote(path),
+            b"\nfapolicyd-cli --update\n",
+        ]
+        .concat(),
         // `all` is "add no constraint", which is what an `exe` the record could not
         // supply has to become: a guessed one would be skipped at match time and make
         // the rule broader than written.
