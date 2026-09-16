@@ -12,16 +12,6 @@ pub enum Decision {
     Explain(String),
 }
 
-/// Why the record landed in the rule arms, which is also the difference between them.
-enum Arm {
-    /// `trust=1`. The file is trusted and a rule denied it, so widening trust would be
-    /// wrong and a rule is the only answer.
-    Trusted,
-    /// No `trust=` at all. A trust entry is still a legal answer here (§8.1), which is
-    /// what the unrepresentable-path fallback uses.
-    TrustAbsent,
-}
-
 const ABSENT_NOTE: &str = "no trust= in this record, so the trust-vs-rule decision has \
                            no input; a scoped rule never widens global trust, so a rule \
                            is the safe default";
@@ -76,7 +66,7 @@ pub fn decide(record: &Record, exe_override: Option<&[u8]>) -> Decision {
                 note: None,
             }
         }
-        Trust::Trusted => rule(record, path, Arm::Trusted, exe_override),
+        Trust::Trusted => rule(record, path, false, exe_override),
         // The value is displayed, not compared: `from_object` maps every non-0/1 value
         // here, so hard-coding `9` would misreport a `trust=?` record.
         Trust::Unavailable => Decision::Explain(format!(
@@ -84,7 +74,7 @@ pub fn decide(record: &Record, exe_override: Option<&[u8]>) -> Decision {
              file's trust state is unknown rather than untrusted",
             String::from_utf8_lossy(trust.as_deref().unwrap_or_default())
         )),
-        Trust::Absent => rule(record, path, Arm::TrustAbsent, exe_override),
+        Trust::Absent => rule(record, path, true, exe_override),
     }
 }
 
@@ -93,11 +83,18 @@ pub fn decide(record: &Record, exe_override: Option<&[u8]>) -> Decision {
 /// Refusals live here and not in `emit` because they change the decision, not the
 /// rendering: on an unrepresentable path the `trust`-absent arm still has a legal
 /// answer, and the trusted arm has none.
-fn rule(record: &Record, path: Vec<u8>, arm: Arm, exe_override: Option<&[u8]>) -> Decision {
-    let note = match arm {
-        Arm::Trusted => None,
-        Arm::TrustAbsent => Some(ABSENT_NOTE.to_string()),
-    };
+///
+/// `trust_absent` is the whole difference between the arms: `false` is `trust=1`, where
+/// the file is already trusted and widening trust would be wrong, so a rule is the only
+/// answer; `true` is no `trust=` at all, where a trust entry is still a legal answer
+/// (§8.1) and is what the unrepresentable-path fallback uses.
+fn rule(
+    record: &Record,
+    path: Vec<u8>,
+    trust_absent: bool,
+    exe_override: Option<&[u8]>,
+) -> Decision {
+    let note = trust_absent.then(|| ABSENT_NOTE.to_string());
 
     // A control byte splits the emitted line in two. Neither a rule nor a trust
     // record survives that, so both arms refuse.
@@ -109,16 +106,10 @@ fn rule(record: &Record, path: Vec<u8>, arm: Arm, exe_override: Option<&[u8]>) -
     }
 
     if path.iter().any(|b| *b == b' ' || *b == b':') {
-        return match arm {
-            Arm::Trusted => Decision::Explain(
-                "path is unrepresentable in a rule (space or colon; the rule parser \
-                 has no quoting and a colon flips the format), and the file is already \
-                 trusted, so there is nothing safe to emit"
-                    .into(),
-            ),
+        return if trust_absent {
             // §8.1 offers the trust entry as the alternative, and the trust file is
             // parsed right to left, so a space in the path is fine there.
-            Arm::TrustAbsent => Decision::Emit {
+            Decision::Emit {
                 suggestion: Suggestion::TrustFile { path },
                 note: Some(
                     "no trust= in this record and the path cannot be written in a rule \
@@ -126,7 +117,14 @@ fn rule(record: &Record, path: Vec<u8>, arm: Arm, exe_override: Option<&[u8]>) -
                      suggestion"
                         .into(),
                 ),
-            },
+            }
+        } else {
+            Decision::Explain(
+                "path is unrepresentable in a rule (space or colon; the rule parser \
+                 has no quoting and a colon flips the format), and the file is already \
+                 trusted, so there is nothing safe to emit"
+                    .into(),
+            )
         };
     }
 
