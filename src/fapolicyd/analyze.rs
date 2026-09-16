@@ -205,13 +205,6 @@ pub fn analyze(
                 }
                 // A `TrustFile` carries no exe, so the note would be noise there.
                 if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
-                    let pid =
-                        String::from_utf8_lossy(&record.subject_get(b"pid").unwrap_or_default())
-                            .into_owned();
-                    let execed = String::from_utf8_lossy(execed).into_owned();
-                    let logged =
-                        String::from_utf8_lossy(&record.subject_get(b"exe").unwrap_or_default())
-                            .into_owned();
                     out.diagnostics.push(Diagnostic {
                         line,
                         // It describes how the rule was scoped; a trust entry has no exe.
@@ -220,7 +213,14 @@ pub fn analyze(
                             "exe= is stale: pid {pid} was denied perm=execute of {execed}, and \
                              the daemon keeps the pre-exec image until that exec is permitted; \
                              the emitted rule is scoped to exe={execed} and not to the logged \
-                             exe={logged}"
+                             exe={logged}",
+                            pid = String::from_utf8_lossy(
+                                &record.subject_get(b"pid").unwrap_or_default()
+                            ),
+                            execed = String::from_utf8_lossy(execed),
+                            logged = String::from_utf8_lossy(
+                                &record.subject_get(b"exe").unwrap_or_default()
+                            ),
                         ),
                     });
                 }
