@@ -7,6 +7,7 @@
 mod fapolicyd;
 
 use clap::{Parser, Subcommand};
+use fapolicyd::model::{Artifact, Diagnostic};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,7 +15,8 @@ use std::process::ExitCode;
 /// DESIGN.md §9. `0` success, `1` usage or I/O error, `2` input consumed but
 /// unparseable. Note that clap's own default for a usage error is `2`, which §9
 /// reserves for unparseable input — hence `try_parse` and the explicit mapping in
-/// `main`, rather than letting clap exit on our behalf.
+/// `main`, rather than letting clap exit on our behalf. `rules` and `trust` map the
+/// same way: an empty artifact is still exit `0`.
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
@@ -25,7 +27,7 @@ const EXIT_UNPARSEABLE: u8 = 2;
     version,
     about = "Turn host policy denial records into the rules that would allow them",
     // §9: the domain slot must stay spendable. clap v4 already defaults
-    // `infer_subcommands` to false, so `rulesteward fapo analyze` is rejected; this
+    // `infer_subcommands` to false, so `rulesteward fapo rules` is rejected; this
     // is stated rather than set so nobody "helpfully" turns inference on.
     subcommand_required = true,
     arg_required_else_help = false
@@ -57,17 +59,22 @@ enum Domain {
     },
 }
 
+/// One artifact each (DESIGN.md §9). Both run the same pass over the same input; what
+/// differs is which half of its answer is written, so a log needing both is two runs.
 #[derive(Subcommand)]
 enum FapolicydAction {
-    /// Read denial records on stdin, write rules and fapolicyd-cli commands on stdout.
+    /// Read denial records on stdin, write a rules.d fragment on stdout.
     // The two D12 advisories are the same on every run, so they are printed by
-    // `--help` and not on stderr beside the rule (DESIGN.md §8.1).
-    #[command(after_long_help = ANALYZE_AFTER_LONG_HELP)]
-    Analyze,
+    // `--help` and not beside the rule (DESIGN.md §8.1).
+    #[command(after_long_help = RULES_AFTER_LONG_HELP)]
+    Rules,
+    /// Read denial records on stdin, write fapolicyd-cli trust commands on stdout.
+    #[command(after_long_help = TRUST_AFTER_LONG_HELP)]
+    Trust,
 }
 
 /// `--help` only, never `-h`: standing advice, not a usage reminder.
-const ANALYZE_AFTER_LONG_HELP: &str = "\
+const RULES_AFTER_LONG_HELP: &str = "\
 Before adding the rule:
   A rule placed in /etc/fapolicyd/rules.d/ has no effect on a host that still
   has a legacy /etc/fapolicyd/fapolicyd.rules, and the daemon logs nothing about
@@ -83,6 +90,18 @@ Where the rule goes:
   before the file holding the rule that denied. rule=N in a record is that rule's
   position in compiled.rules with %set lines dropped, and fagenrules --check
   shows the merged order.";
+
+/// DESIGN.md §8.3. Both facts are properties of fapolicyd-cli and not of the input, so
+/// they belong here rather than beside every trust entry.
+const TRUST_AFTER_LONG_HELP: &str = "\
+Before running these commands:
+  fapolicyd-cli --file add writes the trust file and contacts no daemon; the
+  running daemon only picks the entry up after fapolicyd-cli --update, which is
+  why both are emitted.
+
+  --file add rewrites its destination file with \"w\", so any comments you have
+  hand-written into fapolicyd.trust or a trust.d/ fragment are destroyed. Do not
+  annotate those files.";
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -103,22 +122,25 @@ fn main() -> ExitCode {
             conf,
             no_conf,
             action,
-        } => match action {
-            FapolicydAction::Analyze => run_fapolicyd_analyze(conf, no_conf),
-        },
+        } => run_fapolicyd(conf, no_conf, action),
     }
 }
 
-fn run_fapolicyd_analyze(conf: Option<PathBuf>, no_conf: bool) -> ExitCode {
+/// The one writer in the tree. Diagnostics go to stdout as `#` comments ahead of the
+/// artifact they explain, so `rulesteward fapolicyd rules > 89-rulesteward.rules` is a
+/// file the daemon reads and the notes are its header. stderr carries errors only: the
+/// flag conflict, the stdin read and the stdout write, each of which means the user
+/// has no artifact at all.
+fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) -> ExitCode {
     // clap's own `conflicts_with` only fires when both flags land in the same
-    // subcommand's matches: `--no-conf analyze --conf X` is split across two levels
+    // subcommand's matches: `--no-conf rules --conf X` is split across two levels
     // and slips straight through it. The conflict is checked by hand instead, so all
     // four orderings are rejected the same way.
     if no_conf && conf.is_some() {
         let _ = writeln!(
             std::io::stderr().lock(),
             "rulesteward: --no-conf cannot be used with --conf <PATH>\n\
-             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] analyze"
+             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] <rules|trust>"
         );
         return ExitCode::from(EXIT_USAGE);
     }
@@ -148,25 +170,39 @@ fn run_fapolicyd_analyze(conf: Option<PathBuf>, no_conf: bool) -> ExitCode {
 
     let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref(), &rules_d);
 
-    let mut err = std::io::stderr().lock();
-    if let Some(note) = conf_note {
-        let _ = writeln!(err, "rulesteward: {note}");
-    }
-    if let Some(note) = rules_note {
-        let _ = writeln!(err, "rulesteward: {note}");
-    }
-    for d in &outcome.diagnostics {
+    let (wanted, artifact) = match action {
+        FapolicydAction::Rules => (Artifact::Rules, &outcome.rules),
+        FapolicydAction::Trust => (Artifact::Trust, &outcome.trust),
+    };
+    let mut bytes = Vec::new();
+    // The conf and rules reads happen here and not in the pass, so their notes arrive
+    // as strings and become comments exactly like the pass's own. Both describe the
+    // host rather than a suggestion, so both are `Both`.
+    let host_notes = conf_note
+        .into_iter()
+        .chain(rules_note)
+        .map(|msg| Diagnostic {
+            line: None,
+            msg,
+            artifact: Artifact::Both,
+        });
+    for d in host_notes.chain(outcome.diagnostics) {
+        if d.artifact != wanted && d.artifact != Artifact::Both {
+            continue;
+        }
+        // Writing into a Vec cannot fail; the one write that can is below.
         let _ = match d.line {
-            Some(n) => writeln!(err, "rulesteward: line {n}: {}", d.msg),
-            None => writeln!(err, "rulesteward: {}", d.msg),
+            Some(n) => writeln!(bytes, "# rulesteward: line {n}: {}", d.msg),
+            None => writeln!(bytes, "# rulesteward: {}", d.msg),
         };
     }
+    bytes.extend_from_slice(artifact);
 
     let mut out = std::io::stdout().lock();
-    if let Err(e) = out.write_all(&outcome.stdout).and_then(|()| out.flush()) {
+    if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
         // A closed pipe or a full disk means the suggestions never reached anyone.
         // Saying so on stderr is the difference between that and an empty answer.
-        let _ = writeln!(err, "rulesteward: writing stdout: {e}");
+        let _ = writeln!(std::io::stderr().lock(), "rulesteward: writing stdout: {e}");
         return ExitCode::from(EXIT_USAGE);
     }
 

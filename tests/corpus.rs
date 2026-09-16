@@ -7,7 +7,7 @@
 //! This is a robustness sweep, not a correctness one — it has no expected output. It
 //! asserts the two things that must hold for every capture on every release: the tool
 //! never panics, and it never drops a denial record silently. Anything it cannot act
-//! on has to say why.
+//! on has to say why, in the artifact it could not write.
 #![cfg(feature = "full-corpus")]
 
 use std::io::Write;
@@ -46,43 +46,64 @@ fn every_capture_is_either_acted_on_or_explained() {
             .filter(|l| l.windows(8).any(|w| w == b"dec=deny"))
             .count();
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
-            .args(["fapolicyd", "analyze", "--no-conf"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(&input)
-            .expect("write");
-        let out = child.wait_with_output().expect("wait");
         let name = log.file_name().unwrap().to_string_lossy();
 
-        let Some(code) = out.status.code() else {
-            failures.push(format!("{name}: killed by a signal — panic or crash"));
-            continue;
-        };
-        if !(0..=2).contains(&code) {
-            failures.push(format!("{name}: exit {code} is outside §9's 0/1/2"));
-        }
-        if denials > 0 && out.stdout.is_empty() && out.stderr.is_empty() {
-            failures.push(format!(
-                "{name}: {denials} denial records went in and nothing came out — \
-                 a silent drop is the one outcome that is never acceptable"
-            ));
-        }
-        // §9: stdout is bare lines. Every one must be something a user can paste.
-        for line in out.stdout.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            if !line.starts_with(b"fapolicyd-cli ") && !line.starts_with(b"allow ") {
+        // Both actions: the sweep has to cover every line either artifact can write.
+        for action in ["rules", "trust"] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
+                .args(["fapolicyd", action, "--no-conf"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn");
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&input)
+                .expect("write");
+            let out = child.wait_with_output().expect("wait");
+
+            let Some(code) = out.status.code() else {
                 failures.push(format!(
-                    "{name}: stdout line is neither a command nor a rule: {}",
-                    String::from_utf8_lossy(line)
+                    "{name} {action}: killed by a signal — panic or crash"
                 ));
-                break;
+                continue;
+            };
+            if !(0..=2).contains(&code) {
+                failures.push(format!(
+                    "{name} {action}: exit {code} is outside §9's 0/1/2"
+                ));
+            }
+            if denials > 0 && out.stdout.is_empty() {
+                failures.push(format!(
+                    "{name} {action}: {denials} denial records went in and nothing came out — \
+                     a silent drop is the one outcome that is never acceptable"
+                ));
+            }
+            // §9: one artifact per action, comments and result lines and nothing else.
+            // Every non-comment line must be something a user can paste.
+            let result = if action == "rules" {
+                &b"allow "[..]
+            } else {
+                &b"fapolicyd-cli "[..]
+            };
+            for line in out.stdout.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                if !line.starts_with(b"# ") && !line.starts_with(result) {
+                    failures.push(format!(
+                        "{name} {action}: stdout line belongs to neither the comments nor the \
+                         artifact: {}",
+                        String::from_utf8_lossy(line)
+                    ));
+                    break;
+                }
+            }
+            if !out.stderr.is_empty() {
+                failures.push(format!(
+                    "{name} {action}: stderr carries errors only, and got: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
             }
         }
     }

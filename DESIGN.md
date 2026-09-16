@@ -22,14 +22,18 @@ observed behaviour.
 `rulesteward` is a family tool, not a fapolicyd tool that might one day grow.
 Every use of it is spelled `rulesteward <domain> <action>`, and the top level
 stays open for `selinux`, `apparmor` and whatever follows. v1 ships exactly one
-domain and one action:
+domain and two actions:
 
 ```
-rulesteward fapolicyd analyze
+rulesteward fapolicyd rules
+rulesteward fapolicyd trust
 ```
 
-It reads fapolicyd denial records on stdin and writes fapolicyd rules or
-`fapolicyd-cli` commands on stdout. It is the audit2allow half only.
+Both read fapolicyd denial records on stdin and run the same pass over them.
+They differ in what they write: `rules` writes a `rules.d` fragment, `trust`
+writes the `fapolicyd-cli` commands that add the untrusted paths. One artifact
+per action, so each run's stdout is a file its target reads. It is the
+audit2allow half only.
 
 **Non-goals for v1**, named so re-entry is cheap:
 
@@ -269,7 +273,7 @@ line, with no `[N blob data]` on any release (measured 2026-09-08,
 `log-format.md` "journald"). The recommended invocation is
 
 ```
-journalctl -u fapolicyd -o cat | rulesteward fapolicyd analyze \
+journalctl -u fapolicyd -o cat | rulesteward fapolicyd rules \
   --conf /etc/fapolicyd/fapolicyd.conf
 ```
 
@@ -524,7 +528,7 @@ fails to start on next boot (`emitter-constraints.md:14`).
   and exit 0 both when the reload segfaults the daemon and when it leaves a
   daemon up that answers ALLOW to everything. Exit 0 means the FIFO write
   succeeded and nothing more (`emitter-constraints.md:22`). Like the `rules.d/`
-  warning, this text lives in `rulesteward fapolicyd analyze --help` rather than
+  warning, this text lives in `rulesteward fapolicyd rules --help` rather than
   on every run.
 - **Every attribute is advisory, so never rely on one to narrow a rule** unless
   it has been seen carrying a value in a real denial record for that event class.
@@ -574,7 +578,7 @@ fails to start on next boot (`emitter-constraints.md:14`).
   `fapolicyd-cli --list` does not parse rules at all, it echoes lines with a
   counter and will happily print an attribute the parser dropped
   (`edge-cases.md:121`). That warning is standing advice rather than a finding
-  about the input, so it is printed by `rulesteward fapolicyd analyze --help`
+  about the input, so it is printed by `rulesteward fapolicyd rules --help`
   and not on every run. The same note also says the file must sort before the
   file holding the rule that denied, because `rules.d/` merges in filename order
   and the first match wins: measured 2026-09-06 on Rocky 8, 9 and 10, a rule at
@@ -631,11 +635,13 @@ not on an object-specific path.
 ## 9. CLI and output contract
 
 The command surface is `rulesteward <domain> <action> [flags]`. v1 exposes
-exactly `rulesteward fapolicyd analyze`. These are commitments, cheap now and
-expensive to retrofit:
+exactly `rulesteward fapolicyd rules` and `rulesteward fapolicyd trust`. These
+are commitments, cheap now and expensive to retrofit:
 
-- **No bare-action forms and no default domain.** `rulesteward analyze` is not
-  valid and must never become an alias, or the domain slot is spent.
+- **No bare-action forms and no default domain.** `rulesteward rules` is not
+  valid and must never become an alias, or the domain slot is spent. Neither is
+  `rulesteward fapolicyd analyze`, the single action these two replaced before
+  0.3.0 shipped: a removed action is a usage error, never an alias.
 - **No aliases or shortenings of `fapolicyd`**, so a future domain cannot collide
   with a prefix people got used to typing.
 - **Domain-specific flags hang off the domain, not the root.** `--conf` and
@@ -648,16 +654,20 @@ expensive to retrofit:
 What the **root** promises, and must keep promising for every domain added
 later:
 
-- results on stdout as bare lines, pipe-safe, no commentary
-- diagnostics on stderr
+- one artifact per action on stdout: bare result lines plus `# rulesteward:`
+  comments, so stdout is always a file the target reads
+- stderr carries errors only: usage, I/O. Diagnostics ride beside the output
+  they explain because `2>&1`, `tee` and copy-paste all mix the two streams, and
+  a diagnostic that lands inside a rules file has to be a comment there (#38)
 - exit `0` success, `1` usage or I/O error, `2` input consumed but unparseable.
   "Unparseable" means non-comment input arrived and no line yielded a single
   `name=value` field. A log full of allow records parses fine and exits `0`
   with nothing to suggest; usage errors are `1`, and `--help`/`--version` are
   `0`, so clap's own exit-2-on-usage default is remapped.
 
-What the root does **not** promise is the shape of those lines. That is each
-domain's business; for `fapolicyd` it is rules and `fapolicyd-cli` commands.
+What the root does **not** promise is the shape of those lines, or how many
+actions a domain has. That is each domain's business; for `fapolicyd` it is a
+`rules.d` fragment from `rules` and `fapolicyd-cli` commands from `trust`.
 
 ---
 
@@ -723,3 +733,7 @@ the tool, so a research capture whose interesting record only appears inside a
 - generalisation beyond exact paths (`dir=` prefix suggestions)
 - the fapolicyd filter subsystem
 - the trust database beyond `--file add`
+- trust entries as `path size sha256` output: it changes the shape of `trust`'s
+  output, not where it goes, and computing the hash means opening every path the
+  log names — a FIFO blocks forever and a foreign host's log hashes the wrong
+  file

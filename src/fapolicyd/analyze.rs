@@ -1,7 +1,7 @@
 //! The pipeline. Pure: bytes in, bytes and diagnostics out.
 
 use super::emit;
-use super::model::{self, Diagnostic, Record, Suggestion};
+use super::model::{self, Artifact, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
@@ -12,9 +12,13 @@ use std::collections::HashMap;
 /// the cap are never compared against anything (DESIGN.md §4).
 const MAX_SYSLOG_FIELDS: usize = 21;
 
+/// Two artifacts, never one stream. `rules` is a rules.d fragment and `trust` is a list
+/// of `fapolicyd-cli` commands; they go to different places and one run of the pass
+/// produces both, so the caller writes whichever one its action names.
 #[derive(Debug, Default)]
 pub struct Outcome {
-    pub stdout: Vec<u8>,
+    pub rules: Vec<u8>,
+    pub trust: Vec<u8>,
     pub diagnostics: Vec<Diagnostic>,
     /// §9's exit 2: we read the input but could not make sense of any of it.
     pub consumed_but_unparseable: bool,
@@ -64,6 +68,9 @@ pub fn analyze(
         {
             out.diagnostics.push(Diagnostic {
                 line: None,
+                // A misconfigured host makes every record suspect, whichever artifact
+                // the user asked for.
+                artifact: Artifact::Both,
                 msg: format!(
                     "syslog_format names {f}=; the daemon's uid/gid formatter can segfault \
                      on Rocky 9/10 and emits unterminated heap bytes on Rocky 8 (research \
@@ -82,7 +89,10 @@ pub fn analyze(
     // `(perm, exe, path)`, because those same two records need two rules: they can
     // match different rules and the emitted rule depends on the perm.
     let mut seen: Vec<Suggestion> = Vec::new();
-    let mut rules_emitted = false;
+    // Counted and not flagged: each artifact's output names how many suggestions the
+    // other one holds, so a user who ran one action learns the other half exists.
+    let mut rules_emitted = 0usize;
+    let mut trust_emitted = 0usize;
     // The `rule=` of every record that produced a rule, deduplicated: the placement
     // note has to name the file those rules have to be merged ahead of.
     let mut denied: Vec<usize> = Vec::new();
@@ -130,7 +140,12 @@ pub fn analyze(
         }
 
         if let Some(msg) = truncated(&record, syslog_format, payload.len()) {
-            out.diagnostics.push(Diagnostic { line, msg });
+            // Nothing was emitted, so neither artifact can be read as complete.
+            out.diagnostics.push(Diagnostic {
+                line,
+                msg,
+                artifact: Artifact::Both,
+            });
             continue;
         }
 
@@ -151,6 +166,9 @@ pub fn analyze(
                 Some((n, Some(r))) if r.refuses() => {
                     out.diagnostics.push(Diagnostic {
                         line,
+                        // The refusal names both answers as impossible, so it belongs
+                        // in whichever one the user is holding.
+                        artifact: Artifact::Both,
                         msg: format!(
                             "rule={n} is subject-side ({}): it constrains the process, not the \
                              file, so no path rule and no trust entry can resolve this denial; \
@@ -172,8 +190,18 @@ pub fn analyze(
 
         match policy::decide(&record, stale.as_deref()) {
             Decision::Emit { suggestion, note } => {
+                // The note explains the suggestion, so it follows it into that
+                // artifact and nowhere else.
+                let artifact = match suggestion {
+                    Suggestion::Rule { .. } => Artifact::Rules,
+                    Suggestion::TrustFile { .. } => Artifact::Trust,
+                };
                 if let Some(msg) = note {
-                    out.diagnostics.push(Diagnostic { line, msg });
+                    out.diagnostics.push(Diagnostic {
+                        line,
+                        msg,
+                        artifact,
+                    });
                 }
                 // A `TrustFile` carries no exe, so the note would be noise there.
                 if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
@@ -186,6 +214,8 @@ pub fn analyze(
                             .into_owned();
                     out.diagnostics.push(Diagnostic {
                         line,
+                        // It describes how the rule was scoped; a trust entry has no exe.
+                        artifact: Artifact::Rules,
                         msg: format!(
                             "exe= is stale: pid {pid} was denied perm=execute of {execed}, and \
                              the daemon keeps the pre-exec image until that exec is permitted; \
@@ -198,21 +228,33 @@ pub fn analyze(
                     continue;
                 }
                 if matches!(suggestion, Suggestion::Rule { .. }) {
-                    rules_emitted = true;
+                    rules_emitted += 1;
                     if let Some(n) = n.filter(|n| !denied.contains(n)) {
                         denied.push(n);
                     }
+                } else {
+                    trust_emitted += 1;
                 }
-                out.stdout.extend_from_slice(&emit::render(&suggestion));
+                let rendered = emit::render(&suggestion);
+                match artifact {
+                    Artifact::Rules => out.rules.extend_from_slice(&rendered),
+                    _ => out.trust.extend_from_slice(&rendered),
+                }
                 seen.push(suggestion);
             }
-            Decision::Explain(msg) => out.diagnostics.push(Diagnostic { line, msg }),
+            // Nothing was emitted into either artifact, so both have to say why.
+            Decision::Explain(msg) => out.diagnostics.push(Diagnostic {
+                line,
+                msg,
+                artifact: Artifact::Both,
+            }),
         }
     }
 
     if corrupt > 0 {
         out.diagnostics.push(Diagnostic {
             line: None,
+            artifact: Artifact::Both,
             msg: format!(
                 "{corrupt} records have unreadable field names: the daemon failed a rules \
                  reload and is now running with NO rules, allowing everything. Restart it. \
@@ -224,6 +266,7 @@ pub fn analyze(
     if unmatched > 0 {
         out.diagnostics.push(Diagnostic {
             line: None,
+            artifact: Artifact::Both,
             msg: format!(
                 "the rules file does not match this log: {unmatched} record(s) name a rule= the \
                  file does not contain, or one that is an allow rule; those records were \
@@ -233,11 +276,35 @@ pub fn analyze(
     }
 
     // D12: this note belongs to the run, not to a line. The two standing advisories
-    // that used to sit beside it are input-independent and live in `analyze --help`.
-    if rules_emitted {
+    // that used to sit beside it are input-independent and live in `rules --help`.
+    if rules_emitted > 0 {
         out.diagnostics.push(Diagnostic {
             line: None,
+            artifact: Artifact::Rules,
             msg: placement_note(rules_d, rules, &denied),
+        });
+    }
+
+    // Each artifact names the other one's contents, because a user who ran one action
+    // has no other way to learn that the input also needed the other.
+    if trust_emitted > 0 {
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            artifact: Artifact::Rules,
+            msg: format!(
+                "{trust_emitted} untrusted path(s) need a trust entry, not a rule: run \
+                 rulesteward fapolicyd trust on the same input"
+            ),
+        });
+    }
+    if rules_emitted > 0 {
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            artifact: Artifact::Trust,
+            msg: format!(
+                "{rules_emitted} denial(s) need a rule, not a trust entry: run \
+                 rulesteward fapolicyd rules on the same input"
+            ),
         });
     }
 
@@ -257,7 +324,7 @@ pub fn analyze(
 /// The remaining cases lead with "none recommended" and name the constraint: a `0-`
 /// prefix, `rules.d/` disagreeing with `compiled.rules`, or no `rules.d/` read at all --
 /// `--no-conf`, a legacy `fapolicyd.rules`, or records that carry no `rule=`. How
-/// `rules.d/` merges is the same on every run and lives in `analyze --help` instead.
+/// `rules.d/` merges is the same on every run and lives in `rules --help` instead.
 ///
 /// The earliest file wins: a name that sorts before it sorts before all of them.
 fn placement_note(
@@ -392,10 +459,16 @@ fn truncated(
 /// D11. A real log repeats the same sentence thousands of times; one line with a count
 /// says the same thing. The first line number wins, because that is the one worth
 /// opening the log at.
+///
+/// The artifact is part of the key: the same sentence written into two different files
+/// is two lines, each counting only what its own reader will see.
 fn collapse(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     let mut out: Vec<(Diagnostic, usize)> = Vec::new();
     for d in diagnostics {
-        match out.iter_mut().find(|(kept, _)| kept.msg == d.msg) {
+        match out
+            .iter_mut()
+            .find(|(kept, _)| kept.msg == d.msg && kept.artifact == d.artifact)
+        {
             Some((_, n)) => *n += 1,
             None => out.push((d, 1)),
         }
@@ -420,7 +493,7 @@ mod tests {
         spec.split(',').map(str::to_string).collect()
     }
 
-    fn stderr(o: &Outcome) -> String {
+    fn notes(o: &Outcome) -> String {
         o.diagnostics
             .iter()
             .map(|d| match d.line {
@@ -437,27 +510,30 @@ mod tests {
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
         let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None, &[]);
-        assert_eq!(o.diagnostics.len(), 2, "{}", stderr(&o));
+        assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
             "{}",
-            stderr(&o)
+            notes(&o)
         );
-        assert!(o.diagnostics[0].msg.contains("uid="), "{}", stderr(&o));
-        assert!(o.diagnostics[1].msg.contains("gid="), "{}", stderr(&o));
+        assert!(o.diagnostics[0].msg.contains("uid="), "{}", notes(&o));
+        assert!(o.diagnostics[1].msg.contains("gid="), "{}", notes(&o));
     }
 
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
         let o = analyze(SHORT, Some(&f), None, &[]);
-        assert!(o.stdout.is_empty(), "must emit nothing when truncated");
-        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert!(
+            o.rules.is_empty() && o.trust.is_empty(),
+            "must emit nothing when truncated"
+        );
+        assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert_eq!(o.diagnostics[0].line, Some(1));
         assert!(
             o.diagnostics[0].msg.contains("names trust="),
             "{}",
-            stderr(&o)
+            notes(&o)
         );
     }
 
@@ -467,13 +543,19 @@ mod tests {
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
         let o = analyze(SHORT, None, None, &[]);
-        assert!(!stderr(&o).contains("truncated"), "{}", stderr(&o));
+        assert!(!notes(&o).contains("truncated"), "{}", notes(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
         let o = analyze(&whole, None, None, &[]);
-        assert!(o.diagnostics.is_empty(), "{}", stderr(&o));
-        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
+        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        // The only thing left to say is that the other action holds this suggestion.
+        assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
+        assert!(
+            o.diagnostics[0].msg.contains("need a trust entry"),
+            "{}",
+            notes(&o)
+        );
     }
 
     #[test]
@@ -487,9 +569,9 @@ mod tests {
                        trust=1 comm=bash exe=/usr/bin/bash\n";
         let o = analyze(record, Some(&f), None, &[]);
         assert!(
-            !stderr(&o).contains("truncated"),
+            !notes(&o).contains("truncated"),
             "not truncated: {}",
-            stderr(&o)
+            notes(&o)
         );
     }
 
@@ -500,12 +582,12 @@ mod tests {
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
         let o = analyze(&record, None, None, &[]);
-        assert!(o.stdout.is_empty());
-        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert!(o.rules.is_empty() && o.trust.is_empty());
+        assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert!(
             o.diagnostics[0].msg.contains("511-byte cap"),
             "{}",
-            stderr(&o)
+            notes(&o)
         );
     }
 
@@ -515,9 +597,9 @@ mod tests {
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
         let o = analyze(&input, Some(&f), None, &[]);
-        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
-        assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", stderr(&o));
+        assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", notes(&o));
     }
 
     #[test]
@@ -528,11 +610,12 @@ mod tests {
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
         let o = analyze(input, None, None, &[]);
         assert!(
-            o.stdout.is_empty(),
-            "{}",
-            String::from_utf8_lossy(&o.stdout)
+            o.rules.is_empty() && o.trust.is_empty(),
+            "{}{}",
+            String::from_utf8_lossy(&o.rules),
+            String::from_utf8_lossy(&o.trust)
         );
-        assert!(o.diagnostics.is_empty(), "{}", stderr(&o));
+        assert!(o.diagnostics.is_empty(), "{}", notes(&o));
         assert!(!o.consumed_but_unparseable, "a comment is not content");
     }
 
@@ -544,10 +627,10 @@ mod tests {
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
         let o = analyze(TRUSTED, None, None, &[]);
         assert_eq!(
-            String::from_utf8(o.stdout.clone()).unwrap(),
+            String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
-        let text = stderr(&o);
+        let text = notes(&o);
         assert!(text.contains("new file:"), "{text}");
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -559,7 +642,7 @@ mod tests {
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
         let o = analyze(&input, None, None, &[]);
-        assert_eq!(o.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
     #[test]
@@ -572,7 +655,7 @@ mod tests {
         let input = [TRUSTED, open.as_bytes()].concat();
         let o = analyze(&input, None, None, &[]);
         assert_eq!(
-            String::from_utf8(o.stdout).unwrap(),
+            String::from_utf8(o.rules).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
              allow perm=open exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
@@ -583,10 +666,10 @@ mod tests {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
         let o = analyze(input, None, None, &[]);
         assert_eq!(
-            String::from_utf8(o.stdout.clone()).unwrap(),
+            String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
         );
-        let text = stderr(&o);
+        let text = notes(&o);
         assert!(text.contains("line 1: no trust= in this record"), "{text}");
     }
 
@@ -609,11 +692,12 @@ mod tests {
             );
             let o = analyze(input.as_bytes(), None, Some(&ld_so()), &[]);
             assert!(
-                o.stdout.is_empty(),
-                "{tail}: {}",
-                String::from_utf8_lossy(&o.stdout)
+                o.rules.is_empty() && o.trust.is_empty(),
+                "{tail}: {}{}",
+                String::from_utf8_lossy(&o.rules),
+                String::from_utf8_lossy(&o.trust)
             );
-            let text = stderr(&o);
+            let text = notes(&o);
             assert!(text.contains("pattern=ld_so"), "{tail}: {text}");
             assert!(text.contains("rule=5 is subject-side"), "{tail}: {text}");
         }
@@ -627,8 +711,8 @@ mod tests {
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
         let o = analyze(input, None, Some(&rules), &[]);
-        let text = stderr(&o);
-        assert!(o.stdout.starts_with(b"allow perm=execute"), "{text}");
+        let text = notes(&o);
+        assert!(o.rules.starts_with(b"allow perm=execute"), "{text}");
         assert!(text.contains("not read"), "generic note: {text}");
         assert!(!text.contains("does not match"), "{text}");
     }
@@ -644,7 +728,7 @@ mod tests {
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
         let o = analyze(input, None, Some(&[rule]), &rules_d);
-        let text = stderr(&o);
+        let text = notes(&o);
         assert!(
             text.contains(
                 "new file: rules.d/1-rulesteward.rules (sorts before local.rules, rule=1)"
@@ -659,15 +743,16 @@ mod tests {
                       path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&ld_so()), &[]);
         assert_eq!(
-            String::from_utf8(o.stdout.clone()).unwrap(),
+            String::from_utf8(o.trust.clone()).unwrap(),
             "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
         );
-        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        // The mismatch note, plus the cross-reference into the `rules` output.
+        assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert_eq!(o.diagnostics[0].line, None);
         assert!(
             o.diagnostics[0].msg.contains("does not match this log"),
             "{}",
-            stderr(&o)
+            notes(&o)
         );
     }
 
@@ -682,12 +767,12 @@ mod tests {
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&rules), &[]);
-        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
-        assert_eq!(o.diagnostics.len(), 1, "{}", stderr(&o));
+        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
             o.diagnostics[0].msg.contains("does not match this log"),
             "{}",
-            stderr(&o)
+            notes(&o)
         );
     }
 
@@ -697,8 +782,8 @@ mod tests {
         // record as a mismatch.
         let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&ld_so()), &[]);
-        assert!(o.stdout.starts_with(b"fapolicyd-cli --file add "));
-        assert!(!stderr(&o).contains("does not match"), "{}", stderr(&o));
+        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        assert!(!notes(&o).contains("does not match"), "{}", notes(&o));
     }
 
     const LOADER: &str = "/usr/lib64/ld-linux-x86-64.so.2";
@@ -715,7 +800,7 @@ mod tests {
         );
         let o = analyze(input.as_bytes(), None, None, &[]);
         assert_eq!(
-            String::from_utf8(o.stdout.clone()).unwrap(),
+            String::from_utf8(o.rules.clone()).unwrap(),
             format!(
                 "allow perm=execute exe=/usr/sbin/runuser : path={LOADER}\n\
                  allow perm=open exe=/usr/sbin/runuser : path={LOADER}\n\
@@ -723,7 +808,7 @@ mod tests {
                  allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/sed\n"
             )
         );
-        let text = stderr(&o);
+        let text = notes(&o);
         assert_eq!(
             text.matches("exe= is stale").count(),
             1,
@@ -741,13 +826,13 @@ mod tests {
         );
         let o = analyze(input.as_bytes(), None, None, &[]);
         assert!(
-            String::from_utf8(o.stdout.clone())
+            String::from_utf8(o.rules.clone())
                 .unwrap()
                 .contains("allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/grep"),
             "{}",
-            String::from_utf8_lossy(&o.stdout)
+            String::from_utf8_lossy(&o.rules)
         );
-        assert!(!stderr(&o).contains("exe= is stale"), "{}", stderr(&o));
+        assert!(!notes(&o).contains("exe= is stale"), "{}", notes(&o));
     }
 
     #[test]
@@ -756,7 +841,7 @@ mod tests {
         // never the stale logged value, which is known wrong.
         let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
         let o = analyze(input, None, None, &[]);
-        let text = String::from_utf8(o.stdout.clone()).unwrap();
+        let text = String::from_utf8(o.rules.clone()).unwrap();
         assert!(
             text.contains("allow perm=open all : path=/usr/bin/grep"),
             "{text}"

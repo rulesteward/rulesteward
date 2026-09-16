@@ -1,22 +1,14 @@
---- exit 0 ---
---- stdout ---
-fapolicyd-cli --file add '/tmp/live/probe-grep'
-fapolicyd-cli --update
-fapolicyd-cli --file add '/tmp/live/probe-lib.so'
-fapolicyd-cli --update
+--- rules exit 0 ---
+# rulesteward: line 53: exe= is stale: pid 75414 was denied perm=execute of /usr/lib64/ld-linux-x86-64.so.2, and the daemon keeps the pre-exec image until that exec is permitted; the emitted rule is scoped to exe=/usr/lib64/ld-linux-x86-64.so.2 and not to the logged exe=/usr/sbin/runuser (x16)
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
 allow perm=execute exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
 allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/bin/grep
-fapolicyd-cli --file add '/etc/ld.so.cache'
-fapolicyd-cli --update
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libpcre.so.1.2.12
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libsigsegv.so.2.0.6
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libc.so.6
-fapolicyd-cli --file add '/usr/share/locale/locale.alias'
-fapolicyd-cli --update
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION
-fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'
-fapolicyd-cli --update
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MEASUREMENT
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TELEPHONE
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_ADDRESS
@@ -28,8 +20,18 @@ allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TIME
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_NUMERIC
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/C.utf8/LC_CTYPE
+--- trust exit 0 ---
+# rulesteward: 18 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+fapolicyd-cli --file add '/tmp/live/probe-grep'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/live/probe-lib.so'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/ld.so.cache'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/usr/share/locale/locale.alias'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'
+fapolicyd-cli --update
 fapolicyd-cli --file add '/etc/hostname'
 fapolicyd-cli --update
 --- stderr ---
-rulesteward: line 53: exe= is stale: pid 75414 was denied perm=execute of /usr/lib64/ld-linux-x86-64.so.2, and the daemon keeps the pre-exec image until that exec is permitted; the emitted rule is scoped to exe=/usr/lib64/ld-linux-x86-64.so.2 and not to the logged exe=/usr/sbin/runuser (x16)
-rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)

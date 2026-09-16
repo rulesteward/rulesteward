@@ -1,5 +1,6 @@
---- exit 0 ---
---- stdout ---
+--- rules exit 0 ---
+# rulesteward: 3 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+--- trust exit 0 ---
 fapolicyd-cli --file add '/tmp/gaps/spaced bash'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/tmp/gaps/target'

@@ -43,6 +43,17 @@ impl Record {
     }
 }
 
+/// Which action's output a diagnostic is written beside. `rules` and `trust` are two
+/// files with two readers, so a note about a trust entry has no business in a rules.d
+/// fragment. `Both` is for what neither reader can act without: a hazard on the host, a
+/// record that could not be used at all, a fact about the input itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Artifact {
+    Rules,
+    Trust,
+    Both,
+}
+
 /// One thing the run has to say, with the 1-based input line it came from. Host-level
 /// diagnostics — the conf read, the uid/gid hazard, the corruption summary — belong to
 /// the run and not to a line, so their `line` is `None`.
@@ -50,6 +61,7 @@ impl Record {
 pub struct Diagnostic {
     pub line: Option<usize>,
     pub msg: String,
+    pub artifact: Artifact,
 }
 
 /// Object trust, from `obj ? (obj->val ? 1 : 0) : 9`.
