@@ -18,8 +18,11 @@ pub struct File {
 
 /// GNU `filevercmp`, which is the order `ls -1v` gives fagenrules: a port of gnulib's
 /// `lib/filevercmp.c`. `order`, `file_prefixlen` and `verrevcmp` keep the names and the
-/// shape of their C originals so the two can be read side by side; the C is the
-/// reference for any question about them. Comparisons are ASCII-only, as there.
+/// semantics of their C originals, and the C is the reference for any question about
+/// them. What they do not keep is its pair of integer cursors: each walks a slice that
+/// every step shortens instead, so no loop here can be made to stand still. A cursor a
+/// mutation stops advancing hangs the suite rather than failing it, and a hang is a
+/// timeout, which is a mutant nothing can kill. Comparisons are ASCII-only, as there.
 fn filevercmp(a: &[u8], b: &[u8]) -> Ordering {
     match (a.is_empty(), b.is_empty()) {
         (true, true) => return Ordering::Equal,
@@ -59,15 +62,19 @@ fn filevercmp(a: &[u8], b: &[u8]) -> Ordering {
     }
 }
 
-/// The sort class of the byte at `pos`, as a rank that compares lexicographically:
-/// the C's `-2 < -1 < 0 < letter < letter + 256` with the numbers replaced by classes,
-/// because arithmetic on a rank only invites mutants no order can tell apart. `pos`
-/// may be one past the end, which is how the caller detects the end of a string.
-fn order(s: &[u8], pos: usize) -> (u8, u8) {
-    match s.get(pos) {
+/// A digit, and the end of the name: the two classes `verrevcmp` steers on.
+const DIGIT: (u8, u8) = (2, 0);
+const END: (u8, u8) = (1, 0);
+
+/// The sort class of the first byte of `s`, as a rank that compares
+/// lexicographically: the C's `-2 < -1 < 0 < letter < letter + 256` with the numbers
+/// replaced by classes. An empty `s` is the end of the name, which the C reaches by
+/// letting its cursor step one past the last byte.
+fn order(s: &[u8]) -> (u8, u8) {
+    match s.first() {
         Some(b'~') => (0, 0),
-        None => (1, 0),
-        Some(&c) if c.is_ascii_digit() => (2, 0),
+        None => END,
+        Some(&c) if c.is_ascii_digit() => DIGIT,
         Some(&c) if c.is_ascii_alphabetic() => (3, c),
         Some(&c) => (4, c),
     }
@@ -76,77 +83,78 @@ fn order(s: &[u8], pos: usize) -> (u8, u8) {
 /// The length of the name up to its file extensions -- the trailing `.` groups that
 /// start with a letter or `~`, so `.tar.gz` and `.~1~` are cut and `a..a` is not.
 fn file_prefixlen(s: &[u8]) -> usize {
-    let n = s.len();
     let mut prefixlen = 0;
-    let mut i = 0;
+    let mut skip_to = 0;
+    for i in 0..s.len() {
+        // Bytes inside an extension run do not extend the prefix. Everything after
+        // the last one does, which is why the extensions are skipped and not stopped
+        // at: `zz.0` keeps its `.0`, `zz.0.txt` does not keep its `.txt`.
+        if i < skip_to {
+            continue;
+        }
+        prefixlen = i + 1;
+        skip_to = prefixlen + extensions_len(&s[prefixlen..]);
+    }
+    prefixlen
+}
+
+/// The run of extensions at the front of `s`: each is a `.`, then a letter or `~`,
+/// then any run of letters, digits and `~`.
+fn extensions_len(s: &[u8]) -> usize {
+    let mut rest = s;
+    // The pattern consumes the `.` and the byte after it, so every pass shortens
+    // `rest` by at least two and the loop cannot be made to stand still.
+    while let [b'.', c, tail @ ..] = rest {
+        if !(c.is_ascii_alphabetic() || *c == b'~') {
+            break;
+        }
+        let body = tail
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric() || **c == b'~')
+            .count();
+        rest = &tail[body..];
+    }
+    s.len() - rest.len()
+}
+
+/// The version comparison itself: the two names give up a byte at a time while their
+/// classes agree, and a digit run on both sides at once compares as a number instead.
+fn verrevcmp(mut s1: &[u8], mut s2: &[u8]) -> Ordering {
     loop {
-        if i == n {
-            return prefixlen;
-        }
-        i += 1;
-        prefixlen = i;
-        while i + 1 < n && s[i] == b'.' && (s[i + 1].is_ascii_alphabetic() || s[i + 1] == b'~') {
-            i += 2;
-            while i < n && (s[i].is_ascii_alphanumeric() || s[i] == b'~') {
-                i += 1;
+        let (c1, c2) = (order(s1), order(s2));
+        // The C's non-digit loop, one pass of it: a run of digits is only a number
+        // when the other side is on one too, or has ended. `0x` against `ax` compares
+        // its `0` as a digit, and only `a0` against `a` drops the zero.
+        if !([DIGIT, END].contains(&c1) && [DIGIT, END].contains(&c2)) {
+            if c1 != c2 {
+                return c1.cmp(&c2);
             }
+            // Equal classes below `DIGIT` mean the same byte on both sides, so
+            // neither has ended and both have one to give.
+            (s1, s2) = (&s1[1..], &s2[1..]);
+            continue;
         }
+        let ((d1, r1), (d2, r2)) = (digits(s1), digits(s2));
+        // Leading zeros are gone, so the longer run is the larger number, and equal
+        // lengths decide on the first digit that differs.
+        let by_number = d1.len().cmp(&d2.len()).then_with(|| d1.cmp(d2));
+        if by_number != Ordering::Equal {
+            return by_number;
+        }
+        if (r1.len(), r2.len()) == (s1.len(), s2.len()) {
+            // Neither side had a digit or a zero to give, so both have ended: the C's
+            // outer loop condition, and what makes every pass through this one either
+            // return or shorten a name.
+            return Ordering::Equal;
+        }
+        (s1, s2) = (r1, r2);
     }
 }
 
-/// The version comparison itself: non-digit runs compare by `order` byte for byte,
-/// digit runs compare as numbers with leading zeros dropped, and a longer digit run
-/// wins outright.
-fn verrevcmp(s1: &[u8], s2: &[u8]) -> Ordering {
-    let (s1_len, s2_len) = (s1.len(), s2.len());
-    let (mut s1_pos, mut s2_pos) = (0usize, 0usize);
-    while s1_pos < s1_len || s2_pos < s2_len {
-        // The C's `first_diff`: the first digit that differed in the run being
-        // compared, which only decides once the two runs turn out equally long.
-        let mut first_diff = None;
-        // Either side may step one past its end here; `order` is what reports that,
-        // so every index below stays behind an explicit bounds test.
-        while (s1_pos < s1_len && !s1[s1_pos].is_ascii_digit())
-            || (s2_pos < s2_len && !s2[s2_pos].is_ascii_digit())
-        {
-            let (s1_c, s2_c) = (order(s1, s1_pos), order(s2, s2_pos));
-            if s1_c != s2_c {
-                return s1_c.cmp(&s2_c);
-            }
-            s1_pos += 1;
-            s2_pos += 1;
-        }
-        while s1_pos < s1_len && s1[s1_pos] == b'0' {
-            s1_pos += 1;
-        }
-        while s2_pos < s2_len && s2[s2_pos] == b'0' {
-            s2_pos += 1;
-        }
-        while s1_pos < s1_len
-            && s2_pos < s2_len
-            && s1[s1_pos].is_ascii_digit()
-            && s2[s2_pos].is_ascii_digit()
-        {
-            if first_diff.is_none() {
-                first_diff = match s1[s1_pos].cmp(&s2[s2_pos]) {
-                    Ordering::Equal => None,
-                    diff => Some(diff),
-                };
-            }
-            s1_pos += 1;
-            s2_pos += 1;
-        }
-        if s1_pos < s1_len && s1[s1_pos].is_ascii_digit() {
-            return Ordering::Greater;
-        }
-        if s2_pos < s2_len && s2[s2_pos].is_ascii_digit() {
-            return Ordering::Less;
-        }
-        if let Some(diff) = first_diff {
-            return diff;
-        }
-    }
-    Ordering::Equal
+/// The leading digit run of `s` without its leading zeros, and what follows the run.
+fn digits(s: &[u8]) -> (&[u8], &[u8]) {
+    let s = &s[s.iter().take_while(|c| **c == b'0').count()..];
+    s.split_at(s.iter().take_while(|c| c.is_ascii_digit()).count())
 }
 
 /// Drops anything not named `*.rules` -- fagenrules' own filter -- then sorts and
