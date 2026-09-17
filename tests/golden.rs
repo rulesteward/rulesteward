@@ -15,16 +15,16 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Both actions, one report. They are two artifacts out of one pass, so a golden that
-/// pinned only one of them would let the other drift unwatched. The single `stderr`
-/// section carries both runs' stderr and is expected to be empty: §9 puts errors there
+/// Every action, one report. They are three results out of one pass, so a golden that
+/// pinned only one of them would let the others drift unwatched. The single `stderr`
+/// section carries every run's stderr and is expected to be empty: §9 puts errors there
 /// and nothing else, and a fixture on stdin produces no error.
 fn run(fixture: &Path) -> Vec<u8> {
     let input = std::fs::read(fixture).expect("read fixture");
 
     let mut report = Vec::new();
     let mut errors = Vec::new();
-    for action in ["rules", "trust"] {
+    for action in ["rules", "trust", "why"] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
             .args(["fapolicyd", action, "--no-conf"])
             .stdin(Stdio::piped())

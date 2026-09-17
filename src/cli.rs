@@ -46,8 +46,10 @@ pub enum Domain {
     },
 }
 
-/// One artifact each (DESIGN.md §9). Both run the same pass over the same input; what
-/// differs is which half of its answer is written, so a log needing both is two runs.
+/// One result each (DESIGN.md §9). All three run the same pass over the same input;
+/// what differs is which part of its answer is written, so a log needing two of them is
+/// two runs. `rules` and `trust` are the audit2allow half and write artifacts a target
+/// reads; `why` is the audit2why half and writes a report for the reader.
 #[derive(Subcommand)]
 pub enum FapolicydAction {
     /// Read denial records on stdin, write a rules.d fragment on stdout.
@@ -58,6 +60,10 @@ pub enum FapolicydAction {
     /// Read denial records on stdin, write fapolicyd-cli trust commands on stdout.
     #[command(after_long_help = TRUST_AFTER_LONG_HELP)]
     Trust,
+    /// Read denial records on stdin, write one line per denying rule on stdout: number,
+    /// rules.d file, text, denial count and verdict.
+    #[command(after_long_help = WHY_AFTER_LONG_HELP)]
+    Why,
 }
 
 /// `--help` only, never `-h`: standing advice, not a usage reminder.
@@ -89,3 +95,10 @@ Before running these commands:
   --file add rewrites its destination file with \"w\", so any comments you have
   hand-written into fapolicyd.trust or a trust.d/ fragment are destroyed. Do not
   annotate those files.";
+
+/// What the rule number in the report is, since the report is built around it.
+const WHY_AFTER_LONG_HELP: &str = "\
+Reading the report:
+  rule=N in a record is that rule's position in compiled.rules (or
+  fapolicyd.rules) counting every line that is not blank, a comment or a %set;
+  fagenrules --check shows the merged order.";
