@@ -19,6 +19,12 @@
 # it runs the daemon under systemd with a --debug-deny drop-in and captures the
 # same denials through every journalctl output mode, to settle how the tool
 # reads a journal capture rather than a redirected stderr log.
+#
+# The `audit` variant is VM-only too, and starts the shipped unit with NO
+# drop-in: the route under test is the ordinary non-debug daemon, which logs
+# deny_audit nowhere but auditd. It captures every ausearch mode in two passes,
+# before and after loading the two STIG syscall rules, to measure what auditd
+# carries for a denial. There is no apply pass.
 set -u
 # shellcheck source=/dev/null
 source /harvest/lib.sh
@@ -124,6 +130,128 @@ if [ "${HARVEST_VARIANT:-base}" = "journal" ]; then
     systemctl stop fapolicyd
     for f in "$J.short" "$J.short-a" "$J.cat" "$J.cat-a" "$J.json"; do
         [ -s "$f" ] || fail "empty capture $f"
+    done
+    echo "PASS"; exit 0
+fi
+
+if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
+    [ "${VM_RUN:-}" = 1 ] || fail "audit variant needs systemd and auditd: VM only"
+    # Same reason as the journal block: an enforcing daemon started through
+    # systemd locks the host and there is no --permissive to fall back on.
+    grep -qE '^permissive\s*=\s*1' /etc/fapolicyd/fapolicyd.conf ||
+        fail "permissive is not 1; refusing systemctl start"
+    # `enabled 2` is the immutable state: auditctl -a and -d both fail and only a
+    # reboot clears it, so the two passes would collapse into one.
+    auditctl -s | grep -qE '^enabled 1$' ||
+        fail "auditctl -s is not 'enabled 1': 2 is immutable and needs a reboot, refusing"
+    systemctl is-active -q auditd || fail "auditd is not running"
+    # That drop-in would put --debug-deny back on the command line and the route
+    # under test would be stderr again, not auditd.
+    [ -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf ] &&
+        fail "stale journal drop-in present: the audit route is the shipped unit"
+    command -v ausearch >/dev/null || fail "ausearch is missing: install audit"
+
+    echo "== audit rules as found =="
+    auditctl -l
+    echo "== auditctl -s =="
+    auditctl -s
+
+    SINCE=@$(date +%s)
+    systemctl start fapolicyd || fail "systemctl start"
+    # No --debug-deny here, so the daemon forks and talks through syslog; the
+    # line still reaches the journal, just not on the unit's own stderr.
+    for _ in $(seq 1 300); do
+        journalctl -u fapolicyd --since="$SINCE" | grep -q "Starting to listen" && break
+        systemctl is-active -q fapolicyd || fail "daemon died before listening"
+        command sleep 2
+    done
+    # Not a failure: whether the shipped unit logs that line at all is one of the
+    # things this variant is here to measure.
+    journalctl -u fapolicyd --since="$SINCE" | grep -q "Starting to listen" ||
+        echo "no 'Starting to listen' line in the journal after 600 s; unit active, proceeding"
+
+    echo "== unit =="
+    systemctl show fapolicyd -p Type -p MainPID -p ExecStart
+
+    audit_pass() {  # audit_pass <tag>: trigger, then capture every ausearch mode
+        local A="/out/${FIXTURE_NAME:-live}.audit.$1"
+        local d t e f m action
+        # ausearch parses -ts with strptime %x and date's %x uses the same
+        # locale, so the two agree whatever LANG happens to be over ssh.
+        d=$(date +%x); t=$(date +%T); e=$(date +%s)
+        command sleep 1
+        trigger
+        command sleep 3   # auditd batches; give it time to flush to disk
+
+        # -m FANOTIFY selects whole events that contain a FANOTIFY record;
+        # all.raw is the unfiltered slice, for the case where the record rides
+        # inside a SYSCALL event or is not written at all. stderr is appended,
+        # never dropped: a "<no matches>" message must not become a failure.
+        # --input-logs because ausearch reads STDIN whenever stdin is not a
+        # tty, and under ssh or cron it is not: the first run of this variant
+        # searched an empty pipe on all three releases and captured nothing.
+        {
+            ausearch --input-logs -m FANOTIFY -ts "$d" "$t" --raw > "$A.fanotify.raw"
+            ausearch --input-logs -m FANOTIFY -ts "$d" "$t"       > "$A.fanotify.default"
+            ausearch --input-logs -m FANOTIFY -ts "$d" "$t" -i    > "$A.fanotify.i"
+            ausearch --input-logs -ts "$d" "$t" --raw             > "$A.all.raw"
+            # The file underneath ausearch, sliced on the epoch in
+            # msg=audit(...), so a record ausearch declines to report is
+            # still visible.
+            awk -v e="$e" '{ i = index($0, "msg=audit("); if (i) { split(substr($0, i + 10), a, "."); if (a[1] + 0 >= e) print } }' \
+                /var/log/audit/audit.log > "$A.audit.log"
+        } 2>>"$A.err"
+
+        echo "== $1: records =="
+        for f in "$A.fanotify.raw" "$A.fanotify.default" "$A.fanotify.i" "$A.all.raw" "$A.audit.log"; do
+            printf '%s %s\n' "$(wc -l < "$f")" "$(basename "$f")"
+        done
+        echo "== $1: FANOTIFY record types =="
+        grep -o '^type=[A-Z_]*' "$A.fanotify.raw" | sort | uniq -c
+        echo "== $1: first FANOTIFY event, raw =="
+        head -8 "$A.fanotify.raw"
+
+        # Q6: does any ausearch mode feed the tool at all? No assertion on the
+        # result -- empty output is the finding this variant exists to record.
+        for m in fanotify.raw fanotify.default fanotify.i; do
+            for action in rules trust why; do
+                echo "== $1: rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf < audit.$1.$m =="
+                $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
+                    < "$A.$m" > /tmp/rs.out 2> /tmp/rs.err
+                echo "exit=$?"
+                echo "-- stdout --"; cat /tmp/rs.out
+                echo "-- stderr --"; cat /tmp/rs.err
+            done
+        done
+    }
+
+    audit_pass asfound
+
+    echo "== loading the two STIG syscall rules =="
+    # key= is what makes the auditctl -d below and the restore assertion in
+    # live.sh exact rather than a guess at which rules were already there. Under
+    # a permissive daemon nothing returns EPERM, so the second rule is expected
+    # not to fire; that gets recorded, not worked around.
+    auditctl -a always,exit -F arch=b64 -S execve -F key=rulesteward-live ||
+        fail "auditctl -a execve"
+    auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM -F key=rulesteward-live ||
+        fail "auditctl -a open"
+    auditctl -l
+
+    audit_pass syscall
+
+    auditctl -d always,exit -F arch=b64 -S execve -F key=rulesteward-live
+    auditctl -d always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM -F key=rulesteward-live
+    auditctl -l | grep -q rulesteward-live && fail "audit rules not removed"
+    systemctl stop fapolicyd
+    # Empty is a legitimate result here, so it is reported and not asserted.
+    for f in "/out/${FIXTURE_NAME:-live}.audit.asfound.fanotify.raw" \
+             "/out/${FIXTURE_NAME:-live}.audit.syscall.fanotify.raw"; do
+        if [ -s "$f" ]; then
+            echo "$(wc -l < "$f") lines $(basename "$f")"
+        else
+            echo "empty $(basename "$f")"
+        fi
     done
     echo "PASS"; exit 0
 fi
