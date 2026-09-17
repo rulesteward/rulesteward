@@ -21,6 +21,15 @@
 # which this has none of, and they would put three directories and a link into a
 # package whose whole content is one binary and its licence.
 %define _build_id_links none
+# BUILDTIME, and every file mtime, come from SOURCE_DATE_EPOCH, which release.sh
+# exports from the commit being built. from_changelog is off because there is no
+# %%changelog (see above) and it is the source of rpmbuild's "set but %%changelog
+# is missing" warning. _buildhost pins the last header field that took a value
+# from the host.
+%global use_source_date_epoch_as_buildtime 1
+%global clamp_mtime_to_source_date_epoch 1
+%global source_date_epoch_from_changelog 0
+%global _buildhost rulesteward
 
 Name:           rulesteward
 Version:        %{ver}

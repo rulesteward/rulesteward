@@ -31,6 +31,10 @@ rpm_pkg() {
     local ver="${TAG#v}"
     ver="${ver//-/\~}"
     mkdir -p dist
+    # Committer date of HEAD: the tag commit on a tag run and on `just rpm` at the
+    # tag. The spec clamps BUILDTIME and every file mtime to it.
+    SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+    export SOURCE_DATE_EPOCH
     # _rpmfilename flattens rpm's default x86_64/ subdirectory so the package
     # lands beside the tarball. The %% keeps the macros unexpanded at define time.
     rpmbuild -bb \
@@ -43,7 +47,7 @@ rpm_pkg() {
     # No glob: a local dist/ accumulates artifacts from earlier tags, and the
     # check below has to read the package this run produced.
     local pkg="dist/rulesteward-$ver-1.x86_64.rpm"
-    log "$(rpm -qpl "$pkg")"
+    log "$(rpm -qp --qf 'BUILDTIME=%{BUILDTIME} BUILDHOST=%{BUILDHOST}\n' "$pkg"; rpm -qpl "$pkg")"
     # AutoReqProv is off, so the only dependencies left should be the rpmlib()
     # capability tags rpm always emits. Anything else means the binary stopped
     # being static or the package grew a script.
