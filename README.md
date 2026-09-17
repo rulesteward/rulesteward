@@ -81,6 +81,25 @@ allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/C.utf8/LC_CTYPE
 ```
 
+## why
+
+```
+rulesteward fapolicyd why --conf /etc/fapolicyd/fapolicyd.conf < denials.log
+```
+
+One line per denying rule: its number, the `rules.d` file it lives in, how
+many denials it produced, and whether `rules` or `trust` has anything for it.
+Under `--no-conf` there is no rules file to read, so each line is the number
+and the count only. Same capture as under rules, run with `--conf` pointing at
+the vendored Rocky 9 conf and `rules.d` fixture:
+
+```
+# rulesteward: 2 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+rule=5   30-patterns.rules      22 denials  subject-side, nothing to emit  deny_audit perm=any pattern=ld_so : all
+rule=8   41-shared-obj.rules     1 denials  trust: 1                       deny_audit perm=open all : ftype=application/x-sharedlib
+rule=13  90-deny-execute.rules   1 denials  trust: 1                       deny_audit perm=execute all : all
+```
+
 ## trust
 
 ```
