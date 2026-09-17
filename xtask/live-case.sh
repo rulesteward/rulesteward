@@ -11,7 +11,9 @@
 # fp_manifest), which is why the file lives at /harvest/lib.sh here. Never
 # fp_setup_stig: on Rocky 8 the SSG remediation removes a systemd mask and
 # starts an ENFORCING daemon. The `denyall` variant is the STIG's whole
-# observable effect, written by hand.
+# observable effect, written by hand. The `placement` variant denies a trusted
+# binary by an object-side rule, the one denial shape a path rule resolves, so
+# the run reaches the placement note that no default install produces.
 #
 # The `journal` variant is VM-only and replaces fp_start and both apply passes:
 # it runs the daemon under systemd with a --debug-deny drop-in and captures the
@@ -29,6 +31,11 @@ fail() { echo "FAIL: $*"; exit 1; }
 fp_setup || fail fp_setup
 if [ "${HARVEST_VARIANT:-base}" = "denyall" ]; then
     echo 'deny_audit perm=any all : all' > /etc/fapolicyd/rules.d/99-deny-everything.rules
+    fagenrules || fail fagenrules
+elif [ "${HARVEST_VARIANT:-base}" = "placement" ]; then
+    # 41- sorts between 41-shared-obj and 42-trusted-elf, whose
+    # `allow perm=execute all : trust=1` would shadow any deny placed after it.
+    echo 'deny_audit perm=execute all : path=/usr/bin/sed' > /etc/fapolicyd/rules.d/41-live-placement.rules
     fagenrules || fail fagenrules
 fi
 fp_manifest | sed 's/^/# /'
@@ -50,6 +57,7 @@ trigger() {
     as_tester cat /tmp/live/probe-lib.so                 # untrusted sharedlib open
     as_tester cat /tmp/live/data.txt                     # plain data open (allowed)
     as_tester /usr/bin/grep -c x /etc/hostname           # trusted control (allowed)
+    as_tester /usr/bin/sed -n 1p /etc/hostname           # trusted control; placement denies it by object
     # A trusted binary through the loader: the shipped ld_so pattern rule denies
     # it with the OBJECT trusted, the only trust=1 denial a default install has.
     as_tester /lib64/ld-linux-x86-64.so.2 /usr/bin/grep -c x /etc/hostname
@@ -135,6 +143,14 @@ trigger
 echo "== pass 1 denials =="
 tail -n +$((MARK+1)) /tmp/deny.log | grep 'dec=deny' | tee /tmp/denials1.txt
 echo "count=$(wc -l < /tmp/denials1.txt)"
+if [ "${HARVEST_VARIANT:-base}" = placement ]; then
+    # The daemon numbers rules without the %languages set line, so the number is
+    # one less than `nl` above shows and differs from the issue's count; take it
+    # from the record and hold the placement note to the same number.
+    PLACED=$(grep -oE 'rule=[0-9]+ dec=deny_audit perm=execute .* path=/usr/bin/sed .*trust=1' /tmp/denials1.txt | grep -om1 'rule=[0-9]*')
+    [ -n "$PLACED" ] || fail "placement: expected a trust=1 execute denial of /usr/bin/sed"
+    echo "placement: denied by $PLACED"
+fi
 
 # Two artifacts, two runs of the same pass over the same input: the rules.d fragment
 # and the trust commands go to different places and are applied differently below.
@@ -153,6 +169,11 @@ for action in rules trust; do
 done
 grep -qE '^(allow|fapolicyd-cli) ' /tmp/rs.rules /tmp/rs.trust ||
     fail "nothing emitted for $(wc -l < /tmp/denials1.txt) denials"
+if [ "${HARVEST_VARIANT:-base}" = placement ]; then
+    grep -qF ' : path=/usr/bin/sed' /tmp/rs.rules || fail "placement: no path rule for /usr/bin/sed"
+    grep -qF "# rulesteward: new file: rules.d/40-rulesteward.rules (sorts before 41-live-placement.rules, $PLACED)" /tmp/rs.rules ||
+        fail "placement: note is not the expected 40-rulesteward.rules line"
+fi
 
 echo "== applying both artifacts verbatim (daemon live, as a user would) =="
 # The eval below is the test, not an oversight: a user pastes these lines into a
@@ -211,6 +232,11 @@ echo "count=$(wc -l < /tmp/denials2.txt)"
 echo "== verdict =="
 STILL=0
 still_denied /tmp/denials2.txt || STILL=1
+# The placement variant exists to prove the note lands the rule where it works,
+# so a rule that needs pass 3 is the failure, not a second chance.
+if [ "$STILL" -eq 1 ] && [ "${HARVEST_VARIANT:-base}" = placement ]; then
+    fail "placement: rule written to $RULES and /usr/bin/sed still denied; pass 3 not run"
+fi
 
 if [ "$STILL" -eq 1 ] && [ -f "$RULES" ]; then
     # First match wins and rules.d merges in name order, so 50- sits after the
