@@ -152,9 +152,10 @@ if [ "${HARVEST_VARIANT:-base}" = placement ]; then
     echo "placement: denied by $PLACED"
 fi
 
-# Two artifacts, two runs of the same pass over the same input: the rules.d fragment
-# and the trust commands go to different places and are applied differently below.
-for action in rules trust; do
+# Three runs of the same pass over the same input: the rules.d fragment and the
+# trust commands go to different places and are applied differently below; the
+# why report is asserted on and never applied.
+for action in rules trust why; do
     echo "== rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf =="
     tail -n +$((MARK+1)) /tmp/deny.log \
         | $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
@@ -169,8 +170,14 @@ for action in rules trust; do
 done
 grep -qE '^(allow|fapolicyd-cli) ' /tmp/rs.rules /tmp/rs.trust ||
     fail "nothing emitted for $(wc -l < /tmp/denials1.txt) denials"
+# The ld_so trigger fires in every variant and 30-patterns sorts before both
+# 41-live-placement and 99-deny-everything, so rule 5 is its denier everywhere.
+grep -qE '^rule=[0-9]+ +30-patterns\.rules +[0-9]+ denials +subject-side, nothing to emit +deny_audit perm=any pattern=ld_so : all$' /tmp/rs.why ||
+    fail "why: no subject-side line for the ld_so pattern rule"
 if [ "${HARVEST_VARIANT:-base}" = placement ]; then
     grep -qF ' : path=/usr/bin/sed' /tmp/rs.rules || fail "placement: no path rule for /usr/bin/sed"
+    grep -qE "^$PLACED +41-live-placement\.rules " /tmp/rs.why ||
+        fail "why: no line for $PLACED in 41-live-placement.rules"
     grep -qF "# rulesteward: new file: rules.d/40-rulesteward.rules (sorts before 41-live-placement.rules, $PLACED)" /tmp/rs.rules ||
         fail "placement: note is not the expected 40-rulesteward.rules line"
 fi
