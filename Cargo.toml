@@ -1,6 +1,6 @@
 [package]
 name = "rulesteward"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "audit2why/audit2allow for host policy systems; fapolicyd is the first domain"
 repository = "https://github.com/rulesteward/rulesteward"
