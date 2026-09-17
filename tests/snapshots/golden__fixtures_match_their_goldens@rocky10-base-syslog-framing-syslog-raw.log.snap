@@ -89,4 +89,10 @@ fapolicyd-cli --file add '/probe/actor'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/probe/obj'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 12 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+# rulesteward: 57 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+rule=1    1 denials
+rule=2  188 denials
 --- stderr ---

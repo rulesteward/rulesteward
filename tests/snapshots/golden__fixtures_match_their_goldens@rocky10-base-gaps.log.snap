@@ -12,4 +12,8 @@ fapolicyd-cli --file add '/tmp/gaps/target'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/tmp/gaps/deleted'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: 3 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+rule=1  2 denials
+rule=2  4 denials
 --- stderr ---

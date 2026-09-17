@@ -5,4 +5,5 @@ input_file: tests/fixtures/handwritten-not-denials.log
 ---
 --- rules exit 0 ---
 --- trust exit 0 ---
+--- why exit 0 ---
 --- stderr ---

@@ -19,4 +19,10 @@ allow perm=open exe=/usr/bin/bash : path=/tmp/absent
 # rulesteward: 3 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
 fapolicyd-cli --file add '/tmp/with space'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+# rulesteward: 3 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+rule=13  4 denials
+rule=16  2 denials
 --- stderr ---
