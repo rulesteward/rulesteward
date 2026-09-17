@@ -36,4 +36,7 @@ fapolicyd-cli --file add '/tmp/edge/#hash'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/tmp/edge/percent%20enc'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: 11 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+rule=13  14 denials
 --- stderr ---

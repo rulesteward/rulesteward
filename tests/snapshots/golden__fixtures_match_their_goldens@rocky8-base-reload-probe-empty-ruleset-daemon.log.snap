@@ -7,4 +7,6 @@ input_file: tests/fixtures/rocky8-base-reload-probe-empty-ruleset-daemon.log
 # rulesteward: 250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record
 --- trust exit 0 ---
 # rulesteward: 250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record
+--- why exit 0 ---
+# rulesteward: 250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record
 --- stderr ---

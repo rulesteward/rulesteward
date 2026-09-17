@@ -10,4 +10,7 @@ input_file: tests/fixtures/rocky10-base-syslog-format.log
 # rulesteward: line 20: cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path
 fapolicyd-cli --file add '/tmp/untrusted-ls'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+rule=13  4 denials
 --- stderr ---

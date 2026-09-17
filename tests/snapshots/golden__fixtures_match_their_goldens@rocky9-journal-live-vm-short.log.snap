@@ -39,4 +39,11 @@ fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/etc/hostname'
 fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+# rulesteward: 18 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+rule=5   22 denials
+rule=8    1 denials
+rule=13   1 denials
 --- stderr ---

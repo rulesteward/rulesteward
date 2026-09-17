@@ -7,4 +7,6 @@ input_file: tests/fixtures/handwritten-21-fields.log
 # rulesteward: line 12: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)
 --- trust exit 0 ---
 # rulesteward: line 12: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)
+--- why exit 0 ---
+rule=2  1 denials
 --- stderr ---

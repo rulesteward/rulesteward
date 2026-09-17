@@ -6,22 +6,39 @@ use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
 use super::rules_d;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Write;
 
 /// `parse_syslog_format` stops after 21 names and still returns success, so names past
 /// the cap are never compared against anything (DESIGN.md §4).
 const MAX_SYSLOG_FIELDS: usize = 21;
 
-/// Two artifacts, never one stream. `rules` is a rules.d fragment and `trust` is a list
-/// of `fapolicyd-cli` commands; they go to different places and one run of the pass
-/// produces both, so the caller writes whichever one its action names.
+/// Three results, never one stream. `rules` is a rules.d fragment, `trust` is a list of
+/// `fapolicyd-cli` commands and `why` is the per-rule report; they go to different
+/// places and one run of the pass produces all three, so the caller writes whichever
+/// one its action names.
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub rules: Vec<u8>,
     pub trust: Vec<u8>,
+    /// The audit2why half: one line per denying rule, ascending by number. Rendered
+    /// here and not in `emit.rs`, because these lines are a report and not
+    /// `Suggestion`s — there is no target file for them to be written into.
+    pub why: Vec<u8>,
     pub diagnostics: Vec<Diagnostic>,
     /// §9's exit 2: we read the input but could not make sense of any of it.
     pub consumed_but_unparseable: bool,
+}
+
+/// What one rule number accounts for: how many records it denied, and how many
+/// distinct suggestions of each kind those records produced. `denials` is counted at
+/// the `rule=` lookup and the other two beside `rules_emitted`/`trust_emitted`, so they
+/// count suggestions after deduplication while `denials` counts records.
+#[derive(Default)]
+struct Tally {
+    denials: usize,
+    rules: usize,
+    trust: usize,
 }
 
 /// One pass over the input, one record per line.
@@ -96,6 +113,9 @@ pub fn analyze(
     // The `rule=` of every record that produced a rule, deduplicated: the placement
     // note has to name the file those rules have to be merged ahead of.
     let mut denied: BTreeSet<usize> = BTreeSet::new();
+    // `why`'s whole input, ascending by rule number because a BTreeMap iterates in key
+    // order and the report is one line per denying rule in that order.
+    let mut tally: BTreeMap<usize, Tally> = BTreeMap::new();
     // Records naming a rule the file does not have, or one that is an allow: either
     // says the rules file is not this log's, and both are reported once for the run.
     let mut unmatched = 0usize;
@@ -160,6 +180,13 @@ pub fn analyze(
             .subject_get(b"rule")
             .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
             .filter(|n| *n != 0);
+
+        // D4: tallied here, after the truncation refusal and before the refusal below,
+        // so a truncated record counts nowhere and a subject-side rule's count equals
+        // the number of refusal comments the other two actions carry.
+        if let Some(n) = n {
+            tally.entry(n).or_default().denials += 1;
+        }
 
         if let Some(rules) = rules {
             match n.map(|n| (n, n.checked_sub(1).and_then(|i| rules.get(i)))) {
@@ -227,13 +254,22 @@ pub fn analyze(
                 if seen.contains(&suggestion) {
                     continue;
                 }
-                if matches!(suggestion, Suggestion::Rule { .. }) {
+                let is_rule = matches!(suggestion, Suggestion::Rule { .. });
+                if is_rule {
                     rules_emitted += 1;
                     if let Some(n) = n {
                         denied.insert(n);
                     }
                 } else {
                     trust_emitted += 1;
+                }
+                // The same count, per rule, for `why`'s verdict column.
+                if let Some(t) = n.and_then(|n| tally.get_mut(&n)) {
+                    if is_rule {
+                        t.rules += 1;
+                    } else {
+                        t.trust += 1;
+                    }
                 }
                 let rendered = emit::render(&suggestion);
                 match artifact {
@@ -308,11 +344,94 @@ pub fn analyze(
         });
     }
 
+    out.why = why_report(&tally, rules, rules_d);
+
     out.diagnostics = collapse(out.diagnostics);
 
     // §9's exit 2 is "input consumed but unparseable" — not "no denials found". A log
     // full of allow records is a successful run with nothing to suggest.
     out.consumed_but_unparseable = content > 0 && parsed == 0;
+    out
+}
+
+/// The `why` artifact: one line per denying rule, ascending, in aligned columns.
+///
+/// Columns are `rule=N`, the rules.d file, the denial count, the verdict and the rule
+/// text. The first four are bounded -- a filename, a count, a fixed verdict vocabulary
+/// -- so they are padded to the widest value in the run; the text is the only free-form
+/// field, so it goes last and pads nothing and one long `pattern=` shifts no column. A
+/// column that is empty for every row (no rules file, so no file, verdict or text)
+/// collapses along with its separator, and trailing spaces are trimmed per line.
+fn why_report(
+    tally: &BTreeMap<usize, Tally>,
+    rules: Option<&[rules::Rule]>,
+    rules_d: &[rules_d::File],
+) -> Vec<u8> {
+    let rows: Vec<[String; 5]> = tally
+        .iter()
+        .map(|(&n, t)| {
+            let file = rules
+                .and_then(|compiled| rules_d::locate(rules_d, compiled, n))
+                .map(|i| rules_d[i].name.clone())
+                .unwrap_or_default();
+            // No rules file, or a number it does not have: nothing to quote and no
+            // verdict to reach, so both cells stay empty.
+            let rule = rules.and_then(|compiled| n.checked_sub(1).and_then(|i| compiled.get(i)));
+            let (verdict, text) = match rule {
+                Some(r) if r.refuses() => {
+                    ("subject-side, nothing to emit".to_string(), r.text.clone())
+                }
+                Some(r) => {
+                    let counts: Vec<String> = [("rules", t.rules), ("trust", t.trust)]
+                        .iter()
+                        .filter(|(_, c)| *c > 0)
+                        .map(|(kind, c)| format!("{kind}: {c}"))
+                        .collect();
+                    // The run's own per-line notes already say why nothing came out.
+                    let verdict = if counts.is_empty() {
+                        "nothing to emit".to_string()
+                    } else {
+                        counts.join(", ")
+                    };
+                    (verdict, r.text.clone())
+                }
+                None => (String::new(), String::new()),
+            };
+            [
+                format!("rule={n}"),
+                file,
+                t.denials.to_string(),
+                verdict,
+                text,
+            ]
+        })
+        .collect();
+
+    let mut widths = [0usize; 4];
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.len());
+        }
+    }
+
+    let mut out = Vec::new();
+    for row in &rows {
+        let mut line = String::new();
+        for (i, &w) in widths.iter().enumerate() {
+            if w == 0 {
+                continue;
+            }
+            match i {
+                // Right-aligned, so the digits line up under each other.
+                2 => line.push_str(&format!("{:>w$} denials", row[2], w = w)),
+                _ => line.push_str(&format!("{:<w$}", row[i], w = w)),
+            }
+            line.push_str("  ");
+        }
+        line.push_str(&row[4]);
+        // Writing into a Vec cannot fail.
+        let _ = writeln!(out, "{}", line.trim_end());
+    }
     out
 }
 
@@ -854,6 +973,77 @@ mod tests {
         assert!(
             !text.contains("/usr/sbin/runuser : path=/usr/bin/grep"),
             "{text}"
+        );
+    }
+
+    /// `why`'s three verdict shapes in one run: a subject-side refusal, a rule that
+    /// produced both kinds of suggestion, and one that produced neither.
+    #[test]
+    fn the_why_report_names_a_verdict_per_rule_in_number_order() {
+        let rules = rules::parse(
+            b"deny_audit perm=any pattern=ld_so : all\n\
+              deny_audit perm=open all : all\n\
+              deny_audit perm=execute all : all\n",
+        );
+        let input = b"rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/ld trust=0\n\
+                      rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/untrusted trust=0\n\
+                      rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/trusted trust=1\n\
+                      rule=3 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/unknown trust=9\n";
+        let o = analyze(input, None, Some(&rules), &[]);
+        assert_eq!(
+            String::from_utf8(o.why.clone()).unwrap(),
+            "rule=1  1 denials  subject-side, nothing to emit  \
+             deny_audit perm=any pattern=ld_so : all\n\
+             rule=2  2 denials  rules: 1, trust: 1             \
+             deny_audit perm=open all : all\n\
+             rule=3  1 denials  nothing to emit                \
+             deny_audit perm=execute all : all\n"
+        );
+    }
+
+    #[test]
+    fn a_why_line_without_a_rules_file_is_the_number_and_the_count() {
+        // No rules file means no filename, no verdict and no text for any row, so all
+        // three columns collapse along with their separators and nothing trails.
+        let input = b"rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/a trust=0\n\
+                      rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/b trust=0\n";
+        let o = analyze(input, None, None, &[]);
+        assert_eq!(
+            String::from_utf8(o.why.clone()).unwrap(),
+            "rule=1  2 denials\n"
+        );
+    }
+
+    #[test]
+    fn one_long_rule_text_lengthens_its_own_line_and_shifts_no_column() {
+        // The text is the only free-form column, so it goes last and pads nothing: an
+        // outlier makes its own line longer and leaves every other line untouched.
+        let rules = rules::parse(
+            b"deny_audit perm=open all : all\n\
+              deny_audit perm=open all : ftype=application/x-sharedlib,application/x-executable,text/x-shellscript\n",
+        );
+        let input = b"rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/a trust=0\n\
+                      rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/b trust=0\n";
+        let o = analyze(input, None, Some(&rules), &[]);
+        let why = String::from_utf8(o.why.clone()).unwrap();
+        let lines: Vec<&str> = why.lines().collect();
+        assert_eq!(lines.len(), 2, "{why}");
+        assert_eq!(
+            lines[0].find("denials"),
+            lines[1].find("denials"),
+            "counts are not aligned: {why}"
+        );
+        assert!(
+            lines[1].len() > lines[0].len() + 40,
+            "the long text must lengthen only its own line: {why}"
         );
     }
 }

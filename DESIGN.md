@@ -22,18 +22,20 @@ observed behaviour.
 `rulesteward` is a family tool, not a fapolicyd tool that might one day grow.
 Every use of it is spelled `rulesteward <domain> <action>`, and the top level
 stays open for `selinux`, `apparmor` and whatever follows. v1 ships exactly one
-domain and two actions:
+domain and three actions:
 
 ```
 rulesteward fapolicyd rules
 rulesteward fapolicyd trust
+rulesteward fapolicyd why
 ```
 
-Both read fapolicyd denial records on stdin and run the same pass over them.
-They differ in what they write: `rules` writes a `rules.d` fragment, `trust`
-writes the `fapolicyd-cli` commands that add the untrusted paths. One artifact
-per action, so each run's stdout is a file its target reads. It is the
-audit2allow half only.
+All three read fapolicyd denial records on stdin and run the same pass over
+them. They differ in what they write: `rules` writes a `rules.d` fragment and
+`trust` writes the `fapolicyd-cli` commands that add the untrusted paths, one
+artifact per action, so each of those runs' stdout is a file its target reads.
+`why` is the audit2why half: one line per denying rule, a report for the person
+reading it rather than a file for a target to consume.
 
 **Non-goals for v1**, named so re-entry is cheap:
 
@@ -476,6 +478,10 @@ distinct denials into one and loses the `perm` the emitted rule depends on. A
 path-only key is correct for the *trust* output — one trust entry covers both
 perms — but the occurrence count will read low unless that merge is deliberate.
 
+That per-rule aggregate — the rule that denied, how many records it denied, and
+what this table could emit for them — is what `rulesteward fapolicyd why`
+reports in full, one line per denying rule.
+
 ---
 
 ## 8. Emitter constraints
@@ -635,8 +641,9 @@ not on an object-specific path.
 ## 9. CLI and output contract
 
 The command surface is `rulesteward <domain> <action> [flags]`. v1 exposes
-exactly `rulesteward fapolicyd rules` and `rulesteward fapolicyd trust`. These
-are commitments, cheap now and expensive to retrofit:
+exactly `rulesteward fapolicyd rules`, `rulesteward fapolicyd trust` and
+`rulesteward fapolicyd why`. These are commitments, cheap now and expensive to
+retrofit:
 
 - **No bare-action forms and no default domain.** `rulesteward rules` is not
   valid and must never become an alias, or the domain slot is spent. Neither is
@@ -656,6 +663,9 @@ later:
 
 - one artifact per action on stdout: bare result lines plus `# rulesteward:`
   comments, so stdout is always a file the target reads
+- an action whose result has no target file writes a report for the reader
+  instead, in the same shape: bare result lines plus `# rulesteward:` comments,
+  so it stays greppable and pipe-safe like the artifacts do
 - stderr carries errors only: usage, I/O. Diagnostics ride beside the output
   they explain because `2>&1`, `tee` and copy-paste all mix the two streams, and
   a diagnostic that lands inside a rules file has to be a comment there (#38)
@@ -667,7 +677,8 @@ later:
 
 What the root does **not** promise is the shape of those lines, or how many
 actions a domain has. That is each domain's business; for `fapolicyd` it is a
-`rules.d` fragment from `rules` and `fapolicyd-cli` commands from `trust`.
+`rules.d` fragment from `rules`, `fapolicyd-cli` commands from `trust`, and one
+line per denying rule from `why`.
 
 ---
 

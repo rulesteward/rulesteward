@@ -69,9 +69,10 @@ fn the_domain_cannot_be_abbreviated() {
 
 #[test]
 fn the_action_is_not_spelled_the_other_way() {
-    // `analyze` was the v0.3.0-unreleased action and is now two. It is a usage error
-    // and never an alias for either of them, because §9 forbids aliases.
-    for bad in ["analyse", "analyze"] {
+    // `analyze` was the v0.3.0-unreleased action and is now three. It is a usage error
+    // and never an alias for any of them, because §9 forbids aliases — and neither is
+    // a near-miss spelling of `why`.
+    for bad in ["analyse", "analyze", "explain", "whys"] {
         let (code, _, _) = run(&["fapolicyd", bad], b"");
         assert_eq!(code, 1, "{bad} must be a usage error");
     }
@@ -429,6 +430,85 @@ fn a_record_needing_trust_is_named_in_the_rules_output() {
         ),
         "{out}"
     );
+}
+
+// `why` writes a report and not an artifact (#76): run-level comments plus one line
+// per denying rule, and nothing that belongs to a single input line.
+
+#[test]
+fn why_stdout_is_one_line_per_rule_and_comments() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    );
+    let input = std::fs::read(fixture).expect("read fixture");
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "why"], &input);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    for line in out.lines() {
+        assert!(
+            line.starts_with("# ") || line.starts_with("rule="),
+            "not a why line: {line}"
+        );
+    }
+    let numbers: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("rule="))
+        .map(|l| l.split_whitespace().next().expect("a first column"))
+        .collect();
+    assert_eq!(numbers, ["rule=5", "rule=8", "rule=13"], "{out}");
+    // D2: every per-line note is dropped, so no comment may name a line.
+    assert!(!out.contains("# rulesteward: line "), "{out}");
+}
+
+#[test]
+fn why_names_the_rules_d_file_and_the_subject_side_verdict() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    );
+    let input = std::fs::read(fixture).expect("read fixture");
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "why"], &input);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("rule=5 "))
+        .expect("a rule=5 line");
+    assert_eq!(
+        line.split_whitespace().collect::<Vec<_>>().join(" "),
+        "rule=5 30-patterns.rules 22 denials subject-side, nothing to emit \
+         deny_audit perm=any pattern=ld_so : all",
+        "{out}"
+    );
+
+    // The columns are padded to the run's widest value, so every count ends at the
+    // same offset whatever the rule number and filename around it are.
+    let offsets: Vec<Option<usize>> = out
+        .lines()
+        .filter(|l| l.starts_with("rule="))
+        .map(|l| l.find("denials"))
+        .collect();
+    assert_eq!(offsets.len(), 3, "{out}");
+    assert!(
+        offsets.iter().all(|o| *o == offsets[0] && o.is_some()),
+        "counts are not aligned: {out}"
+    );
+}
+
+#[test]
+fn why_without_a_rules_file_prints_numbers_and_counts() {
+    // No rules file means no filename, no verdict and no rule text, so those columns
+    // collapse: the line is the number and the count and nothing after it.
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "why"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    let rules: Vec<&str> = out.lines().filter(|l| l.starts_with("rule=")).collect();
+    assert_eq!(rules, ["rule=13  1 denials"], "{out}");
 }
 
 #[test]

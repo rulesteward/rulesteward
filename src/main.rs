@@ -17,8 +17,8 @@ use std::process::ExitCode;
 /// DESIGN.md §9. `0` success, `1` usage or I/O error, `2` input consumed but
 /// unparseable. Note that clap's own default for a usage error is `2`, which §9
 /// reserves for unparseable input — hence `try_parse` and the explicit mapping in
-/// `main`, rather than letting clap exit on our behalf. `rules` and `trust` map the
-/// same way: an empty artifact is still exit `0`.
+/// `main`, rather than letting clap exit on our behalf. `rules`, `trust` and `why` map
+/// the same way: an empty artifact is still exit `0`.
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
@@ -60,7 +60,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         let _ = writeln!(
             std::io::stderr().lock(),
             "rulesteward: --no-conf cannot be used with --conf <PATH>\n\
-             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] <rules|trust>"
+             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] <rules|trust|why>"
         );
         return ExitCode::from(EXIT_USAGE);
     }
@@ -98,9 +98,12 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
 
     let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref(), &rules_d);
 
+    // `why` has no artifact of its own to keep diagnostics for, so `None` means
+    // "run-level only": every diagnostic that describes the run rather than a line.
     let (wanted, artifact) = match action {
-        FapolicydAction::Rules => (Artifact::Rules, &outcome.rules),
-        FapolicydAction::Trust => (Artifact::Trust, &outcome.trust),
+        FapolicydAction::Rules => (Some(Artifact::Rules), &outcome.rules),
+        FapolicydAction::Trust => (Some(Artifact::Trust), &outcome.trust),
+        FapolicydAction::Why => (None, &outcome.why),
     };
     let mut bytes = Vec::new();
     // The conf and rules reads happen here and not in the pass, so their notes arrive
@@ -115,7 +118,11 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
             artifact: Artifact::Both,
         });
     for d in host_notes.chain(outcome.diagnostics) {
-        if d.artifact != wanted && d.artifact != Artifact::Both {
+        let keep = match wanted {
+            Some(w) => d.artifact == w || d.artifact == Artifact::Both,
+            None => d.line.is_none(),
+        };
+        if !keep {
             continue;
         }
         // Writing into a Vec cannot fail; the one write that can is below.
