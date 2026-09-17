@@ -2,8 +2,8 @@
 # The live acceptance run: the musl binary against a real fapolicyd, on a rootful
 # Rocky container or on a Rocky VM over ssh.
 #
-#   xtask/live.sh <8|9|10> [base|denyall]                container
-#   xtask/live.sh <8|9|10> vm [base|denyall|journal]     VM, host `rockyN` from ~/.ssh/config
+#   xtask/live.sh <8|9|10> [base|denyall|placement]                container
+#   xtask/live.sh <8|9|10> vm [base|denyall|placement|journal]     VM, host `rockyN` from ~/.ssh/config
 #
 # `journal` runs the daemon under systemd with a --debug-deny drop-in and
 # captures every journalctl output mode; it needs systemd, so it is VM-only.
@@ -22,12 +22,12 @@
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall|journal]}"
+VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall|placement|journal]}"
 shift
 MODE=container
 [ "${1:-}" = "vm" ] && { MODE=vm; shift; }
 VARIANT="${1:-base}"
-case "$VARIANT" in base|denyall|journal) ;; *) die "variant is base, denyall or journal, not $VARIANT" ;; esac
+case "$VARIANT" in base|denyall|placement|journal) ;; *) die "variant is base, denyall, placement or journal, not $VARIANT" ;; esac
 [ "$VARIANT" = journal ] && [ "$MODE" = container ] && die "journal needs systemd: use  live.sh $VER vm journal"
 
 LIB="$REPO/research/docs/harvest/lib.sh"
@@ -110,6 +110,7 @@ ssh_ 'sudo tar -C /out -cf - .' | tar -C "$OUT/$NAME" -xf - || true
 if ssh_ 'sudo test -d /etc/fapolicyd/rules.d && ! sudo test -d /etc/fapolicyd/rules.d.off &&
          ! sudo find /etc/fapolicyd/rules.d -name "*-rulesteward.rules" | grep -q . &&
          ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules &&
+         ! sudo test -f /etc/fapolicyd/rules.d/41-live-placement.rules &&
          ! sudo test -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf' \
    && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null' \
    && ! ssh_ 'systemctl is-active -q fapolicyd'; then

@@ -104,7 +104,7 @@ one is re-deriving settled work.
 | `just corpus` | The full 121-log sweep through the `research` symlink |
 | `just musl` | The musl release build plus the static-binary assertion |
 | `just rpm` | The RPM around the musl binary, into `dist/` |
-| `just live <8\|9\|10> [vm] [base\|denyall]` | The binary against a live fapolicyd in a rootful container or on a VM (`xtask/live.sh`); local-only |
+| `just live <8\|9\|10> [vm] [base\|denyall\|placement]` | The binary against a live fapolicyd in a rootful container or on a VM (`xtask/live.sh`); local-only |
 | `./xtask/install-tools.sh` | Installs the pinned `just`, `cargo-deny`, `cargo-mutants` and `typos` into `.tools/bin`; run directly, never through `just` |
 | `./xtask/sync-fixtures.sh` | Re-vendor the fixtures out of `research`; `--check` reports drift |
 
