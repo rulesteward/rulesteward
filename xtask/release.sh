@@ -35,6 +35,15 @@ rpm_pkg() {
     # tag. The spec clamps BUILDTIME and every file mtime to it.
     SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
     export SOURCE_DATE_EPOCH
+    # build.rs writes the man page and the completion into the bin's OUT_DIR, whose
+    # hash cargo takes from the dependency graph. A dir from an earlier graph
+    # survives beside the current one, so exactly one match is demanded rather than
+    # the newest guessed.
+    local pages=(target/x86_64-unknown-linux-musl/release/build/rulesteward-*/out/rulesteward.1)
+    { [ "${#pages[@]}" -eq 1 ] && [ -e "${pages[0]}" ]; } \
+        || die "expected one generated man page, found: ${pages[*]} (rm -rf target/x86_64-unknown-linux-musl/release/build/rulesteward-* and rerun)"
+    local outdir
+    outdir="$(dirname "${pages[0]}")"
     # _rpmfilename flattens rpm's default x86_64/ subdirectory so the package
     # lands beside the tarball. The %% keeps the macros unexpanded at define time.
     rpmbuild -bb \
@@ -43,6 +52,7 @@ rpm_pkg() {
         --define "_rpmfilename %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
         --define "ver $ver" \
         --define "srcroot $REPO" \
+        --define "outdir $REPO/$outdir" \
         xtask/rulesteward.spec
     # No glob: a local dist/ accumulates artifacts from earlier tags, and the
     # check below has to read the package this run produced.
