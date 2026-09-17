@@ -3,10 +3,14 @@
 # Rocky container or on a Rocky VM over ssh.
 #
 #   xtask/live.sh <8|9|10> [base|denyall|placement]                container
-#   xtask/live.sh <8|9|10> vm [base|denyall|placement|journal]     VM, host `rockyN` from ~/.ssh/config
+#   xtask/live.sh <8|9|10> vm [base|denyall|placement|journal|audit]  VM, host `rockyN` from ~/.ssh/config
 #
 # `journal` runs the daemon under systemd with a --debug-deny drop-in and
 # captures every journalctl output mode; it needs systemd, so it is VM-only.
+#
+# `audit` runs the shipped unit with no drop-in and captures every ausearch mode
+# across two passes (audit rules as found, then with the two STIG syscall rules);
+# auditd needs the host's audit subsystem, so VM-only.
 #
 # Local-only, like `just corpus`: it needs rootful podman (fanotify needs
 # CAP_SYS_ADMIN in the initial user namespace, so rootless cannot work) or a
@@ -22,13 +26,14 @@
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall|placement|journal]}"
+VER="${1:?usage: live.sh <8|9|10> [vm] [base|denyall|placement|journal|audit]}"
 shift
 MODE=container
 [ "${1:-}" = "vm" ] && { MODE=vm; shift; }
 VARIANT="${1:-base}"
-case "$VARIANT" in base|denyall|placement|journal) ;; *) die "variant is base, denyall, placement or journal, not $VARIANT" ;; esac
-[ "$VARIANT" = journal ] && [ "$MODE" = container ] && die "journal needs systemd: use  live.sh $VER vm journal"
+case "$VARIANT" in base|denyall|placement|journal|audit) ;; *) die "variant is base, denyall, placement, journal or audit, not $VARIANT" ;; esac
+{ [ "$VARIANT" = journal ] || [ "$VARIANT" = audit ]; } && [ "$MODE" = container ] &&
+    die "journal and audit need systemd and auditd: use  live.sh $VER vm $VARIANT"
 
 LIB="$REPO/research/docs/harvest/lib.sh"
 [ -f "$LIB" ] || die "research/docs/harvest/lib.sh is missing: make the symlink with  ln -s ../rulesteward-research research"
@@ -83,6 +88,9 @@ ssh_ "
   # The journal variant's systemd drop-in, removed whether or not the case got
   # that far: stop first, so the unit systemd stops is the one it started.
   sudo systemctl stop fapolicyd 2>/dev/null
+  # The audit variant's two rules, removed whether or not the case got that far.
+  sudo auditctl -d always,exit -F arch=b64 -S execve -F key=rulesteward-live 2>/dev/null
+  sudo auditctl -d always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM -F key=rulesteward-live 2>/dev/null
   sudo rm -f /etc/systemd/system/fapolicyd.service.d/rulesteward.conf
   sudo rmdir /etc/systemd/system/fapolicyd.service.d 2>/dev/null
   sudo systemctl daemon-reload
@@ -101,19 +109,22 @@ ssh_ "
 RC=$?
 set -e
 ssh_ 'sudo cat /out/*.log' > "$OUT/$NAME.log" || true
-# Everything else the case wrote -- the journal variant's captures -- pulled the
+# Everything else the case wrote -- the journal and audit variants' captures -- pulled the
 # same way staging pushed, before the /out cleanup below.
 rm -rf "${OUT:?}/$NAME" && mkdir -p "$OUT/$NAME"
 ssh_ 'sudo tar -C /out -cf - .' | tar -C "$OUT/$NAME" -xf - || true
 
-# Assert the restore, do not assume it.
+# Assert the restore, do not assume it. The audit variant's rules and the unit's
+# enabled state are asserted the same way /etc/fapolicyd is.
 if ssh_ 'sudo test -d /etc/fapolicyd/rules.d && ! sudo test -d /etc/fapolicyd/rules.d.off &&
          ! sudo find /etc/fapolicyd/rules.d -name "*-rulesteward.rules" | grep -q . &&
          ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules &&
          ! sudo test -f /etc/fapolicyd/rules.d/41-live-placement.rules &&
          ! sudo test -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf' \
    && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null' \
-   && ! ssh_ 'systemctl is-active -q fapolicyd'; then
+   && ! ssh_ 'systemctl is-active -q fapolicyd' \
+   && ! ssh_ 'sudo auditctl -l 2>/dev/null | grep -q rulesteward-live' \
+   && ! ssh_ 'systemctl is-enabled -q fapolicyd'; then
     ssh_ "sudo rm -rf $ORIG /harvest /out"
     log "   restore asserted on $HOST"
 else
