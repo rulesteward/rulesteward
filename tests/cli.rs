@@ -450,3 +450,16 @@ fn errors_are_the_only_thing_on_stderr() {
     );
     assert!(!err.starts_with("# "), "errors are not comments: {err}");
 }
+
+/// D6: both artifacts come out of `build.rs` on every plain build, with no feature
+/// gate, so the RPM can never ship a stale one. `.TH` is not the first line of the
+/// page -- clap_mangen emits the `\*(Aq` quote definition ahead of it -- so the header
+/// is matched anywhere rather than at the start.
+#[test]
+fn every_build_generates_the_man_page_and_the_bash_completion() {
+    let out = std::path::Path::new(env!("OUT_DIR"));
+    let page = std::fs::read_to_string(out.join("rulesteward.1")).unwrap();
+    assert!(page.contains(".TH rulesteward 1"), "{page}");
+    let bash = std::fs::read_to_string(out.join("rulesteward.bash")).unwrap();
+    assert!(bash.contains("complete -F _rulesteward"), "{bash}");
+}

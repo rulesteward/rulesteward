@@ -19,7 +19,7 @@
 # rpmbuild generates /usr/lib/.build-id symlinks for every ELF file it packages
 # and owns them in %%files. They are only useful beside a debuginfo package,
 # which this has none of, and they would put three directories and a link into a
-# package whose whole content is one binary and its licence.
+# package that otherwise holds a binary, a licence, a man page and a completion.
 %define _build_id_links none
 # BUILDTIME, and every file mtime, come from SOURCE_DATE_EPOCH, which release.sh
 # exports from the commit being built. from_changelog is off because there is no
@@ -49,9 +49,15 @@ Reads fapolicyd denial records on stdin and writes the rules that would allow th
 %install
 install -Dm755 %{srcroot}/target/x86_64-unknown-linux-musl/release/rulesteward %{buildroot}/usr/bin/rulesteward
 install -Dm644 %{srcroot}/LICENSE %{buildroot}/usr/share/licenses/rulesteward/LICENSE
+# Both come out of build.rs on every build; release.sh passes the OUT_DIR. The
+# brp chain is off (above), so the page is installed uncompressed, which man reads.
+install -Dm644 %{outdir}/rulesteward.1 %{buildroot}/usr/share/man/man1/rulesteward.1
+install -Dm644 %{outdir}/rulesteward.bash %{buildroot}/usr/share/bash-completion/completions/rulesteward
 
 %files
 /usr/bin/rulesteward
+/usr/share/man/man1/rulesteward.1
+/usr/share/bash-completion/completions/rulesteward
 # %%{_licensedir} is undefined on a host without redhat-rpm-config, so the path is
 # literal and matches what EL macros expand to anyway.
 %license /usr/share/licenses/rulesteward/LICENSE

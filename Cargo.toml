@@ -9,6 +9,13 @@ license = "GPL-3.0-or-later"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 
+[build-dependencies]
+# build.rs renders the man page and the bash completion from src/cli.rs (#79).
+# Build-only: none of it links into the shipped binary.
+clap = { version = "4", features = ["derive"] }
+clap_mangen = "0.2"
+clap_complete = "4"
+
 [dev-dependencies]
 # Bounded property testing on the parser. Dev-only: never in the shipped binary.
 proptest = "1.11"
