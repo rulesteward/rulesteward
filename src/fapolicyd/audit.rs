@@ -549,6 +549,47 @@ type=PATH msg=audit(1789678619.794:7470): item=0 name=\"/tmp/live/probe-lib.so\"
         assert_eq!(records(EXEC_EVENT_DEFAULT, None).records[0].0, Some(7));
     }
 
+    #[test]
+    fn the_key_is_exactly_what_sits_between_the_parentheses() {
+        // Grouping only needs the key to be consistent, so a test over grouping alone
+        // would pass with any deterministic slice of `msg=`; this pins the slice.
+        let f = fields(b"type=FANOTIFY msg=audit(1789678619.719:7454): resp=1");
+        assert_eq!(key(&f), Some(&b"1789678619.719:7454"[..]));
+        assert_eq!(key(&fields(b"type=FANOTIFY msg=nonsense")), None);
+    }
+
+    #[test]
+    fn a_token_that_starts_with_equals_is_not_a_field() {
+        // An empty name cannot be looked up, so the token is dropped rather than kept
+        // as `("", "x")`.
+        let f = fields(b"=x a=b");
+        assert_eq!(f, vec![(&b"a"[..], &b"b"[..])]);
+    }
+
+    #[test]
+    fn decode_leaves_every_unreadable_shape_as_it_was() {
+        // `(null)` is what audit writes for a missing name, and it is neither quoted
+        // nor hex; an odd-length or non-hex token is passed through, never guessed at.
+        assert_eq!(decode(b"(null)"), b"(null)");
+        assert_eq!(decode(b"abc"), b"abc");
+        assert_eq!(decode(b"zz"), b"zz");
+        assert_eq!(decode(b""), b"");
+        assert_eq!(decode(b"\"\""), b"");
+        assert_eq!(decode(b"2F746D70"), b"/tmp");
+    }
+
+    #[test]
+    fn only_type_lines_count_as_content() {
+        // Framing and a stray prose line are neither content nor parsed: content is
+        // what §9's exit 2 would judge, and it must not count what the reader skipped.
+        let mut input = b"----\ntime->Thu Sep 17 20:56:59 2026\nnot an audit record\n".to_vec();
+        input.extend_from_slice(EXEC_EVENT);
+        let source = records(&input, None);
+        assert_eq!(source.content, 5, "five type= lines in EXEC_EVENT");
+        assert_eq!(source.parsed, 5);
+        assert_eq!(source.records.len(), 1);
+    }
+
     /// Byte-substitution, so a test can state one field's change instead of restating
     /// a whole event around it.
     fn replace(input: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
