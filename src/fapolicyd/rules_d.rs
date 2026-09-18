@@ -23,32 +23,16 @@ pub struct File {
 /// every step shortens instead, so no loop here can be made to stand still. A cursor a
 /// mutation stops advancing hangs the suite rather than failing it, and a hang is a
 /// timeout, which is a mutant nothing can kill. Comparisons are ASCII-only, as there.
+///
+/// The C's leading block for `.`, `..` and the other dotfiles is not ported: `files`
+/// drops every dotfile before sorting, as `ls` without `-a` does, and `read_dir` never
+/// yields `.` or `..`, so no name reaching here starts with a `.`.
 fn filevercmp(a: &[u8], b: &[u8]) -> Ordering {
     match (a.is_empty(), b.is_empty()) {
         (true, true) => return Ordering::Equal,
         (true, false) => return Ordering::Less,
         (false, true) => return Ordering::Greater,
         (false, false) => {}
-    }
-    // `.`, `..` and every other dotfile sort ahead of the rest, in that order.
-    if a[0] == b'.' {
-        if b[0] != b'.' {
-            return Ordering::Less;
-        }
-        match (a.len() == 1, b.len() == 1) {
-            (true, true) => return Ordering::Equal,
-            (true, false) => return Ordering::Less,
-            (false, true) => return Ordering::Greater,
-            (false, false) => {}
-        }
-        match (a[1] == b'.' && a.len() == 2, b[1] == b'.' && b.len() == 2) {
-            (true, true) => return Ordering::Equal,
-            (true, false) => return Ordering::Less,
-            (false, true) => return Ordering::Greater,
-            (false, false) => {}
-        }
-    } else if b[0] == b'.' {
-        return Ordering::Greater;
     }
     // First pass over the names without their extensions; only a tie there, and only
     // when at least one name has an extension, re-runs over the whole of both.
@@ -157,13 +141,15 @@ fn digits(s: &[u8]) -> (&[u8], &[u8]) {
     s.split_at(s.iter().take_while(|c| c.is_ascii_digit()).count())
 }
 
-/// Drops anything not named `*.rules` -- fagenrules' own filter -- then sorts and
-/// parses. Rule numbers inside a `File` are per-file; `locate` does the arithmetic
-/// that turns them back into the daemon's numbering.
+/// Drops anything not named `*.rules` and every dotfile -- fagenrules' own filter,
+/// `ls -1v ${SourceRulesDir} | grep "\.rules$"`, whose `ls` has no `-a` and so lists
+/// no name starting with a `.` -- then sorts and parses. Rule numbers inside a `File`
+/// are per-file; `locate` does the arithmetic that turns them back into the daemon's
+/// numbering.
 pub fn files(named: Vec<(String, Vec<u8>)>) -> Vec<File> {
     let mut named: Vec<(String, Vec<u8>)> = named
         .into_iter()
-        .filter(|(name, _)| name.ends_with(".rules"))
+        .filter(|(name, _)| name.ends_with(".rules") && !name.starts_with('.'))
         .collect();
     // The byte-order tie-break is `ls`'s own: coreutils falls back to `strcmp` when
     // filevercmp calls two names equal, which is what keeps `01-a` before `1-a`.
@@ -313,6 +299,24 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_rules_file_is_not_merged_and_consumes_no_rule_number() {
+        // fagenrules' `ls` has no `-a`, so a dotfile beside the shipped split is not
+        // in its input: the merged set is the split unchanged, numbering and all.
+        let mut named: Vec<(String, Vec<u8>)> = shipped()
+            .into_iter()
+            .map(|f| {
+                let bytes: String = f.rules.iter().map(|r| format!("{}\n", r.text)).collect();
+                (f.name, bytes.into_bytes())
+            })
+            .collect();
+        named.push((
+            ".hidden.rules".to_string(),
+            b"allow perm=open all : all\n".to_vec(),
+        ));
+        assert_eq!(files(named), shipped());
+    }
+
+    #[test]
     fn every_file_boundary_locates_to_its_own_file() {
         let (files, compiled) = (shipped(), compiled());
         // (rule number, file index) at both ends of every multi-rule file.
@@ -392,32 +396,14 @@ mod tests {
         assert_eq!(filevercmp(b"10-a.rules", b"10-a.rules"), Ordering::Equal);
     }
 
-    /// gnulib's `tests/test-filevercmp.c`, its `examples` array verbatim: a list
-    /// already in filevercmp order, `\1` and all. The C test's own `filenvercmp`
-    /// pass replaces those bytes with NUL, which no filename can hold, so only the
-    /// `filevercmp` half is ported.
+    /// gnulib's `tests/test-filevercmp.c`, its `examples` array minus the dotfiles:
+    /// a list already in filevercmp order, `\1` and all. The dotfiles are dropped
+    /// because `files` filters them out before sorting, so this port does not carry
+    /// the C's block for them. The C test's own `filenvercmp` pass replaces those
+    /// bytes with NUL, which no filename can hold, so only the `filevercmp` half is
+    /// ported.
     const GNULIB_EXAMPLES: &[&[u8]] = &[
         b"",
-        b".",
-        b"..",
-        b".0",
-        b".9",
-        b".A",
-        b".Z",
-        b".a~",
-        b".a",
-        b".b~",
-        b".b",
-        b".z",
-        b".zz~",
-        b".zz",
-        b".zz.~1~",
-        b".zz.0",
-        b".\x01",
-        b".\x01.txt",
-        b".\x01x",
-        b".\x01x\x01",
-        b".\x01.0",
         b"0",
         b"9",
         b"A",
@@ -471,7 +457,8 @@ mod tests {
         b"#.b#",
     ];
 
-    /// The same file's `equals` sets: within a set every name compares equal.
+    /// The same file's `equals` sets, its dotfile sets dropped for the same reason:
+    /// within a set every name compares equal.
     const GNULIB_EQUALS: &[&[&[u8]]] = &[
         &[b"a", b"a0", b"a0000"],
         &[
@@ -479,15 +466,8 @@ mod tests {
             b"a\x01c-027.txt",
             b"a\x01c-00000000000000000000000000000000000000000000000000000027.txt",
         ],
-        &[
-            b".a\x01c-27.txt",
-            b".a\x01c-027.txt",
-            b".a\x01c-00000000000000000000000000000000000000000000000000000027.txt",
-        ],
         &[b"a\x01c-", b"a\x01c-0", b"a\x01c-00"],
-        &[b".a\x01c-", b".a\x01c-0", b".a\x01c-00"],
         &[b"a\x01c-0.txt", b"a\x01c-00.txt"],
-        &[b".a\x01c-1\x01.txt", b".a\x01c-001\x01.txt"],
     ];
 
     #[test]
