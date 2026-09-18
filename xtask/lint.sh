@@ -43,7 +43,13 @@ actions_are_pinned() {
 images_are_pinned() {
     local hits
     hits="$(grep -rnE '^[[:space:]]*-?[[:space:]]*(container|image):' "$REPO/.github/workflows" |
-        grep -vE '^[^:]+:[0-9]+:[[:space:]]*-?[[:space:]]*(container|image):[[:space:]]*([^[:space:]]+@sha256:[0-9a-f]{64}|\$\{\{[[:space:]]*matrix\.[a-z_]+[[:space:]]*\}\})[[:space:]]*(#.*)?$' || true)"
+        grep -vE '^[^:]+:[0-9]+:[[:space:]]*-?[[:space:]]*(container|image):[[:space:]]*([^[:space:]]+@sha256:[0-9a-f]{64}|\$\{\{[[:space:]]*matrix\.image[[:space:]]*\}\})[[:space:]]*(#.*)?$' || true)"
+    # The matrix escape above is only honest if every value `matrix.image` can take
+    # is an `image:` line. A bare list item (`image: [docker.io/x:8, ...]` or
+    # `- docker.io/x:8`) carries no key, so it is caught here by its shape: a
+    # registry path with a tag and no digest.
+    hits="$hits$(grep -rnE '(^|[[:space:],\[])[a-z0-9.-]+\.[a-z]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+([[:space:],\]]|$)' "$REPO/.github/workflows" |
+        grep -vE '@sha256:[0-9a-f]{64}' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
     [ -z "$hits" ] || { printf '%s\n' "$hits" >&2; return 1; }
 }
 
