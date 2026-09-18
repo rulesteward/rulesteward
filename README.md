@@ -44,6 +44,33 @@ bytes:
 journalctl -u fapolicyd -o cat | rulesteward fapolicyd rules
 ```
 
+When the unit runs as shipped, with no `--debug-deny`, a `deny_audit` denial goes
+to auditd and nowhere else, so the audit log already carries every denial the
+host has seen. `--raw` is the mode the reader takes, and `--input-logs` is
+needed in a script because `ausearch` reads stdin whenever stdin is not a tty:
+
+```
+ausearch -m FANOTIFY --raw --input-logs | rulesteward fapolicyd why --conf /etc/fapolicyd/fapolicyd.conf
+```
+
+A real run against a vendored Rocky 9 `ausearch --raw` capture, with `--conf`
+pointing at the vendored Rocky 9 conf and `rules.d` fixture:
+
+```
+# rulesteward: 1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: 2 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+rule=5   30-patterns.rules      22 denials  subject-side, nothing to emit  deny_audit perm=any pattern=ld_so : all
+rule=8   41-shared-obj.rules     1 denials  trust: 1                       deny_audit perm=open all : ftype=application/x-sharedlib
+rule=13  90-deny-execute.rules   1 denials  trust: 1                       deny_audit perm=execute all : all
+```
+
+`why` needs only the rule number the FANOTIFY record carries. `rules` and
+`trust` also need the object's PATH record, which the kernel writes only while
+an exit rule is loaded, so without one they emit nothing and say so: load an
+exit rule with `auditctl -a always,exit -F arch=b64 -S
+creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use
+the journal route above.
+
 A log captured on another host needs `--no-conf`, because the default reads
 this host's `fapolicyd.conf` and rules files and would validate against the
 wrong machine.
