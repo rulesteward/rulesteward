@@ -148,8 +148,13 @@ jobs:
           path: dist/musl
       # rpm --version is in the log because the sum comparison this job exists for
       # only means something beside the two rpm versions that wrote the files.
+      # The checkout is owned by the runner's uid and this job runs as the
+      # container's root, so git refuses the repository ("dubious ownership") until
+      # it is marked safe; actions/checkout marks it only for its own step.
+      # release.sh needs it for the committer date SOURCE_DATE_EPOCH clamps to.
       - run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           rpm --version
           cd dist/musl && sha256sum -c SHA256SUM
       - run: ./xtask/release.sh wrap dist/musl
