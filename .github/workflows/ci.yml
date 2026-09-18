@@ -1,10 +1,14 @@
 name: ci
 
-# This file holds no logic. Every step is `./.tools/bin/just <recipe>` or the one
-# bootstrap script that installs `just` on a runner that has none, so deleting
-# .github/ at a platform migration loses no mechanism. xtask/lint.sh's
+# This file holds almost no logic. Every step is `./.tools/bin/just <recipe>`, a
+# script in xtask/, or the one bootstrap script that installs `just` on a runner
+# that has none, so deleting .github/ at a platform migration loses no mechanism.
+# The install matrix is the exception: its assertions are the whole reason that
+# job exists, they run in a container with no cargo and no `just`, and a script
+# holding them would be mechanism nothing else ever calls. xtask/lint.sh's
 # actions-are-pinned gate rejects any `uses:` that is not a first-party action at
-# a 40-hex commit sha.
+# a 40-hex commit sha, and images-are-pinned rejects any `container:` or `image:`
+# without a sha256 digest.
 
 on:
   push:
@@ -40,6 +44,16 @@ jobs:
       # that the binary really is statically linked.
       - run: ./xtask/install-tools.sh
       - run: ./.tools/bin/just musl
+      # The one binary every release artifact is built around. The rpm job wraps
+      # this file and the release job tars it, so nothing downstream rebuilds it
+      # and both artifacts hold one binary by construction. The SHA256SUM beside
+      # it is what those jobs check what they received against.
+      - run: ./xtask/release.sh stage dist/musl
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: musl
+          path: dist/musl
+          if-no-files-found: error
 
   # The absolute gate on changed code, on pull requests and on master pushes
   # alike. `fetch-depth: 0` because the script diffs against the base branch on a
@@ -105,25 +119,136 @@ jobs:
           path: .cache/mutants-stats
       - run: ./.tools/bin/just mutants --verdict
 
+  # The release RPM, built in the distribution it targets. #59 measured that
+  # ubuntu-latest's rpm 4.18.2 and an EL10 host's 4.19.1.1 write different
+  # RPMVERSION, PLATFORM and OPTFLAGS from an identical payload, which was the one
+  # thing keeping the published file and a local `just rpm` from sharing a
+  # sha256; under rockylinux:10 the two rpms match and so do the files. The binary
+  # is downloaded from the musl job, never rebuilt: its sum is asserted here and
+  # again on the installed file. That EL8's rpm 4.14 reads a header and a gzip
+  # payload this wrote is the install job's assertion, not the w9.gzdio comment
+  # in xtask/rulesteward.spec alone.
+  rpm:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [musl]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: docker.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # rockylinux:10, 2026-09-17
+    permissions:
+      contents: read
+    steps:
+      # rpm-build for rpmbuild; git because actions/checkout falls back to a
+      # tarball download without it and xtask/release.sh reads the committer date
+      # of HEAD for SOURCE_DATE_EPOCH.
+      - run: dnf install -y rpm-build git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: musl
+          path: dist/musl
+      # rpm --version is in the log because the sum comparison this job exists for
+      # only means something beside the two rpm versions that wrote the files.
+      - run: |
+          set -euo pipefail
+          rpm --version
+          cd dist/musl && sha256sum -c SHA256SUM
+      - run: ./xtask/release.sh wrap dist/musl
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  # Everything the package promises, asserted on every release it targets before
+  # any of it is published: the file installs, the installed binary is byte for
+  # byte the one the musl job linked, the four packaged paths are there and it
+  # runs, and the uninstall leaves none of them. On EL8 this is also the
+  # assertion that rpm 4.14 reads a package rpm 4.19 wrote.
+  install:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rpm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      # One release failing to install is not a reason to stop measuring the
+      # other two.
+      fail-fast: false
+      matrix:
+        # Three explicit entries rather than an image composed from `el`: a digest
+        # has to be literal in this file for the images-are-pinned gate in
+        # xtask/lint.sh to read it.
+        include:
+          - el: 8
+            image: docker.io/rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6 # rockylinux:8, 2026-09-17
+          - el: 9
+            image: docker.io/rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f # rockylinux:9, 2026-09-17
+          - el: 10
+            image: docker.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # rockylinux:10, 2026-09-17
+    container: ${{ matrix.image }}
+    steps:
+      # git for actions/checkout, which is here only for the fixture below. If
+      # EL8's base repos ever stop resolving, `rpm -i --nodeps` on the file is the
+      # fallback recorded on #94.
+      - run: dnf install -y git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rpm
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: musl
+          path: dist/musl
+      - run: dnf install -y ./dist/*.rpm
+      - run: |
+          set -euo pipefail
+          rpm --version
+          # clap prints `rulesteward <version>`. A pre-release tag carries a
+          # suffix the crate version does not, so v0.6.0 has to match the binary
+          # exactly and a throwaway v0.6.0-rc1 is accepted against 0.6.0.
+          ver="$(rulesteward --version | awk '{print $2}')"
+          tag="${GITHUB_REF_NAME#v}"
+          [[ "$tag" == "$ver" || "$tag" == "$ver-"* ]] || { echo "--version says $ver, tag says $tag" >&2; exit 1; }
+          paths="$(printf '%s\n' /usr/bin/rulesteward /usr/share/bash-completion/completions/rulesteward /usr/share/licenses/rulesteward/LICENSE /usr/share/man/man1/rulesteward.1)"
+          [ "$(rpm -ql rulesteward | sort)" = "$paths" ] || { rpm -ql rulesteward >&2; exit 1; }
+          while read -r f; do test -e "$f"; done <<<"$paths"
+          sha256sum -c <<<"$(cut -d' ' -f1 dist/musl/SHA256SUM)  /usr/bin/rulesteward"
+          rulesteward fapolicyd rules --no-conf < tests/fixtures/handwritten-minimal-format.log > /dev/null
+      - run: |
+          set -euo pipefail
+          dnf remove -y rulesteward
+          for f in /usr/bin/rulesteward /usr/share/bash-completion/completions/rulesteward /usr/share/licenses/rulesteward/LICENSE /usr/share/man/man1/rulesteward.1; do
+            [ ! -e "$f" ] || { echo "$f survived the uninstall" >&2; exit 1; }
+          done
+
   # The tag path, and the only job that can write to the repository. Its
   # `permissions` block replaces the workflow-level `contents: read` for this job
   # alone; every other job keeps the read-only token. `needs` means a tag whose
-  # tests or musl build fail publishes nothing.
+  # tests, musl build, RPM build or install matrix fail publishes nothing. It
+  # builds nothing itself: the binary and the RPM are the artifacts the jobs above
+  # tested, so what is published is what was measured.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, musl]
+    needs: [check, musl, rpm, install]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: ./xtask/install-tools.sh
-      # Unpinned on purpose: install-tools.sh pins what decides the bytes of the
-      # binary, and rpmbuild only wraps a binary it never touches.
-      - run: sudo apt-get update && sudo apt-get install -y rpm
-      - run: ./.tools/bin/just release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: musl
+          path: dist/musl
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rpm
+          path: dist
+      - run: ./xtask/release.sh tarball dist/musl/rulesteward
       # gh reads GH_TOKEN and nothing else; scoped to the one step that calls it.
+      # publish writes SHA256SUMS over that tarball and the downloaded RPM.
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: ./.tools/bin/just publish
+        run: ./xtask/release.sh publish

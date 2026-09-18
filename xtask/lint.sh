@@ -35,6 +35,24 @@ actions_are_pinned() {
     [ -z "$hits" ] || { printf '%s\n' "$hits" >&2; return 1; }
 }
 
+# A container image at a mutable tag is the same hazard a `uses:` at a mutable tag
+# is -- somebody else's moving code running with the job's token -- and the gate
+# above never sees it, because `container:` is not a `uses:`. The one indirection
+# allowed is a matrix expression, whose values are `image:` lines this same gate
+# reads, so every digest in the file is still literal.
+images_are_pinned() {
+    local hits
+    hits="$(grep -rnE '^[[:space:]]*-?[[:space:]]*(container|image):' "$REPO/.github/workflows" |
+        grep -vE '^[^:]+:[0-9]+:[[:space:]]*-?[[:space:]]*(container|image):[[:space:]]*([^[:space:]]+@sha256:[0-9a-f]{64}|\$\{\{[[:space:]]*matrix\.image[[:space:]]*\}\})[[:space:]]*(#.*)?$' || true)"
+    # The matrix escape above is only honest if every value `matrix.image` can take
+    # is an `image:` line. A bare list item (`image: [docker.io/x:8, ...]` or
+    # `- docker.io/x:8`) carries no key, so it is caught here by its shape: a
+    # registry path with a tag and no digest.
+    hits="$hits$(grep -rnE '(^|[[:space:],\[])[a-z0-9.-]+\.[a-z]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+([[:space:],\]]|$)' "$REPO/.github/workflows" |
+        grep -vE '@sha256:[0-9a-f]{64}' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    [ -z "$hits" ] || { printf '%s\n' "$hits" >&2; return 1; }
+}
+
 # A skip must be able to become a failure. `#[ignore]` with no reason string is a
 # test that quietly does not run and says nothing about why; `#[ignore = "..."]`
 # is a decision someone can read and reverse.
@@ -78,6 +96,7 @@ main() {
     # rejected: it reads the same database this already reads.
     gate "cargo deny"               cargo deny check
     gate "actions are pinned"       actions_are_pinned
+    gate "images are pinned"        images_are_pinned
     gate "ignore carries a reason"  ignore_carries_a_reason
     gate "shellcheck"               shell_scripts_are_clean
     # The only gate over the strings users read; fixtures and snapshots are
