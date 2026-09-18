@@ -23,8 +23,8 @@
 # The `audit` variant is VM-only too, and starts the shipped unit with NO
 # drop-in: the route under test is the ordinary non-debug daemon, which logs
 # deny_audit nowhere but auditd. It captures every ausearch mode in two passes,
-# before and after loading the two STIG syscall rules, to measure what auditd
-# carries for a denial. There is no apply pass.
+# before and after loading the two STIG syscall rules, and asserts what the tool
+# says about each capture per release (#90). There is no apply pass.
 set -u
 # shellcheck source=/dev/null
 source /harvest/lib.sh
@@ -175,7 +175,7 @@ if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
 
     audit_pass() {  # audit_pass <tag>: trigger, then capture every ausearch mode
         local A="/out/${FIXTURE_NAME:-live}.audit.$1"
-        local d t e f m action el
+        local d t e f m action el n
         # ausearch parses -ts with strptime %x and date's %x uses the same
         # locale, so the two agree whatever LANG happens to be over ssh.
         d=$(date +%x); t=$(date +%T); e=$(date +%s)
@@ -224,25 +224,49 @@ if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
             done
         done
 
-        # Q6 has an answer now: the reader landed (#88), so the syscall pass is
-        # asserted and not just reported. The expectation inverts by release --
-        # 9 and 10 carry the rule number in fan_info (`D` is rule 13, the shipped
-        # `deny_audit perm=execute all : all`), and Rocky 8's kernel 4.18 writes
-        # fan_info=0, where the diagnostic saying so is the whole result. The
-        # asfound pass stays unasserted beyond the exit code: on 8 its capture is
-        # empty, which is itself a measured finding.
-        if [ "$1" = syscall ]; then
+        # Q6 has an answer now: the reader landed (#88), so each pass is asserted
+        # and not just reported, per release. 9 and 10 carry the rule number in
+        # fan_info (5 is the ld_so pattern rule, `D` is rule 13, the shipped
+        # `deny_audit perm=execute all : all`) in both passes, so why has the
+        # same subject-side verdict as base; without an exit rule loaded the
+        # opens carry no PATH, so rules and trust say so and emit nothing.
+        # Rocky 8's kernel 4.18 writes fan_info=0, where the counted diagnostic
+        # is the whole result, and writes no FANOTIFY record at all without an
+        # exit rule, so its asfound capture is empty and so is the answer.
+        el=$(. /etc/os-release; echo "${VERSION_ID%%.*}")
+        if [ "$el" = 8 ] && [ "$1" = asfound ]; then
+            [ -s "$A.fanotify.raw" ] && fail "el8 asfound: capture is not empty"
             $RS fapolicyd why --conf /etc/fapolicyd/fapolicyd.conf \
-                < "$A.fanotify.raw" > /tmp/rs.why || fail "why exit $? on audit.$1.fanotify.raw"
-            el=$(. /etc/os-release; echo "${VERSION_ID%%.*}")
+                < "$A.fanotify.raw" > /tmp/rs.why 2> /tmp/rs.err || fail "why exit $? on an empty capture"
+            { [ -s /tmp/rs.why ] || [ -s /tmp/rs.err ]; } && fail "el8 asfound: output on an empty capture"
+        else
+            for action in rules trust why; do
+                $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
+                    < "$A.fanotify.raw" > "/tmp/rs.$action" 2> /tmp/rs.err || fail "$1: $action exited $?"
+                [ -s /tmp/rs.err ] && fail "$1: $action wrote to stderr"
+            done
             if [ "$el" = 8 ]; then
-                grep -q 'carry no rule number' /tmp/rs.why ||
-                    fail "el8: why says nothing about fan_info=0"
+                n=$(grep -c '^type=FANOTIFY' "$A.fanotify.raw")
+                grep -qF "# rulesteward: $n FANOTIFY record(s) carry no rule number (fan_info=0)" /tmp/rs.why ||
+                    fail "el8 $1: why does not count $n records with fan_info=0"
+                grep -q '^rule=' /tmp/rs.why && fail "el8 $1: why named a rule with no rule number"
             else
-                grep -q '^rule=13 ' /tmp/rs.why || fail "el$el: why names no rule=13"
+                grep -qE '^rule=[0-9]+ +30-patterns\.rules +[0-9]+ denials +subject-side, nothing to emit +deny_audit perm=any pattern=ld_so : all$' /tmp/rs.why ||
+                    fail "el$el $1: why: no subject-side line for the ld_so pattern rule"
+                grep -q '^rule=13 ' /tmp/rs.why || fail "el$el $1: why names no rule=13"
+                if [ "$1" = asfound ]; then
+                    { grep -qF 'audit event(s) carry no PATH record' /tmp/rs.rules &&
+                      grep -qF 'audit event(s) carry no PATH record' /tmp/rs.trust; } ||
+                        fail "el$el asfound: no 'no PATH record' diagnostic"
+                    grep -qE '^(allow|fapolicyd-cli) ' /tmp/rs.rules /tmp/rs.trust &&
+                        fail "el$el asfound: emitted a rule or trust entry with no PATH"
+                else
+                    grep -qE '^(allow|fapolicyd-cli) ' /tmp/rs.rules /tmp/rs.trust ||
+                        fail "el$el syscall: nothing emitted"
+                fi
             fi
-            echo "== $1: why asserted on el$el =="
         fi
+        echo "== $1: verdict asserted on el$el =="
     }
 
     audit_pass asfound
