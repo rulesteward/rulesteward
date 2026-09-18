@@ -4,24 +4,11 @@
 //! `selinux` and whatever follows, so anything that would quietly turn `fapolicyd`
 //! into an optional word belongs here as a failing case.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod common;
 
+/// The code and both streams as strings: every assertion below reads them that way.
 fn run(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin)
-        .expect("write");
-    let out = child.wait_with_output().expect("wait");
+    let out = common::run(args, stdin);
     (
         out.status.code().unwrap(),
         String::from_utf8_lossy(&out.stdout).into_owned(),

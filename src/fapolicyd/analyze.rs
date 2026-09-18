@@ -126,9 +126,6 @@ pub fn analyze(
     // other one holds, so a user who ran one action learns the other half exists.
     let mut rules_emitted = 0usize;
     let mut trust_emitted = 0usize;
-    // The `rule=` of every record that produced a rule, deduplicated: the placement
-    // note has to name the file those rules have to be merged ahead of.
-    let mut denied: BTreeSet<usize> = BTreeSet::new();
     // `why`'s whole input, ascending by rule number because a BTreeMap iterates in key
     // order and the report is one line per denying rule in that order.
     let mut tally: BTreeMap<usize, Tally> = BTreeMap::new();
@@ -155,7 +152,7 @@ pub fn analyze(
         if let Some(msg) = truncated(&record, syslog_format, payload_len) {
             // Nothing was emitted, so neither artifact can be read as complete.
             out.diagnostics.push(Diagnostic {
-                line,
+                line: Some(line),
                 msg,
                 artifact: Artifact::Both,
             });
@@ -185,7 +182,7 @@ pub fn analyze(
             match n.map(|n| (n, n.checked_sub(1).and_then(|i| rules.get(i)))) {
                 Some((n, Some(r))) if r.refuses() => {
                     out.diagnostics.push(Diagnostic {
-                        line,
+                        line: Some(line),
                         // The refusal names both answers as impossible, so it belongs
                         // in whichever one the user is holding.
                         artifact: Artifact::Both,
@@ -218,7 +215,7 @@ pub fn analyze(
                 };
                 if let Some(msg) = note {
                     out.diagnostics.push(Diagnostic {
-                        line,
+                        line: Some(line),
                         msg,
                         artifact,
                     });
@@ -226,7 +223,7 @@ pub fn analyze(
                 // A `TrustFile` carries no exe, so the note would be noise there.
                 if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
                     out.diagnostics.push(Diagnostic {
-                        line,
+                        line: Some(line),
                         // It describes how the rule was scoped; a trust entry has no exe.
                         artifact: Artifact::Rules,
                         msg: format!(
@@ -250,9 +247,6 @@ pub fn analyze(
                 let is_rule = matches!(suggestion, Suggestion::Rule { .. });
                 if is_rule {
                     rules_emitted += 1;
-                    if let Some(n) = n {
-                        denied.insert(n);
-                    }
                 } else {
                     trust_emitted += 1;
                 }
@@ -273,7 +267,7 @@ pub fn analyze(
             }
             // Nothing was emitted into either artifact, so both have to say why.
             Decision::Explain(msg) => out.diagnostics.push(Diagnostic {
-                line,
+                line: Some(line),
                 msg,
                 artifact: Artifact::Both,
             }),
@@ -307,6 +301,15 @@ pub fn analyze(
     // D12: this note belongs to the run, not to a line. The two standing advisories
     // that used to sit beside it are input-independent and live in `rules --help`.
     if rules_emitted > 0 {
+        // The `rule=` of every record that produced a rule, deduplicated: the placement
+        // note has to name the file those rules have to be merged ahead of. That is the
+        // tally's own `rules` count, incremented at the same place as the emission, so a
+        // rule whose records all became trust entries is not one of them.
+        let denied: BTreeSet<usize> = tally
+            .iter()
+            .filter(|(_, t)| t.rules != 0)
+            .map(|(&n, _)| n)
+            .collect();
         out.diagnostics.push(Diagnostic {
             line: None,
             artifact: Artifact::Rules,
@@ -371,7 +374,7 @@ fn daemon_records(input: &[u8]) -> Source {
             continue;
         }
         source.parsed += 1;
-        source.records.push((Some(i + 1), record, payload.len()));
+        source.records.push((i + 1, record, payload.len()));
     }
     source
 }

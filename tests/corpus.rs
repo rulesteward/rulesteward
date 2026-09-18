@@ -10,9 +10,9 @@
 //! on has to say why, in the artifact it could not write.
 #![cfg(feature = "full-corpus")]
 
-use std::io::Write;
+mod common;
+
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 #[test]
 fn every_capture_is_either_acted_on_or_explained() {
@@ -50,20 +50,7 @@ fn every_capture_is_either_acted_on_or_explained() {
 
         // Both actions: the sweep has to cover every line either artifact can write.
         for action in ["rules", "trust"] {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
-                .args(["fapolicyd", action, "--no-conf"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawn");
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&input)
-                .expect("write");
-            let out = child.wait_with_output().expect("wait");
+            let out = common::run(&["fapolicyd", action, "--no-conf"], &input);
 
             let Some(code) = out.status.code() else {
                 failures.push(format!(

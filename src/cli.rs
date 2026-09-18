@@ -16,8 +16,7 @@ use std::path::PathBuf;
     // §9: the domain slot must stay spendable. clap v4 already defaults
     // `infer_subcommands` to false, so `rulesteward fapo rules` is rejected; this
     // is stated rather than set so nobody "helpfully" turns inference on.
-    subcommand_required = true,
-    arg_required_else_help = false
+    subcommand_required = true
 )]
 pub struct Cli {
     #[command(subcommand)]

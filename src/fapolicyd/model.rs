@@ -53,7 +53,7 @@ impl Record {
 /// daemon payload to have been truncated.
 #[derive(Default)]
 pub struct Source {
-    pub records: Vec<(Option<usize>, Record, usize)>,
+    pub records: Vec<(usize, Record, usize)>,
     pub content: usize,
     pub parsed: usize,
     pub diagnostics: Vec<Diagnostic>,

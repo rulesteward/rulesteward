@@ -11,9 +11,9 @@
 //! with `cargo insta accept` after reading the diff. A snapshot that gets blessed
 //! unread is just a changelog.
 
-use std::io::Write;
+mod common;
+
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 /// Every action, one report. They are three results out of one pass, so a golden that
 /// pinned only one of them would let the others drift unwatched. The single `stderr`
@@ -25,20 +25,7 @@ fn run(fixture: &Path) -> Vec<u8> {
     let mut report = Vec::new();
     let mut errors = Vec::new();
     for action in ["rules", "trust", "why"] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
-            .args(["fapolicyd", action, "--no-conf"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn rulesteward");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(&input)
-            .expect("write stdin");
-        let out = child.wait_with_output().expect("wait");
+        let out = common::run(&["fapolicyd", action, "--no-conf"], &input);
 
         report.extend_from_slice(
             format!("--- {action} exit {} ---\n", out.status.code().unwrap()).as_bytes(),
