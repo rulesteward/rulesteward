@@ -175,7 +175,7 @@ if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
 
     audit_pass() {  # audit_pass <tag>: trigger, then capture every ausearch mode
         local A="/out/${FIXTURE_NAME:-live}.audit.$1"
-        local d t e f m action
+        local d t e f m action el
         # ausearch parses -ts with strptime %x and date's %x uses the same
         # locale, so the two agree whatever LANG happens to be over ssh.
         d=$(date +%x); t=$(date +%T); e=$(date +%s)
@@ -211,8 +211,8 @@ if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
         echo "== $1: first FANOTIFY event, raw =="
         head -8 "$A.fanotify.raw"
 
-        # Q6: does any ausearch mode feed the tool at all? No assertion on the
-        # result -- empty output is the finding this variant exists to record.
+        # Every mode against every action, reported: -i is not supported input and
+        # what it produces is worth seeing rather than asserting.
         for m in fanotify.raw fanotify.default fanotify.i; do
             for action in rules trust why; do
                 echo "== $1: rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf < audit.$1.$m =="
@@ -223,6 +223,26 @@ if [ "${HARVEST_VARIANT:-base}" = "audit" ]; then
                 echo "-- stderr --"; cat /tmp/rs.err
             done
         done
+
+        # Q6 has an answer now: the reader landed (#88), so the syscall pass is
+        # asserted and not just reported. The expectation inverts by release --
+        # 9 and 10 carry the rule number in fan_info (`D` is rule 13, the shipped
+        # `deny_audit perm=execute all : all`), and Rocky 8's kernel 4.18 writes
+        # fan_info=0, where the diagnostic saying so is the whole result. The
+        # asfound pass stays unasserted beyond the exit code: on 8 its capture is
+        # empty, which is itself a measured finding.
+        if [ "$1" = syscall ]; then
+            $RS fapolicyd why --conf /etc/fapolicyd/fapolicyd.conf \
+                < "$A.fanotify.raw" > /tmp/rs.why || fail "why exit $? on audit.$1.fanotify.raw"
+            el=$(. /etc/os-release; echo "${VERSION_ID%%.*}")
+            if [ "$el" = 8 ]; then
+                grep -q 'carry no rule number' /tmp/rs.why ||
+                    fail "el8: why says nothing about fan_info=0"
+            else
+                grep -q '^rule=13 ' /tmp/rs.why || fail "el$el: why names no rule=13"
+            fi
+            echo "== $1: why asserted on el$el =="
+        fi
     }
 
     audit_pass asfound

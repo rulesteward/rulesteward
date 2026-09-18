@@ -511,6 +511,49 @@ fn why_without_a_rules_file_prints_numbers_and_counts() {
     assert_eq!(rules, ["rule=13  1 denials"], "{out}");
 }
 
+/// One denied `execve` as `ausearch -m FANOTIFY --raw` writes it (#87), trimmed to the
+/// fields the reader looks at. `fan_info=D` is rule 13, and `items=2` is what makes
+/// `item=0` the binary rather than the loader.
+const AUDIT_EXEC: &[u8] = b"\
+type=FANOTIFY msg=audit(1789678619.719:7454): resp=1 fan_type=1 fan_info=D subj_trust=2 obj_trust=0\x1d
+type=SYSCALL msg=audit(1789678619.719:7454): arch=c000003e syscall=59 success=yes items=2 pid=91726 auid=1000 uid=1001 exe=\"/tmp/live/probe-grep\" key=\"rulesteward-live\"\x1dARCH=x86_64
+type=PATH msg=audit(1789678619.719:7454): item=0 name=\"/tmp/live/probe-grep\" nametype=NORMAL cap_frootid=0\x1dOUID=\"root\"
+type=PATH msg=audit(1789678619.719:7454): item=1 name=\"/lib64/ld-linux-x86-64.so.2\" nametype=NORMAL cap_frootid=0\x1dOUID=\"root\"
+";
+
+/// The same route with no exit rule loaded: the kernel collected no name, so the event
+/// is FANOTIFY and SYSCALL only and there is no object to act on.
+const AUDIT_NO_PATH: &[u8] = b"\
+type=FANOTIFY msg=audit(1789678611.043:7402): resp=1 fan_type=1 fan_info=8 subj_trust=2 obj_trust=0\x1d
+type=SYSCALL msg=audit(1789678611.043:7402): arch=c000003e syscall=257 success=yes items=0 pid=91648 auid=1000 uid=1001 exe=\"/usr/bin/cat\" key=(null)\x1dARCH=x86_64
+";
+
+#[test]
+fn an_audit_event_with_no_path_is_a_success_that_names_both_fixes() {
+    // Nothing to emit is not a failure (§9), and the run-level note has to carry both
+    // ways out: load an exit rule, or take the journal route instead.
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "rules"], AUDIT_NO_PATH);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert!(
+        out.lines().all(|l| l.starts_with('#')),
+        "the rules artifact has to be empty: {out}"
+    );
+    assert!(out.contains("no PATH record"), "{out}");
+    assert!(out.contains("auditctl -a always,exit"), "{out}");
+    assert!(out.contains("journal route"), "{out}");
+}
+
+#[test]
+fn why_counts_the_rule_an_audit_record_names_in_hex() {
+    // `fan_info=D` is the shipped rule 13. Without a rules file the verdict and text
+    // columns collapse, exactly as they do for a daemon record.
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "why"], AUDIT_EXEC);
+    assert_eq!(code, 0, "{err}");
+    let rules: Vec<&str> = out.lines().filter(|l| l.starts_with("rule=")).collect();
+    assert_eq!(rules, ["rule=13  1 denials"], "{out}");
+}
+
 #[test]
 fn errors_are_the_only_thing_on_stderr() {
     // A failed conf read is a diagnostic and not an error, so it is a comment on
