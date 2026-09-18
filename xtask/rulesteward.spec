@@ -1,6 +1,8 @@
-# The RPM around the musl binary. Built only through xtask/release.sh: `ver` and
-# `srcroot` arrive as --define, so a hand `rpmbuild -bb xtask/rulesteward.spec`
-# fails on an undefined macro rather than packaging whatever is in the tree.
+# The RPM around the musl binary. Built only through xtask/release.sh: `ver`,
+# `bin`, `srcroot` and `outdir` arrive as --define, so a hand `rpmbuild -bb
+# xtask/rulesteward.spec` fails on an undefined macro rather than packaging
+# whatever is in the tree. `bin` is a macro rather than a fixed path under
+# `srcroot` because the tag path wraps a binary downloaded from the musl job.
 #
 # No %prep, %build or Source: the binary is already built by xtask/musl.sh and
 # the spec only installs it. No %changelog either -- git log is the changelog,
@@ -47,7 +49,7 @@ AutoReqProv:    no
 Reads fapolicyd denial records on stdin and writes the rules that would allow them on stdout.
 
 %install
-install -Dm755 %{srcroot}/target/x86_64-unknown-linux-musl/release/rulesteward %{buildroot}/usr/bin/rulesteward
+install -Dm755 %{bin} %{buildroot}/usr/bin/rulesteward
 install -Dm644 %{srcroot}/LICENSE %{buildroot}/usr/share/licenses/rulesteward/LICENSE
 # Both come out of build.rs on every build; release.sh passes the OUT_DIR. The
 # brp chain is off (above), so the page is installed uncompressed, which man reads.
