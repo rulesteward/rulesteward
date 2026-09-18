@@ -206,7 +206,13 @@ jobs:
         with:
           name: musl
           path: dist/musl
-      - run: dnf install -y ./dist/*.rpm
+      # The rockylinux:9 and :10 images ship `tsflags=nodocs` in /etc/yum.conf, so
+      # dnf would install the package without its man page and licence, and the
+      # test -e below would fail on files rpm -ql lists. Measured on the v0.5.0-rc10
+      # dry run: EL8, whose image has no tsflags, passed. An empty tsflags is the
+      # package as a host installs it; the assertion is about the package, not the
+      # image's dnf policy.
+      - run: dnf install -y --setopt=tsflags= ./dist/*.rpm
       - run: |
           set -euo pipefail
           rpm --version
