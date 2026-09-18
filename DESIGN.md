@@ -39,8 +39,8 @@ reading it rather than a file for a target to consume.
 
 **Non-goals for v1**, named so re-entry is cheap:
 
-- no journald API or auditd input; `journalctl` output on stdin is covered by
-  §5
+- no journald API; `journalctl` output on stdin is covered by §5, and `ausearch`
+  output by §5's audit route
 - no `--apply`; the tool never mutates anything
 - no RPM awareness
 - no generalisation beyond the exact path in the record
@@ -300,6 +300,52 @@ than when it is needed.
 **Records are one per line.** Newlines inside values become `\012`
 (`log-format.md:96`). There is exactly one exception, and it is §6's corrupted
 record.
+
+**The audit route reads `ausearch`, and it is the only route a non-debug daemon
+has.** A default install denies with `deny_audit`, which reaches auditd and
+nothing else, so a host running the shipped unit with no `--debug-deny` drop-in
+has its denials in `/var/log/audit/audit.log` and nowhere else. Measured
+2026-09-17 on all three releases (`log-format.md` "auditd", #87). The
+recommended invocation is
+
+```
+ausearch -m FANOTIFY --raw --input-logs -ts <run start> \
+  | rulesteward fapolicyd why --conf /etc/fapolicyd/fapolicyd.conf
+```
+
+`--input-logs` is not optional in a script: `ausearch` reads STDIN whenever
+stdin is not a tty, so under ssh or cron it searches the pipe it is being piped
+into and reports `<no matches>`. On a terminal it is harmless.
+
+What the reader does with it:
+
+- **`msg=audit(<epoch>.<ms>:<serial>)` groups one event**, identically on every
+  record of it and on every release. Grouping is on that key and never on
+  adjacency, because `--raw` and the default mode write the records of an event
+  in opposite orders and the default one frames them with `----` and `time->`.
+- **One record per FANOTIFY record, not per event.** An exec through the loader
+  carries two, one per rule decision. `fan_info` is the rule number *in hex*
+  (`D` is rule 13); Rocky 8 writes `fan_info=0` and carries none, which is a
+  diagnostic and not an error.
+- **The decision is not in the record.** A permissive daemon answers `resp=1`
+  for a `deny_audit` and for an `allow_audit` alike, so only the rule text tells
+  them apart: with `--conf` the rule's own word is used and an `allow_audit` is
+  correctly not a denial; without it, the permissive default is assumed.
+  `resp=2` is an enforcing deny and needs nothing.
+- **What each action can answer differs.** `why` works wherever `fan_info`
+  carries a number, because the rule number is in the FANOTIFY record itself.
+  `rules` and `trust` need the subject and the object, which come from the
+  event's SYSCALL and PATH records, and the kernel writes a PATH only when an
+  exit-filter rule is loaded — any rule, matching or not. Without one, the opens
+  carry no PATH and the exec carries only the loader, and the run says so and
+  emits nothing.
+- **`-i` is a second dialect and is not input.** It rewrites the timestamp, the
+  uid, the syscall name, `resp` and `fan_info`, so it parses here and produces
+  nonsense. Kernel audit lines routed through the journal are out of scope for
+  the same reason: `journalctl` is §5's daemon route, not this one.
+- **ENRICHED captures carry a 0x1d separator** between the raw record and the
+  decoded suffix, with no space. The record is cut there: a reader that does not
+  sees `obj_trust=0\x1d` as the trust value.
 
 **Do not add a syslog input mode expecting it to be useful.** Only decisions
 carrying the syslog bit reach `/var/log/messages`: `deny_audit` and bare `deny`

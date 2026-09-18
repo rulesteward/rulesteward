@@ -1,0 +1,83 @@
+# case=audit variant=syscall distro=rocky 8.10 kernel=4.18.0-553.el8_10.x86_64 nevra=fapolicyd-1.3.2-1.el8.x86_64
+# source=live/rocky8-audit-live-vm/rocky8-audit-live-vm.audit.syscall.fanotify.default -- ausearch -m FANOTIFY without --raw: ---- and time-> framing, record order reversed, fan_info=0 (application #87)
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.426:5979): proctitle=2F746D702F6C6976652F70726F62652D67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.426:5979): item=1 name="/lib64/ld-linux-x86-64.so.2" inode=8388760 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:ld_so_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=PATH msg=audit(1789678653.426:5979): item=0 name="/tmp/live/probe-grep" inode=8388741 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=unconfined_u:object_r:user_tmp_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.426:5979): cwd="/home/ssullivan"
+type=EXECVE msg=audit(1789678653.426:5979): argc=4 a0="/tmp/live/probe-grep" a1="-c" a2="x" a3="/etc/hostname"
+type=SYSCALL msg=audit(1789678653.426:5979): arch=c000003e syscall=59 success=yes exit=0 a0=7fffb58c6ddf a1=7fffb58c6878 a2=7fffb58c68a0 a3=0 items=2 ppid=75976 pid=75977 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="probe-grep" exe="/tmp/live/probe-grep" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key="rulesteward-live"
+type=FANOTIFY msg=audit(1789678653.426:5979): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.496:5995): proctitle=72756E75736572002D7500746573746572002D2D00636174002F746D702F6C6976652F70726F62652D6C69622E736F
+type=PATH msg=audit(1789678653.496:5995): item=0 name="/tmp/live/probe-lib.so" inode=8397900 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=unconfined_u:object_r:user_tmp_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.496:5995): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.496:5995): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7fff3f9dddea a2=0 a3=0 items=1 ppid=75982 pid=75983 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="cat" exe="/usr/bin/cat" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.496:5995): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.637:6024): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.637:6024): item=0 name="/lib64/ld-linux-x86-64.so.2" inode=8388760 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:ld_so_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.637:6024): cwd="/home/ssullivan"
+type=EXECVE msg=audit(1789678653.637:6024): argc=5 a0="/lib64/ld-linux-x86-64.so.2" a1="/usr/bin/grep" a2="-c" a3="x" a4="/etc/hostname"
+type=SYSCALL msg=audit(1789678653.637:6024): arch=c000003e syscall=59 success=yes exit=0 a0=7ffe67202dca a1=7ffe67201678 a2=7ffe672016a8 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key="rulesteward-live"
+type=FANOTIFY msg=audit(1789678653.637:6024): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+type=FANOTIFY msg=audit(1789678653.637:6024): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.638:6025): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.638:6025): item=0 name="/usr/bin/grep" inode=2026 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:bin_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.638:6025): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.638:6025): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f844763a230 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.638:6025): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.638:6026): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.638:6026): item=0 name="/etc/ld.so.cache" inode=9471364 dev=fc:05 mode=0100644 ouid=0 ogid=0 rdev=00:00 obj=unconfined_u:object_r:ld_so_cache_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.638:6026): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.638:6026): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f844742fe94 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.638:6026): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.639:6027): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.639:6027): item=0 name="/lib64/libpcre.so.1" inode=8399179 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:lib_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.639:6027): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.639:6027): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f844763af90 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.639:6027): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.639:6028): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.639:6028): item=0 name="/lib64/libc.so.6" inode=8388768 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:lib_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.639:6028): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.639:6028): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f84476314d0 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.639:6028): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.640:6029): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.640:6029): item=0 name="/lib64/libpthread.so.0" inode=8388786 dev=fc:05 mode=0100755 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:lib_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.640:6029): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.640:6029): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f84476319c0 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.640:6029): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.640:6030): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.640:6030): item=0 name="/usr/lib/locale/locale-archive" inode=8398562 dev=fc:05 mode=0100644 ouid=0 ogid=0 rdev=00:00 obj=unconfined_u:object_r:locale_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.640:6030): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.640:6030): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f8446d35370 a2=80000 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.640:6030): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.641:6031): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.641:6031): item=0 name="/usr/lib64/gconv/gconv-modules.cache" inode=1473 dev=fc:05 mode=0100644 ouid=0 ogid=0 rdev=00:00 obj=unconfined_u:object_r:lib_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.641:6031): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.641:6031): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7f8446d31200 a2=0 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.641:6031): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2
+----
+time->Thu Sep 17 20:57:33 2026
+type=PROCTITLE msg=audit(1789678653.641:6032): proctitle=2F6C696236342F6C642D6C696E75782D7838362D36342E736F2E32002F7573722F62696E2F67726570002D630078002F6574632F686F73746E616D65
+type=PATH msg=audit(1789678653.641:6032): item=0 name="/etc/hostname" inode=8400553 dev=fc:05 mode=0100644 ouid=0 ogid=0 rdev=00:00 obj=system_u:object_r:hostname_etc_t:s0 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=CWD msg=audit(1789678653.641:6032): cwd="/home/ssullivan"
+type=SYSCALL msg=audit(1789678653.641:6032): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7ffeb9785de0 a2=100 a3=0 items=1 ppid=75994 pid=75995 auid=1000 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=(none) ses=137 comm="ld-linux-x86-64" exe="/usr/lib64/ld-2.28.so" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key=(null)
+type=FANOTIFY msg=audit(1789678653.641:6032): resp=1 fan_type=0 fan_info=0 subj_trust=2 obj_trust=2

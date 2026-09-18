@@ -5,6 +5,7 @@
 //! move rather than a redesign.
 
 pub mod analyze;
+pub mod audit;
 pub mod conf;
 pub mod emit;
 pub mod model;

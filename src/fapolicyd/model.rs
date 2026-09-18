@@ -43,6 +43,22 @@ impl Record {
     }
 }
 
+/// What one input source yielded, ahead of the pass that runs over it.
+///
+/// Two sources produce this: the daemon log, one record per line, and `audit::records`
+/// off an `ausearch` pipe. `content` counts the lines that looked like input and
+/// `parsed` the ones that yielded a field, which is the whole of §9's exit 2. The third
+/// element of a record is the payload length §6's 511-byte test reads -- always 0 on the
+/// audit route, where the record was assembled from whole audit fields and there is no
+/// daemon payload to have been truncated.
+#[derive(Default)]
+pub struct Source {
+    pub records: Vec<(Option<usize>, Record, usize)>,
+    pub content: usize,
+    pub parsed: usize,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 /// Which action's output a diagnostic is written beside. `rules` and `trust` are two
 /// files with two readers, so a note about a trust entry has no business in a rules.d
 /// fragment. `Both` is for what neither reader can act without: a hazard on the host, a

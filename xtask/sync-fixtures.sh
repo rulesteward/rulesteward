@@ -39,6 +39,9 @@ FIXTURES=(
   "rocky10-base-syslog-format.log:all"                         # subject trust=1, object trust=0
   "rocky10-base-syslog-framing-syslog-raw.log:head:200"        # syslog framing, daemon PID
   "rocky8-base-reload-probe-empty-ruleset-daemon.log:tail:250" # corrupted field names
+  "rocky9-audit-live-vm-syscall-raw.log:all"                   # ausearch --raw, hex rule, PATH
+  "rocky9-audit-live-vm-asfound-raw.log:all"                   # ausearch --raw, no PATH on the opens
+  "rocky8-audit-live-vm-syscall-default.log:all"               # ausearch default framing, fan_info=0
 )
 
 check=0

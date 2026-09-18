@@ -1,7 +1,8 @@
 //! The pipeline. Pure: bytes in, bytes and diagnostics out.
 
+use super::audit;
 use super::emit;
-use super::model::{self, Artifact, Diagnostic, Record, Suggestion};
+use super::model::{self, Artifact, Diagnostic, Record, Source, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
@@ -41,9 +42,14 @@ struct Tally {
     trust: usize,
 }
 
-/// One pass over the input, one record per line.
+/// One pass over the input, over the records of whichever source wrote it.
 ///
-/// The order of the per-line steps is part of the contract. Each step earns its place:
+/// Two sources reach the same pipeline: `daemon_records` below, one record per line,
+/// and `audit::records`, which assembles one per FANOTIFY record out of an `ausearch`
+/// event. Steps 1 to 5 are what "this line is a record" means and belong to the source;
+/// everything from step 6 down is the pass and runs over both, once.
+///
+/// The order of the steps is part of the contract. Each step earns its place:
 ///
 /// 1. `#` and empty are tested on the RAW line, BEFORE the framing prefix is stripped.
 ///    A commented-out example carries a `]: ` of its own, so stripping first turns a
@@ -97,8 +103,18 @@ pub fn analyze(
         }
     }
 
-    let mut content = 0usize;
-    let mut parsed = 0usize;
+    // The audit route is decided on the input's first real line and changes two things
+    // only: where the records come from, and that no truncation test applies to them.
+    let audit = audit::is_audit(input);
+    let source = if audit {
+        audit::records(input, rules)
+    } else {
+        daemon_records(input)
+    };
+    out.diagnostics.extend(source.diagnostics);
+    // `syslog_format` describes the daemon's own line. An audit record was assembled
+    // from whole audit fields, so neither §6 test has anything to measure on it.
+    let syslog_format = if audit { None } else { syslog_format };
     let mut corrupt = 0usize;
     // Deduplication is on the whole suggestion (D12). `TrustFile` equality is path
     // equality, because one user action emits both a perm=execute and a perm=open
@@ -123,34 +139,11 @@ pub fn analyze(
     // it is never reset, and it dies with the loop.
     let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
 
-    for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
-        let line = Some(i + 1);
-        // Leading whitespace and all: the research captures indent their commented-out
-        // example records, and an indented comment is still a comment.
-        let trimmed = raw.trim_ascii_start();
-        if trimmed.is_empty() || trimmed.starts_with(b"#") {
-            continue;
-        }
-
-        let payload = parse::strip_prefix(raw);
-        if parse::is_noise(payload) {
-            continue;
-        }
-        content += 1;
-
-        let record = parse::parse(payload);
-        let names: Vec<&[u8]> = record
-            .subject
+    for (line, record, payload_len) in source.records {
+        if names(&record)
             .iter()
-            .chain(record.object.iter().flatten())
-            .map(|(k, _)| k.as_slice())
-            .collect();
-        if names.is_empty() {
-            continue;
-        }
-        parsed += 1;
-
-        if names.iter().any(|n| parse::is_corrupt_field_name(n)) {
+            .any(|n| parse::is_corrupt_field_name(n))
+        {
             corrupt += 1;
             continue;
         }
@@ -159,7 +152,7 @@ pub fn analyze(
             continue;
         }
 
-        if let Some(msg) = truncated(&record, syslog_format, payload.len()) {
+        if let Some(msg) = truncated(&record, syslog_format, payload_len) {
             // Nothing was emitted, so neither artifact can be read as complete.
             out.diagnostics.push(Diagnostic {
                 line,
@@ -350,8 +343,48 @@ pub fn analyze(
 
     // §9's exit 2 is "input consumed but unparseable" — not "no denials found". A log
     // full of allow records is a successful run with nothing to suggest.
-    out.consumed_but_unparseable = content > 0 && parsed == 0;
+    out.consumed_but_unparseable = source.content > 0 && source.parsed == 0;
     out
+}
+
+/// The daemon source: one record per line, steps 1 to 5 of the pass's ladder.
+///
+/// A line that yields no field at all counts as content and not as parsed, which is the
+/// whole of §9's exit 2: the daemon interleaves prose with records and prose is not a
+/// parse failure.
+fn daemon_records(input: &[u8]) -> Source {
+    let mut source = Source::default();
+    for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
+        // Leading whitespace and all: the research captures indent their commented-out
+        // example records, and an indented comment is still a comment.
+        let trimmed = raw.trim_ascii_start();
+        if trimmed.is_empty() || trimmed.starts_with(b"#") {
+            continue;
+        }
+        let payload = parse::strip_prefix(raw);
+        if parse::is_noise(payload) {
+            continue;
+        }
+        source.content += 1;
+        let record = parse::parse(payload);
+        if names(&record).is_empty() {
+            continue;
+        }
+        source.parsed += 1;
+        source.records.push((Some(i + 1), record, payload.len()));
+    }
+    source
+}
+
+/// Every field name in the record, both sides. The corruption test reads all of them
+/// and so does the "no fields at all" test, and neither may look at one side only.
+fn names(record: &Record) -> Vec<&[u8]> {
+    record
+        .subject
+        .iter()
+        .chain(record.object.iter().flatten())
+        .map(|(k, _)| k.as_slice())
+        .collect()
 }
 
 /// The `why` artifact: one line per denying rule, ascending, in aligned columns.
