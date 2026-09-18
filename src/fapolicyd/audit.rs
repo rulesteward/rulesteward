@@ -139,9 +139,7 @@ pub fn records(input: &[u8], rules: Option<&[rules::Rule]>) -> Source {
             });
             // The payload length is the 511-byte truncation test's input and there is
             // no daemon payload here, so it is 0 and that test never fires.
-            source
-                .records
-                .push((Some(*line), Record { subject, object }, 0));
+            source.records.push((*line, Record { subject, object }, 0));
         }
     }
 
@@ -545,8 +543,8 @@ type=PATH msg=audit(1789678619.794:7470): item=0 name=\"/tmp/live/probe-lib.so\"
     fn the_line_of_a_record_is_the_fanotify_line_it_came_from() {
         // The FANOTIFY record is the denial; a per-line note has to send the reader to
         // it and not to the SYSCALL record that supplied the subject.
-        assert_eq!(records(EXEC_EVENT, None).records[0].0, Some(1));
-        assert_eq!(records(EXEC_EVENT_DEFAULT, None).records[0].0, Some(7));
+        assert_eq!(records(EXEC_EVENT, None).records[0].0, 1);
+        assert_eq!(records(EXEC_EVENT_DEFAULT, None).records[0].0, 7);
     }
 
     #[test]
