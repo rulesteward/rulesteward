@@ -1,0 +1,17 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky9-audit-live-vm-asfound-raw.log
+---
+--- rules exit 0 ---
+# rulesteward: 23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: line 3: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x24)
+--- trust exit 0 ---
+# rulesteward: 23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: line 3: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x24)
+--- why exit 0 ---
+# rulesteward: 23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+rule=5   22 denials
+rule=8    1 denials
+rule=13   1 denials
+--- stderr ---

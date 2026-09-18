@@ -1,0 +1,51 @@
+---
+source: tests/golden.rs
+expression: report
+input_file: tests/fixtures/rocky9-audit-live-vm-syscall-raw.log
+---
+--- rules exit 0 ---
+# rulesteward: 1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: line 15: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/bin/grep
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libpcre.so.1
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libsigsegv.so.2
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libc.so.6
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MEASUREMENT
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TELEPHONE
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_ADDRESS
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_NAME
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_PAPER
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MONETARY
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_COLLATE
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TIME
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_NUMERIC
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_CTYPE
+--- trust exit 0 ---
+# rulesteward: 1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: line 15: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)
+# rulesteward: 16 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+fapolicyd-cli --file add '/tmp/live/probe-grep'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/tmp/live/probe-lib.so'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/ld.so.cache'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/usr/share/locale/locale.alias'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'
+fapolicyd-cli --update
+fapolicyd-cli --file add '/etc/hostname'
+fapolicyd-cli --update
+--- why exit 0 ---
+# rulesteward: 1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+# rulesteward: 16 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+rule=5   22 denials
+rule=8    1 denials
+rule=13   1 denials
+--- stderr ---
