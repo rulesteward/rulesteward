@@ -47,7 +47,7 @@ musl:
     ./xtask/musl.sh
 
 # Mutation testing. Unsharded and judged against docs/mutation-baseline.json;
-# MUTANTS_SHARD=k/8 runs one shard and judges nothing, which is what CI does.
+# MUTANTS_SHARD=k/16 runs one shard and judges nothing, which is what CI does.
 mutants *ARGS:
     ./xtask/mutants.sh {{ARGS}}
 
