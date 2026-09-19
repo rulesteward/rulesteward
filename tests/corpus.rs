@@ -14,6 +14,16 @@ mod common;
 
 use std::path::PathBuf;
 
+/// The host `check` places candidates against, and the candidates. Both are committed.
+const CONF: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/conf/default.conf"
+);
+const CANDIDATE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/check/00-cand.rules"
+);
+
 #[test]
 fn every_capture_is_either_acted_on_or_explained() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("research/docs/fixtures/raw");
@@ -48,9 +58,19 @@ fn every_capture_is_either_acted_on_or_explained() {
 
         let name = log.file_name().unwrap().to_string_lossy();
 
-        // Both actions: the sweep has to cover every line either artifact can write.
-        for action in ["rules", "trust"] {
-            let out = common::run(&["fapolicyd", action, "--no-conf"], &input);
+        // Every action: the sweep has to cover every line any of them can write.
+        for action in ["rules", "trust", "check"] {
+            // `check` alone needs a host to place candidates against, so it runs against
+            // the vendored Rocky 9 conf tree and the committed candidate rather than
+            // `--no-conf`, where every verdict would be `unknown` and the sweep would
+            // exercise nothing. The tree is not every capture's own host, which is why
+            // this sweep asserts robustness and not verdicts (DESIGN.md §10).
+            let args: Vec<&str> = if action == "check" {
+                vec!["fapolicyd", "--conf", CONF, "check", CANDIDATE]
+            } else {
+                vec!["fapolicyd", action, "--no-conf"]
+            };
+            let out = common::run(&args, &input);
 
             let Some(code) = out.status.code() else {
                 failures.push(format!(
@@ -70,14 +90,15 @@ fn every_capture_is_either_acted_on_or_explained() {
                 ));
             }
             // §9: one artifact per action, comments and result lines and nothing else.
-            // Every non-comment line must be something a user can paste.
-            let result = if action == "rules" {
-                &b"allow "[..]
-            } else {
-                &b"fapolicyd-cli "[..]
+            // Every non-comment line must be something a user can paste -- or, for the
+            // one action whose result is a report, one of its three verdicts.
+            let result: &[&[u8]] = match action {
+                "rules" => &[b"allow "],
+                "trust" => &[b"fapolicyd-cli "],
+                _ => &[b"allowed ", b"denied ", b"unknown "],
             };
             for line in out.stdout.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-                if !line.starts_with(b"# ") && !line.starts_with(result) {
+                if !line.starts_with(b"# ") && !result.iter().any(|p| line.starts_with(p)) {
                     failures.push(format!(
                         "{name} {action}: stdout line belongs to neither the comments nor the \
                          artifact: {}",

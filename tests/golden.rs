@@ -38,6 +38,39 @@ fn run(fixture: &Path) -> Vec<u8> {
     report
 }
 
+/// `check` is its own golden, because it is the one action that takes a candidate path
+/// and needs a host to place it against: the loop above runs `--no-conf`, where every
+/// verdict would be `unknown`. The conf tree is the shipped Rocky 9 default under
+/// `tests/fixtures/conf/`, already used by the `cli.rs` placement tests, and the
+/// candidate file is the one committed beside this fixture. The log is the live-VM
+/// capture whose records are #120's own probes, so the three verdicts here are the ones
+/// that issue measured on a real daemon.
+#[test]
+fn check_matches_its_golden() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let input = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    ))
+    .expect("read fixture");
+
+    let out = common::run(&["fapolicyd", "--conf", conf, "check", candidate], &input);
+    let report = format!(
+        "--- check exit {} ---\n{}--- stderr ---\n{}",
+        out.status.code().unwrap(),
+        String::from_utf8(out.stdout).expect("UTF-8 report"),
+        String::from_utf8(out.stderr).expect("UTF-8 stderr"),
+    );
+    insta::assert_snapshot!(report);
+}
+
 #[test]
 fn fixtures_match_their_goldens() {
     // `glob!` runs every fixture and reports every mismatch in one run; it panics

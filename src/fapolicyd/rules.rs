@@ -22,6 +22,63 @@ pub struct Rule {
     pub object: Option<Vec<String>>,
 }
 
+/// One token of a rule, as far as `check` can evaluate it (DESIGN.md §7, #120's D4 set).
+///
+/// Everything outside that set is kept as `Unevaluable` rather than dropped: a rule the
+/// evaluator cannot decide has to stop the walk, and a dropped token would silently make
+/// the rule look broader than it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attr {
+    All,
+    Perm(String),
+    Exe(String),
+    Path(String),
+    Dir(String),
+    Ftype(String),
+    Trust(String),
+    /// A token with no `=` that is not `all`: the tail of a value containing a space,
+    /// which is #120's K2. The daemon logs `'=' is missing for field ace/probe-grep`,
+    /// keeps loading, counts the broken rule in `Loaded N rules` so it occupies its slot,
+    /// and never matches anything with it.
+    NeverMatches,
+    /// `pattern=`, `uid=`, `sha256hash=`, a `%set` reference, a `dir=` keyword: real
+    /// attributes whose value cannot be decided from a log record.
+    Unevaluable,
+}
+
+impl Attr {
+    /// One token of a rule's subject or object side. Which side it was written on is the
+    /// caller's business: `perm=` on the object side is a real attribute in the wrong
+    /// place, and only the matcher knows which side it is reading.
+    fn new(token: &str) -> Attr {
+        let Some((name, value)) = token.split_once('=') else {
+            return if token == "all" {
+                Attr::All
+            } else {
+                Attr::NeverMatches
+            };
+        };
+        // A `%set` reference names a list this tool never expands: `ftype=%languages`
+        // holds 24 media types, and comparing the record's `ftype=` against the literal
+        // `%languages` would call every one of them a mismatch.
+        if value.starts_with('%') {
+            return Attr::Unevaluable;
+        }
+        let v = value.to_string();
+        match name {
+            "perm" => Attr::Perm(v),
+            "exe" => Attr::Exe(v),
+            "path" => Attr::Path(v),
+            // `dir=` also takes the keywords `execdirs`, `systemdirs` and `untrusted`,
+            // each naming a set of directories this tool cannot enumerate from a record.
+            "dir" if value.starts_with('/') => Attr::Dir(v),
+            "ftype" => Attr::Ftype(v),
+            "trust" => Attr::Trust(v),
+            _ => Attr::Unevaluable,
+        }
+    }
+}
+
 /// Every line that is not blank, `#` or `%set` is a rule; that is the whole grammar
 /// (`nv_split` recognises three line shapes) and the whole of `fapolicyd-cli --list`.
 ///
@@ -59,6 +116,25 @@ impl Rule {
             subject,
             object,
         }
+    }
+
+    /// The two sides decomposed, for `check`'s matcher. The fields stay as they are: the
+    /// tokens are what `--list` shows and what a diagnostic quotes, and this is a view of
+    /// them, not a second parse.
+    ///
+    /// ORIGINAL format -- no object side at all -- comes back as one `Unevaluable`. The
+    /// grammar is a different one, no capture has a rule in it, and a rule that places no
+    /// object constraint would otherwise read as matching every file.
+    pub fn attrs(&self) -> (Vec<Attr>, Vec<Attr>) {
+        fn side(tokens: &[String]) -> Vec<Attr> {
+            tokens.iter().map(|t| Attr::new(t)).collect()
+        }
+        (
+            side(&self.subject),
+            self.object
+                .as_deref()
+                .map_or_else(|| vec![Attr::Unevaluable], side),
+        )
     }
 
     /// A rule that constrains only the process refuses: nothing scoped to a path, and
@@ -151,5 +227,71 @@ allow perm=open all : all
     #[test]
     fn an_exe_only_deny_refuses() {
         assert!(Rule::new("deny perm=execute exe=/usr/bin/foo : all").refuses());
+    }
+
+    #[test]
+    fn every_d4_attribute_keeps_its_value_and_its_side() {
+        let (subject, object) = Rule::new(
+            "allow perm=open exe=/usr/bin/cat dir=/usr/bin : path=/tmp/x dir=/tmp/ \
+             ftype=text/plain trust=1",
+        )
+        .attrs();
+        assert_eq!(
+            subject,
+            [
+                Attr::Perm("open".into()),
+                Attr::Exe("/usr/bin/cat".into()),
+                Attr::Dir("/usr/bin".into()),
+            ]
+        );
+        assert_eq!(
+            object,
+            [
+                Attr::Path("/tmp/x".into()),
+                Attr::Dir("/tmp/".into()),
+                Attr::Ftype("text/plain".into()),
+                Attr::Trust("1".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn all_is_an_attribute_and_any_other_bare_token_never_matches() {
+        // K2: `path=/tmp/sp ace/x` splits into a `path=` and a bare `ace/x`, which is
+        // the token the daemon reports `'=' is missing for field` about.
+        let (subject, object) = Rule::new("allow perm=any all : path=/tmp/sp ace/x").attrs();
+        assert_eq!(subject, [Attr::Perm("any".into()), Attr::All]);
+        assert_eq!(
+            object,
+            [Attr::Path("/tmp/sp".into()), Attr::NeverMatches],
+            "the broken token is kept, because the rule still occupies its slot"
+        );
+    }
+
+    #[test]
+    fn what_a_log_record_cannot_decide_is_unevaluable_and_not_dropped() {
+        let (subject, object) =
+            Rule::new("deny_audit perm=any pattern=ld_so uid=0 : ftype=%languages dir=execdirs")
+                .attrs();
+        assert_eq!(
+            subject,
+            [
+                Attr::Perm("any".into()),
+                Attr::Unevaluable,
+                Attr::Unevaluable
+            ]
+        );
+        assert_eq!(object, [Attr::Unevaluable, Attr::Unevaluable]);
+    }
+
+    #[test]
+    fn an_original_format_rule_has_no_object_side_to_evaluate() {
+        let (subject, object) = Rule::new("deny_audit perm=any pattern=ld_so").attrs();
+        assert_eq!(subject, [Attr::Perm("any".into()), Attr::Unevaluable]);
+        assert_eq!(
+            object,
+            [Attr::Unevaluable],
+            "no object side is not the same as `all`"
+        );
     }
 }

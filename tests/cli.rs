@@ -59,7 +59,7 @@ fn the_action_is_not_spelled_the_other_way() {
     // `analyze` was the v0.3.0-unreleased action and is now three. It is a usage error
     // and never an alias for any of them, because §9 forbids aliases — and neither is
     // a near-miss spelling of `why`.
-    for bad in ["analyse", "analyze", "explain", "whys"] {
+    for bad in ["analyse", "analyze", "explain", "whys", "checks"] {
         let (code, _, _) = run(&["fapolicyd", bad], b"");
         assert_eq!(code, 1, "{bad} must be a usage error");
     }
@@ -539,6 +539,84 @@ fn why_counts_the_rule_an_audit_record_names_in_hex() {
     assert_eq!(code, 0, "{err}");
     let rules: Vec<&str> = out.lines().filter(|l| l.starts_with("rule=")).collect();
     assert_eq!(rules, ["rule=13  1 denials"], "{out}");
+}
+
+/// #121: `check` takes a path, and the two ways of getting it wrong are both §9's exit 1.
+/// A missing path is clap's own usage error, remapped from its default 2; a path that
+/// cannot be read is one we raise, because a verdict against rules that were never read
+/// would be a verdict about nothing.
+#[test]
+fn check_without_a_readable_path_is_a_usage_error() {
+    let (code, _, err) = run(&["fapolicyd", "check"], b"");
+    assert_eq!(
+        code, 1,
+        "a missing PATH is a usage error, not exit 2: {err}"
+    );
+
+    let (code, _, err) = run(
+        &["fapolicyd", "--no-conf", "check", "/nonexistent/x.rules"],
+        DENIAL,
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("/nonexistent/x.rules"), "{err}");
+    assert!(!err.starts_with("# "), "errors are not comments: {err}");
+
+    // fagenrules merges `*.rules` and nothing else, so a candidate under any other name
+    // is a file the daemon would never read.
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let (code, _, err) = run(&["fapolicyd", "--no-conf", "check", conf], DENIAL);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("*.rules"), "{err}");
+}
+
+/// The report is a report: every denial gets a line whatever the answer is, and nothing
+/// about it is an error. `--no-conf` leaves no host to place the candidates against, so
+/// the honest verdict for all of them is `unknown` -- never `denied`.
+#[test]
+fn check_reports_every_denial_and_exits_0() {
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "check", candidate], DENIAL);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    let lines: Vec<&str> = out.lines().filter(|l| !l.starts_with("# ")).collect();
+    assert_eq!(lines.len(), 1, "{out}");
+    assert!(lines[0].starts_with("unknown "), "{out}");
+    assert!(lines[0].contains("path=/tmp/x rule=1"), "{out}");
+}
+
+/// The candidate file is sorted into the host's rules.d/ under its own name, so the
+/// filename is what decides whether a rule is reached before the one that denied. Same
+/// rule, two names, two verdicts -- #120's `exec-before-N` and `exec-after-N`.
+#[test]
+fn a_candidate_is_placed_by_its_filename() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let dir = std::env::temp_dir().join("rulesteward-check-placement");
+    let rule = b"allow perm=execute all : path=/tmp/gaps/trusted-ls\n";
+    for (name, want) in [("00-cand.rules", "allowed "), ("99-cand.rules", "denied ")] {
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        std::fs::write(&path, rule).expect("write candidate");
+        let (code, out, err) = run(
+            &["fapolicyd", "--conf", conf, "check", path.to_str().unwrap()],
+            DENIED_BY_13,
+        );
+        assert_eq!(code, 0, "{err}");
+        let line = out
+            .lines()
+            .find(|l| !l.starts_with("# "))
+            .unwrap_or_default();
+        assert!(line.starts_with(want), "{name}: {out}");
+        std::fs::remove_file(&path).expect("remove candidate");
+    }
 }
 
 #[test]
