@@ -36,9 +36,10 @@ fi
 # The harness sends `name` and `cwd` and nothing else. Everything else is derived
 # from `cwd`, which is the checkout the session was in when it asked: the repo
 # root through git's common dir, so a request made from inside a linked worktree
-# still lands beside it rather than under it, and the source branch from that
-# checkout's HEAD, so a worktree cut while on a feature branch starts from the
-# feature branch and not from master.
+# still lands beside it rather than under it. The start point is not taken from
+# that checkout at all: it is origin's default branch (origin/master or
+# origin/main) after a `git fetch origin`, whatever the checkout has checked
+# out.
 input="$(cat)"
 name="$(jq -r '.name // empty' <<<"$input" 2>/dev/null)"
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"
@@ -60,9 +61,6 @@ if [ -z "$common" ]; then
     exit 1
 fi
 REPO="$(dirname "$common")"
-# A branch name when on one, the commit when detached: `worktree add` accepts
-# either as the start point.
-source_branch="$(git -C "$cwd" symbolic-ref -q --short HEAD 2>/dev/null || git -C "$cwd" rev-parse HEAD)"
 # The directory the harness itself uses, so `EnterWorktree` with `path` and the
 # exit-time cleanup both recognise the tree.
 path="$REPO/.claude/worktrees/$name"
@@ -85,6 +83,20 @@ fail() {
     fi
     exit 1
 }
+
+# Start from origin's default branch, freshly fetched, never from this
+# checkout's HEAD or its local master: the service runs for days and the
+# checkout may be on a feature branch or behind. A fetch failure aborts the
+# creation rather than handing over a tree cut from a stale origin/master.
+out="$(git -C "$REPO" fetch --quiet origin 2>&1)" || fail "git fetch origin" "$out"
+if ! source_branch="$(git -C "$REPO" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; then
+    # origin/HEAD is unset on some clones; fall back to whichever exists.
+    if git -C "$REPO" rev-parse -q --verify origin/main >/dev/null 2>&1; then
+        source_branch=origin/main
+    else
+        source_branch=origin/master
+    fi
+fi
 
 out="$(git -C "$REPO" worktree add "$path" -b "$branch" "$source_branch" 2>&1)" \
     || fail "git worktree add" "$out"
