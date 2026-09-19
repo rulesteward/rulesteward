@@ -200,7 +200,7 @@ in_diff() {
 verdict() {
     local k f val stats="" sums missed caught unviable timeout total sum
 
-    for k in 0 1 2 3 4 5 6 7; do
+    for k in {0..15}; do
         f="$STATS/shard-$k.json"
         # Diagnosed rather than skipped: a missing file is a cancelled or crashed
         # shard, and skipping it would leave a smaller, better-looking sum.
@@ -215,7 +215,7 @@ verdict() {
                        (map(.unviable) | add), (map(.timeout) | add) ]
                      | map(if type == "number" then . else error("field missing or not a number") end)
                      | @tsv' <<<"$stats")" ||
-        die "could not sum the eight shard stats -- cargo-mutants' outcome format moved"
+        die "could not sum the shard stats -- cargo-mutants' outcome format moved"
     read -r missed caught unviable timeout <<<"$sums"
 
     # The floor, and the check that matters most. Every mutant belongs to exactly
@@ -226,9 +226,9 @@ verdict() {
     total="$(cargo mutants --list --json | jq length)"
     sum=$(( missed + caught + unviable + timeout ))
     [ "$sum" -eq "$total" ] ||
-        die "the eight shards account for $sum of $total mutants -- a shard tested nothing"
+        die "the shards account for $sum of $total mutants -- a shard tested nothing"
 
-    log "summed eight shards"
+    log "summed sixteen shards"
     judge "$missed" "$caught" "$unviable" "$timeout" "$total"
 }
 
