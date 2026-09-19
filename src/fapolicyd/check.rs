@@ -325,11 +325,12 @@ fn perm_matches(rule_perm: &str, record: &Record) -> Option<bool> {
 /// daemon wrote and what a rule would have to spell are not the same bytes, and #120
 /// measured neither: a space made the rule unloadable (K2) and nothing measured the
 /// prefix. `sh_set` plus the control bytes is the escaper's whole table
-/// (`parse::unescape`).
+/// (`parse::unescape`), and `<= b' '` is `sh_set`'s own space plus every one of those
+/// control bytes -- which is why the literal below does not repeat the space.
 fn prefix(value: Vec<u8>, dir: &str) -> Option<bool> {
     let escaped = value
         .iter()
-        .any(|b| *b < b' ' || b"\"'`$\\!()| ".contains(b));
+        .any(|b| *b <= b' ' || b"\"'`$\\!()|".contains(b));
     (!escaped).then(|| value.starts_with(dir.as_bytes()))
 }
 
@@ -1116,6 +1117,92 @@ trust=0";
             "unknown perm=execute exe=/usr/sbin/runuser path=/tmp/live/probe-grep (1 denials)  no rule="
         );
         assert_eq!(lines.len(), 2);
+    }
+
+    /// The proposed `rules.d/` with one file's contents replaced: a candidate written
+    /// into a file the host already has, rather than a new file of its own.
+    fn replacing(name: &str, body: &str) -> Vec<rules_d::File> {
+        let mut listing = listing(None);
+        for entry in &mut listing {
+            if entry.0 == name {
+                entry.1 = body.as_bytes().to_vec();
+            }
+        }
+        rules_d::files(listing)
+    }
+
+    #[test]
+    fn a_candidate_inside_an_existing_file_is_placed_by_its_position_in_that_file() {
+        // rule=8 is the SECOND rule of 41-shared-obj.rules, so where the candidate lands
+        // in the merged order is that file's own offset plus its index inside it. The
+        // candidate here is written between the two shipped rules.
+        let (record, n) = parsed(LIB);
+        let compiled = compiled();
+        let got = verdict(
+            &record,
+            n,
+            None,
+            Some(&compiled),
+            &host(),
+            &replacing(
+                "41-shared-obj.rules",
+                "allow perm=open all : ftype=application/x-sharedlib trust=1\n\
+                 allow perm=open all : path=/tmp/live/probe-lib.so\n\
+                 deny_audit perm=open all : ftype=application/x-sharedlib\n",
+            ),
+        );
+        assert_eq!(rendered(&got).0, "allowed", "{got:?}");
+        assert!(rendered(&got).1.contains("41-shared-obj.rules"), "{got:?}");
+    }
+
+    #[test]
+    fn a_candidate_repeating_rule_n_verbatim_is_still_a_candidate_before_it() {
+        // D3 skips the host's rules 1..N-1 and NOT rule N itself: a copy of the rule that
+        // denied, merged ahead of it, is a rule the daemon would reach first.
+        let got = check(
+            Some(("00-cand.rules", "deny_audit perm=execute all : all")),
+            EXEC,
+        );
+        assert_eq!(rendered(&got).0, "denied", "{got:?}");
+        assert!(
+            rendered(&got).1.starts_with("00-cand.rules:"),
+            "the candidate decides, not the shipped rule 13: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_broken_token_on_the_subject_side_matches_nothing_either() {
+        // K2 again, on the other side of the colon: everything else about this candidate
+        // matches the record.
+        let got = check(
+            Some((
+                "00-cand.rules",
+                "allow perm=execute all ace/x : path=/tmp/live/probe-grep",
+            )),
+            EXEC,
+        );
+        assert_eq!(rendered(&got).0, "denied", "{got:?}");
+    }
+
+    #[test]
+    fn an_object_side_all_places_no_constraint_on_the_file() {
+        let got = check(
+            Some(("00-cand.rules", "allow perm=execute all : all")),
+            EXEC,
+        );
+        assert_eq!(rendered(&got).0, "allowed", "{got:?}");
+    }
+
+    #[test]
+    fn a_control_byte_in_the_path_is_unknown_against_a_dir_candidate() {
+        // `rocky8-base-edge-paths.log`'s `\012` path. The escaped byte is not a space, so
+        // it is the control-byte half of the refusal that has to catch it.
+        let got = check(
+            Some(("00-cand.rules", "allow perm=execute all : dir=/tmp/edge/")),
+            "rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+             : path=/tmp/edge/nl\\012line ftype=application/x-executable trust=0",
+        );
+        assert_eq!(rendered(&got).0, "unknown", "{got:?}");
     }
 
     #[test]

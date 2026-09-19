@@ -925,6 +925,47 @@ mod tests {
         );
     }
 
+    /// D-d: one line per distinct denial, in first-seen order, with a count. A real log
+    /// repeats one denial thousands of times and the verdict for all of them is the same,
+    /// so repeating the line would bury the one that differs.
+    #[test]
+    fn the_check_report_is_one_line_per_denial_with_the_repeats_counted() {
+        let rule = rules::Rule::new("deny_audit perm=execute all : all");
+        let host = vec![rules_d::File {
+            name: "90-deny-execute.rules".into(),
+            rules: vec![rule.clone()],
+        }];
+        let mut proposed = vec![rules_d::File {
+            name: "00-cand.rules".into(),
+            rules: vec![rules::Rule::new(
+                "allow perm=execute all : path=/tmp/gaps/trusted-ls",
+            )],
+        }];
+        proposed.extend(host.clone());
+        let denial = "rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/gaps/trusted-ls trust=1\n";
+        let other = denial.replace("trusted-ls", "other-ls");
+        let input = format!("{denial}{other}{denial}");
+        let o = analyze(
+            input.as_bytes(),
+            None,
+            Some(&[rule]),
+            &host,
+            Some(&proposed),
+        );
+        let report = String::from_utf8(o.check.clone()).unwrap();
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines.len(), 2, "two distinct denials: {report}");
+        assert!(
+            lines[0].starts_with("allowed ") && lines[0].contains("(2 denials)"),
+            "the repeat is counted, not repeated: {report}"
+        );
+        assert!(
+            lines[1].starts_with("denied ") && lines[1].contains("(1 denials)"),
+            "and the second denial keeps its own line: {report}"
+        );
+    }
+
     #[test]
     fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
         let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
