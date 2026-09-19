@@ -82,12 +82,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: ./xtask/install-tools.sh
       - env:
-          MUTANTS_SHARD: ${{ matrix.shard }}/8
+          MUTANTS_SHARD: ${{ matrix.shard }}/16
         run: ./.tools/bin/just mutants
       # One artifact per shard, replacing eight declared `stats-N` job outputs
       # the verdict mapped to eight environment variables. The verdict's
