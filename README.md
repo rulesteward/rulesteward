@@ -9,19 +9,102 @@ says when the other verb is the right answer for part of the input.
 
 ## Install
 
-Download from <https://github.com/rulesteward/rulesteward/releases>. `SHA256SUMS`
-sits beside both assets.
+Download from <https://github.com/rulesteward/rulesteward/releases>. The RPM is
+GPG-signed and both assets carry a GitHub build-provenance attestation.
+`SHA256SUMS` sits beside them, and catches a corrupted download and nothing
+else: whoever can replace an asset can replace the sums next to it.
+
+The signing key is a release asset beside the RPM. Its primary fingerprint, from
+`gpg --show-keys --fingerprint RPM-GPG-KEY-rulesteward`:
 
 ```
-dnf install ./rulesteward-0.3.0-1.x86_64.rpm
+1D3D D934 70C4 ECAE B3F5  77F7 D13B D5DA 6F14 575A
+```
+
+Import it, then check the package:
+
+```
+rpm --import RPM-GPG-KEY-rulesteward
+rpm -K rulesteward-0.6.0.rc2-1.x86_64.rpm
+```
+
+```
+rulesteward-0.6.0.rc2-1.x86_64.rpm: digests signatures OK
+```
+
+Without the import the same command says `digests SIGNATURES NOT OK` and exits 1.
+A STIG host sets `localpkg_gpgcheck=1`, so dnf repeats that check on a local
+file and an unimported key fails the transaction, which is why the import comes
+first:
+
+```
+dnf install ./rulesteward-0.6.0.rc2-1.x86_64.rpm
+```
+
+```
+...
+Installed:
+  rulesteward-0.6.0~rc2-1.x86_64                                                
+
+Complete!
 ```
 
 installs `/usr/bin/rulesteward`. The tarball holds the same static binary and
 nothing else:
 
 ```
-tar -xzf rulesteward-v0.3.0-x86_64-unknown-linux-musl.tar.gz
+tar -xzf rulesteward-v0.6.0-rc2-x86_64-unknown-linux-musl.tar.gz
 ```
+
+The attestation ties either file to the workflow run that built it:
+
+```
+gh attestation verify rulesteward-v0.6.0-rc2-x86_64-unknown-linux-musl.tar.gz --repo rulesteward/rulesteward
+```
+
+```
+Loaded digest sha256:cfcef0440c0af2382947da318be5b300ae2aa826ecdf6972455b096f45bfb88a for file://rulesteward-v0.6.0-rc2-x86_64-unknown-linux-musl.tar.gz
+Loaded 1 attestation from GitHub API
+
+The following policy criteria will be enforced:
+- Predicate type must match:................ https://slsa.dev/provenance/v1
+- Source Repository Owner URI must match:... https://github.com/rulesteward
+- Source Repository URI must match:......... https://github.com/rulesteward/rulesteward
+- Subject Alternative Name must match regex: (?i)^https://github\.com/rulesteward/rulesteward/
+- OIDC Issuer must match:................... https://token.actions.githubusercontent.com
+
+✓ Verification succeeded!
+
+The following 1 attestation matched the policy criteria
+
+- Attestation #1
+  - Build repo:..... rulesteward/rulesteward
+  - Build workflow:. .github/workflows/ci.yml@refs/tags/v0.6.0-rc2
+  - Signer repo:.... rulesteward/rulesteward
+  - Signer workflow: .github/workflows/ci.yml@refs/tags/v0.6.0-rc2
+```
+
+```
+gh attestation verify rulesteward-0.6.0.rc2-1.x86_64.rpm --repo rulesteward/rulesteward
+```
+
+```
+Loaded digest sha256:1775d088f8265f9be4f13d02693b27b0c529477189c475a4c3498f1e5f574bb0 for file://rulesteward-0.6.0.rc2-1.x86_64.rpm
+Loaded 1 attestation from GitHub API
+...
+✓ Verification succeeded!
+
+The following 1 attestation matched the policy criteria
+
+- Attestation #1
+  - Build repo:..... rulesteward/rulesteward
+  - Build workflow:. .github/workflows/ci.yml@refs/tags/v0.6.0-rc2
+  - Signer repo:.... rulesteward/rulesteward
+  - Signer workflow: .github/workflows/ci.yml@refs/tags/v0.6.0-rc2
+```
+
+`gh` writes that report only to a terminal. In a script the exit status is the
+answer.
 
 ## Getting denials
 

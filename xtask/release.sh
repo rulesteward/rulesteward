@@ -28,9 +28,11 @@
 # decides the bytes of the binary; rpmbuild only wraps a binary it never touches
 # (the spec turns off the brp chain that would).
 #
-# SHA256SUMS is integrity, not signing. It catches a truncated or corrupted
-# download; it proves nothing about who built the file, because anyone who can
-# replace the tarball can replace the sums beside it.
+# Three things reach a downloader, and only two of them are evidence. The RPM is
+# GPG-signed by the `sign` job, and both assets carry build provenance that the
+# attest step in the `release` job writes and `verify` reads back. SHA256SUMS is
+# neither: it catches a truncated or corrupted download and nothing else, because
+# anyone who can replace the tarball can replace the sums beside it.
 
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
