@@ -210,6 +210,72 @@ rule=8   41-shared-obj.rules     1 denials  trust: 1                       deny_
 rule=13  90-deny-execute.rules   1 denials  trust: 1                       deny_audit perm=execute all : all
 ```
 
+## check
+
+```
+rulesteward fapolicyd check 50-mine.rules --conf /etc/fapolicyd/fapolicyd.conf < denials.log
+```
+
+One line per denial: the verdict, the record, and the rule behind it. `<PATH>`
+is a rules file, sorted into the host's `rules.d/` under its own name, or a
+directory read as a whole proposed `rules.d/` in place of the host's. The name
+is what decides placement, so a candidate merged after the rule that denied
+cannot allow anything.
+
+`allowed` names the candidate that matches the record and merges ahead of the
+rule that denied it. `denied` means no candidate before that rule matches, so
+the same rule denies the access again. `unknown` means the tool did not guess:
+the candidate turns on something the record cannot decide (`pattern=`, `uid=`,
+a `%set` reference), the record carries no `rule=`, the placement cannot be
+resolved, or `exe=` is the stale pre-exec image described under rules.
+
+Same capture as under rules, with `--conf` pointing at the vendored Rocky 9
+conf and `rules.d` fixture, and a candidate file that allows the denied execute
+of `/tmp/live/probe-grep`:
+
+```
+allowed perm=execute exe=/usr/sbin/runuser path=/tmp/live/probe-grep rule=13 (1 denials)  00-cand.rules: allow perm=execute all : path=/tmp/live/probe-grep
+denied  perm=open exe=/usr/bin/cat path=/tmp/live/probe-lib.so rule=8 (1 denials)  no candidate before rule=8 matches; deny_audit perm=open all : ftype=application/x-sharedlib denies it again
+denied  perm=execute exe=/usr/sbin/runuser path=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (1 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
+denied  perm=open exe=/usr/sbin/runuser path=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (1 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
+unknown perm=open exe=/usr/sbin/runuser path=/usr/bin/grep rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/etc/ld.so.cache rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib64/libpcre.so.1.2.12 rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib64/libsigsegv.so.2.0.6 rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib64/libc.so.6 rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/share/locale/locale.alias rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib64/gconv/gconv-modules.cache rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_MEASUREMENT rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_TELEPHONE rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_ADDRESS rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_NAME rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_PAPER rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_MONETARY rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_COLLATE rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_TIME rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/en_US.utf8/LC_NUMERIC rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/usr/lib/locale/C.utf8/LC_CTYPE rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+unknown perm=open exe=/usr/sbin/runuser path=/etc/hostname rule=5 (1 denials)  exe= is stale (§6): a rule for this record has to name /usr/lib64/ld-linux-x86-64.so.2, not the logged exe=, and no candidate can be matched against a value the log does not carry
+```
+
+A directory replaces the host's `rules.d/` whole. The vendored Rocky 9
+`rules.d` fixture, proposed as itself against a vendored `ausearch --raw`
+capture, allows nothing new:
+
+```
+# rulesteward: 23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route
+# rulesteward: line 3: record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)
+denied  perm=execute exe=/tmp/live/probe-grep rule=13 (1 denials)  no candidate before rule=13 matches; deny_audit perm=execute all : all denies it again
+denied  perm=open exe=/usr/bin/cat rule=8 (1 denials)  no candidate before rule=8 matches; deny_audit perm=open all : ftype=application/x-sharedlib denies it again
+denied  perm=execute exe=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (2 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
+denied  perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (20 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
+```
+
+Denials left in place are still exit 0. Exit 0 says the input parsed and every
+denial got a verdict, not that the candidate rules allow them all.
+
 ## trust
 
 ```
