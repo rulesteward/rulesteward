@@ -208,6 +208,10 @@ pub fn analyze(
 
         if let Some(rules) = rules {
             match n.map(|n| (n, n.checked_sub(1).and_then(|i| rules.get(i)))) {
+                // Not under `check`: its verdict line above already answers for this
+                // record, and "no path rule can resolve this" is what #120's
+                // `subjectside-before-N` row measured to be false for a candidate.
+                Some((_, Some(r))) if r.refuses() && proposed.is_some() => continue,
                 Some((n, Some(r))) if r.refuses() => {
                     out.diagnostics.push(Diagnostic {
                         line: Some(line),
@@ -964,6 +968,18 @@ mod tests {
             lines[1].starts_with("denied ") && lines[1].contains("(1 denials)"),
             "and the second denial keeps its own line: {report}"
         );
+    }
+
+    /// #120 `subjectside-before-N`: a candidate ahead of a subject-side rule N allowed the
+    /// access, so `check` gives the record a verdict and never the refusal comment.
+    #[test]
+    fn check_gives_a_subject_side_denial_a_verdict_and_no_refusal() {
+        let input = b"rule=5 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
+                      path=/usr/bin/grep trust=1\n";
+        let o = analyze(input, None, Some(&ld_so()), &[], Some(&[]));
+        assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
+        assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);
+        assert!(o.rules.is_empty() && o.trust.is_empty());
     }
 
     #[test]
