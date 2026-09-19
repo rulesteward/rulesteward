@@ -221,6 +221,32 @@ mod tests {
     }
 
     #[test]
+    fn the_object_side_begins_after_the_separator_and_not_inside_the_subject() {
+        // The subject's last field ends in `t=0`, which is itself a well-formed token:
+        // an object side cut at the wrong offset carries it as a field of its own.
+        let r = parse(b"rule=1 dec=deny_audit trust=0 : path=/tmp/x");
+        assert_eq!(r.object, Some(vec![(b"path".to_vec(), b"/tmp/x".to_vec())]));
+    }
+
+    #[test]
+    fn a_token_with_a_leading_equals_has_no_name_and_is_dropped() {
+        // An empty name is not a field. Accepting one puts every nameless token under
+        // the same key, where `get` would return the first of them to any caller.
+        let r = parse(b"rule=1 =orphan dec=deny_audit");
+        assert_eq!(r.subject.len(), 2);
+        assert_eq!(get(&r.subject, b""), None);
+    }
+
+    #[test]
+    fn a_doubled_backslash_leaves_the_space_after_it_a_delimiter() {
+        // `\\` is one literal backslash, so the run before the space is even and the
+        // space delimits. Counting it as odd swallows the rest of the side into `exe`.
+        let r = parse(b"exe=/tmp/edge/back\\\\ perm=execute");
+        assert_eq!(r.subject_get(b"exe"), Some(b"/tmp/edge/back\\".to_vec()));
+        assert_eq!(get(&r.subject, b"perm"), Some(b"execute".to_vec()));
+    }
+
+    #[test]
     fn an_escaped_colon_in_a_path_is_not_the_separator() {
         // /tmp/edge/a : b emits as a\ :\ b — the delimiter is the UNESCAPED one.
         let r = parse(b"exe=/usr/sbin/runuser : path=/tmp/edge/a\\ :\\ b ftype=text/plain");
@@ -290,6 +316,10 @@ mod tests {
         assert!(!is_corrupt_field_name(b"check-config"));
         // A real capture from rocky8-base-reload-probe-empty-ruleset-daemon.log.
         assert!(is_corrupt_field_name(&[0x52, 0x3f, 0xfa, 0x62, 0x0f, 0x56]));
+        // The test is the byte class at both ends of the printable range. A space is
+        // printable and so is not corruption; a control byte is, whichever one it is.
+        assert!(!is_corrupt_field_name(b"two words"));
+        assert!(is_corrupt_field_name(b"bell\x07"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "missed": 5,
-  "total": 386,
-  "note": "Hand-edited; the reason for every change lives in the commit body, never in a regenerate. Measured 2026-09-16 by the eight-shard CI run 35121466524 on PR #66: 349 caught, 5 missed, 10 unviable, 22 timeouts. The 5 are comparison and arithmetic flips in parse, fields, is_corrupt_field_name and escaped; the 22 timeouts are cursor mutants that stop a byte-walking loop advancing, 21 in rules_d's filevercmp port and one in unescape."
+  "missed": 0,
+  "total": 527,
+  "note": "Hand-edited; the reason for every change lives in the commit body, never in a regenerate. Measured 2026-09-19 by the sixteen-shard CI run 35471986851 on PR #131: 511 caught, 0 missed, 16 unviable, 0 timeouts of 527 generated. The run before it, 35469491349 on master, generated 529 with 5 missed and 2 timeouts: the 5 have tests in src/fapolicyd/parse.rs, and the 2 are the hangs excluded by name in .cargo/mutants.toml, so the denominator loses exactly those two and nothing else. A missed above 0 is now a regression rather than a ceiling to raise."
 }

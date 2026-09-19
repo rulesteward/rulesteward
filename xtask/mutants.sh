@@ -2,9 +2,9 @@
 # Mutation testing, with a verdict.
 #
 #   ./xtask/mutants.sh                  full run, then judge it against the baseline
-#   MUTANTS_SHARD=k/8 ./xtask/mutants.sh   run shard k, judge nothing, report its numbers
+#   MUTANTS_SHARD=k/16 ./xtask/mutants.sh  run shard k, judge nothing, report its numbers
 #   ./xtask/mutants.sh --in-diff        absolute gate on the code this change touched
-#   ./xtask/mutants.sh --verdict        sum the eight shards' numbers and judge the sum
+#   ./xtask/mutants.sh --verdict        sum the sixteen shards' numbers and judge the sum
 #   ./xtask/mutants.sh --write-baseline record what is there now as accepted
 #
 # **`cargo mutants` exits 2 whenever any mutant survives, and 3 whenever one hangs,
@@ -43,7 +43,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 BASELINE="$REPO/docs/mutation-baseline.json"
 OUTCOMES="$REPO/mutants.out/outcomes.json"
 # One file per shard: written by run_shard, read by --verdict. In CI each shard
-# uploads its file as an artifact and the verdict job downloads all eight back
+# uploads its file as an artifact and the verdict job downloads all sixteen back
 # into this directory.
 STATS="$REPO/.cache/mutants-stats"
 
@@ -128,7 +128,7 @@ discard_mutant_seeds() {
 run_shard() {
     local spec="$1" k n compact
     [[ "$spec" =~ ^([0-9]+)/([0-9]+)$ ]] ||
-        die "MUTANTS_SHARD is '$spec' -- expected 'k/N', as in 0/8"
+        die "MUTANTS_SHARD is '$spec' -- expected 'k/N', as in 0/16"
     k="${BASH_REMATCH[1]}"
     n="${BASH_REMATCH[2]}"
     # cargo-mutants shards are 0-based and it rejects k >= n itself; saying so

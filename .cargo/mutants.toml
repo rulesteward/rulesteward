@@ -2,6 +2,16 @@
 exclude_re = [
   "src/main.rs",                      # argument plumbing; clap owns the contract
   "replace .* with String::new\\(\\)",
+  # A hang, not a survivor. Line 128 of rules_d.rs is the both-ended check that ends
+  # verrevcmp's loop; negating it hands the loop back the same two slices, so every
+  # pair of equal versions spins forever. No test catches a mutant that never returns,
+  # and #66 showed that reshaping the loop to dodge a timeout costs more than it buys.
+  # Matched by operator and function, so any other flip in verrevcmp still counts.
+  "replace == with != in verrevcmp",
+  # The same, for escaped's cursor: `j /= 1` leaves j where it is, so a backslash
+  # before the byte under test spins forever. The `+=` flip of that one line does
+  # terminate, and a_doubled_backslash_leaves_the_space_after_it_a_delimiter kills it.
+  "replace -= with /= in escaped",
 ]
 profile = "mutants"
 timeout_multiplier = 5.0
