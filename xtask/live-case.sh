@@ -5,7 +5,9 @@
 # --conf, its stdout applied exactly as printed with the daemon live, then the
 # identical triggers again. PASS means no suggested path was denied a second
 # time; every FAIL names the path, and a second placement pass separates a wrong
-# rule from a wrongly placed one.
+# rule from a wrongly placed one. Between the two passes the same fragment goes
+# through `check` before the daemon loads it, and pass 2 is what its verdicts are
+# asserted against (#123).
 #
 # Daemon helpers come from the research harness (fp_setup, fp_start, as_tester,
 # fp_manifest), which is why the file lives at /harvest/lib.sh here. Never
@@ -416,6 +418,14 @@ else
 fi
 RULES=/etc/fapolicyd/$RULES
 echo "== rules file: $RULES ($WHENCE) =="
+# The fragment is staged under its installed basename and only copied into
+# rules.d/ once `check` has read it (#123). Staging it in rules.d/ first would be
+# a file fagenrules has not compiled yet, which is exactly the drift
+# `rules_d::locate` reports, and every verdict would come back `unknown`. The
+# basename is the staged name because placement is decided by the name alone.
+CANDDIR=/tmp/candidate
+rm -rf "$CANDDIR"; mkdir -p "$CANDDIR"
+CAND="$CANDDIR/$(basename "$RULES")"
 : > /tmp/suggested-paths.txt
 while IFS= read -r line; do
     case "$line" in
@@ -428,11 +438,60 @@ while IFS= read -r line; do
         "fapolicyd-cli --update")
             timeout 120 fapolicyd-cli --update || echo "  (--update exited $?)" ;;
         allow*)
-            echo "$line" >> "$RULES"
+            echo "$line" >> "$CAND"
             printf '%s\n' "${line##* : path=}" >> /tmp/suggested-paths.txt ;;
         *) echo "UNEXPECTED LINE: $line" ;;
     esac
 done < <(cat /tmp/rs.rules /tmp/rs.trust)
+
+# run_check <candidate> <out>: the pass 1 denials through `check` against a
+# candidate the daemon has not loaded, printed like every other action's run.
+run_check() {
+    echo "== rulesteward fapolicyd check $1 --conf /etc/fapolicyd/fapolicyd.conf =="
+    $RS fapolicyd check "$1" --conf /etc/fapolicyd/fapolicyd.conf \
+        < /tmp/denials1.txt > "$2" 2>/tmp/rs.err
+    RC=$?
+    echo "exit=$RC"
+    echo "-- stdout --"; cat "$2"
+    echo "-- stderr --"; cat /tmp/rs.err
+    [ "$RC" -eq 0 ] || fail "check exited $RC"
+    [ -s /tmp/rs.err ] && fail "check wrote to stderr"
+    return 0
+}
+
+: > /tmp/check-rows.txt
+if [ -f "$CAND" ]; then
+    run_check "$CAND" /tmp/rs.check
+    # One pass over the report: the verdict, perm=, path= and exe= of each line
+    # for the pass 2 assertion, and the run's counts. The scan stops at the count
+    # so the candidate rule text in the last column cannot be read as the
+    # record's own fields. The counts are denials and not lines, because a line
+    # carries every record that agreed on the same six values.
+    awk '$1=="allowed"||$1=="denied"||$1=="unknown" {
+           n=0; p=""; f=""; e=""
+           for (i=2;i<=NF;i++) {
+               if ($i=="denials)") { n=substr($(i-1),2)+0; break }
+               if ($i ~ /^perm=/) p=$i; else if ($i ~ /^path=/) f=$i; else if ($i ~ /^exe=/) e=$i
+           }
+           c[$1]+=n; print $1, p, f, e > "/tmp/check-rows.txt"
+         }
+         END { printf "check: allowed=%d denied=%d unknown=%d\n", c["allowed"], c["denied"], c["unknown"] }' \
+        /tmp/rs.check
+    if [ "${HARVEST_VARIANT:-base}" = placement ]; then
+        # The same rules under a name that merges AFTER the file that denies.
+        # Placement is decided by the basename alone, so the verdict has to go
+        # back to denied; an allowed here would mean check ignored the name.
+        cp "$CAND" "$CANDDIR/99-rulesteward.rules"
+        run_check "$CANDDIR/99-rulesteward.rules" /tmp/rs.check-late
+        grep -qE '^denied .* path=/usr/bin/sed ' /tmp/rs.check-late ||
+            fail "placement: check did not say denied for /usr/bin/sed under 99-rulesteward.rules"
+    fi
+    cat "$CAND" >> "$RULES"
+else
+    # base and denyall emit trust entries only: no allow line is printed, so
+    # there is no rules file for this run to install and none to check.
+    echo "check: no candidate rules file ($WHENCE); nothing to check"
+fi
 # The deliberate failed reload, for showing that the assertion in reload_rules
 # fires. A rule with no perm= is the smallest unloadable rule there is -- the
 # daemon reads the `:` as a field and says "'=' is missing for field :" -- and it
@@ -460,6 +519,33 @@ MARK=$(wc -l < /tmp/deny.log)
 trigger
 tail -n +$((MARK+1)) /tmp/deny.log | grep 'dec=deny' | tee /tmp/denials2.txt
 echo "count=$(wc -l < /tmp/denials2.txt)"
+
+pass2_denied() {  # pass2_denied <perm=X> <path=Y|exe=Y>: a pass 2 denial carrying both
+    [ -n "$2" ] || return 1
+    awk -v p="$1" -v f="$2" '
+        { hp=0; hf=0
+          for (i=1;i<=NF;i++) { if ($i==p) hp=1; if ($i==f) hf=1 }
+          if (hp && hf) { found=1; exit } }
+        END { exit !found }' /tmp/denials2.txt
+}
+
+# D9 (#119): every denial `check` called allowed has to be absent from pass 2,
+# where the daemon has the same rules loaded. An `allowed` the daemon denied
+# again is a bug in `check` and fails the run -- never an assertion to soften.
+# An `unknown` is reported beside what pass 2 did and fails nothing: declining
+# to guess is a verdict the tool is entitled to.
+if [ -s /tmp/check-rows.txt ]; then
+    echo "== check: predictions against pass 2 =="
+    while read -r verdict perm path exe; do
+        if pass2_denied "$perm" "${path:-$exe}"; then seen="denied again"; else seen="absent"; fi
+        case "$verdict" in
+            allowed) [ "$seen" = absent ] ||
+                fail "check: allowed $perm ${path:-$exe} but pass 2 denied it again" ;;
+            unknown) echo "check unknown: $perm ${path:-$exe}: pass 2 $seen" ;;
+        esac
+    done < /tmp/check-rows.txt
+    echo "check: every allowed denial is absent from pass 2"
+fi
 echo "== verdict =="
 STILL=0
 still_denied /tmp/denials2.txt || STILL=1
