@@ -7,6 +7,7 @@
 #   ./xtask/release.sh stage <dir>    the binary, the man page, the completion and a SHA256SUM into <dir>
 #   ./xtask/release.sh tarball <bin>  the tarball alone, around a binary built elsewhere
 #   ./xtask/release.sh wrap <dir>     the RPM alone, around a staged <dir>, building nothing
+#   ./xtask/release.sh sign <dir>     the one RPM in <dir>, signed into <dir>/signed
 #   ./xtask/release.sh publish        the sums, then gh release create for the tag being built
 #
 # `stage`, `tarball` and `wrap` are how the tag path splits `build` across three
@@ -15,7 +16,9 @@
 # measured that only an EL rpm writes a package a local `just rpm` matches byte
 # for byte, and the binary is downloaded rather than rebuilt to get there, so one
 # file is in both artifacts by construction. `build` still does all of it in one
-# process, which is what `just release` runs.
+# process, which is what `just release` runs. `sign` is a fourth job between the
+# wrap and the release rather than part of `wrap`, because it is the only job the
+# signing key is released to and that job should do nothing else.
 #
 # cargo-dist is rejected: its value is a cross-platform matrix and installer
 # generation, and this project has one target and one artifact.
@@ -87,9 +90,11 @@ rpm_pkg() {
         --define "outdir $outdir" \
         xtask/rulesteward.spec
     # No glob: a local dist/ accumulates artifacts from earlier tags, and the
-    # check below has to read the package this run produced.
+    # check below has to read the package this run produced. The sha256 is logged
+    # here so the rpm CI job and a local `just rpm` print the unsigned sum the
+    # same way, which is the file the two are compared on.
     local pkg="dist/rulesteward-$ver-1.x86_64.rpm"
-    log "$(rpm -qp --qf 'BUILDTIME=%{BUILDTIME} BUILDHOST=%{BUILDHOST}\n' "$pkg"; rpm -qpl "$pkg")"
+    log "$(rpm -qp --qf 'BUILDTIME=%{BUILDTIME} BUILDHOST=%{BUILDHOST}\n' "$pkg"; rpm -qpl "$pkg"; sha256sum "$pkg")"
     # AutoReqProv is off, so the only dependencies left should be the rpmlib()
     # capability tags rpm always emits. Anything else means the binary stopped
     # being static or the package grew a script.
@@ -126,13 +131,63 @@ build() {
     sums
 }
 
+# The GPG signature, written into a copy so the unsigned file survives beside it:
+# a signature carries the time it was made and is not reproducible, so the sum a
+# local `just rpm` is compared against stays the unsigned one. #104 measured that
+# rpmsign touches nothing else -- %{PAYLOADDIGEST} and the file size are equal
+# across a signature -- which is what the assertion below reads.
+sign() {
+    need rpmsign
+    need gpg
+    # No local fallback key, for the reason publish has no fallback tag: the
+    # secret is released to one environment-scoped job and nowhere else.
+    [ -n "${RPM_SIGNING_SUBKEY:-}" ] || die "RPM_SIGNING_SUBKEY is unset: sign runs on the tag CI job only"
+    local dir="$1" unsigned signed
+    # Exactly one package demanded rather than the newest guessed, as
+    # generated_dir does: a dir with two rpms in it means the caller staged
+    # something this function cannot reason about.
+    local pkgs=("$dir"/*.rpm)
+    { [ "${#pkgs[@]}" -eq 1 ] && [ -e "${pkgs[0]}" ]; } \
+        || die "expected one rpm in $dir, found: ${pkgs[*]}"
+    unsigned="${pkgs[0]}"
+    signed="$dir/signed/$(basename "$unsigned")"
+    # The keyring goes outside the workspace on purpose: upload-artifact reads
+    # paths under it, and a keyring written into dist/ would be a file it could
+    # publish. The trap removes it however this function returns.
+    GNUPGHOME="$(mktemp -d)"
+    export GNUPGHOME
+    trap 'rm -rf "$GNUPGHOME"' EXIT
+    # bash's own printf rather than a here-string or an argument, so the key is
+    # in no process argv. gpg's import chatter goes to stderr, where every other
+    # diagnostic in this tree goes; the variable itself is never echoed.
+    printf '%s' "$RPM_SIGNING_SUBKEY" | gpg --batch --import
+    mkdir -p "$dir/signed"
+    cp "$unsigned" "$signed"
+    # rpmsign execs /usr/bin/gpg and %_gpg_name is the only macro it needs; the
+    # value is the signing UID exactly. stdin from /dev/null because there is no
+    # tty in the container and the subkey has no passphrase, so nothing may block
+    # on a prompt that will never be answered. The `Could not set GPG_TTY`
+    # warning it prints is that, and is harmless.
+    rpmsign --define "_gpg_name rulesteward release signing" --addsign "$signed" < /dev/null
+    local before after
+    before="$(rpm -qp --qf '%{PAYLOADDIGEST}' "$unsigned")"
+    after="$(rpm -qp --qf '%{PAYLOADDIGEST}' "$signed")"
+    [ "$before" = "$after" ] \
+        || die "signing rewrote more than the signature header: unsigned PAYLOADDIGEST $before, signed $after"
+    log "unsigned $(sha256sum "$unsigned")"
+    log "signed   $(sha256sum "$signed")"
+}
+
 publish() {
     # No local fallback tag here on purpose: publish creates a public release, so
     # it runs only where a tag ref exists, which is the tag-triggered CI job.
     [ -n "${GITHUB_REF_NAME:-}" ] || die "GITHUB_REF_NAME is unset: publish runs on the tag CI job only"
     need gh
     sums
-    gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/*.rpm dist/SHA256SUMS
+    # RPM-GPG-KEY-rulesteward rides along because `rpm --import` wants the key
+    # before `rpm -K` on the package means anything, and a release page is where
+    # a downloader who has neither already looks.
+    gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/*.rpm dist/SHA256SUMS RPM-GPG-KEY-rulesteward
 }
 
 case "${1:-}" in
@@ -141,6 +196,7 @@ case "${1:-}" in
     stage)   stage "${2:?usage: release.sh stage <dir>}" ;;
     tarball) tarball "${2:?usage: release.sh tarball <binary>}" ;;
     wrap)    rpm_pkg "${2:?usage: release.sh wrap <dir>}/rulesteward" "$2" ;;
+    sign)    sign "${2:?usage: release.sh sign <dir>}" ;;
     publish) publish ;;
-    *)       die "usage: release.sh build|rpm|stage <dir>|tarball <bin>|wrap <dir>|publish" ;;
+    *)       die "usage: release.sh build|rpm|stage <dir>|tarball <bin>|wrap <dir>|sign <dir>|publish" ;;
 esac
