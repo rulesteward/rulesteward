@@ -294,7 +294,11 @@ jobs:
   # `needs` means a tag whose tests, musl build, RPM build, signature or install
   # matrix fail publishes nothing. It builds nothing itself: the binary and the
   # signed RPM are the artifacts the jobs above tested, so what is published is
-  # what was measured.
+  # what was measured. The three permissions beyond `contents: write` are the
+  # attest step's: `id-token: write` to mint the OIDC token Sigstore signs the
+  # provenance against, `attestations: write` to store the result under this
+  # repository, and `artifact-metadata: write` for the storage record that makes
+  # it queryable.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check, musl, rpm, sign, install]
@@ -302,6 +306,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -313,10 +320,26 @@ jobs:
           name: rpm-signed
           path: dist
       - run: ./xtask/release.sh tarball dist/musl/rulesteward
+      # Ahead of publish, so a tag whose attestation fails publishes nothing.
+      # actions/attest rather than attest-build-provenance because the latter has
+      # been a wrapper over this action since its v4, and with no predicate or
+      # sbom input this one defaults to the same SLSA build provenance. The globs
+      # match only the two files at the top of dist/: the musl artifact unpacks
+      # into dist/musl/ and holds the binary, the man page and the completion,
+      # none of which is a tarball or an RPM.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.rpm
       # gh reads GH_TOKEN and nothing else; scoped to the one step that calls it.
       # publish writes SHA256SUMS over that tarball and the signed RPM, which
       # keeps the unsigned file's name, and attaches both with the sums and the
-      # committed public key.
+      # committed public key. verify then reads both attestations back out of the
+      # repository's store, so a release whose provenance nobody can check fails
+      # the job that made it.
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: ./xtask/release.sh publish
+        run: |
+          ./xtask/release.sh publish
+          ./xtask/release.sh verify

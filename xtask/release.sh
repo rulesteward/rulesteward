@@ -9,6 +9,7 @@
 #   ./xtask/release.sh wrap <dir>     the RPM alone, around a staged <dir>, building nothing
 #   ./xtask/release.sh sign <dir>     the one RPM in <dir>, signed into <dir>/signed
 #   ./xtask/release.sh publish        the sums, then gh release create for the tag being built
+#   ./xtask/release.sh verify         every published artifact's attestation, read back
 #
 # `stage`, `tarball` and `wrap` are how the tag path splits `build` across three
 # jobs: the musl job stages what it linked, a rockylinux:10 job wraps that file
@@ -190,6 +191,24 @@ publish() {
     gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/*.rpm dist/SHA256SUMS RPM-GPG-KEY-rulesteward
 }
 
+# The attestation the attest step wrote, read back the way a downloader reads it:
+# `gh attestation verify` hashes the local file and asks the repo's attestation
+# store for a signed statement over that digest. A subject-path that missed one of
+# the two artifacts, or a file rewritten after it was attested, fails here rather
+# than on somebody's machine. Unlike SHA256SUMS this is not self-referential --
+# whoever replaces the tarball cannot replace the signature over its digest.
+verify() {
+    # Same reasoning as publish's GITHUB_REF_NAME: the store being asked is a
+    # repository's, so there is no sensible local fallback to guess.
+    [ -n "${GITHUB_REPOSITORY:-}" ] || die "GITHUB_REPOSITORY is unset: verify runs on the tag CI job only"
+    need gh
+    # errexit stops the loop on the first failure, which is the wanted behaviour:
+    # one unverifiable artifact fails the release job.
+    for f in dist/*.tar.gz dist/*.rpm; do
+        gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
+    done
+}
+
 case "${1:-}" in
     build)   build ;;
     rpm)     ./xtask/musl.sh; rpm_pkg ;;
@@ -198,5 +217,6 @@ case "${1:-}" in
     wrap)    rpm_pkg "${2:?usage: release.sh wrap <dir>}/rulesteward" "$2" ;;
     sign)    sign "${2:?usage: release.sh sign <dir>}" ;;
     publish) publish ;;
-    *)       die "usage: release.sh build|rpm|stage <dir>|tarball <bin>|wrap <dir>|sign <dir>|publish" ;;
+    verify)  verify ;;
+    *)       die "usage: release.sh build|rpm|stage <dir>|tarball <bin>|wrap <dir>|sign <dir>|publish|verify" ;;
 esac
