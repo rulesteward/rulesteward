@@ -85,6 +85,15 @@ The `check` recipe in the `justfile` carries the split: the `Stop` hook runs
 developer runs before pushing, and mutation testing runs only in CI. Do not read
 a green `just check` as a green pipeline.
 
+## The CI-versus-local RPM comparison is on the **unsigned** file
+
+The published RPM is signed by the `sign` job, and a signature carries its own
+creation time, so the signed file is not reproducible. Comparing a download
+against a local `just rpm` therefore fails on a difference that is not a
+regression. Strip the signature first with `rpmsign --delsign` on a *copy* of the
+download -- #104 measured that restores the file byte for byte -- or compare
+against the unsigned sha256 the `rpm` job prints in its log.
+
 ## Cite names, never a co-author, and read the ledger before proposing a tool
 
 Commit subjects are imperative and sentence-length; the body says what was
