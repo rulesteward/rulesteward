@@ -460,6 +460,18 @@ reliably contains control or high bytes, which is what the tool tests for; it
 runs that test **before** the `dec=` filter, because a record whose names are
 gone reads as `no-opinion` and would otherwise be dropped in silence.
 
+**The second `destroy_rules` is a double free.** It frees the same names again,
+whether it comes from another failed reload or from the SIGTERM handler, and the
+daemon ends in `double free or corruption (out)` and a core dump. Measured
+2026-09-19 on Rocky 8, 9 and 10 with `num_fields = 10` and the backtrace `free` <-
+`destroy_rules` <- `do_reload_rules` <- `update_thread_main`. So "restart the
+daemon" means `kill -9`, and two failed reloads in a row crash it with no signal
+at all. Upstream fixed this in a16995c, "Make rule reload transactional", 14
+commits after the v1.4.5 tag and contained in v1.5, which also adds
+`fapolicyd-cli --check-rules`. The 1.4.5 packages on Rocky 8, 9 and 10 do not
+carry the fix, so the control-byte test above is a workaround for 1.4.5 and
+earlier rather than permanent daemon behaviour.
+
 ---
 
 ## 7. Policy — the decision table

@@ -354,6 +354,51 @@ if [ "${HARVEST_VARIANT:-base}" = placement ]; then
         fail "placement: note is not the expected 40-rulesteward.rules line"
 fi
 
+# reload_rules <label> -- fagenrules, reload, and assert the daemon loaded it.
+#
+# `fapolicyd-cli --reload-rules` exits 0 whether the rules parsed or not, so the
+# daemon's own "Loaded N rules" is the only signal that the ruleset now in force
+# is the one just written. N is the rule count of compiled.rules: every line that
+# is not blank, a comment or a %set, which is why it is one less than the nl
+# listing above shows. Without this a failed reload discards the WHOLE ruleset
+# and the daemon answers everything with rule=0 dec=no-opinion, so pass 2 sees no
+# denial and passes for the wrong reason.
+#
+# A reload that does not load leaves fapolicyd 1.4.5 with every syslog field name
+# freed (DESIGN.md section 6). The next destroy_rules() frees them again, so
+# SIGTERM would end the run in a double free and a core dump, and a second daemon
+# on the same log would truncate it under the first. kill -9, wait for the pid,
+# drop the log from the reload onward, fail.
+reload_rules() {
+    local label="$1" want mark
+    mark=$(wc -c < /tmp/deny.log)
+    fagenrules; echo "fagenrules exit=$?"
+    want=$(grep -cvE '^\s*(#|%|$)' /etc/fapolicyd/compiled.rules)
+    timeout 60 fapolicyd-cli --reload-rules; echo "--reload-rules exit=$?"
+    for _ in $(seq 1 30); do
+        if tail -c +$((mark+1)) /tmp/deny.log | grep -qaF "Loaded $want rules"; then
+            echo "$label: daemon loaded $want rules"
+            return 0
+        fi
+        kill -0 "$PID" 2>/dev/null || break
+        command sleep 1
+    done
+    echo "== $label: no 'Loaded $want rules' since the reload =="
+    # The daemon's own parse errors, and nothing else from that slice: the
+    # records after a failed reload carry freed field names.
+    tail -c +$((mark+1)) /tmp/deny.log | grep -aE 'ERROR|No rules in file' | head -5
+    kill -9 "$PID" 2>/dev/null
+    # This shell cannot wait on the pid -- fp_start backgrounded it inside a
+    # command substitution -- so it stays a zombie under the container's pid 1,
+    # and kill -0 succeeds on a zombie. Read the state instead.
+    for _ in $(seq 1 30); do
+        grep -qs '^State:.[RSD]' "/proc/$PID/status" || break
+        command sleep 1
+    done
+    truncate -s "$mark" /tmp/deny.log
+    fail "$label: reload did not load $want rules; daemon killed"
+}
+
 echo "== applying both artifacts verbatim (daemon live, as a user would) =="
 # The eval below is the test, not an oversight: a user pastes these lines into a
 # root shell, so the case does the same, and a quoting defect in shell_quote
@@ -388,9 +433,16 @@ while IFS= read -r line; do
         *) echo "UNEXPECTED LINE: $line" ;;
     esac
 done < <(cat /tmp/rs.rules /tmp/rs.trust)
+# The deliberate failed reload, for showing that the assertion in reload_rules
+# fires. A rule with no perm= is the smallest unloadable rule there is -- the
+# daemon reads the `:` as a field and says "'=' is missing for field :" -- and it
+# discards the whole ruleset. Containers only.
+if [ -n "${LIVE_BAD_RULE:-}" ]; then
+    echo 'allow all : path=/tmp/live/probe-grep' >> "$RULES"
+    echo "== LIVE_BAD_RULE: appended a rule with no perm= to $RULES =="
+fi
 if [ -f "$RULES" ]; then
-    fagenrules; echo "fagenrules exit=$?"
-    timeout 60 fapolicyd-cli --reload-rules; echo "--reload-rules exit=$?"
+    reload_rules "pass 2 reload"
 fi
 command sleep 5
 echo "-- suggested paths --"; cat /tmp/suggested-paths.txt
@@ -422,8 +474,7 @@ if [ "$STILL" -eq 1 ] && [ -f "$RULES" ]; then
     # shipped 30-patterns deny. The same rule, placed first.
     echo "== pass 3: same rules moved to 00-rulesteward.rules =="
     mv "$RULES" /etc/fapolicyd/rules.d/00-rulesteward.rules
-    fagenrules; echo "fagenrules exit=$?"
-    timeout 60 fapolicyd-cli --reload-rules; echo "--reload-rules exit=$?"
+    reload_rules "pass 3 reload"
     command sleep 5
     MARK=$(wc -l < /tmp/deny.log)
     trigger

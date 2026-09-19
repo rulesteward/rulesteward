@@ -12,6 +12,10 @@
 # across two passes (audit rules as found, then with the two STIG syscall rules);
 # auditd needs the host's audit subsystem, so VM-only.
 #
+# LIVE_BAD_RULE=1 appends a rule with no perm= to the fragment before the pass 2
+# reload, which fails to load and must end the run in FAIL. It is the check on
+# the check, container-only by construction: the VM path below never passes it.
+#
 # Local-only, like `just corpus`: it needs rootful podman (fanotify needs
 # CAP_SYS_ADMIN in the initial user namespace, so rootless cannot work) or a
 # private VM, and the daemon helpers from the research harness through the
@@ -56,6 +60,7 @@ if [ "$MODE" = container ]; then
         -v "$BIN:/harvest/rulesteward:ro,Z" \
         -v "$OUT:/out:Z" \
         -e "FIXTURE_NAME=$NAME" -e "HARVEST_VARIANT=$VARIANT" -e "HARVEST_ARG=" \
+        -e "LIVE_BAD_RULE=${LIVE_BAD_RULE:-}" \
         "docker.io/rockylinux/rockylinux:${VER}" bash /harvest/case.sh || true
     log "== $NAME: $(tail -1 "$OUT/$NAME.log")"
     exit 0
