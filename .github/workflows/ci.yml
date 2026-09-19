@@ -164,14 +164,54 @@ jobs:
           path: dist/*.rpm
           if-no-files-found: error
 
-  # Everything the package promises, asserted on every release it targets before
-  # any of it is published: the file installs, the installed binary is byte for
-  # byte the one the musl job linked, the four packaged paths are there and it
-  # runs, and the uninstall leaves none of them. On EL8 this is also the
-  # assertion that rpm 4.14 reads a package rpm 4.19 wrote.
-  install:
+  # The signature. This is the only job that names the rpm-signing environment,
+  # so the only job the signing secret is released to, and it does nothing else.
+  # The unsigned `rpm` artifact is left exactly as it was: a signature carries
+  # the time it was made and is not reproducible, so the CI-versus-local sha256
+  # comparison stays on the unsigned file while every job below takes the signed
+  # one. No `git config --global --add safe.directory` the way the rpm job needs
+  # one: xtask/release.sh falls back to `git describe` only when GITHUB_REF_NAME
+  # is unset, which on a tag run it is not, and `sign` reads no other git state.
+  sign:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [rpm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: docker.io/rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 # rockylinux:10, 2026-09-17
+    environment: rpm-signing
+    permissions:
+      contents: read
+    steps:
+      # rpm-sign for rpmsign and gnupg2 for the /usr/bin/gpg it execs, neither of
+      # which is in the image; git because actions/checkout falls back to a
+      # tarball download without it.
+      - run: dnf install -y rpm-sign gnupg2 git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rpm
+          path: dist
+      # The secret is scoped to this one step, which is the only place that can
+      # read it.
+      - env:
+          RPM_SIGNING_SUBKEY: ${{ secrets.RPM_SIGNING_SUBKEY }}
+        run: ./xtask/release.sh sign dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpm-signed
+          path: dist/signed/*.rpm
+          if-no-files-found: error
+
+  # Everything the package promises, asserted on every release it targets before
+  # any of it is published: the file installs under gpgcheck against the
+  # committed public key, the installed binary is byte for byte the one the musl
+  # job linked, the four packaged paths are there and it runs, and the uninstall
+  # leaves none of them. On EL8 this is also the assertion that rpm 4.14 reads a
+  # package rpm 4.19 wrote and verifies a signature rpm 4.19 made. The file
+  # tested here is the signed one, which is the file the release job publishes.
+  install:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [sign]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -200,22 +240,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rpm
+          name: rpm-signed
           path: dist
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: musl
           path: dist/musl
+      # The key the sign job signed with, committed at the repo root and already
+      # checked out above. Importing it is what makes the gpgcheck below a check
+      # rather than a no-op.
+      - run: rpm --import RPM-GPG-KEY-rulesteward
       # The rockylinux:9 and :10 images ship `tsflags=nodocs` in /etc/yum.conf, so
       # dnf would install the package without its man page and licence, and the
       # test -e below would fail on files rpm -ql lists. Measured on the v0.5.0-rc10
       # dry run: EL8, whose image has no tsflags, passed. An empty tsflags is the
       # package as a host installs it; the assertion is about the package, not the
       # image's dnf policy.
-      - run: dnf install -y --setopt=tsflags= ./dist/*.rpm
+      # localpkg_gpgcheck is off by default for a local file, so without it dnf
+      # would install an unsigned package without complaint.
+      - run: dnf install -y --setopt=tsflags= --setopt=localpkg_gpgcheck=1 ./dist/*.rpm
       - run: |
           set -euo pipefail
           rpm --version
+          rpm -Kv dist/*.rpm
+          # `rpm -K` exits 0 on an unsigned package -- it prints `digests OK` and
+          # says nothing about a signature -- so the exit code asserts nothing
+          # and the output is what has to be read. No pipe into grep: grep -q
+          # exits at the match and pipefail would then see rpm's SIGPIPE.
+          k="$(rpm -K dist/*.rpm)"
+          [[ "$k" == *"signatures OK"* ]] || { echo "rpm -K says: $k" >&2; exit 1; }
           # clap prints `rulesteward <version>`. A pre-release tag carries a
           # suffix the crate version does not, so v0.6.0 has to match the binary
           # exactly and a throwaway v0.6.0-rc1 is accepted against 0.6.0.
@@ -236,13 +289,15 @@ jobs:
 
   # The tag path, and the only job that can write to the repository. Its
   # `permissions` block replaces the workflow-level `contents: read` for this job
-  # alone; every other job keeps the read-only token. `needs` means a tag whose
-  # tests, musl build, RPM build or install matrix fail publishes nothing. It
-  # builds nothing itself: the binary and the RPM are the artifacts the jobs above
-  # tested, so what is published is what was measured.
+  # alone; every other job keeps the read-only token. It does not name the
+  # rpm-signing environment: it publishes the signed file but never sees the key.
+  # `needs` means a tag whose tests, musl build, RPM build, signature or install
+  # matrix fail publishes nothing. It builds nothing itself: the binary and the
+  # signed RPM are the artifacts the jobs above tested, so what is published is
+  # what was measured.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, musl, rpm, install]
+    needs: [check, musl, rpm, sign, install]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -255,11 +310,13 @@ jobs:
           path: dist/musl
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rpm
+          name: rpm-signed
           path: dist
       - run: ./xtask/release.sh tarball dist/musl/rulesteward
       # gh reads GH_TOKEN and nothing else; scoped to the one step that calls it.
-      # publish writes SHA256SUMS over that tarball and the downloaded RPM.
+      # publish writes SHA256SUMS over that tarball and the signed RPM, which
+      # keeps the unsigned file's name, and attaches both with the sums and the
+      # committed public key.
       - env:
           GH_TOKEN: ${{ github.token }}
         run: ./xtask/release.sh publish
