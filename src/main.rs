@@ -17,8 +17,9 @@ use std::process::ExitCode;
 /// DESIGN.md §9. `0` success, `1` usage or I/O error, `2` input consumed but
 /// unparseable. Note that clap's own default for a usage error is `2`, which §9
 /// reserves for unparseable input — hence `try_parse` and the explicit mapping in
-/// `main`, rather than letting clap exit on our behalf. `rules`, `trust` and `why` map
-/// the same way: an empty artifact is still exit `0`.
+/// `main`, rather than letting clap exit on our behalf. All four actions map the same
+/// way: an empty artifact is still exit `0`, and `check`'s unreadable `<PATH>` is `1`
+/// because no candidate was read at all.
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
@@ -60,7 +61,8 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         let _ = writeln!(
             std::io::stderr().lock(),
             "rulesteward: --no-conf cannot be used with --conf <PATH>\n\
-             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] <rules|trust|why>"
+             usage: rulesteward fapolicyd [--conf <PATH> | --no-conf] \
+             <rules|trust|why|check <PATH>>"
         );
         return ExitCode::from(EXIT_USAGE);
     }
@@ -73,7 +75,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
 
     // D1's ladder, step 1 and 2 (DESIGN.md §6). The read lives here so the libraries
     // stay pure; they receive an already-parsed field list or nothing at all.
-    let (syslog_format, conf_note, rules, rules_note, rules_d) = if no_conf {
+    let (syslog_format, conf_note, rules, rules_note, listing) = if no_conf {
         (None, None, None, None, Vec::new())
     } else {
         let (f, fnote) = match read_syslog_format(conf.as_deref()) {
@@ -89,14 +91,36 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         // Only when compiled.rules won. A legacy fapolicyd.rules is what the daemon
         // enforced, so whatever rules.d/ holds is not where that rule= came from.
         let d = if compiled {
-            fapolicyd::rules_d::files(read_rules_d(conf.as_deref()))
+            read_rules_d(conf.as_deref())
         } else {
             Vec::new()
         };
         (f, fnote, r, rnote, d)
     };
 
-    let outcome = fapolicyd::analyze(&input, syslog_format.as_deref(), rules.as_deref(), &rules_d);
+    // The candidate read (#121), before the host listing is merged, so `check` can sort
+    // its file into the same listing rather than into a second merge order. Unreadable is
+    // a usage error and not a note: the user named this path, and a verdict against rules
+    // that were not read would be a verdict about nothing.
+    let proposed = match &action {
+        FapolicydAction::Check { path } => match read_candidates(path, &listing) {
+            Ok(named) => Some(fapolicyd::rules_d::files(named)),
+            Err(e) => {
+                let _ = writeln!(std::io::stderr().lock(), "rulesteward: {e}");
+                return ExitCode::from(EXIT_USAGE);
+            }
+        },
+        _ => None,
+    };
+    let rules_d = fapolicyd::rules_d::files(listing);
+
+    let outcome = fapolicyd::analyze(
+        &input,
+        syslog_format.as_deref(),
+        rules.as_deref(),
+        &rules_d,
+        proposed.as_deref(),
+    );
 
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
     // "run-level only": every diagnostic that describes the run rather than a line.
@@ -104,6 +128,10 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         FapolicydAction::Rules => (Some(Artifact::Rules), &outcome.rules),
         FapolicydAction::Trust => (Some(Artifact::Trust), &outcome.trust),
         FapolicydAction::Why => (None, &outcome.why),
+        // `Both` rather than `None`: a check line is a verdict per record, so the
+        // per-line diagnostics that say a record could not be used at all belong beside
+        // it, while the notes about emitting a rule or a trust entry do not.
+        FapolicydAction::Check { .. } => (Some(Artifact::Both), &outcome.check),
     };
     let mut bytes = Vec::new();
     // The conf and rules reads happen here and not in the pass, so their notes arrive
@@ -241,4 +269,62 @@ fn read_rules_d(conf: Option<&std::path::Path>) -> Vec<(String, Vec<u8>)> {
             ))
         })
         .collect()
+}
+
+/// `check`'s candidate rules (#121): `path` as a whole proposed `rules.d/`, or one rules
+/// file sorted into the host's listing under its own name.
+///
+/// The file form replaces the host's file of the same name and leaves the ordering to
+/// `rules_d::files`, so the filename decides placement exactly as it does on the host and
+/// there is no second merge order to keep honest. A name that does not end in `.rules` is
+/// refused rather than checked, because fagenrules would not merge it and every verdict
+/// from it would be about a file the daemon never reads.
+///
+/// Every error here is the user's own path, so all of them are `EXIT_USAGE` and none is a
+/// note: unlike the host reads above, there is nothing to degrade to.
+fn read_candidates(
+    path: &std::path::Path,
+    host: &[(String, Vec<u8>)],
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let failed =
+        |what: &std::path::Path, e: std::io::Error| format!("reading {}: {e}", what.display());
+
+    if path.is_dir() {
+        let mut named = Vec::new();
+        for entry in std::fs::read_dir(path).map_err(|e| failed(path, e))? {
+            let entry = entry.map_err(|e| failed(path, e))?;
+            // read_dir yields directories too, and `files` filters by name only.
+            if !entry.path().is_file() {
+                continue;
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|n| format!("{}: {n:?} is not a usable filename", path.display()))?;
+            named.push((
+                name,
+                std::fs::read(entry.path()).map_err(|e| failed(&entry.path(), e))?,
+            ));
+        }
+        return Ok(named);
+    }
+
+    // The read first: a path that does not exist deserves that answer and not a lecture
+    // about its extension.
+    let bytes = std::fs::read(path).map_err(|e| failed(path, e))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if !name.ends_with(".rules") {
+        return Err(format!(
+            "{}: a candidate file has to be named *.rules, or fagenrules will not merge it",
+            path.display()
+        ));
+    }
+    let mut named: Vec<(String, Vec<u8>)> =
+        host.iter().filter(|(n, _)| *n != name).cloned().collect();
+    named.push((name, bytes));
+    Ok(named)
 }

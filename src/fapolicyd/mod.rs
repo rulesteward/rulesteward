@@ -6,6 +6,7 @@
 
 pub mod analyze;
 pub mod audit;
+pub mod check;
 pub mod conf;
 pub mod emit;
 pub mod model;

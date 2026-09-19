@@ -22,20 +22,27 @@ observed behaviour.
 `rulesteward` is a family tool, not a fapolicyd tool that might one day grow.
 Every use of it is spelled `rulesteward <domain> <action>`, and the top level
 stays open for `selinux`, `apparmor` and whatever follows. v1 ships exactly one
-domain and three actions:
+domain and four actions:
 
 ```
 rulesteward fapolicyd rules
 rulesteward fapolicyd trust
 rulesteward fapolicyd why
+rulesteward fapolicyd check <PATH>
 ```
 
-All three read fapolicyd denial records on stdin and run the same pass over
+All four read fapolicyd denial records on stdin and run the same pass over
 them. They differ in what they write: `rules` writes a `rules.d` fragment and
 `trust` writes the `fapolicyd-cli` commands that add the untrusted paths, one
 artifact per action, so each of those runs' stdout is a file its target reads.
 `why` is the audit2why half: one line per denying rule, a report for the person
 reading it rather than a file for a target to consume.
+
+`check` is the other half of the loop the first three open. It takes the rules
+someone is about to add — one `*.rules` file, or a whole proposed `rules.d/` —
+and reports, per denial, whether they would have allowed it: `allowed`, `denied`
+or `unknown`. It is a report like `why`, it writes nothing anywhere, and it runs
+before a reload rather than after one.
 
 **Non-goals for v1**, named so re-entry is cheap:
 
@@ -528,6 +535,30 @@ That per-rule aggregate — the rule that denied, how many records it denied, an
 what this table could emit for them — is what `rulesteward fapolicyd why`
 reports in full, one line per denying rule.
 
+**`check` answers the opposite question, and refuses rather than guesses.**
+Given candidate rules, it reports per denial whether they would have allowed it.
+The walk is candidates-only and rests on D3: the daemon reached `rule=N`, so
+every rule the host already had before N is proved not to match that record and
+is skipped; only what the operator added has to be evaluated, in the merged
+order `rules.d/` gives it, first match wins. The verdicts are `allowed` (an
+`allow*` candidate matches first), `denied` (a `deny*` candidate matches first,
+or none matches and the rule that denied denies again) and `unknown`.
+
+A wrong `allowed` is worse than an `unknown`, so `unknown` is the answer for
+everything the 48-row measurement in #120 did not settle: an attribute no log
+record can decide (`pattern=`, `uid=`, a `%set` reference, a `dir=` keyword,
+subject `trust=`), a record missing the field a candidate tests, a `rules.d/`
+that no longer agrees with `compiled.rules`, a rule the proposal moved or
+deleted, and a record whose `exe=` §6's rewrite fired on — there the logged
+value and the value a rule would have to name are different images (#120 K3).
+Two corrections from that measurement are branches in the matcher rather than
+advice: a candidate with no `perm=` fails the reload and discards the
+**whole** ruleset, so it makes every verdict in the run `unknown` (K1), and a
+candidate whose path contains a space loads, occupies its rule slot and matches
+nothing (K2). `perm=`, `exe=`, `path=`, `ftype=` and object `trust=` compare
+against the logged value; `dir=` is a plain byte prefix on both sides, with no
+slash logic — `dir=/tmp/live` covers `/tmp/live2/x`.
+
 ---
 
 ## 8. Emitter constraints
@@ -687,9 +718,9 @@ not on an object-specific path.
 ## 9. CLI and output contract
 
 The command surface is `rulesteward <domain> <action> [flags]`. v1 exposes
-exactly `rulesteward fapolicyd rules`, `rulesteward fapolicyd trust` and
-`rulesteward fapolicyd why`. These are commitments, cheap now and expensive to
-retrofit:
+exactly `rulesteward fapolicyd rules`, `rulesteward fapolicyd trust`,
+`rulesteward fapolicyd why` and `rulesteward fapolicyd check <PATH>`. These are
+commitments, cheap now and expensive to retrofit:
 
 - **No bare-action forms and no default domain.** `rulesteward rules` is not
   valid and must never become an alias, or the domain slot is spent. Neither is
@@ -697,6 +728,11 @@ retrofit:
   0.3.0 shipped: a removed action is a usage error, never an alias.
 - **No aliases or shortenings of `fapolicyd`**, so a future domain cannot collide
   with a prefix people got used to typing.
+- **An action may take a positional argument; none takes an optional one.**
+  `check <PATH>` is required, because an action whose meaning changes when an
+  argument is omitted is two actions. An unreadable `<PATH>` is exit `1` and not
+  a diagnostic: the user named that path, and a verdict against rules that were
+  never read is a verdict about nothing.
 - **Domain-specific flags hang off the domain, not the root.** `--conf` and
   `--no-conf` (§6) belong to `fapolicyd`, declared there and accepted before or
   after the action, so a second action inherits them. v1 defines **no global
@@ -723,8 +759,10 @@ later:
 
 What the root does **not** promise is the shape of those lines, or how many
 actions a domain has. That is each domain's business; for `fapolicyd` it is a
-`rules.d` fragment from `rules`, `fapolicyd-cli` commands from `trust`, and one
-line per denying rule from `why`.
+`rules.d` fragment from `rules`, `fapolicyd-cli` commands from `trust`, one
+line per denying rule from `why`, and one line per denial from `check`, each
+beginning with `allowed `, `denied ` or `unknown ` so the report greps by
+verdict.
 
 ---
 
@@ -790,6 +828,13 @@ the tool, so a research capture whose interesting record only appears inside a
 - generalisation beyond exact paths (`dir=` prefix suggestions)
 - the fapolicyd filter subsystem
 - the trust database beyond `--file add`
+- full-ruleset evaluation for `check`: evaluating every rule against a
+  reconstructed event, instead of only the candidates D3 proves are reachable.
+  It is what would turn §7's `unknown` arms into verdicts, and it cannot be
+  done from a log record — `pattern=ld_so` is a property of the process's
+  memory map, `uid=` and `sha256hash=` are fields the record does not carry, and
+  a `%set` names media types the daemon computed. The inputs it needs are on the
+  host, not in the capture, so it belongs to a tool that runs there
 - trust entries as `path size sha256` output: it changes the shape of `trust`'s
   output, not where it goes, and computing the hash means opening every path the
   log names — a FIFO blocks forever and a foreign host's log hashes the wrong

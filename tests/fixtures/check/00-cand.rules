@@ -1,0 +1,9 @@
+# A proposed rules.d/ fragment, for the `check` golden and the corpus sweep. The name
+# sorts before every shipped file, so the rule is merged ahead of the whole host ruleset
+# and is reached before any rule that denied.
+#
+# It allows the denied execute of the copied grep, which is #120's `exec-before-N` row:
+# measured `allow (rule=1)` on Rocky 8, 9 and 10. Every other denial in the fixture stays
+# denied, and the loader's own records come back unknown because §6's stale `exe=` rewrite
+# fires on them (#120 K3).
+allow perm=execute all : path=/tmp/live/probe-grep

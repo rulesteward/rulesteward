@@ -45,10 +45,10 @@ pub enum Domain {
     },
 }
 
-/// One result each (DESIGN.md §9). All three run the same pass over the same input;
-/// what differs is which part of its answer is written, so a log needing two of them is
-/// two runs. `rules` and `trust` are the audit2allow half and write artifacts a target
-/// reads; `why` is the audit2why half and writes a report for the reader.
+/// One result each (DESIGN.md §9). All four run the same pass over the same input; what
+/// differs is which part of its answer is written, so a log needing two of them is two
+/// runs. `rules` and `trust` are the audit2allow half and write artifacts a target reads;
+/// `why` and `check` are the audit2why half and write a report for the reader.
 #[derive(Subcommand)]
 pub enum FapolicydAction {
     /// Read denial records on stdin, write a rules.d fragment on stdout.
@@ -63,6 +63,15 @@ pub enum FapolicydAction {
     /// rules.d file, text, denial count and verdict.
     #[command(after_long_help = WHY_AFTER_LONG_HELP)]
     Why,
+    /// Read denial records on stdin, write one line per denial on stdout saying whether
+    /// the candidate rules at PATH would have allowed it: allowed, denied or unknown.
+    #[command(after_long_help = CHECK_AFTER_LONG_HELP)]
+    Check {
+        /// A rules file to merge into the host's rules.d/, or a whole proposed rules.d/
+        /// directory to use in its place.
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
 }
 
 /// `--help` only, never `-h`: standing advice, not a usage reminder.
@@ -94,6 +103,32 @@ Before running these commands:
   --file add rewrites its destination file with \"w\", so any comments you have
   hand-written into fapolicyd.trust or a trust.d/ fragment are destroyed. Do not
   annotate those files.";
+
+/// The three verdicts and the one thing a reader must not conclude from `unknown`. Both
+/// are properties of the action and not of an input, so they belong here.
+const CHECK_AFTER_LONG_HELP: &str = "\
+Reading the verdicts:
+  allowed  a candidate that the daemon reaches before the rule that denied
+           matches this record, and it is an allow rule.
+  denied   the first candidate to match is a deny rule, or none matches and the
+           rule that denied denies again.
+  unknown  the candidates cannot be evaluated against this record. The line names
+           the reason: an attribute no log record can decide (pattern=, uid=, a
+           %set), a candidate with no perm= (which fails the reload and discards
+           the whole ruleset), a rules.d/ that no longer agrees with
+           compiled.rules, or a record whose exe= this tool had to rewrite.
+
+  unknown is not \"denied\". It is the one answer that is never wrong, and a
+  verdict this tool will not guess at is one to test on a host.
+
+What PATH is:
+  a *.rules file, merged into the host's rules.d/ under its own name -- the
+  filename decides where it lands in the merged order, so 00-new.rules is
+  reached before every shipped rule and 99-new.rules after all of them. Or a
+  directory, used as the whole proposed rules.d/ in place of the host's.
+
+  The host's own rules.d/ and compiled.rules are read beside --conf, exactly as
+  the other actions read them; --no-conf leaves every verdict unknown.";
 
 /// What the rule number in the report is, since the report is built around it.
 const WHY_AFTER_LONG_HELP: &str = "\

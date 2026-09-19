@@ -1,6 +1,7 @@
 //! The pipeline. Pure: bytes in, bytes and diagnostics out.
 
 use super::audit;
+use super::check;
 use super::emit;
 use super::model::{self, Artifact, Diagnostic, Record, Source, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
@@ -26,6 +27,9 @@ pub struct Outcome {
     /// here and not in `emit.rs`, because these lines are a report and not
     /// `Suggestion`s — there is no target file for them to be written into.
     pub why: Vec<u8>,
+    /// The `check` report: one line per distinct denial, in first-seen order, saying what
+    /// the proposed rules.d/ would do with it. Empty unless a candidate path was given.
+    pub check: Vec<u8>,
     pub diagnostics: Vec<Diagnostic>,
     /// §9's exit 2: we read the input but could not make sense of any of it.
     pub consumed_but_unparseable: bool,
@@ -72,11 +76,16 @@ struct Tally {
 /// which is v1's behaviour exactly. `rules_d` is empty for the same reasons and also
 /// whenever the legacy `fapolicyd.rules` won the read, because then the merge order in
 /// `rules.d/` is not the order that produced the record's `rule=`.
+///
+/// `proposed` is `rules.d/` with the candidates merged in, and `None` for every action
+/// but `check`: the pass is one pass, so the check runs inside the same loop rather than
+/// over a second reading of the same records.
 pub fn analyze(
     input: &[u8],
     syslog_format: Option<&[String]>,
     rules: Option<&[rules::Rule]>,
     rules_d: &[rules_d::File],
+    proposed: Option<&[rules_d::File]>,
 ) -> Outcome {
     let mut out = Outcome::default();
 
@@ -135,6 +144,8 @@ pub fn analyze(
     // §6's stale `exe=`, keyed by the pid bytes as logged. One run is one capture, so
     // it is never reset, and it dies with the loop.
     let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
+    // `check`'s rows, in first-seen order, which is the order the report is written in.
+    let mut checked: Vec<(check::Key, usize, check::Verdict)> = Vec::new();
 
     for (line, record, payload_len) in source.records {
         if names(&record)
@@ -176,6 +187,23 @@ pub fn analyze(
         // the number of refusal comments the other two actions carry.
         if let Some(n) = n {
             tally.entry(n).or_default().denials += 1;
+        }
+
+        // Before the refusal below, because a subject-side `rule=N` is exactly where a
+        // candidate is worth checking: #120's `subjectside-before-N` row measured an
+        // `allow`, so "nothing this tool can emit resolves it" is not "nothing resolves
+        // it". The first record of a key decides for all of them; `stale_exe` is the only
+        // input two records sharing a key can differ on, and it already gives `unknown`.
+        if let Some(proposed) = proposed {
+            let key = check::key(&record, n);
+            match checked.iter_mut().find(|(seen, _, _)| *seen == key) {
+                Some((_, count, _)) => *count += 1,
+                None => {
+                    let verdict =
+                        check::verdict(&record, n, stale.as_deref(), rules, rules_d, proposed);
+                    checked.push((key, 1, verdict));
+                }
+            }
         }
 
         if let Some(rules) = rules {
@@ -341,6 +369,7 @@ pub fn analyze(
     }
 
     out.why = why_report(&tally, rules, rules_d);
+    out.check = check::report(&checked);
 
     out.diagnostics = collapse(out.diagnostics);
 
@@ -664,7 +693,7 @@ mod tests {
 
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
-        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None, &[]);
+        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None, &[], None);
         assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -678,7 +707,7 @@ mod tests {
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(SHORT, Some(&f), None, &[]);
+        let o = analyze(SHORT, Some(&f), None, &[], None);
         assert!(
             o.rules.is_empty() && o.trust.is_empty(),
             "must emit nothing when truncated"
@@ -697,12 +726,12 @@ mod tests {
         // Step 4 is the fallback, not a cross-check: this record is nowhere near the
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
-        let o = analyze(SHORT, None, None, &[]);
+        let o = analyze(SHORT, None, None, &[], None);
         assert!(!notes(&o).contains("truncated"), "{}", notes(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
-        let o = analyze(&whole, None, None, &[]);
+        let o = analyze(&whole, None, None, &[], None);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         // The only thing left to say is that the other action holds this suggestion.
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
@@ -722,7 +751,7 @@ mod tests {
         assert!(f.len() > MAX_SYSLOG_FIELDS);
         let record = b"rule=1 dec=deny_audit perm=open auid=1000 sessionid=1 pid=1 ppid=1 \
                        trust=1 comm=bash exe=/usr/bin/bash\n";
-        let o = analyze(record, Some(&f), None, &[]);
+        let o = analyze(record, Some(&f), None, &[], None);
         assert!(
             !notes(&o).contains("truncated"),
             "not truncated: {}",
@@ -736,7 +765,7 @@ mod tests {
         let mut record = head.to_vec();
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
-        let o = analyze(&record, None, None, &[]);
+        let o = analyze(&record, None, None, &[], None);
         assert!(o.rules.is_empty() && o.trust.is_empty());
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert!(
@@ -751,7 +780,7 @@ mod tests {
         let mut input = SHORT.to_vec();
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(&input, Some(&f), None, &[]);
+        let o = analyze(&input, Some(&f), None, &[], None);
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
         assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", notes(&o));
@@ -763,7 +792,7 @@ mod tests {
         // make this line indistinguishable from a live denial.
         let input = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
-        let o = analyze(input, None, None, &[]);
+        let o = analyze(input, None, None, &[], None);
         assert!(
             o.rules.is_empty() && o.trust.is_empty(),
             "{}{}",
@@ -780,7 +809,7 @@ mod tests {
 
     #[test]
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
-        let o = analyze(TRUSTED, None, None, &[]);
+        let o = analyze(TRUSTED, None, None, &[], None);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
@@ -796,7 +825,7 @@ mod tests {
     #[test]
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
-        let o = analyze(&input, None, None, &[]);
+        let o = analyze(&input, None, None, &[], None);
         assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
@@ -808,7 +837,7 @@ mod tests {
             .unwrap()
             .replace("perm=execute", "perm=open");
         let input = [TRUSTED, open.as_bytes()].concat();
-        let o = analyze(&input, None, None, &[]);
+        let o = analyze(&input, None, None, &[], None);
         assert_eq!(
             String::from_utf8(o.rules).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
@@ -819,7 +848,7 @@ mod tests {
     #[test]
     fn a_denial_with_no_trust_field_emits_a_rule_and_says_why() {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
-        let o = analyze(input, None, None, &[]);
+        let o = analyze(input, None, None, &[], None);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
@@ -849,7 +878,7 @@ mod tests {
                 "rule=5 dec=deny_audit perm=open pid=1 exe=/usr/sbin/runuser : \
                  path=/etc/hostname {tail}\n"
             );
-            let o = analyze(input.as_bytes(), None, Some(&ld_so()), &[]);
+            let o = analyze(input.as_bytes(), None, Some(&ld_so()), &[], None);
             assert!(
                 o.rules.is_empty() && o.trust.is_empty(),
                 "{tail}: {}{}",
@@ -869,7 +898,7 @@ mod tests {
         let rules = vec![rules::Rule::new("deny_audit perm=execute all : all")];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
-        let o = analyze(input, None, Some(&rules), &[]);
+        let o = analyze(input, None, Some(&rules), &[], None);
         let text = notes(&o);
         assert!(o.rules.starts_with(b"allow perm=execute"), "{text}");
         assert!(text.contains("not read"), "generic note: {text}");
@@ -886,7 +915,7 @@ mod tests {
         }];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
-        let o = analyze(input, None, Some(&[rule]), &rules_d);
+        let o = analyze(input, None, Some(&[rule]), &rules_d, None);
         let text = notes(&o);
         assert!(
             text.contains(
@@ -900,7 +929,7 @@ mod tests {
     fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
         let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()), &[]);
+        let o = analyze(input, None, Some(&ld_so()), &[], None);
         assert_eq!(
             String::from_utf8(o.trust.clone()).unwrap(),
             "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
@@ -926,7 +955,7 @@ mod tests {
         );
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&rules), &[]);
+        let o = analyze(input, None, Some(&rules), &[], None);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
@@ -941,7 +970,7 @@ mod tests {
         // A host conf whose syslog_format drops `rule` would otherwise report every
         // record as a mismatch.
         let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()), &[]);
+        let o = analyze(input, None, Some(&ld_so()), &[], None);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         assert!(!notes(&o).contains("does not match"), "{}", notes(&o));
     }
@@ -958,7 +987,7 @@ mod tests {
              dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n\
              dec=deny_audit perm=open pid=999 exe=/usr/sbin/runuser : path=/usr/bin/sed trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None, &[]);
+        let o = analyze(input.as_bytes(), None, None, &[], None);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             format!(
@@ -984,7 +1013,7 @@ mod tests {
             "dec=deny_audit perm=execute pid=0 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
              dec=deny_audit perm=open pid=0 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None, &[]);
+        let o = analyze(input.as_bytes(), None, None, &[], None);
         assert!(
             String::from_utf8(o.rules.clone())
                 .unwrap()
@@ -1000,7 +1029,7 @@ mod tests {
         // The override goes THROUGH the exe filter, so an unwritable one is `all` and
         // never the stale logged value, which is known wrong.
         let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
-        let o = analyze(input, None, None, &[]);
+        let o = analyze(input, None, None, &[], None);
         let text = String::from_utf8(o.rules.clone()).unwrap();
         assert!(
             text.contains("allow perm=open all : path=/usr/bin/grep"),
@@ -1029,7 +1058,7 @@ mod tests {
                       path=/tmp/trusted trust=1\n\
                       rule=3 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/unknown trust=9\n";
-        let o = analyze(input, None, Some(&rules), &[]);
+        let o = analyze(input, None, Some(&rules), &[], None);
         assert_eq!(
             String::from_utf8(o.why.clone()).unwrap(),
             "rule=1  1 denials  subject-side, nothing to emit  \
@@ -1049,7 +1078,7 @@ mod tests {
                       path=/tmp/a trust=0\n\
                       rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/b trust=0\n";
-        let o = analyze(input, None, None, &[]);
+        let o = analyze(input, None, None, &[], None);
         assert_eq!(
             String::from_utf8(o.why.clone()).unwrap(),
             "rule=1  2 denials\n"
@@ -1068,7 +1097,7 @@ mod tests {
                       path=/tmp/a trust=0\n\
                       rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/b trust=0\n";
-        let o = analyze(input, None, Some(&rules), &[]);
+        let o = analyze(input, None, Some(&rules), &[], None);
         let why = String::from_utf8(o.why.clone()).unwrap();
         let lines: Vec<&str> = why.lines().collect();
         assert_eq!(lines.len(), 2, "{why}");
