@@ -711,9 +711,12 @@ fn a_rule_naming_a_changed_set_is_evaluated_and_not_skipped() {
 
 /// The default path is read beside `--conf`, so `--no-conf` leaves it nowhere to resolve
 /// to. That is a usage error and not a run of unknowns, and it names both ways out.
+///
+/// The stdin is empty on purpose: the exit is before the stdin read, so a record written
+/// to it races the child closing the pipe and fails the write with `BrokenPipe`.
 #[test]
 fn check_with_no_conf_and_no_path_is_a_usage_error() {
-    let (code, out, err) = run(&["fapolicyd", "--no-conf", "check"], DENIED_BY_13);
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "check"], b"");
     assert_eq!(code, 1, "{err}");
     assert!(out.is_empty(), "{out}");
     assert!(err.contains("PATH") && err.contains("--no-conf"), "{err}");
