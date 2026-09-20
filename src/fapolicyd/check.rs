@@ -12,9 +12,11 @@
 //! the merged listing carries. Closing the rest means evaluating the whole ruleset against
 //! a reconstructed event, which is parked (DESIGN.md §11).
 
+use super::json;
 use super::model::Record;
 use super::rules::{Attr, Rule, Set};
 use super::rules_d;
+use serde::Serialize;
 use std::io::Write;
 
 /// What the candidates would do with one denial. Each arm carries the line's last
@@ -352,6 +354,73 @@ pub fn report(rows: &[(Key, usize, Verdict)]) -> Vec<u8> {
         let _ = writeln!(out, "{word:<7} {fields}({count} denials)  {detail}");
     }
     out
+}
+
+/// One report line as a document carries it (#146, DESIGN.md §9.1). Built here rather than in
+/// `json.rs` because `Key`'s fields are this module's, and the verdict is split into the
+/// word the text report greps by and the detail it ends with, so a reader filtering on
+/// `verdict` never parses the line.
+///
+/// `ftype` and `trust` are in because two entries can differ only in them -- the same
+/// reason they are in the key. A `*_hex` sibling is the one conditional field in the
+/// document (§9.1): it appears only when the value was not UTF-8.
+#[derive(Serialize)]
+pub struct Entry {
+    verdict: &'static str,
+    detail: String,
+    denials: usize,
+    perm: Option<String>,
+    exe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exe_hex: Option<String>,
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_hex: Option<String>,
+    ftype: Option<String>,
+    trust: Option<String>,
+    rule: Option<usize>,
+}
+
+/// `report`'s rows as entries, same rows and same order.
+pub fn entries(rows: &[(Key, usize, Verdict)]) -> Vec<Entry> {
+    rows.iter()
+        .map(|(k, count, verdict)| {
+            let (word, detail) = rendered(verdict);
+            let (exe, exe_hex) = with_hex(&k.exe);
+            let (path, path_hex) = with_hex(&k.path);
+            Entry {
+                verdict: word,
+                detail: detail.to_string(),
+                denials: *count,
+                // `perm` and `trust` are the daemon's own vocabulary and `ftype` is a
+                // MIME type. A byte that is not UTF-8 in one of them is corruption and
+                // not a name anyone has to recover, so none of them earns a hex sibling.
+                perm: k.perm.as_deref().map(lossy),
+                exe,
+                exe_hex,
+                path,
+                path_hex,
+                ftype: k.ftype.as_deref().map(lossy),
+                trust: k.trust.as_deref().map(lossy),
+                rule: k.rule,
+            }
+        })
+        .collect()
+}
+
+/// A field the record may not have carried, as text plus §9.1's hex sibling.
+fn with_hex(value: &Option<Vec<u8>>) -> (Option<String>, Option<String>) {
+    match value {
+        Some(v) => {
+            let (text, hex) = json::lossy_hex(v);
+            (Some(text), hex)
+        }
+        None => (None, None),
+    }
+}
+
+fn lossy(value: &[u8]) -> String {
+    json::lossy_hex(value).0
 }
 
 /// A record's value as the daemon spelled it: every control byte back in the escaper's

@@ -1,0 +1,54 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky9-journal-live-vm-short.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    },
+    {
+      "line": null,
+      "msg": "18 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "rule": 5,
+      "file": null,
+      "text": null,
+      "denials": 22,
+      "subject_side": null,
+      "rules": 18,
+      "trust": 4
+    },
+    {
+      "rule": 8,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 1
+    },
+    {
+      "rule": 13,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 1
+    }
+  ]
+}
+--- stderr ---

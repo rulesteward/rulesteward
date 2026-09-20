@@ -1,0 +1,13 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/handwritten-minimal-format.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [],
+  "entries": []
+}
+--- stderr ---

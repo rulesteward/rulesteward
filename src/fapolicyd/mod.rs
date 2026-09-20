@@ -9,6 +9,7 @@ pub mod audit;
 pub mod check;
 pub mod conf;
 pub mod emit;
+pub mod json;
 pub mod model;
 pub mod parse;
 pub mod policy;

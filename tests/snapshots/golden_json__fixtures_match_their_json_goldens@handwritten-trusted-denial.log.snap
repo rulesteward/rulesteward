@@ -1,0 +1,45 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/handwritten-trusted-denial.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    },
+    {
+      "line": null,
+      "msg": "3 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "rule": 13,
+      "file": null,
+      "text": null,
+      "denials": 4,
+      "subject_side": null,
+      "rules": 1,
+      "trust": 1
+    },
+    {
+      "rule": 16,
+      "file": null,
+      "text": null,
+      "denials": 2,
+      "subject_side": null,
+      "rules": 2,
+      "trust": 0
+    }
+  ]
+}
+--- stderr ---

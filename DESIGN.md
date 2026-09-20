@@ -839,6 +839,12 @@ commitments, cheap now and expensive to retrofit:
   a usage error, because one path is not a group; and `--dir-system` without
   `--dir-min` is a usage error too, because it lifts refusals that only the
   grouping makes. Both are exit `1`, like every other usage error here.
+- **`--format` hangs off the domain too** (#146), for the same reason `--conf`
+  does: the choice is about how a result is written and not about which result,
+  so every action inherits it and a second domain declares its own. It takes
+  `text`, `json` or `json-compact` and defaults to `text`, which is the output
+  every version before 0.10.0 wrote, byte for byte. A JSON format on `rules` or
+  `trust` is exit `1` until #147 gives those two artifacts a document.
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added
@@ -864,6 +870,87 @@ actions a domain has. That is each domain's business; for `fapolicyd` it is a
 line per denying rule from `why`, and one line per denial from `check`, each
 beginning with `allowed `, `denied ` or `unknown ` so the report greps by
 verdict.
+
+### 9.1 The JSON document
+
+`--format json` and `--format json-compact` write one document on stdout and
+nothing else. They are the same document: `json` is indented for a person
+reading one run and `json-compact` is one line for a consumer reading a stream
+of them, and both end in exactly one `\n`. Everything below is a contract, so a
+field is never removed or given a new meaning without `schema` moving.
+
+```json
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    { "line": null,
+      "msg": "2 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input" }
+  ],
+  "entries": [
+    { "rule": 13, "file": "90-deny-execute.rules",
+      "text": "deny_audit perm=execute all : all", "denials": 1,
+      "subject_side": false, "rules": 1, "trust": 0 }
+  ]
+}
+```
+
+`schema` is `1`. `action` is `why` or `check`, so a reader that is handed a
+document knows which entries it has without inferring it from their shape.
+
+`diagnostics` carries what the text path writes as `# rulesteward:` comments
+ahead of the artifact — the same notes, filtered the same way by the action, in
+the same order — because a JSON document has no comments to put them in.
+`line` is the 1-based input line the note came from, or `null` for a note about
+the run rather than a line.
+
+Every key is always present and an absent value is `null`, so a reader indexes
+rather than tests. The one exception is a `*_hex` field, which is absent when
+there is nothing for it to say.
+
+A `why` entry is what the row is, not what the report said about it: the
+verdict column's wording is the report's and is deliberately not a field here.
+
+| field | type | `null` when |
+|---|---|---|
+| `rule` | number | never |
+| `file` | string | no `rules.d/` component was found to hold that rule |
+| `text` | string | there was no rules file, or it has no rule of that number |
+| `denials` | number | never |
+| `subject_side` | bool | with `text`; `true` when the rule refuses the record outright (§7) |
+| `rules` | number | never |
+| `trust` | number | never |
+
+A `check` entry is the report line split into its parts, with the six key fields
+of §7's denial. `ftype` and `trust` are in for the same reason they are in the
+key: two entries can differ only in them.
+
+| field | type | `null` when |
+|---|---|---|
+| `verdict` | string | never; `allowed`, `denied` or `unknown` |
+| `detail` | string | never; the candidate as `file: rule text`, or the reason there is no verdict |
+| `denials` | number | never |
+| `perm`, `exe`, `path`, `ftype`, `trust` | string | the record did not carry that field |
+| `exe_hex`, `path_hex` | string | **absent**, not null, unless the value was not UTF-8 |
+| `rule` | number | the record carried no `rule=` |
+
+A record's value reaches the document as its true bytes decoded lossily, and not
+in the octal form the text report spells control characters with: that form
+exists because §9 promises bare lines on stdout, and JSON escapes control
+characters itself. What lossy decoding destroys is a byte that is not UTF-8,
+which is what `exe_hex` and `path_hex` carry — the whole value, hex, lower case,
+no separator — for the records §4 says can hold one.
+
+The set of characters a document escapes is the set the text report spells:
+`\u0000`-`\u001f` from the JSON writer itself, and `\u007f`-`\u009f` — DEL and
+the C1 controls, CSI among them — added on top, so a document is as safe to
+read on a terminal as a report line is. An escape is a spelling and not a
+change: the value that parses out is the value the record carried.
+
+The exit codes are unchanged. Exit `0` with nothing to report is a document with
+`"entries": []`, which is the answer "no denials", and exit `2` writes nothing on
+stdout at all: input arrived that no line could be parsed from, so there is no
+document to write and the exit code is the whole answer.
 
 ---
 

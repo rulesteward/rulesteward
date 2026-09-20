@@ -1,0 +1,18 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky8-base-reload-probe-empty-ruleset-daemon.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
