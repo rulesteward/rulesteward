@@ -14,6 +14,10 @@ use std::cmp::Ordering;
 pub struct File {
     pub name: String,
     pub rules: Vec<Rule>,
+    /// Its `%set` definitions, which no rule number counts. Kept beside the rules so the
+    /// caller can compare the directory's sets against the loaded ones in merge order
+    /// without reading the files a second time (#158).
+    pub sets: Vec<String>,
 }
 
 /// GNU `filevercmp`, which is the order `ls -1v` gives fagenrules: a port of gnulib's
@@ -162,6 +166,7 @@ pub fn files(named: Vec<(String, Vec<u8>)>) -> Vec<File> {
         .map(|(name, bytes)| File {
             name,
             rules: rules::parse(&bytes),
+            sets: rules::sets(&bytes),
         })
         .collect()
 }
@@ -305,7 +310,14 @@ mod tests {
         let mut named: Vec<(String, Vec<u8>)> = shipped()
             .into_iter()
             .map(|f| {
-                let bytes: String = f.rules.iter().map(|r| format!("{}\n", r.text)).collect();
+                // Sets first, as fagenrules' own input has them: written back too, or the
+                // round trip would lose 10-languages.rules' whole content (#158).
+                let bytes: String = f
+                    .sets
+                    .iter()
+                    .chain(f.rules.iter().map(|r| &r.text))
+                    .map(|line| format!("{line}\n"))
+                    .collect();
                 (f.name, bytes.into_bytes())
             })
             .collect();

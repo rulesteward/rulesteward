@@ -670,6 +670,45 @@ fn an_unedited_rules_d_proposes_nothing() {
     );
 }
 
+/// A `%set` is in neither `rules::parse`'s output nor a rule number, so a `rules.d/`
+/// whose only edit is a set definition merges to `compiled.rules` rule for rule and is
+/// not the directory the daemon loaded. Claiming nothing is proposed there is a claim
+/// about a file that changed.
+#[test]
+fn a_changed_set_definition_is_not_nothing_proposed() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/edited-set/fapolicyd.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "check"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !out.contains("nothing is proposed"),
+        "the set definition is what changed: {out}"
+    );
+}
+
+/// D3 skips the rules before N because the daemon walked past them, and that proof holds
+/// only while the sets they name hold. Here the record's own ftype was added to
+/// `%languages`, so the deny naming that set now matches and is reached before the new
+/// allow. `allowed` would be the wrong answer the issue's hazard forbids; what this tool
+/// may say is that it cannot decide, naming the rule.
+#[test]
+fn a_rule_naming_a_changed_set_is_evaluated_and_not_skipped() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/edited-set-and-rule/fapolicyd.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "check"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    let line = out
+        .lines()
+        .find(|l| !l.starts_with("# "))
+        .unwrap_or_default();
+    assert!(line.starts_with("unknown "), "{out}");
+    assert!(line.contains("ftype=%languages"), "{out}");
+}
+
 /// The default path is read beside `--conf`, so `--no-conf` leaves it nowhere to resolve
 /// to. That is a usage error and not a run of unknowns, and it names both ways out.
 #[test]

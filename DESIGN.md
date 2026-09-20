@@ -567,7 +567,12 @@ the daemon loaded is the baseline. Rule N is then found in the proposal by its
 text rather than by its file, and a `rules.d/` that still merges to
 `compiled.rules` rule for rule proposes nothing, which is said as a diagnostic
 and not left to be inferred from a page of `denied`. The D3 skip is unchanged
-either way, because it was always against `compiled.rules`. A host loading a
+either way with one exception: a `%set` is in no rule's text and in no rule
+number, so `main` compares the directory's `%` lines against the loaded file's
+and, when they differ, a rule naming a set is evaluated rather than skipped —
+the daemon walked past it, but not with this definition — which makes it
+`unknown`, because what a set holds is never expanded here (#139). A host
+loading a
 legacy `fapolicyd.rules` reads no `rules.d/` at all, so the default has nothing
 to propose and the run names the file the daemon loads instead.
 

@@ -89,13 +89,15 @@ pub fn analyze(
 ) -> Outcome {
     let mut out = Outcome::default();
 
-    // The two arms differ only in what rule N is placed against: candidates are placed
-    // against the `rules.d/` fagenrules generated `compiled.rules` from, while the
-    // directory itself is placed against `compiled.rules`, because an in-place edit is
-    // exactly the two disagreeing.
+    // The arms differ only in what rule N is placed against. Candidates are placed
+    // against the `rules.d/` fagenrules generated `compiled.rules` from, so the sets in
+    // hand are by construction the loaded ones; a candidate file that redefines a set is
+    // #139's. The directory itself is placed against `compiled.rules`, because an
+    // in-place edit is exactly the two disagreeing, and whether its sets are still the
+    // loaded ones is the caller's to answer, because only it read the two files.
     let proposed = proposal.map(|p| match p {
-        check::Proposal::Merged(files) => (Some(rules_d), files),
-        check::Proposal::OnDisk => (None, rules_d),
+        check::Proposal::Merged(files) => (Some(rules_d), true, files),
+        check::Proposal::OnDisk { sets_agree } => (None, sets_agree, rules_d),
     });
 
     if let Some(fields) = syslog_format {
@@ -203,13 +205,20 @@ pub fn analyze(
         // `allow`, so "nothing this tool can emit resolves it" is not "nothing resolves
         // it". The first record of a key decides for all of them; `stale_exe` is the only
         // input two records sharing a key can differ on, and it already gives `unknown`.
-        if let Some((host, proposed)) = proposed {
+        if let Some((host, sets_agree, proposed)) = proposed {
             let key = check::key(&record, n);
             match checked.iter_mut().find(|(seen, _, _)| *seen == key) {
                 Some((_, count, _)) => *count += 1,
                 None => {
-                    let verdict =
-                        check::verdict(&record, n, stale.as_deref(), rules, host, proposed);
+                    let verdict = check::verdict(
+                        &record,
+                        n,
+                        stale.as_deref(),
+                        rules,
+                        host,
+                        sets_agree,
+                        proposed,
+                    );
                     checked.push((key, 1, verdict));
                 }
             }
@@ -925,6 +934,7 @@ mod tests {
         let rules_d = vec![rules_d::File {
             name: "local.rules".into(),
             rules: vec![rule.clone()],
+            sets: Vec::new(),
         }];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
@@ -947,12 +957,14 @@ mod tests {
         let host = vec![rules_d::File {
             name: "90-deny-execute.rules".into(),
             rules: vec![rule.clone()],
+            sets: Vec::new(),
         }];
         let mut proposed = vec![rules_d::File {
             name: "00-cand.rules".into(),
             rules: vec![rules::Rule::new(
                 "allow perm=execute all : path=/tmp/gaps/trusted-ls",
             )],
+            sets: Vec::new(),
         }];
         proposed.extend(host.clone());
         let denial = "rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \

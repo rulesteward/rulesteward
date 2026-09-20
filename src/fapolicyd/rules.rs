@@ -98,6 +98,17 @@ pub fn parse(file: &[u8]) -> Vec<Rule> {
     rules
 }
 
+/// The `%set` definitions of a file, in the order written. `parse` drops them because no
+/// rule number counts them, which makes an edited set invisible to every comparison of
+/// rule text -- and the rules naming it mean something different afterwards. What a set
+/// *holds* is never expanded here (#139), so these are compared as text and nothing more.
+pub fn sets(file: &[u8]) -> Vec<String> {
+    file.split(|&b| b == b'\n')
+        .map(|line| String::from_utf8_lossy(line).trim().to_string())
+        .filter(|line| line.starts_with('%'))
+        .collect()
+}
+
 impl Rule {
     /// No unescaping anywhere: the rule language has no escape mechanism and no
     /// quoting, so `%set` references and `pattern=` values are stored literally.

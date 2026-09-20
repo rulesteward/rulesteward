@@ -64,12 +64,18 @@ pub enum Proposal<'a> {
     /// `check` with no `PATH`: the host's `rules.d/` as it is on disk now, placed against
     /// `compiled.rules`. The two disagreeing is the edit being asked about and not drift,
     /// so there is no host listing to locate rule `N` in.
-    OnDisk,
+    ///
+    /// `sets_agree` is the caller's answer to "are the directory's `%set` definitions the
+    /// ones the daemon loaded?", decided in `main` where the files are read. A `%set` is
+    /// in no rule's text and in no rule number, so an edited one is invisible to every
+    /// comparison here and changes what the rules naming it match.
+    OnDisk { sets_agree: bool },
 }
 
 /// The verdict for one denial: `n` is its `rule=`, `stale` what §6's rewrite would scope
 /// a rule to, `compiled` the host's own rules, `host` the `rules.d/` they were generated
 /// from -- `None` in `Proposal::OnDisk`, where the proposal is that directory itself --
+/// `sets_agree` whether the `%set` definitions in hand are the ones the daemon loaded,
 /// and `proposed` the merged listing to walk.
 ///
 /// The walk is candidates-only, which is D3: the daemon reached rule N, so every rule the
@@ -82,6 +88,7 @@ pub fn verdict(
     stale: Option<&[u8]>,
     compiled: Option<&[Rule]>,
     host: Option<&[rules_d::File]>,
+    sets_agree: bool,
     proposed: &[rules_d::File],
 ) -> Verdict {
     // K3: #120 measured the daemon comparing a candidate's `exe=` against the value the
@@ -161,11 +168,18 @@ pub fn verdict(
 
     for (file, rule) in flat(proposed).take(limit) {
         // D3 again: this rule is one of the host's own, from before N, and the daemon
-        // walked past it to reach N.
-        if compiled
-            .iter()
-            .take(n - 1)
-            .any(|before| before.text == rule.text)
+        // walked past it to reach N. That proof is about the rule's text and holds only
+        // while the sets its text names hold: an edited `%languages` makes an untouched
+        // `ftype=%languages` deny a different rule, reached before N and matching what it
+        // did not match when the record was written. So when the sets have changed, a
+        // rule naming one is evaluated rather than skipped, and `matches` answers `None`
+        // for it -- this tool never expands a set (#139). A value beginning with `%` is
+        // exactly what `rules::Attr::new` calls a set reference.
+        if (sets_agree || !rule.text.contains("=%"))
+            && compiled
+                .iter()
+                .take(n - 1)
+                .any(|before| before.text == rule.text)
         {
             continue;
         }
@@ -860,6 +874,7 @@ trust=0";
             None,
             Some(&compiled),
             Some(&host()),
+            true,
             &rules_d::files(listing(candidate)),
         )
     }
@@ -952,6 +967,7 @@ trust=0";
             Some(b"/tmp/live/probe-other"),
             Some(&compiled),
             Some(&host()),
+            true,
             &rules_d::files(listing(Some((
                 "00-cand.rules",
                 "allow perm=execute all : path=/tmp/live/probe-grep\n",
@@ -983,7 +999,7 @@ trust=0";
         let (record, n) = parsed(EXEC);
         let compiled = compiled();
         let proposed = rules_d::files(listing(None));
-        let got = verdict(&record, n, None, None, Some(&host()), &proposed);
+        let got = verdict(&record, n, None, None, Some(&host()), true, &proposed);
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
         let (short, short_n) = parsed(
             "rule=99 dec=deny_audit perm=execute auid=1000 pid=1 exe=/usr/sbin/runuser \
@@ -995,6 +1011,7 @@ trust=0";
             None,
             Some(&compiled),
             Some(&host()),
+            true,
             &proposed,
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
@@ -1010,7 +1027,15 @@ trust=0";
             "90-deny-execute.rules".to_string(),
             b"deny_audit perm=execute all : all\n".to_vec(),
         )]);
-        let got = verdict(&record, n, None, Some(&compiled), Some(&drifted), &drifted);
+        let got = verdict(
+            &record,
+            n,
+            None,
+            Some(&compiled),
+            Some(&drifted),
+            true,
+            &drifted,
+        );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
         assert!(rendered(&got).1.contains("fagenrules"), "{got:?}");
     }
@@ -1033,6 +1058,7 @@ trust=0";
             None,
             Some(&compiled),
             Some(&host()),
+            true,
             &rules_d::files(proposed),
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
@@ -1181,6 +1207,7 @@ trust=0";
             None,
             Some(&compiled),
             Some(&host()),
+            true,
             &replacing(
                 "41-shared-obj.rules",
                 "allow perm=open all : ftype=application/x-sharedlib trust=1\n\
