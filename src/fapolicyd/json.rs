@@ -110,15 +110,59 @@ fn document<E: Serialize>(
         entries,
     };
     // Serialising these cannot fail: every field is a number, a bool, a string or an
-    // option of one, and serde_json's only other error is an io error the Vec writer
-    // does not have. Empty rather than a panic if that reasoning is ever wrong -- the
-    // exit code is the run's answer and nothing here is worth aborting it.
-    let mut bytes = if compact {
-        serde_json::to_vec(&doc)
+    // option of one, and serde_json's only other error is an io error the writer does
+    // not have. Empty rather than a panic if that reasoning is ever wrong -- the exit
+    // code is the run's answer and nothing here is worth aborting it.
+    let text = if compact {
+        serde_json::to_string(&doc)
     } else {
-        serde_json::to_vec_pretty(&doc)
+        serde_json::to_string_pretty(&doc)
     }
     .unwrap_or_default();
+    let mut bytes = escaped(&text).into_bytes();
     bytes.push(b'\n');
     bytes
+}
+
+/// DEL and the C1 controls as `\u00xx`, which serde_json does not do: it escapes below
+/// U+0020 and stops there, so U+007F and U+009B -- CSI on a terminal that honours it --
+/// would reach stdout as themselves, while `check::shown` spells exactly those
+/// characters for the text report. One rule for both reports.
+///
+/// A pass over the serialised document rather than a `Formatter`, because outside a
+/// string literal serde_json writes only ASCII structure, digits, `true`/`false`/`null`
+/// and whitespace: a character in this range is inside a string, where `\u00xx` parses
+/// back to the character it replaced and nothing else changes. Parity with `shown` is
+/// the whole rule -- a bidi or other format character is raw in the report and raw here.
+fn escaped(document: &str) -> String {
+    let mut out = String::with_capacity(document.len());
+    for c in document.chars() {
+        match c {
+            '\u{7f}'..='\u{9f}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both ends of the range, and the two characters just outside it: `~` and the
+    /// no-break space are ordinary text in the report and stay ordinary here.
+    #[test]
+    fn del_and_the_c1_controls_are_escaped_and_their_neighbours_are_not() {
+        assert_eq!(
+            escaped("~\u{7f}\u{9b}\u{9f}\u{a0}"),
+            "~\\u007f\\u009b\\u009f\u{a0}"
+        );
+    }
+
+    /// What serde_json already escaped is text by the time this runs, and a second pass
+    /// over `\u001b` must not touch the backslash or re-escape the digits.
+    #[test]
+    fn an_escape_serde_json_wrote_is_left_alone() {
+        assert_eq!(escaped("\"\\u001b\""), "\"\\u001b\"");
+    }
 }

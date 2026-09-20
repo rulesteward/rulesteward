@@ -1317,3 +1317,60 @@ fn the_format_flag_is_accepted_before_the_action() {
     assert_eq!(doc["action"], "why", "{doc}");
     assert_eq!(doc["entries"][0]["rule"], 1, "{doc}");
 }
+
+/// §9.1: a document escapes what the text report escapes. serde_json stops at U+0020, so
+/// DEL and the C1 controls are this tool's to spell -- a raw U+009B is CSI on a terminal
+/// that honours it, and a `check` document is read on a terminal. Synthetic, because no
+/// captured fixture holds one: the daemon's own escaper would have written them octally.
+#[test]
+fn a_document_escapes_del_and_the_c1_controls() {
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    // U+007F and U+009F are the ends of the range; `~` (U+007E) and U+00A0 sit just
+    // outside it and pin both bounds against a mutated one.
+    let record: &[u8] = b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 \
+exe=/usr/bin/bash : path=/tmp/a\x7fb\xc2\x9bc\xc2\x9fd~\xc2\xa0e trust=0\n";
+    let path = "/tmp/a\u{7f}b\u{9b}c\u{9f}d~\u{a0}e";
+
+    for format in ["json", "json-compact"] {
+        let out = common::run(
+            &[
+                "fapolicyd",
+                "--no-conf",
+                "check",
+                candidate,
+                "--format",
+                format,
+            ],
+            record,
+        );
+        assert_eq!(out.status.code().unwrap(), 0);
+        let stdout = &out.stdout;
+        for raw in [&b"\x7f"[..], &b"\xc2\x9b"[..], &b"\xc2\x9f"[..]] {
+            assert!(
+                !stdout.windows(raw.len()).any(|w| w == raw),
+                "{format}: {raw:?} reached stdout raw: {stdout:?}"
+            );
+        }
+        let text = String::from_utf8(stdout.clone()).expect("a document is UTF-8");
+        for escape in ["\\u007f", "\\u009b", "\\u009f"] {
+            assert!(
+                text.contains(escape),
+                "{format}: {escape} is missing: {text}"
+            );
+        }
+        // The two neighbours are still themselves, and next to each other.
+        assert!(text.contains("d~\u{a0}e"), "{format}: {text}");
+
+        // The escape is a spelling and not a change: what parses out is the path the
+        // record carried, and the bytes were UTF-8, so there is no hex sibling.
+        let doc: serde_json::Value = serde_json::from_slice(stdout).expect("a document");
+        assert_eq!(doc["entries"][0]["path"], path, "{format}: {text}");
+        assert!(
+            doc["entries"][0].get("path_hex").is_none(),
+            "{format}: {text}"
+        );
+    }
+}

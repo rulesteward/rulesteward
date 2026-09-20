@@ -941,6 +941,12 @@ characters itself. What lossy decoding destroys is a byte that is not UTF-8,
 which is what `exe_hex` and `path_hex` carry — the whole value, hex, lower case,
 no separator — for the records §4 says can hold one.
 
+The set of characters a document escapes is the set the text report spells:
+`\u0000`-`\u001f` from the JSON writer itself, and `\u007f`-`\u009f` — DEL and
+the C1 controls, CSI among them — added on top, so a document is as safe to
+read on a terminal as a report line is. An escape is a spelling and not a
+change: the value that parses out is the value the record carried.
+
 The exit codes are unchanged. Exit `0` with nothing to report is a document with
 `"entries": []`, which is the answer "no denials", and exit `2` writes nothing on
 stdout at all: input arrived that no line could be parsed from, so there is no
