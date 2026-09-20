@@ -108,7 +108,7 @@ ssh_ "
               mv /etc/fapolicyd.restoring /etc/fapolicyd'
   sudo fapolicyd-cli --delete-db >/dev/null 2>&1
   sudo systemctl disable fapolicyd >/dev/null 2>&1
-  sudo rm -rf /tmp/live /tmp/deny.log /tmp/rs.out /tmp/rs.err /tmp/denials*.txt /tmp/suggested-paths.txt /run/fapolicyd/fapolicyd.fifo
+  sudo rm -rf /tmp/live /opt/live-app /tmp/deny.log /tmp/rs.out /tmp/rs.err /tmp/denials*.txt /tmp/suggested-paths.txt /run/fapolicyd/fapolicyd.fifo
   exit \$rc
 "
 RC=$?
