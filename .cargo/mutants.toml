@@ -2,7 +2,8 @@
 exclude_re = [
   "src/main.rs",                      # argument plumbing; clap owns the contract
   "replace .* with String::new\\(\\)",
-  # A hang, not a survivor. Line 128 of rules_d.rs is the both-ended check that ends
+  # A hang, not a survivor. The `(r1.len(), r2.len()) == (s1.len(), s2.len())` test in
+  # rules_d.rs is the both-ended check that ends
   # verrevcmp's loop; negating it hands the loop back the same two slices, so every
   # pair of equal versions spins forever. No test catches a mutant that never returns,
   # and #66 showed that reshaping the loop to dodge a timeout costs more than it buys.
