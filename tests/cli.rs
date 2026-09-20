@@ -491,10 +491,7 @@ fn a_shared_directory_groups_only_under_dir_system() {
 fn a_dir_min_below_two_is_a_usage_error() {
     // One path is not a group, and §9 maps a usage error to 1 rather than clap's 2.
     for n in ["1", "0"] {
-        let (code, _, err) = run(
-            &["fapolicyd", "--no-conf", "rules", "--dir-min", n],
-            &group_in("/app", 5),
-        );
+        let (code, _, err) = run(&["fapolicyd", "--no-conf", "rules", "--dir-min", n], b"");
         assert_eq!(code, 1, "--dir-min {n} must be a usage error: {err}");
     }
 }
@@ -502,10 +499,7 @@ fn a_dir_min_below_two_is_a_usage_error() {
 #[test]
 fn dir_system_without_dir_min_is_a_usage_error() {
     // It lifts refusals that only the grouping makes, so alone it means nothing.
-    let (code, _, err) = run(
-        &["fapolicyd", "--no-conf", "rules", "--dir-system"],
-        &group_in("/app", 5),
-    );
+    let (code, _, err) = run(&["fapolicyd", "--no-conf", "rules", "--dir-system"], b"");
     assert_eq!(code, 1, "{err}");
 }
 
