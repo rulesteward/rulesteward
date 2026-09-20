@@ -194,13 +194,13 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
     // "run-level only": every diagnostic that describes the run rather than a line.
     let (wanted, artifact) = match action {
-        FapolicydAction::Rules { .. } => (Some(Artifact::Rules), &outcome.rules),
-        FapolicydAction::Trust => (Some(Artifact::Trust), &outcome.trust),
-        FapolicydAction::Why => (None, &outcome.why),
+        FapolicydAction::Rules { .. } => (Some(Artifact::Rules), outcome.rules_text()),
+        FapolicydAction::Trust => (Some(Artifact::Trust), outcome.trust_text()),
+        FapolicydAction::Why => (None, outcome.why_text()),
         // `Both` rather than `None`: a check line is a verdict per record, so the
         // per-line diagnostics that say a record could not be used at all belong beside
         // it, while the notes about emitting a rule or a trust entry do not.
-        FapolicydAction::Check { .. } => (Some(Artifact::Both), &outcome.check),
+        FapolicydAction::Check { .. } => (Some(Artifact::Both), outcome.check_text()),
     };
     let mut bytes = Vec::new();
     // The conf and rules reads happen here and not in the pass, so their notes arrive
@@ -229,7 +229,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
             None => writeln!(bytes, "# rulesteward: {}", d.msg),
         };
     }
-    bytes.extend_from_slice(artifact);
+    bytes.extend_from_slice(&artifact);
 
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {

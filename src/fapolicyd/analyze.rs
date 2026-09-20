@@ -19,20 +19,65 @@ const MAX_SYSLOG_FIELDS: usize = 21;
 /// `fapolicyd-cli` commands and `why` is the per-rule report; they go to different
 /// places and one run of the pass produces all three, so the caller writes whichever
 /// one its action names.
+///
+/// Every one of the four is held as the entries it is made of and not as the bytes they
+/// render to: the text comes from `rules_text`, `trust_text`, `why_text` and
+/// `check_text`, one per field, and rendering is the caller's last step.
 #[derive(Debug, Default)]
 pub struct Outcome {
-    pub rules: Vec<u8>,
-    pub trust: Vec<u8>,
-    /// The audit2why half: one line per denying rule, ascending by number. Rendered
-    /// here and not in `emit.rs`, because these lines are a report and not
-    /// `Suggestion`s — there is no target file for them to be written into.
-    pub why: Vec<u8>,
-    /// The `check` report: one line per distinct denial, in first-seen order, saying what
-    /// the proposed rules.d/ would do with it. Empty unless a candidate path was given.
-    pub check: Vec<u8>,
+    pub rules: Vec<Suggestion>,
+    pub trust: Vec<Suggestion>,
+    /// The audit2why half: one row per denying rule, ascending by number. A row and not
+    /// a line, because these are a report and not `Suggestion`s — there is no target
+    /// file for them to be written into, so `emit.rs` has nothing to say about them.
+    pub why: Vec<WhyRow>,
+    /// The `check` rows: one per distinct denial, in first-seen order, saying what the
+    /// proposed rules.d/ would do with it. Empty unless a candidate path was given.
+    pub check: Vec<(check::Key, usize, check::Verdict)>,
     pub diagnostics: Vec<Diagnostic>,
     /// §9's exit 2: we read the input but could not make sense of any of it.
     pub consumed_but_unparseable: bool,
+}
+
+/// What one `why` line is about, before it is a line: the rule number, the rules.d file
+/// it was found in (empty when it was not located), the counts the verdict column is
+/// computed from, and the rule itself when there was one to look up.
+#[derive(Debug)]
+pub struct WhyRow {
+    pub rule: usize,
+    pub file: String,
+    pub denials: usize,
+    pub rules: usize,
+    pub trust: usize,
+    /// `None` when there is no rules file, or when it does not have that number: nothing
+    /// to quote and no verdict to reach.
+    pub matched: Option<WhyRule>,
+}
+
+/// The rule a `why` row matched: its text, and whether it refuses the record outright
+/// (§7), which is the whole of what the verdict needs from it.
+#[derive(Debug)]
+pub struct WhyRule {
+    pub refuses: bool,
+    pub text: String,
+}
+
+impl Outcome {
+    pub fn rules_text(&self) -> Vec<u8> {
+        self.rules.iter().flat_map(emit::render).collect()
+    }
+
+    pub fn trust_text(&self) -> Vec<u8> {
+        self.trust.iter().flat_map(emit::render).collect()
+    }
+
+    pub fn why_text(&self) -> Vec<u8> {
+        why_report(&self.why)
+    }
+
+    pub fn check_text(&self) -> Vec<u8> {
+        check::report(&self.check)
+    }
 }
 
 /// What one rule number accounts for: how many records it denied, and how many
@@ -333,7 +378,7 @@ pub fn analyze(
                 }
                 match artifact {
                     Artifact::Rules => accepted.push(suggestion.clone()),
-                    _ => out.trust.extend_from_slice(&emit::render(&suggestion)),
+                    _ => out.trust.push(suggestion.clone()),
                 }
                 seen.push(suggestion);
             }
@@ -348,7 +393,7 @@ pub fn analyze(
 
     // After deduplication, because two records for the same path are one member of a
     // group and not two, and after the loop, because the last record can still join one.
-    let accepted = match dir_min {
+    out.rules = match dir_min {
         Some(min) => {
             let (grouped, notes) = group_dirs(accepted, min, dir_system);
             out.diagnostics.extend(notes);
@@ -356,9 +401,6 @@ pub fn analyze(
         }
         None => accepted,
     };
-    for suggestion in &accepted {
-        out.rules.extend_from_slice(&emit::render(suggestion));
-    }
 
     if corrupt > 0 {
         out.diagnostics.push(Diagnostic {
@@ -426,8 +468,8 @@ pub fn analyze(
         });
     }
 
-    out.why = why_report(&tally, rules, rules_d);
-    out.check = check::report(&checked);
+    out.why = why_rows(&tally, rules, rules_d);
+    out.check = checked;
 
     out.diagnostics = collapse(out.diagnostics);
 
@@ -648,6 +690,35 @@ fn names(record: &Record) -> Vec<&[u8]> {
         .collect()
 }
 
+/// The `why` rows: one per denying rule, ascending, each holding the two lookups a row
+/// needs -- the rules.d file the number was located in, and the rule the compiled file
+/// has at that number. Everything a row says in words is decided in `why_report`.
+fn why_rows(
+    tally: &BTreeMap<usize, Tally>,
+    rules: Option<&[rules::Rule]>,
+    rules_d: &[rules_d::File],
+) -> Vec<WhyRow> {
+    tally
+        .iter()
+        .map(|(&n, t)| WhyRow {
+            rule: n,
+            file: rules
+                .and_then(|compiled| rules_d::locate(rules_d, compiled, n))
+                .map(|i| rules_d[i].name.clone())
+                .unwrap_or_default(),
+            denials: t.denials,
+            rules: t.rules,
+            trust: t.trust,
+            matched: rules
+                .and_then(|compiled| n.checked_sub(1).and_then(|i| compiled.get(i)))
+                .map(|r| WhyRule {
+                    refuses: r.refuses(),
+                    text: r.text.clone(),
+                }),
+        })
+        .collect()
+}
+
 /// The `why` artifact: one line per denying rule, ascending, in aligned columns.
 ///
 /// Columns are `rule=N`, the rules.d file, the denial count, the verdict and the rule
@@ -656,27 +727,18 @@ fn names(record: &Record) -> Vec<&[u8]> {
 /// field, so it goes last and pads nothing and one long `pattern=` shifts no column. A
 /// column that is empty for every row (no rules file, so no file, verdict or text)
 /// collapses along with its separator, and trailing spaces are trimmed per line.
-fn why_report(
-    tally: &BTreeMap<usize, Tally>,
-    rules: Option<&[rules::Rule]>,
-    rules_d: &[rules_d::File],
-) -> Vec<u8> {
-    let rows: Vec<[String; 5]> = tally
+fn why_report(rows: &[WhyRow]) -> Vec<u8> {
+    let rows: Vec<[String; 5]> = rows
         .iter()
-        .map(|(&n, t)| {
-            let file = rules
-                .and_then(|compiled| rules_d::locate(rules_d, compiled, n))
-                .map(|i| rules_d[i].name.clone())
-                .unwrap_or_default();
+        .map(|row| {
             // No rules file, or a number it does not have: nothing to quote and no
             // verdict to reach, so both cells stay empty.
-            let rule = rules.and_then(|compiled| n.checked_sub(1).and_then(|i| compiled.get(i)));
-            let (verdict, text) = match rule {
-                Some(r) if r.refuses() => {
+            let (verdict, text) = match &row.matched {
+                Some(r) if r.refuses => {
                     ("subject-side, nothing to emit".to_string(), r.text.clone())
                 }
                 Some(r) => {
-                    let counts: Vec<String> = [("rules", t.rules), ("trust", t.trust)]
+                    let counts: Vec<String> = [("rules", row.rules), ("trust", row.trust)]
                         .iter()
                         .filter(|(_, c)| *c > 0)
                         .map(|(kind, c)| format!("{kind}: {c}"))
@@ -692,9 +754,9 @@ fn why_report(
                 None => (String::new(), String::new()),
             };
             [
-                format!("rule={n}"),
-                file,
-                t.denials.to_string(),
+                format!("rule={}", row.rule),
+                row.file.clone(),
+                row.denials.to_string(),
                 verdict,
                 text,
             ]
@@ -969,7 +1031,7 @@ mod tests {
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
         let o = analyze(&whole, None, None, &[], None, None, false);
-        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        assert!(o.trust_text().starts_with(b"fapolicyd-cli --file add "));
         // The only thing left to say is that the other action holds this suggestion.
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert!(
@@ -1033,8 +1095,8 @@ mod tests {
         assert!(
             o.rules.is_empty() && o.trust.is_empty(),
             "{}{}",
-            String::from_utf8_lossy(&o.rules),
-            String::from_utf8_lossy(&o.trust)
+            String::from_utf8_lossy(&o.rules_text()),
+            String::from_utf8_lossy(&o.trust_text())
         );
         assert!(o.diagnostics.is_empty(), "{}", notes(&o));
         assert!(!o.consumed_but_unparseable, "a comment is not content");
@@ -1048,7 +1110,7 @@ mod tests {
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
         let o = analyze(TRUSTED, None, None, &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.rules.clone()).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
         let text = notes(&o);
@@ -1063,7 +1125,7 @@ mod tests {
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
         let o = analyze(&input, None, None, &[], None, None, false);
-        assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 1);
+        assert_eq!(o.rules_text().iter().filter(|b| **b == b'\n').count(), 1);
     }
 
     #[test]
@@ -1076,7 +1138,7 @@ mod tests {
         let input = [TRUSTED, open.as_bytes()].concat();
         let o = analyze(&input, None, None, &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.rules).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
              allow perm=open exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
         );
@@ -1181,7 +1243,7 @@ mod tests {
     fn a_group_one_short_of_the_floor_stays_one_rule_per_path() {
         let o = grouped(&group_in("/app", 2), 3, false);
         assert_eq!(
-            String::from_utf8(o.rules).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/app/f0\n\
              allow perm=execute exe=/usr/bin/bash : path=/app/f1\n"
         );
@@ -1194,7 +1256,7 @@ mod tests {
         for n in [3, 4] {
             let o = grouped(&group_in("/app", n), 3, false);
             assert_eq!(
-                String::from_utf8(o.rules.clone()).unwrap(),
+                String::from_utf8(o.rules_text()).unwrap(),
                 "allow perm=execute exe=/usr/bin/bash : dir=/app/\n",
                 "{n} members"
             );
@@ -1210,8 +1272,8 @@ mod tests {
     #[test]
     fn the_same_directory_without_the_flag_is_one_rule_per_path() {
         let o = analyze(&group_in("/app", 5), None, None, &[], None, None, false);
-        assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 5);
-        assert!(!o.rules.windows(4).any(|w| w == b"dir="));
+        assert_eq!(o.rules_text().iter().filter(|b| **b == b'\n').count(), 5);
+        assert!(!o.rules_text().windows(4).any(|w| w == b"dir="));
     }
 
     #[test]
@@ -1222,7 +1284,7 @@ mod tests {
         let input = [one.as_slice(), &one, &one].concat();
         let o = grouped(&input, 3, false);
         assert_eq!(
-            String::from_utf8(o.rules).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/app/f0\n"
         );
     }
@@ -1237,7 +1299,7 @@ mod tests {
             .into_bytes();
         let o = grouped(&input, 2, true);
         assert_eq!(
-            String::from_utf8(o.rules).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute all : path=/app/f0\n\
              allow perm=execute all : path=/app/f1\n\
              allow perm=execute all : path=/app/f2\n"
@@ -1255,7 +1317,7 @@ mod tests {
         // of perm, exe and directory, so sharing the directory alone pools nothing. Each
         // takes the position of its own first member.
         assert_eq!(
-            String::from_utf8(o.rules).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : dir=/app/\n\
              allow perm=execute exe=/usr/bin/grep : dir=/app/\n\
              allow perm=open exe=/usr/bin/bash : dir=/app/\n"
@@ -1270,7 +1332,7 @@ mod tests {
             .replace("trust=1", "trust=0");
         let o = grouped(input.as_bytes(), 2, true);
         assert!(o.rules.is_empty(), "{:?}", o.rules);
-        let trust = String::from_utf8(o.trust).unwrap();
+        let trust = String::from_utf8(o.trust_text()).unwrap();
         assert_eq!(trust.matches("--file add").count(), 3, "{trust}");
     }
 
@@ -1279,7 +1341,7 @@ mod tests {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
         let o = analyze(input, None, None, &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.rules.clone()).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
         );
         let text = notes(&o);
@@ -1319,8 +1381,8 @@ mod tests {
             assert!(
                 o.rules.is_empty() && o.trust.is_empty(),
                 "{tail}: {}{}",
-                String::from_utf8_lossy(&o.rules),
-                String::from_utf8_lossy(&o.trust)
+                String::from_utf8_lossy(&o.rules_text()),
+                String::from_utf8_lossy(&o.trust_text())
             );
             let text = notes(&o);
             assert!(text.contains("pattern=ld_so"), "{tail}: {text}");
@@ -1337,7 +1399,7 @@ mod tests {
                       path=/tmp/gaps/trusted-ls trust=1\n";
         let o = analyze(input, None, Some(&rules), &[], None, None, false);
         let text = notes(&o);
-        assert!(o.rules.starts_with(b"allow perm=execute"), "{text}");
+        assert!(o.rules_text().starts_with(b"allow perm=execute"), "{text}");
         assert!(text.contains("not read"), "generic note: {text}");
         assert!(!text.contains("does not match"), "{text}");
     }
@@ -1395,7 +1457,7 @@ mod tests {
             None,
             false,
         );
-        let report = String::from_utf8(o.check.clone()).unwrap();
+        let report = String::from_utf8(o.check_text()).unwrap();
         assert_eq!(
             report.lines().filter(|l| l.starts_with("unknown ")).count(),
             2,
@@ -1446,7 +1508,7 @@ mod tests {
             None,
             false,
         );
-        let report = String::from_utf8(o.check.clone()).unwrap();
+        let report = String::from_utf8(o.check_text()).unwrap();
         let lines: Vec<&str> = report.lines().collect();
         assert_eq!(lines.len(), 2, "two distinct denials: {report}");
         assert!(
@@ -1478,7 +1540,7 @@ mod tests {
             false,
         );
         assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
-        assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);
+        assert!(o.check_text().starts_with(b"unknown "), "{:?}", o.check);
         assert!(o.rules.is_empty() && o.trust.is_empty());
     }
 
@@ -1488,7 +1550,7 @@ mod tests {
                       path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&ld_so()), &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.trust.clone()).unwrap(),
+            String::from_utf8(o.trust_text()).unwrap(),
             "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
         );
         // The mismatch note, plus the cross-reference into the `rules` output.
@@ -1513,7 +1575,7 @@ mod tests {
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&rules), &[], None, None, false);
-        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        assert!(o.trust_text().starts_with(b"fapolicyd-cli --file add "));
         assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
             o.diagnostics[0].msg.contains("does not match this log"),
@@ -1528,7 +1590,7 @@ mod tests {
         // record as a mismatch.
         let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
         let o = analyze(input, None, Some(&ld_so()), &[], None, None, false);
-        assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
+        assert!(o.trust_text().starts_with(b"fapolicyd-cli --file add "));
         assert!(!notes(&o).contains("does not match"), "{}", notes(&o));
     }
 
@@ -1546,7 +1608,7 @@ mod tests {
         );
         let o = analyze(input.as_bytes(), None, None, &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.rules.clone()).unwrap(),
+            String::from_utf8(o.rules_text()).unwrap(),
             format!(
                 "allow perm=execute exe=/usr/sbin/runuser : path={LOADER}\n\
                  allow perm=open exe=/usr/sbin/runuser : path={LOADER}\n\
@@ -1572,11 +1634,11 @@ mod tests {
         );
         let o = analyze(input.as_bytes(), None, None, &[], None, None, false);
         assert!(
-            String::from_utf8(o.rules.clone())
+            String::from_utf8(o.rules_text())
                 .unwrap()
                 .contains("allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/grep"),
             "{}",
-            String::from_utf8_lossy(&o.rules)
+            String::from_utf8_lossy(&o.rules_text())
         );
         assert!(!notes(&o).contains("exe= is stale"), "{}", notes(&o));
     }
@@ -1587,7 +1649,7 @@ mod tests {
         // never the stale logged value, which is known wrong.
         let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
         let o = analyze(input, None, None, &[], None, None, false);
-        let text = String::from_utf8(o.rules.clone()).unwrap();
+        let text = String::from_utf8(o.rules_text()).unwrap();
         assert!(
             text.contains("allow perm=open all : path=/usr/bin/grep"),
             "{text}"
@@ -1617,7 +1679,7 @@ mod tests {
                       path=/tmp/unknown trust=9\n";
         let o = analyze(input, None, Some(&rules), &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.why.clone()).unwrap(),
+            String::from_utf8(o.why_text()).unwrap(),
             "rule=1  1 denials  subject-side, nothing to emit  \
              deny_audit perm=any pattern=ld_so : all\n\
              rule=2  2 denials  rules: 1, trust: 1             \
@@ -1637,7 +1699,7 @@ mod tests {
                       path=/tmp/b trust=0\n";
         let o = analyze(input, None, None, &[], None, None, false);
         assert_eq!(
-            String::from_utf8(o.why.clone()).unwrap(),
+            String::from_utf8(o.why_text()).unwrap(),
             "rule=1  2 denials\n"
         );
     }
@@ -1655,7 +1717,7 @@ mod tests {
                       rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/b trust=0\n";
         let o = analyze(input, None, Some(&rules), &[], None, None, false);
-        let why = String::from_utf8(o.why.clone()).unwrap();
+        let why = String::from_utf8(o.why_text()).unwrap();
         let lines: Vec<&str> = why.lines().collect();
         assert_eq!(lines.len(), 2, "{why}");
         assert_eq!(
