@@ -434,7 +434,7 @@ pub fn analyze(
 /// The daemon's own `dir=systemdirs` is not a substitute: it is a prefix list with
 /// `/usr/` on it, so it would refuse `/usr/bin/app-dir/` too, and it names none of
 /// `/opt`, `/home`, `/tmp` or `/var`.
-const SHARED_DIRS: [&[u8]; 36] = [
+const SHARED_DIRS: &[&[u8]] = &[
     b"/usr",
     b"/usr/bin",
     b"/usr/sbin",
@@ -442,6 +442,9 @@ const SHARED_DIRS: [&[u8]; 36] = [
     b"/usr/lib64",
     b"/usr/libexec",
     b"/usr/share",
+    b"/usr/share/man",
+    b"/usr/share/misc",
+    b"/usr/games",
     b"/usr/include",
     b"/usr/src",
     b"/usr/local",
@@ -451,15 +454,33 @@ const SHARED_DIRS: [&[u8]; 36] = [
     b"/usr/local/lib64",
     b"/usr/local/libexec",
     b"/usr/local/share",
+    b"/usr/local/etc",
+    b"/usr/local/games",
+    b"/usr/local/include",
+    b"/usr/local/man",
+    b"/usr/local/src",
     b"/bin",
     b"/sbin",
     b"/lib",
     b"/lib64",
     b"/etc",
+    b"/etc/opt",
     b"/opt",
     b"/srv",
     b"/var",
     b"/var/lib",
+    b"/var/lib/misc",
+    b"/var/account",
+    b"/var/cache",
+    b"/var/crash",
+    b"/var/games",
+    b"/var/local",
+    b"/var/lock",
+    b"/var/log",
+    b"/var/mail",
+    b"/var/opt",
+    b"/var/run",
+    b"/var/spool",
     b"/home",
     b"/root",
     b"/tmp",
@@ -1070,8 +1091,23 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_list_names_the_fhs_directories_outside_usr_too() {
+        // The loop below walks the list, so it cannot notice an entry that is missing.
+        for d in [
+            "/usr/bin",
+            "/var/log",
+            "/var/spool",
+            "/usr/local/etc",
+            "/etc/opt",
+        ] {
+            let path = format!("{d}/f0");
+            assert_eq!(dir_of(path.as_bytes(), false), None, "{d} is shared");
+        }
+    }
+
+    #[test]
     fn every_shared_directory_in_the_list_is_refused_and_dir_system_lifts_it() {
-        for d in SHARED_DIRS {
+        for &d in SHARED_DIRS {
             let path = [d, b"/f0"].concat();
             let name = String::from_utf8_lossy(d).into_owned();
             assert_eq!(dir_of(&path, false), None, "{name} is shared");

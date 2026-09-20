@@ -690,7 +690,7 @@ fails to start on next boot (`emitter-constraints.md:14`).
   supply is never grouped, because `all` on the subject side is already the
   broadest rule there is and widening the object side as well is more than the
   log showed. A group is refused, its members staying exact `path=` rules, when
-  its parent is one of the 36 directories the FHS shares — `/usr`, `/usr/bin`,
+  its parent is a directory the FHS names — `/usr`, `/usr/bin`,
   `/etc`, `/opt`, `/var`, `/home`, `/tmp` and the rest — by **exact** match, so
   `/usr/bin/app-dir` and `/opt/app-dir` still group; or when it is at or under
   `/tmp/`, `/var/tmp/` or `/dev/shm/`, where every user can write, by
