@@ -734,6 +734,62 @@ fn a_candidate_is_placed_by_its_filename() {
     }
 }
 
+/// The #139 reproduction through a candidate directory, where the per-set gate is `main`'s
+/// to compute: the proposed `rules.d/` prepends the record's own ftype to `%languages`, so
+/// the shipped deny naming that set is reached before the new allow and matches it. Before
+/// the gate reached `Proposal::Merged` this answered `allowed`, which is the wrong answer
+/// the issue forbids.
+#[test]
+fn a_candidate_directory_that_edits_a_set_is_gated_on_that_set() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let shipped = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/rules.d/10-languages.rules"
+    ))
+    .expect("read the shipped set");
+    let dir = std::env::temp_dir().join("rulesteward-check-edited-set");
+    std::fs::create_dir_all(&dir).expect("create the proposal");
+    for (name, body) in [
+        (
+            "10-languages.rules",
+            shipped.replace("%languages=", "%languages=application/x-executable,"),
+        ),
+        (
+            "70-trusted-lang.rules",
+            "allow perm=open all : ftype=%languages trust=1\n\
+             deny_audit perm=any all : ftype=%languages\n"
+                .to_string(),
+        ),
+        (
+            "71-new.rules",
+            "allow perm=execute all : path=/tmp/gaps/trusted-ls\n".to_string(),
+        ),
+        (
+            "90-deny-execute.rules",
+            "deny_audit perm=execute all : all\n".to_string(),
+        ),
+    ] {
+        std::fs::write(dir.join(name), body).expect("write the proposal");
+    }
+    let (code, out, err) = run(
+        &["fapolicyd", "--conf", conf, "check", dir.to_str().unwrap()],
+        DENIED_BY_13,
+    );
+    assert_eq!(code, 0, "{err}");
+    let line = out
+        .lines()
+        .find(|l| !l.starts_with("# "))
+        .unwrap_or_default();
+    assert!(
+        line.starts_with("denied ") && line.ends_with("deny_audit perm=any all : ftype=%languages"),
+        "{out}"
+    );
+    std::fs::remove_dir_all(&dir).expect("remove the proposal");
+}
+
 /// #158: with no `PATH` the proposal is the host's own `rules.d/` beside `--conf`, and
 /// the baseline is `compiled.rules` — what the daemon actually loaded. An operator who
 /// edited `rules.d/` in place and has not run fagenrules yet is exactly that
@@ -812,9 +868,10 @@ fn a_changed_set_definition_is_not_nothing_proposed() {
 
 /// D3 skips the rules before N because the daemon walked past them, and that proof holds
 /// only while the sets they name hold. Here the record's own ftype was added to
-/// `%languages`, so the deny naming that set now matches and is reached before the new
-/// allow. `allowed` would be the wrong answer the issue's hazard forbids; what this tool
-/// may say is that it cannot decide, naming the rule.
+/// `%languages`, so the deny naming that set is reached before the new allow and, resolved
+/// by membership against the proposed definition, matches (#139). `allowed` is the wrong
+/// answer the issue's hazard forbids, and the per-set gate in `main` is what keeps that
+/// deny from being skipped as a rule the daemon already walked past.
 #[test]
 fn a_rule_naming_a_changed_set_is_evaluated_and_not_skipped() {
     let conf = concat!(
@@ -827,8 +884,11 @@ fn a_rule_naming_a_changed_set_is_evaluated_and_not_skipped() {
         .lines()
         .find(|l| !l.starts_with("# "))
         .unwrap_or_default();
-    assert!(line.starts_with("unknown "), "{out}");
-    assert!(line.contains("ftype=%languages"), "{out}");
+    assert!(line.starts_with("denied "), "{out}");
+    assert!(
+        line.ends_with("deny_audit perm=any all : ftype=%languages"),
+        "the deny naming the edited set is what decides it: {out}"
+    );
 }
 
 /// The default path is read beside `--conf`, so `--no-conf` leaves it nowhere to resolve

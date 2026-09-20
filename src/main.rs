@@ -128,17 +128,21 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         _ => None,
     };
     let rules_d = fapolicyd::rules_d::files(listing);
-    // The directory's `%set` definitions against the ones the daemon loaded, in merge
-    // order because fagenrules concatenates. A set is in no rule's text and in no rule
-    // number, so this is the only place an edited one is visible at all; what it holds is
-    // never expanded (#139), so the answer is a bool and the library refuses on it. Only
-    // the no-PATH proposal is gated on it: the same hazard through a candidate `PATH` is
-    // #139's too.
-    let sets_agree = rules_d.iter().flat_map(|f| &f.sets).eq(&loaded_sets);
+    // The proposal's `%set` definitions against the ones the daemon loaded, name by name.
+    // A set is in no rule's text and in no rule number, so this is the only place an
+    // edited one is visible at all, and both proposals are gated on it (#139): a rule
+    // naming a changed set has lost D3's proof and is evaluated against the proposed
+    // definition, and a rule naming only unchanged sets keeps it. Computed here because
+    // this is where the two files were read.
+    let changed =
+        fapolicyd::check::changed_sets(merged.as_deref().unwrap_or(&rules_d), &loaded_sets);
     // With no PATH the proposal is that same listing, read as it is on disk now (#158).
     let proposal = match (&action, merged.as_deref()) {
-        (FapolicydAction::Check { .. }, Some(files)) => Some(Proposal::Merged(files)),
-        (FapolicydAction::Check { .. }, None) => Some(Proposal::OnDisk { sets_agree }),
+        (FapolicydAction::Check { .. }, Some(files)) => Some(Proposal::Merged {
+            files,
+            changed: &changed,
+        }),
+        (FapolicydAction::Check { .. }, None) => Some(Proposal::OnDisk { changed: &changed }),
         _ => None,
     };
 
@@ -156,7 +160,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         // Rule for rule AND set for set: a `rules.d/` whose only edit is a `%set`
         // definition merges to the loaded rules and is not what the daemon loaded.
         (FapolicydAction::Check { path: None }, Some(loaded))
-            if sets_agree && merges_to(&rules_d, loaded) =>
+            if changed.is_empty() && merges_to(&rules_d, loaded) =>
         {
             Some(format!(
                 "{} merges to the rules the daemon loaded; nothing is proposed and every \
@@ -284,7 +288,11 @@ fn merges_to(files: &[fapolicyd::rules_d::File], loaded: &[fapolicyd::rules::Rul
 
 /// What the daemon loaded: its rules, the `%set` definitions beside them, and whether
 /// `compiled.rules` is the file it came from.
-type LoadedRules = (Vec<fapolicyd::rules::Rule>, Vec<Vec<u8>>, bool);
+type LoadedRules = (
+    Vec<fapolicyd::rules::Rule>,
+    Vec<fapolicyd::rules::Set>,
+    bool,
+);
 
 /// The daemon's `open_file()`: /etc/fapolicyd/fapolicyd.rules first, compiled.rules
 /// only when that open fails (research `rule-files.md`). The daemon never opens
