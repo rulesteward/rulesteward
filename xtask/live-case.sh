@@ -5,7 +5,11 @@
 # --conf, its stdout applied exactly as printed with the daemon live, then the
 # identical triggers again. PASS means no suggested path was denied a second
 # time; every FAIL names the path, and a second placement pass separates a wrong
-# rule from a wrongly placed one.
+# rule from a wrongly placed one. Between the two passes the same fragment goes
+# through `check` before the daemon loads it, and pass 2 is what its verdicts are
+# asserted against (#123). A run the tool answers with trust entries alone has no
+# fragment, so it checks a hand-written candidate in a pass of its own and takes
+# it back out before pass 2.
 #
 # Daemon helpers come from the research harness (fp_setup, fp_start, as_tester,
 # fp_manifest), which is why the file lives at /harvest/lib.sh here. Never
@@ -399,6 +403,106 @@ reload_rules() {
     fail "$label: reload did not load $want rules; daemon killed"
 }
 
+# run_check <candidate> <out>: the pass 1 denials through `check` against a
+# candidate the daemon has not loaded, printed like every other action's run.
+run_check() {
+    echo "== rulesteward fapolicyd check $1 --conf /etc/fapolicyd/fapolicyd.conf =="
+    $RS fapolicyd check "$1" --conf /etc/fapolicyd/fapolicyd.conf \
+        < /tmp/denials1.txt > "$2" 2>/tmp/rs.err
+    RC=$?
+    echo "exit=$RC"
+    echo "-- stdout --"; cat "$2"
+    echo "-- stderr --"; cat /tmp/rs.err
+    [ "$RC" -eq 0 ] || fail "check exited $RC"
+    [ -s /tmp/rs.err ] && fail "check wrote to stderr"
+    return 0
+}
+
+# check_counts <report> <rows>: one pass over a check report. The verdict, perm=,
+# path= and exe= of every line go to <rows> for the assertion below, and the
+# run's counts go to stdout on one greppable line. The scan stops at the count so
+# the candidate rule text in the last column cannot be read as the record's own
+# fields. The counts are denials and not lines, because a line carries every
+# record that agreed on the same six values.
+check_counts() {
+    : > "$2"
+    awk -v rows="$2" '$1=="allowed"||$1=="denied"||$1=="unknown" {
+           n=0; p=""; f=""; e=""
+           for (i=2;i<=NF;i++) {
+               if ($i=="denials)") { n=substr($(i-1),2)+0; break }
+               if ($i ~ /^perm=/) p=$i; else if ($i ~ /^path=/) f=$i; else if ($i ~ /^exe=/) e=$i
+           }
+           c[$1]+=n; print $1, p, f, e > rows
+         }
+         END { printf "check: allowed=%d denied=%d unknown=%d\n", c["allowed"], c["denied"], c["unknown"] }' \
+        "$1"
+}
+
+denied_again() {  # denied_again <denials> <perm=X> <path=Y|exe=Y>: a denial carrying both
+    [ -n "$3" ] || return 1
+    awk -v p="$2" -v f="$3" '
+        { hp=0; hf=0
+          for (i=1;i<=NF;i++) { if ($i==p) hp=1; if ($i==f) hf=1 }
+          if (hp && hf) { found=1; exit } }
+        END { exit !found }' "$1"
+}
+
+# check_against <rows> <denials>: D9 (#119). Every denial `check` called allowed
+# has to be absent from the pass the daemon ran with those same rules loaded. An
+# `allowed` the daemon denied again is a bug in `check` and fails the run --
+# never an assertion to soften. An `unknown` is reported beside what the daemon
+# did and fails nothing: declining to guess is a verdict the tool is entitled to.
+check_against() {
+    local verdict perm path exe seen
+    echo "== check: predictions against $(basename "$2") =="
+    while read -r verdict perm path exe; do
+        if denied_again "$2" "$perm" "${path:-$exe}"; then seen="denied again"; else seen="absent"; fi
+        case "$verdict" in
+            allowed) [ "$seen" = absent ] ||
+                fail "check: allowed $perm ${path:-$exe} but the daemon denied it again with those rules loaded" ;;
+            unknown) echo "check unknown: $perm ${path:-$exe}: $seen" ;;
+        esac
+    done < "$1"
+    echo "check: every allowed denial is absent from $(basename "$2")"
+}
+
+CANDDIR=/tmp/candidate
+rm -rf "$CANDDIR"; mkdir -p "$CANDDIR"
+# base and denyall are answered by trust entries alone: the tool prints no allow
+# line, so those runs install no rules file and `check` would have no candidate
+# to predict on. They get a hand-written one, written from what pass 1 really
+# denied, and it gets a pass of its own: left loaded, it would clear the same
+# denials during pass 2 and that pass would stop proving what it exists to prove,
+# which is that the emitted trust entries alone are enough.
+if ! grep -q '^allow ' /tmp/rs.rules; then
+    HAND="$CANDDIR/40-live-check.rules"
+    # 40- merges before 41-shared-obj.rules (the sharedlib open) and
+    # 90-deny-execute.rules (the execute), the two files that denied anything an
+    # object-side rule can resolve. path= and dir= are two different D4
+    # attributes against two real pass 1 denials. The ld_so denials get no
+    # candidate: rule 5 is subject-side and no path rule resolves it.
+    printf '%s\n' 'allow perm=execute all : path=/tmp/live/probe-grep' \
+                  'allow perm=open all : dir=/tmp/live/' > "$HAND"
+    echo "== hand-written candidate $(basename "$HAND") =="; cat "$HAND"
+    run_check "$HAND" /tmp/rs.check-hand
+    check_counts /tmp/rs.check-hand /tmp/check-rows-hand.txt
+    cp "$HAND" /etc/fapolicyd/rules.d/
+    reload_rules "check reload"
+    command sleep 5
+    echo "== check pass: identical triggers, hand-written candidate loaded =="
+    MARK=$(wc -l < /tmp/deny.log)
+    trigger
+    tail -n +$((MARK+1)) /tmp/deny.log | grep 'dec=deny' | tee /tmp/denials-check.txt
+    echo "count=$(wc -l < /tmp/denials-check.txt)"
+    check_against /tmp/check-rows-hand.txt /tmp/denials-check.txt
+    # Out again before the tool's own artifacts are applied. The cleanup reload's
+    # own "Loaded N rules" is the proof it is gone: N is back to what the run
+    # started with.
+    rm -f "/etc/fapolicyd/rules.d/$(basename "$HAND")"
+    reload_rules "check cleanup reload"
+    command sleep 5
+fi
+
 echo "== applying both artifacts verbatim (daemon live, as a user would) =="
 # The eval below is the test, not an oversight: a user pastes these lines into a
 # root shell, so the case does the same, and a quoting defect in shell_quote
@@ -416,6 +520,12 @@ else
 fi
 RULES=/etc/fapolicyd/$RULES
 echo "== rules file: $RULES ($WHENCE) =="
+# The fragment is staged under its installed basename and only copied into
+# rules.d/ once `check` has read it (#123). Staging it in rules.d/ first would be
+# a file fagenrules has not compiled yet, which is exactly the drift
+# `rules_d::locate` reports, and every verdict would come back `unknown`. The
+# basename is the staged name because placement is decided by the name alone.
+CAND="$CANDDIR/$(basename "$RULES")"
 : > /tmp/suggested-paths.txt
 while IFS= read -r line; do
     case "$line" in
@@ -428,11 +538,27 @@ while IFS= read -r line; do
         "fapolicyd-cli --update")
             timeout 120 fapolicyd-cli --update || echo "  (--update exited $?)" ;;
         allow*)
-            echo "$line" >> "$RULES"
+            echo "$line" >> "$CAND"
             printf '%s\n' "${line##* : path=}" >> /tmp/suggested-paths.txt ;;
         *) echo "UNEXPECTED LINE: $line" ;;
     esac
 done < <(cat /tmp/rs.rules /tmp/rs.trust)
+
+: > /tmp/check-rows.txt
+if [ -f "$CAND" ]; then
+    run_check "$CAND" /tmp/rs.check
+    check_counts /tmp/rs.check /tmp/check-rows.txt
+    if [ "${HARVEST_VARIANT:-base}" = placement ]; then
+        # The same rules under a name that merges AFTER the file that denies.
+        # Placement is decided by the basename alone, so the verdict has to go
+        # back to denied; an allowed here would mean check ignored the name.
+        cp "$CAND" "$CANDDIR/99-rulesteward.rules"
+        run_check "$CANDDIR/99-rulesteward.rules" /tmp/rs.check-late
+        grep -qE '^denied .* path=/usr/bin/sed ' /tmp/rs.check-late ||
+            fail "placement: check did not say denied for /usr/bin/sed under 99-rulesteward.rules"
+    fi
+    cat "$CAND" >> "$RULES"
+fi
 # The deliberate failed reload, for showing that the assertion in reload_rules
 # fires. A rule with no perm= is the smallest unloadable rule there is -- the
 # daemon reads the `:` as a field and says "'=' is missing for field :" -- and it
@@ -460,6 +586,8 @@ MARK=$(wc -l < /tmp/deny.log)
 trigger
 tail -n +$((MARK+1)) /tmp/deny.log | grep 'dec=deny' | tee /tmp/denials2.txt
 echo "count=$(wc -l < /tmp/denials2.txt)"
+
+[ -s /tmp/check-rows.txt ] && check_against /tmp/check-rows.txt /tmp/denials2.txt
 echo "== verdict =="
 STILL=0
 still_denied /tmp/denials2.txt || STILL=1
