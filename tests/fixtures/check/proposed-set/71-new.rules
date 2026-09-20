@@ -1,0 +1,3 @@
+# The allow the operator is proposing. It sorts after the deny above, which the
+# edited set now makes match the record, so the daemon never reaches this rule.
+allow perm=execute all : path=/tmp/gaps/trusted-ls

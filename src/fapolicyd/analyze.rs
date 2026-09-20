@@ -89,14 +89,13 @@ pub fn analyze(
 ) -> Outcome {
     let mut out = Outcome::default();
 
-    // The arms differ only in what rule N is placed against. Candidates are placed
-    // against the `rules.d/` fagenrules generated `compiled.rules` from, so the sets in
-    // hand are by construction the loaded ones; a candidate file that redefines a set is
-    // #139's. The directory itself is placed against `compiled.rules`, because an
-    // in-place edit is exactly the two disagreeing, and whether its sets are still the
-    // loaded ones is the caller's to answer, because only it read the two files.
+    // The arms differ only in what rule N is placed against: candidates against the
+    // `rules.d/` fagenrules generated `compiled.rules` from, the directory itself against
+    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Whether
+    // the sets in hand are the loaded ones is the caller's to answer either way, because
+    // only it read the files, and both arms are asked.
     let proposed = proposal.map(|p| match p {
-        check::Proposal::Merged(files) => (Some(rules_d), true, files),
+        check::Proposal::Merged { files, sets_agree } => (Some(rules_d), sets_agree, files),
         check::Proposal::OnDisk { sets_agree } => (None, sets_agree, rules_d),
     });
 
@@ -976,7 +975,10 @@ mod tests {
             None,
             Some(&[rule]),
             &host,
-            Some(check::Proposal::Merged(&proposed)),
+            Some(check::Proposal::Merged {
+                files: &proposed,
+                sets_agree: true,
+            }),
         );
         let report = String::from_utf8(o.check.clone()).unwrap();
         let lines: Vec<&str> = report.lines().collect();
@@ -1002,7 +1004,10 @@ mod tests {
             None,
             Some(&ld_so()),
             &[],
-            Some(check::Proposal::Merged(&[])),
+            Some(check::Proposal::Merged {
+                files: &[],
+                sets_agree: true,
+            }),
         );
         assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
         assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);

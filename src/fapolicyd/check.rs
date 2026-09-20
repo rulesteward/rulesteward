@@ -56,19 +56,24 @@ pub fn key(record: &Record, n: Option<usize>) -> Key {
 
 /// What `check` was asked to check (#158). Both arms carry the same merged listing to
 /// `verdict`; what differs is what rule `N` is placed against.
+///
+/// `sets_agree` is the caller's answer to "are the `%set` definitions of the listing in
+/// hand the ones the daemon loaded?", decided in `main` where the files are read, and it
+/// is asked of both arms. A `%set` is in no rule's text and in no rule number, so an
+/// edited one is invisible to every comparison here while changing what the rules naming
+/// it match -- as true of a proposed `rules.d/` given by `PATH` as of the host's own.
+/// Which set changed is not asked: that precision is #139's.
 #[derive(Clone, Copy)]
 pub enum Proposal<'a> {
     /// `check <PATH>`: the host's `rules.d/` with the candidates merged in, placed
     /// against that same directory as fagenrules last left it.
-    Merged(&'a [rules_d::File]),
+    Merged {
+        files: &'a [rules_d::File],
+        sets_agree: bool,
+    },
     /// `check` with no `PATH`: the host's `rules.d/` as it is on disk now, placed against
     /// `compiled.rules`. The two disagreeing is the edit being asked about and not drift,
     /// so there is no host listing to locate rule `N` in.
-    ///
-    /// `sets_agree` is the caller's answer to "are the directory's `%set` definitions the
-    /// ones the daemon loaded?", decided in `main` where the files are read. A `%set` is
-    /// in no rule's text and in no rule number, so an edited one is invisible to every
-    /// comparison here and changes what the rules naming it match.
     OnDisk { sets_agree: bool },
 }
 

@@ -1,0 +1,2 @@
+allow perm=open all : ftype=%languages trust=1
+deny_audit perm=any all : ftype=%languages
