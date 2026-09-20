@@ -106,13 +106,17 @@ pub fn parse(file: &[u8]) -> Vec<Rule> {
 /// Bytes and not `String`, against the rest of this module: a set holds paths, and §4's
 /// byte rule applies to those. Through `from_utf8_lossy` two definitions differing only
 /// outside UTF-8 collapse into one U+FFFD and would report agreement that is not there,
-/// which is the one direction the caller must never be told (#158). The trim is
-/// `parse`'s, so a CRLF file or a trailing space is not an edit.
+/// which is the one direction the caller must never be told (#158).
+///
+/// Which lines are sets is decided by `parse`'s own test and not by a second one: its
+/// `str::trim` takes a vertical tab and U+00A0 that `trim_ascii` leaves, and a line
+/// `parse` drops as a set while this skips it would be in neither list, so an edit to it
+/// would compare as no edit. The ASCII trim is only on what is kept, so a CRLF file or a
+/// trailing space is not an edit.
 pub fn sets(file: &[u8]) -> Vec<Vec<u8>> {
     file.split(|&b| b == b'\n')
-        .map(<[u8]>::trim_ascii)
-        .filter(|line| line.starts_with(b"%"))
-        .map(<[u8]>::to_vec)
+        .filter(|line| String::from_utf8_lossy(line).trim().starts_with('%'))
+        .map(|line| line.trim_ascii().to_vec())
         .collect()
 }
 
@@ -311,6 +315,22 @@ allow perm=open all : all
         assert_ne!(sets(b"%s=/opt/\xff"), sets(b"%s=/opt/\xfe"));
         // The trim is what keeps a CRLF file or a trailing space from reading as an edit.
         assert_eq!(sets(b"%s=/opt/a\r\n"), sets(b"%s=/opt/a  \n"));
+    }
+
+    #[test]
+    fn every_line_parse_drops_as_a_set_is_a_line_sets_keeps() {
+        // `parse` trims with `str::trim`, which takes a vertical tab and U+00A0 that
+        // `trim_ascii` leaves. A line led by either is dropped from the rules as a set, so
+        // it has to be compared as one, or an edit to it is in neither list (#158).
+        for lead in [&b"\x0b"[..], "\u{a0}".as_bytes()] {
+            let (a, b) = (
+                [lead, b"%s=/opt/a\n"].concat(),
+                [lead, b"%s=/opt/b\n"].concat(),
+            );
+            assert!(parse(&a).is_empty(), "{a:?}");
+            assert_eq!(sets(&a).len(), 1, "{a:?}");
+            assert_ne!(sets(&a), sets(&b));
+        }
     }
 
     #[test]
