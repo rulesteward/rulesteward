@@ -40,6 +40,20 @@ pub fn render(s: &Suggestion) -> Vec<u8> {
             ]
             .concat()
         }
+        // `dir=` is `path=` compared with `strncmp`, so the trailing `/` the grouping
+        // put there is what keeps `dir=/tmp/live` off `/tmp/live2/x`. Unquoted for the
+        // same reason a path is: `policy` refused every path a rule cannot spell, and a
+        // parent of one of those holds no space, colon or control byte either.
+        Suggestion::Dir { perm, exe, dir } => [
+            b"allow perm=",
+            perm.as_slice(),
+            b" exe=",
+            exe,
+            b" : dir=",
+            dir,
+            b"\n",
+        ]
+        .concat(),
     }
 }
 
@@ -141,6 +155,19 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "allow perm=open exe=/tmp/quote'back\\slash : path=/tmp/x\n"
+        );
+    }
+
+    #[test]
+    fn a_dir_rule_is_a_rule_with_the_object_side_widened() {
+        let out = render(&Suggestion::Dir {
+            perm: b"execute".to_vec(),
+            exe: b"/usr/bin/bash".to_vec(),
+            dir: b"/app/".to_vec(),
+        });
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "allow perm=execute exe=/usr/bin/bash : dir=/app/\n"
         );
     }
 

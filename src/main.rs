@@ -167,18 +167,30 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         _ => None,
     };
 
+    // Both grouping flags belong to `rules` and change only what it writes (#138), so
+    // every other action passes the pair that means "one rule per denial".
+    let (dir_min, dir_system) = match &action {
+        FapolicydAction::Rules {
+            dir_min,
+            dir_system,
+        } => (*dir_min, *dir_system),
+        _ => (None, false),
+    };
+
     let outcome = fapolicyd::analyze(
         &input,
         syslog_format.as_deref(),
         rules.as_deref(),
         &rules_d,
         proposal,
+        dir_min,
+        dir_system,
     );
 
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
     // "run-level only": every diagnostic that describes the run rather than a line.
     let (wanted, artifact) = match action {
-        FapolicydAction::Rules => (Some(Artifact::Rules), &outcome.rules),
+        FapolicydAction::Rules { .. } => (Some(Artifact::Rules), &outcome.rules),
         FapolicydAction::Trust => (Some(Artifact::Trust), &outcome.trust),
         FapolicydAction::Why => (None, &outcome.why),
         // `Both` rather than `None`: a check line is a verdict per record, so the

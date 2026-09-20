@@ -677,6 +677,30 @@ fails to start on next boot (`emitter-constraints.md:14`).
   `!=`, no comparison, no regex. For prefix semantics use `dir=`, which is
   exactly `path=` compared with `strncmp`, and nothing else
   (`emitter-constraints.md:203`).
+- **Group into `dir=` only when asked, and never into a directory the system
+  shares.** `rules --dir-min [N]` replaces N or more rules that share `perm`,
+  `exe` and their immediate parent directory with one
+  `allow perm=<perm> exe=<exe> : dir=<parent>/` in the first one's place, and N
+  is 5 when the flag carries no value. Without the flag every rule names one
+  path, byte for byte what 0.8.0 wrote. Four constraints hold whatever the flags
+  say: the value ends in `/`, because `dir=` is `path=` compared with `strncmp`
+  and `dir=/tmp/live` otherwise covers `/tmp/live2/x`; the parent is never
+  climbed past, because a grandparent covers directories no record named;
+  `dir=/` is never emitted at all; and a rule whose `exe=` the record could not
+  supply is never grouped, because `all` on the subject side is already the
+  broadest rule there is and widening the object side as well is more than the
+  log showed. A group is refused, its members staying exact `path=` rules, when
+  its parent is one of the 36 directories the FHS shares — `/usr`, `/usr/bin`,
+  `/etc`, `/opt`, `/var`, `/home`, `/tmp` and the rest — by **exact** match, so
+  `/usr/bin/app-dir` and `/opt/app-dir` still group; or when it is at or under
+  `/tmp/`, `/var/tmp/` or `/dev/shm/`, where every user can write, by
+  **prefix**, so `/tmp/build` is refused and `/tmpfoo` is not. The daemon's own
+  `dir=systemdirs` is no substitute for that list: it is a prefix list with
+  `/usr/` on it, so it would refuse `/usr/bin/app-dir/` too, and it names none
+  of `/opt`, `/home`, `/tmp` or `/var`. `--dir-system` lifts those two refusals
+  and nothing else. Every grouped rule carries a comment naming the count and
+  each path it replaced, because that comment is the only place the operator
+  sees what was widened.
 - **Do not emit these when targeting Rocky 8** (`emitter-constraints.md:236`):
   `dir=execdirs`, `dir=systemdirs`, `dir=untrusted`, `exe=untrusted`,
   `pattern=normal`, and any `gid=%set`.
@@ -780,6 +804,12 @@ commitments, cheap now and expensive to retrofit:
   after the action, so a second action inherits them. v1 defines **no global
   flags** — it has no genuinely cross-domain option yet. Reserve the root for
   `--help` and `--version`.
+- **`--dir-min` and `--dir-system` hang off `rules`** (§8.1), because they
+  change what that one action writes and nothing a second action could inherit.
+  `--dir-min` takes zero or one value and means 5 with none; a value below 2 is
+  a usage error, because one path is not a group; and `--dir-system` without
+  `--dir-min` is a usage error too, because it lifts refusals that only the
+  grouping makes. Both are exit `1`, like every other usage error here.
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added
@@ -867,7 +897,6 @@ the tool, so a research capture whose interesting record only appears inside a
 
 - `--apply`
 - JSON output
-- generalisation beyond exact paths (`dir=` prefix suggestions)
 - the fapolicyd filter subsystem
 - the trust database beyond `--file add`
 - full-ruleset evaluation for `check`: evaluating every rule against a

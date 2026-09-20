@@ -55,7 +55,28 @@ pub enum FapolicydAction {
     // The two D12 advisories are the same on every run, so they are printed by
     // `--help` and not beside the rule (DESIGN.md §8.1).
     #[command(after_long_help = RULES_AFTER_LONG_HELP)]
-    Rules,
+    Rules {
+        /// Replace N or more rules that share a perm, an exe and a parent directory with
+        /// one dir= rule for that directory. Defaults to 5 when the flag is given no
+        /// value. A dir= rule allows every path under that directory, which is more than
+        /// the log showed, so the comment above each one names every path it replaced.
+        #[arg(
+            long,
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "5",
+            // Below 2 there is no group: one path would become a whole subtree.
+            value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(2..),
+        )]
+        dir_min: Option<usize>,
+
+        /// Group under a directory the system shares too -- /usr/bin, /etc, /opt, /tmp
+        /// and the rest -- which --dir-min alone refuses. On one of those, a dir= rule
+        /// allows every path any package or any other user has put there, so give this
+        /// only when allowing the whole directory is what you mean.
+        #[arg(long, requires = "dir_min")]
+        dir_system: bool,
+    },
     /// Read denial records on stdin, write fapolicyd-cli trust commands on stdout.
     #[command(after_long_help = TRUST_AFTER_LONG_HELP)]
     Trust,

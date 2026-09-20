@@ -80,12 +80,19 @@ struct Tally {
 /// `proposal` is what `check` is checking (#158), and `None` for every action but
 /// `check`: the pass is one pass, so the check runs inside the same loop rather than over
 /// a second reading of the same records.
+///
+/// `dir_min` is `--dir-min` and `dir_system` is `--dir-system` (#138, DESIGN.md §8.1),
+/// both `rules`-only. `None` is every other action and every `rules` run without the
+/// flag, where the rules artifact is one `path=` rule per denial exactly as 0.8.0 wrote
+/// it; `dir_system` alone changes nothing, which is why the CLI refuses it alone.
 pub fn analyze(
     input: &[u8],
     syslog_format: Option<&[String]>,
     rules: Option<&[rules::Rule]>,
     rules_d: &[rules_d::File],
     proposal: Option<check::Proposal<'_>>,
+    dir_min: Option<usize>,
+    dir_system: bool,
 ) -> Outcome {
     let mut out = Outcome::default();
 
@@ -156,6 +163,11 @@ pub fn analyze(
     let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
     // `check`'s rows, in first-seen order, which is the order the report is written in.
     let mut checked: Vec<(check::Key, usize, check::Verdict)> = Vec::new();
+    // The rules artifact, still as suggestions: `--dir-min` cannot tell which of them
+    // share a parent directory until the last record has been read, so the rendering is
+    // the one thing that waits for the end of the loop. The trust artifact has no
+    // grouping and is written as it goes.
+    let mut accepted: Vec<Suggestion> = Vec::new();
 
     for (line, record, payload_len) in source.records {
         if names(&record)
@@ -259,7 +271,9 @@ pub fn analyze(
                 // The note explains the suggestion, so it follows it into that
                 // artifact and nowhere else.
                 let artifact = match suggestion {
-                    Suggestion::Rule { .. } => Artifact::Rules,
+                    // `policy` proposes no `Dir`: grouping happens after the loop, on
+                    // the rules this one accepted.
+                    Suggestion::Rule { .. } | Suggestion::Dir { .. } => Artifact::Rules,
                     Suggestion::TrustFile { .. } => Artifact::Trust,
                 };
                 if let Some(msg) = note {
@@ -307,10 +321,9 @@ pub fn analyze(
                         t.trust += 1;
                     }
                 }
-                let rendered = emit::render(&suggestion);
                 match artifact {
-                    Artifact::Rules => out.rules.extend_from_slice(&rendered),
-                    _ => out.trust.extend_from_slice(&rendered),
+                    Artifact::Rules => accepted.push(suggestion.clone()),
+                    _ => out.trust.extend_from_slice(&emit::render(&suggestion)),
                 }
                 seen.push(suggestion);
             }
@@ -321,6 +334,20 @@ pub fn analyze(
                 artifact: Artifact::Both,
             }),
         }
+    }
+
+    // After deduplication, because two records for the same path are one member of a
+    // group and not two, and after the loop, because the last record can still join one.
+    let accepted = match dir_min {
+        Some(min) => {
+            let (grouped, notes) = group_dirs(accepted, min, dir_system);
+            out.diagnostics.extend(notes);
+            grouped
+        }
+        None => accepted,
+    };
+    for suggestion in &accepted {
+        out.rules.extend_from_slice(&emit::render(suggestion));
     }
 
     if corrupt > 0 {
@@ -398,6 +425,156 @@ pub fn analyze(
     // full of allow records is a successful run with nothing to suggest.
     out.consumed_but_unparseable = source.content > 0 && source.parsed == 0;
     out
+}
+
+/// The directories the system itself shares, where a `dir=` rule allows every path any
+/// package or any other user has put there. Exact match and not a prefix, so
+/// `/usr/bin/app-dir` still groups while `/usr/bin` does not.
+///
+/// The daemon's own `dir=systemdirs` is not a substitute: it is a prefix list with
+/// `/usr/` on it, so it would refuse `/usr/bin/app-dir/` too, and it names none of
+/// `/opt`, `/home`, `/tmp` or `/var`.
+const SHARED_DIRS: [&[u8]; 36] = [
+    b"/usr",
+    b"/usr/bin",
+    b"/usr/sbin",
+    b"/usr/lib",
+    b"/usr/lib64",
+    b"/usr/libexec",
+    b"/usr/share",
+    b"/usr/include",
+    b"/usr/src",
+    b"/usr/local",
+    b"/usr/local/bin",
+    b"/usr/local/sbin",
+    b"/usr/local/lib",
+    b"/usr/local/lib64",
+    b"/usr/local/libexec",
+    b"/usr/local/share",
+    b"/bin",
+    b"/sbin",
+    b"/lib",
+    b"/lib64",
+    b"/etc",
+    b"/opt",
+    b"/srv",
+    b"/var",
+    b"/var/lib",
+    b"/home",
+    b"/root",
+    b"/tmp",
+    b"/var/tmp",
+    b"/run",
+    b"/mnt",
+    b"/media",
+    b"/boot",
+    b"/dev",
+    b"/proc",
+    b"/sys",
+];
+
+/// Where every user can write, so a `dir=` rule there covers paths that are nobody's
+/// package and nobody's operator. By prefix and not by exact match, because `/tmp/build`
+/// is as shared as `/tmp` — and `/tmpfoo` is not under `/tmp/` at all.
+const WORLD_WRITABLE: [&[u8]; 3] = [b"/tmp/", b"/var/tmp/", b"/dev/shm/"];
+
+/// The grouping key: `perm`, `exe` and the parent directory. Named because the daemon
+/// keys a rule on all three and two paths in one directory under different perms need
+/// two rules, exactly as they do ungrouped.
+type GroupKey = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// The directory a rule for `path` may be grouped under, or `None` when it may not be:
+/// `/` itself, which is every file on the host, and without `system` a directory the
+/// system shares or one every user can write to.
+///
+/// The value always ends in `/`, because `dir=` is a plain byte prefix with no slash
+/// logic of its own: `dir=/tmp/live` covers `/tmp/live2/x`.
+fn dir_of(path: &[u8], system: bool) -> Option<Vec<u8>> {
+    let cut = path.iter().rposition(|&b| b == b'/')?;
+    if cut == 0 {
+        return None;
+    }
+    let dir = &path[..=cut];
+    if !system
+        && (SHARED_DIRS.contains(&&path[..cut])
+            || WORLD_WRITABLE.iter().any(|w| dir.starts_with(w)))
+    {
+        return None;
+    }
+    Some(dir.to_vec())
+}
+
+/// `--dir-min`: `min` or more rules sharing a perm, an exe and an immediate parent
+/// directory become one `dir=` rule in the position of the group's first member. The
+/// parent is never climbed past, because a grandparent covers directories no record
+/// named, and a rule with no `exe=` is never grouped at all — `all` on the subject side
+/// is already the broadest rule there is.
+///
+/// The tallies are deliberately left alone. `rules_emitted` and `why`'s per-rule count
+/// answer how many denials need a rule, which grouping does not change; it changes how
+/// many lines say so.
+fn group_dirs(
+    accepted: Vec<Suggestion>,
+    min: usize,
+    system: bool,
+) -> (Vec<Suggestion>, Vec<Diagnostic>) {
+    let key = |s: &Suggestion| match s {
+        Suggestion::Rule {
+            perm,
+            exe: Some(exe),
+            path,
+        } => dir_of(path, system).map(|dir| (perm.clone(), exe.clone(), dir)),
+        _ => None,
+    };
+
+    let mut groups: Vec<(GroupKey, Vec<Vec<u8>>)> = Vec::new();
+    for s in &accepted {
+        if let (Some(k), Suggestion::Rule { path, .. }) = (key(s), s) {
+            match groups.iter_mut().find(|(seen, _)| *seen == k) {
+                Some((_, paths)) => paths.push(path.clone()),
+                None => groups.push((k, vec![path.clone()])),
+            }
+        }
+    }
+    groups.retain(|(_, paths)| paths.len() >= min);
+
+    let mut out = Vec::new();
+    let mut notes = Vec::new();
+    for s in accepted {
+        let group = key(&s).and_then(|k| groups.iter_mut().find(|(seen, _)| *seen == k));
+        let Some((k, paths)) = group else {
+            out.push(s);
+            continue;
+        };
+        // Emptied by the group's first member, so the rest of it is dropped rather than
+        // emitted a second time.
+        let paths = std::mem::take(paths);
+        if paths.is_empty() {
+            continue;
+        }
+        notes.push(Diagnostic {
+            line: None,
+            // It explains one rule in the fragment, so it belongs beside that rule.
+            artifact: Artifact::Rules,
+            msg: format!(
+                "dir={} replaces {} rules and allows every path under that directory, \
+                 which is more than this log showed: {}",
+                String::from_utf8_lossy(&k.2),
+                paths.len(),
+                paths
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        });
+        out.push(Suggestion::Dir {
+            perm: k.0.clone(),
+            exe: k.1.clone(),
+            dir: k.2.clone(),
+        });
+    }
+    (out, notes)
 }
 
 /// The daemon source: one record per line, steps 1 to 5 of the pass's ladder.
@@ -714,7 +891,15 @@ mod tests {
 
     #[test]
     fn a_format_naming_uid_or_gid_is_reported_as_a_host_hazard() {
-        let o = analyze(b"", Some(&format("rule,uid,gid,:,path")), None, &[], None);
+        let o = analyze(
+            b"",
+            Some(&format("rule,uid,gid,:,path")),
+            None,
+            &[],
+            None,
+            None,
+            false,
+        );
         assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
             o.diagnostics.iter().all(|d| d.line.is_none()),
@@ -728,7 +913,7 @@ mod tests {
     #[test]
     fn a_field_the_format_names_and_the_record_lacks_is_truncation() {
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(SHORT, Some(&f), None, &[], None);
+        let o = analyze(SHORT, Some(&f), None, &[], None, None, false);
         assert!(
             o.rules.is_empty() && o.trust.is_empty(),
             "must emit nothing when truncated"
@@ -747,12 +932,12 @@ mod tests {
         // Step 4 is the fallback, not a cross-check: this record is nowhere near the
         // cap, so the field the format wanted is not reported missing.
         assert!(SHORT.len() < MAX_PAYLOAD);
-        let o = analyze(SHORT, None, None, &[], None);
+        let o = analyze(SHORT, None, None, &[], None, None, false);
         assert!(!notes(&o).contains("truncated"), "{}", notes(&o));
 
         // With the field present it emits, which is what "not truncated" has to mean.
         let whole = [&SHORT[..SHORT.len() - 1], b" trust=0\n"].concat();
-        let o = analyze(&whole, None, None, &[], None);
+        let o = analyze(&whole, None, None, &[], None, None, false);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         // The only thing left to say is that the other action holds this suggestion.
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
@@ -772,7 +957,7 @@ mod tests {
         assert!(f.len() > MAX_SYSLOG_FIELDS);
         let record = b"rule=1 dec=deny_audit perm=open auid=1000 sessionid=1 pid=1 ppid=1 \
                        trust=1 comm=bash exe=/usr/bin/bash\n";
-        let o = analyze(record, Some(&f), None, &[], None);
+        let o = analyze(record, Some(&f), None, &[], None, None, false);
         assert!(
             !notes(&o).contains("truncated"),
             "not truncated: {}",
@@ -786,7 +971,7 @@ mod tests {
         let mut record = head.to_vec();
         record.resize(MAX_PAYLOAD, b'x');
         record.push(b'\n');
-        let o = analyze(&record, None, None, &[], None);
+        let o = analyze(&record, None, None, &[], None, None, false);
         assert!(o.rules.is_empty() && o.trust.is_empty());
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert!(
@@ -801,7 +986,7 @@ mod tests {
         let mut input = SHORT.to_vec();
         input.extend_from_slice(SHORT);
         let f = format(DEFAULT_FORMAT);
-        let o = analyze(&input, Some(&f), None, &[], None);
+        let o = analyze(&input, Some(&f), None, &[], None, None, false);
         assert_eq!(o.diagnostics.len(), 1, "{}", notes(&o));
         assert_eq!(o.diagnostics[0].line, Some(1), "the FIRST line is kept");
         assert!(o.diagnostics[0].msg.ends_with("(x2)"), "{}", notes(&o));
@@ -813,7 +998,7 @@ mod tests {
         // make this line indistinguishable from a live denial.
         let input = b"# record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
                       exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
-        let o = analyze(input, None, None, &[], None);
+        let o = analyze(input, None, None, &[], None, None, false);
         assert!(
             o.rules.is_empty() && o.trust.is_empty(),
             "{}{}",
@@ -830,7 +1015,7 @@ mod tests {
 
     #[test]
     fn a_trusted_denial_emits_a_rule_and_the_host_notices() {
-        let o = analyze(TRUSTED, None, None, &[], None);
+        let o = analyze(TRUSTED, None, None, &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n"
@@ -846,7 +1031,7 @@ mod tests {
     #[test]
     fn the_same_rule_twice_is_emitted_once() {
         let input = [TRUSTED, TRUSTED].concat();
-        let o = analyze(&input, None, None, &[], None);
+        let o = analyze(&input, None, None, &[], None, None, false);
         assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 1);
     }
 
@@ -858,7 +1043,7 @@ mod tests {
             .unwrap()
             .replace("perm=execute", "perm=open");
         let input = [TRUSTED, open.as_bytes()].concat();
-        let o = analyze(&input, None, None, &[], None);
+        let o = analyze(&input, None, None, &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.rules).unwrap(),
             "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls\n\
@@ -866,10 +1051,187 @@ mod tests {
         );
     }
 
+    // `--dir-min` (#138). Which directories may be grouped is `dir_of`'s answer and is
+    // pinned on it directly; what a group becomes is pinned through the whole pass.
+
+    /// `n` trust=1 denials sharing a perm and an exe under `dir`, differing only in the
+    /// last path component: one group's worth of input.
+    fn group_in(dir: &str, n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|i| {
+                format!("dec=deny_audit perm=execute exe=/usr/bin/bash : path={dir}/f{i} trust=1\n")
+            })
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    fn grouped(input: &[u8], min: usize, system: bool) -> Outcome {
+        analyze(input, None, None, &[], None, Some(min), system)
+    }
+
+    #[test]
+    fn every_shared_directory_in_the_list_is_refused_and_dir_system_lifts_it() {
+        for d in SHARED_DIRS {
+            let path = [d, b"/f0"].concat();
+            let name = String::from_utf8_lossy(d).into_owned();
+            assert_eq!(dir_of(&path, false), None, "{name} is shared");
+            assert_eq!(
+                dir_of(&path, true).as_deref(),
+                Some([d, b"/"].concat().as_slice()),
+                "--dir-system lifts {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_world_writable_directory_is_refused_by_prefix_and_not_by_name() {
+        for path in [
+            &b"/tmp/build/f0"[..],
+            b"/var/tmp/build/f0",
+            b"/dev/shm/build/f0",
+        ] {
+            assert_eq!(
+                dir_of(path, false),
+                None,
+                "{}",
+                String::from_utf8_lossy(path)
+            );
+            assert!(dir_of(path, true).is_some(), "--dir-system lifts it");
+        }
+        // The prefix ends in a slash, so a directory that merely starts with the same
+        // letters is not one of them.
+        assert_eq!(
+            dir_of(b"/tmpfoo/f0", false).as_deref(),
+            Some(&b"/tmpfoo/"[..])
+        );
+    }
+
+    #[test]
+    fn a_directory_the_list_does_not_name_groups_without_dir_system() {
+        for (path, dir) in [
+            (&b"/app/f0"[..], &b"/app/"[..]),
+            (b"/opt/app-dir/f0", b"/opt/app-dir/"),
+            (b"/usr/bin/app-dir/f0", b"/usr/bin/app-dir/"),
+            (b"/usr/lib64/security/f0", b"/usr/lib64/security/"),
+        ] {
+            assert_eq!(
+                dir_of(path, false).as_deref(),
+                Some(dir),
+                "{}",
+                String::from_utf8_lossy(path)
+            );
+        }
+    }
+
+    #[test]
+    fn the_root_directory_is_never_a_group_even_under_dir_system() {
+        // `dir=/` is every file on the host, which no log can have shown.
+        for system in [false, true] {
+            assert_eq!(dir_of(b"/f0", system), None, "system={system}");
+        }
+    }
+
+    #[test]
+    fn a_group_one_short_of_the_floor_stays_one_rule_per_path() {
+        let o = grouped(&group_in("/app", 2), 3, false);
+        assert_eq!(
+            String::from_utf8(o.rules).unwrap(),
+            "allow perm=execute exe=/usr/bin/bash : path=/app/f0\n\
+             allow perm=execute exe=/usr/bin/bash : path=/app/f1\n"
+        );
+    }
+
+    #[test]
+    fn a_group_at_or_past_the_floor_is_one_dir_rule_naming_every_path_it_replaced() {
+        // Two counts, because N is a floor and not a size: three members and four
+        // members are the same one rule.
+        for n in [3, 4] {
+            let o = grouped(&group_in("/app", n), 3, false);
+            assert_eq!(
+                String::from_utf8(o.rules.clone()).unwrap(),
+                "allow perm=execute exe=/usr/bin/bash : dir=/app/\n",
+                "{n} members"
+            );
+            let text = notes(&o);
+            assert!(
+                text.contains(&format!("dir=/app/ replaces {n} rules")),
+                "{text}"
+            );
+            assert!(text.contains("/app/f0 /app/f1 /app/f2"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_same_directory_without_the_flag_is_one_rule_per_path() {
+        let o = analyze(&group_in("/app", 5), None, None, &[], None, None, false);
+        assert_eq!(o.rules.iter().filter(|b| **b == b'\n').count(), 5);
+        assert!(!o.rules.windows(4).any(|w| w == b"dir="));
+    }
+
+    #[test]
+    fn two_records_for_one_path_are_one_member_of_a_group() {
+        // Grouping runs after deduplication, so a path the log repeats does not fill a
+        // floor that three distinct paths would.
+        let one = group_in("/app", 1);
+        let input = [one.as_slice(), &one, &one].concat();
+        let o = grouped(&input, 3, false);
+        assert_eq!(
+            String::from_utf8(o.rules).unwrap(),
+            "allow perm=execute exe=/usr/bin/bash : path=/app/f0\n"
+        );
+    }
+
+    #[test]
+    fn a_rule_with_no_exe_is_never_grouped() {
+        // It renders as `all`, the broadest subject side there is; widening the object
+        // side as well is more than the log showed, so not even --dir-system groups it.
+        let input: Vec<u8> = (0..3)
+            .map(|i| format!("dec=deny_audit perm=execute : path=/app/f{i} trust=1\n"))
+            .collect::<String>()
+            .into_bytes();
+        let o = grouped(&input, 2, true);
+        assert_eq!(
+            String::from_utf8(o.rules).unwrap(),
+            "allow perm=execute all : path=/app/f0\n\
+             allow perm=execute all : path=/app/f1\n\
+             allow perm=execute all : path=/app/f2\n"
+        );
+    }
+
+    #[test]
+    fn a_different_exe_or_perm_in_one_directory_is_a_different_group() {
+        let bash = String::from_utf8(group_in("/app", 3)).unwrap();
+        let grep = bash.replace("exe=/usr/bin/bash", "exe=/usr/bin/grep");
+        let open = bash.replace("perm=execute", "perm=open");
+        let input = format!("{bash}{grep}{open}");
+        let o = grouped(input.as_bytes(), 3, false);
+        // Three groups of three and not one group of nine: a rule is keyed on all three
+        // of perm, exe and directory, so sharing the directory alone pools nothing. Each
+        // takes the position of its own first member.
+        assert_eq!(
+            String::from_utf8(o.rules).unwrap(),
+            "allow perm=execute exe=/usr/bin/bash : dir=/app/\n\
+             allow perm=execute exe=/usr/bin/grep : dir=/app/\n\
+             allow perm=open exe=/usr/bin/bash : dir=/app/\n"
+        );
+    }
+
+    #[test]
+    fn a_trust_entry_is_never_grouped() {
+        // An untrusted path goes to the other artifact, which has no grouping at all.
+        let input = String::from_utf8(group_in("/app", 3))
+            .unwrap()
+            .replace("trust=1", "trust=0");
+        let o = grouped(input.as_bytes(), 2, true);
+        assert!(o.rules.is_empty(), "{:?}", o.rules);
+        let trust = String::from_utf8(o.trust).unwrap();
+        assert_eq!(trust.matches("--file add").count(), 3, "{trust}");
+    }
+
     #[test]
     fn a_denial_with_no_trust_field_emits_a_rule_and_says_why() {
         let input = b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/x\n";
-        let o = analyze(input, None, None, &[], None);
+        let o = analyze(input, None, None, &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             "allow perm=open exe=/usr/bin/bash : path=/tmp/x\n"
@@ -899,7 +1261,15 @@ mod tests {
                 "rule=5 dec=deny_audit perm=open pid=1 exe=/usr/sbin/runuser : \
                  path=/etc/hostname {tail}\n"
             );
-            let o = analyze(input.as_bytes(), None, Some(&ld_so()), &[], None);
+            let o = analyze(
+                input.as_bytes(),
+                None,
+                Some(&ld_so()),
+                &[],
+                None,
+                None,
+                false,
+            );
             assert!(
                 o.rules.is_empty() && o.trust.is_empty(),
                 "{tail}: {}{}",
@@ -919,7 +1289,7 @@ mod tests {
         let rules = vec![rules::Rule::new("deny_audit perm=execute all : all")];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
-        let o = analyze(input, None, Some(&rules), &[], None);
+        let o = analyze(input, None, Some(&rules), &[], None, None, false);
         let text = notes(&o);
         assert!(o.rules.starts_with(b"allow perm=execute"), "{text}");
         assert!(text.contains("not read"), "generic note: {text}");
@@ -937,7 +1307,7 @@ mod tests {
         }];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
-        let o = analyze(input, None, Some(&[rule]), &rules_d, None);
+        let o = analyze(input, None, Some(&[rule]), &rules_d, None, None, false);
         let text = notes(&o);
         assert!(
             text.contains(
@@ -976,6 +1346,8 @@ mod tests {
             Some(&[rule]),
             &host,
             Some(check::Proposal::Merged(&proposed)),
+            None,
+            false,
         );
         let report = String::from_utf8(o.check.clone()).unwrap();
         let lines: Vec<&str> = report.lines().collect();
@@ -1002,6 +1374,8 @@ mod tests {
             Some(&ld_so()),
             &[],
             Some(check::Proposal::Merged(&[])),
+            None,
+            false,
         );
         assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
         assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);
@@ -1012,7 +1386,7 @@ mod tests {
     fn a_rule_number_the_file_does_not_have_is_one_note_and_v1_behaviour() {
         let input = b"rule=99 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()), &[], None);
+        let o = analyze(input, None, Some(&ld_so()), &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.trust.clone()).unwrap(),
             "fapolicyd-cli --file add '/tmp/x'\nfapolicyd-cli --update\n"
@@ -1038,7 +1412,7 @@ mod tests {
         );
         let input = b"rule=3 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&rules), &[], None);
+        let o = analyze(input, None, Some(&rules), &[], None, None, false);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         assert_eq!(o.diagnostics.len(), 2, "{}", notes(&o));
         assert!(
@@ -1053,7 +1427,7 @@ mod tests {
         // A host conf whose syslog_format drops `rule` would otherwise report every
         // record as a mismatch.
         let input = b"dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path=/tmp/x trust=0\n";
-        let o = analyze(input, None, Some(&ld_so()), &[], None);
+        let o = analyze(input, None, Some(&ld_so()), &[], None, None, false);
         assert!(o.trust.starts_with(b"fapolicyd-cli --file add "));
         assert!(!notes(&o).contains("does not match"), "{}", notes(&o));
     }
@@ -1070,7 +1444,7 @@ mod tests {
              dec=deny_audit perm=open pid=75414 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n\
              dec=deny_audit perm=open pid=999 exe=/usr/sbin/runuser : path=/usr/bin/sed trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None, &[], None);
+        let o = analyze(input.as_bytes(), None, None, &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.rules.clone()).unwrap(),
             format!(
@@ -1096,7 +1470,7 @@ mod tests {
             "dec=deny_audit perm=execute pid=0 exe=/usr/sbin/runuser : path={LOADER} trust=1\n\
              dec=deny_audit perm=open pid=0 exe=/usr/sbin/runuser : path=/usr/bin/grep trust=1\n"
         );
-        let o = analyze(input.as_bytes(), None, None, &[], None);
+        let o = analyze(input.as_bytes(), None, None, &[], None, None, false);
         assert!(
             String::from_utf8(o.rules.clone())
                 .unwrap()
@@ -1112,7 +1486,7 @@ mod tests {
         // The override goes THROUGH the exe filter, so an unwritable one is `all` and
         // never the stale logged value, which is known wrong.
         let input = b"dec=deny_audit perm=execute pid=42 exe=/usr/sbin/runuser :                       path=/tmp/spaced\\ bash trust=1\n                      dec=deny_audit perm=open pid=42 exe=/usr/sbin/runuser :                       path=/usr/bin/grep trust=1\n";
-        let o = analyze(input, None, None, &[], None);
+        let o = analyze(input, None, None, &[], None, None, false);
         let text = String::from_utf8(o.rules.clone()).unwrap();
         assert!(
             text.contains("allow perm=open all : path=/usr/bin/grep"),
@@ -1141,7 +1515,7 @@ mod tests {
                       path=/tmp/trusted trust=1\n\
                       rule=3 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/unknown trust=9\n";
-        let o = analyze(input, None, Some(&rules), &[], None);
+        let o = analyze(input, None, Some(&rules), &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.why.clone()).unwrap(),
             "rule=1  1 denials  subject-side, nothing to emit  \
@@ -1161,7 +1535,7 @@ mod tests {
                       path=/tmp/a trust=0\n\
                       rule=1 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/b trust=0\n";
-        let o = analyze(input, None, None, &[], None);
+        let o = analyze(input, None, None, &[], None, None, false);
         assert_eq!(
             String::from_utf8(o.why.clone()).unwrap(),
             "rule=1  2 denials\n"
@@ -1180,7 +1554,7 @@ mod tests {
                       path=/tmp/a trust=0\n\
                       rule=2 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/tmp/b trust=0\n";
-        let o = analyze(input, None, Some(&rules), &[], None);
+        let o = analyze(input, None, Some(&rules), &[], None, None, false);
         let why = String::from_utf8(o.why.clone()).unwrap();
         let lines: Vec<&str> = why.lines().collect();
         assert_eq!(lines.len(), 2, "{why}");

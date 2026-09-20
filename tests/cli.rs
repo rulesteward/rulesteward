@@ -389,6 +389,134 @@ fn rules_stdout_is_a_rules_d_fragment() {
     assert!(out.contains("# rulesteward: new file: rules.d/"), "{out}");
 }
 
+// `rules --dir-min` and `--dir-system` (#138, #161). The flag surface is here; which
+// directories group is pinned beside the grouping itself in `analyze.rs`.
+
+/// `n` trust=1 denials sharing a perm and an exe under `dir`, differing only in the last
+/// path component: what one group is made of.
+fn group_in(dir: &str, n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| {
+            format!("dec=deny_audit perm=execute exe=/usr/bin/bash : path={dir}/f{i} trust=1\n")
+        })
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// The rules the run wrote, without the comments above them.
+fn allow_lines(out: &str) -> Vec<&str> {
+    out.lines().filter(|l| l.starts_with("allow ")).collect()
+}
+
+#[test]
+fn without_dir_min_a_whole_directory_is_still_one_rule_per_path() {
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "rules"], &group_in("/app", 5));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(allow_lines(&out).len(), 5, "{out}");
+    assert!(!out.contains("dir="), "{out}");
+}
+
+#[test]
+fn a_bare_dir_min_leaves_four_paths_alone_and_groups_five() {
+    let args = ["fapolicyd", "--no-conf", "rules", "--dir-min"];
+    let (code, four, err) = run(&args, &group_in("/app", 4));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(allow_lines(&four).len(), 4, "{four}");
+    assert!(
+        !four.contains("dir="),
+        "four is under the default of 5: {four}"
+    );
+
+    let (code, five, err) = run(&args, &group_in("/app", 5));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        allow_lines(&five),
+        ["allow perm=execute exe=/usr/bin/bash : dir=/app/"],
+        "{five}"
+    );
+}
+
+#[test]
+fn a_grouped_rule_names_the_count_and_every_path_it_replaced() {
+    // The comment is the only place the operator sees what the rule widened.
+    let (code, out, err) = run(
+        &["fapolicyd", "--no-conf", "rules", "--dir-min", "2"],
+        &group_in("/app", 2),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("# rulesteward: dir=/app/ replaces 2 rule"),
+        "{out}"
+    );
+    assert!(out.contains("/app/f0 /app/f1"), "{out}");
+    for line in out.lines() {
+        assert!(
+            line.starts_with("# ") || line.starts_with("allow "),
+            "not a rules.d line: {line}"
+        );
+    }
+}
+
+#[test]
+fn a_shared_directory_groups_only_under_dir_system() {
+    let min = ["fapolicyd", "--no-conf", "rules", "--dir-min", "2"];
+    let system = [
+        "fapolicyd",
+        "--no-conf",
+        "rules",
+        "--dir-min",
+        "2",
+        "--dir-system",
+    ];
+    for dir in ["/usr/bin", "/usr", "/opt", "/tmp/build"] {
+        let input = group_in(dir, 2);
+        let (code, out, err) = run(&min, &input);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            !out.contains("dir="),
+            "{dir} must not group on --dir-min: {out}"
+        );
+
+        let (code, out, err) = run(&system, &input);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            allow_lines(&out),
+            [format!("allow perm=execute exe=/usr/bin/bash : dir={dir}/")],
+            "{dir} must group under --dir-system: {out}"
+        );
+    }
+}
+
+#[test]
+fn a_dir_min_below_two_is_a_usage_error() {
+    // One path is not a group, and §9 maps a usage error to 1 rather than clap's 2.
+    for n in ["1", "0"] {
+        let (code, _, err) = run(
+            &["fapolicyd", "--no-conf", "rules", "--dir-min", n],
+            &group_in("/app", 5),
+        );
+        assert_eq!(code, 1, "--dir-min {n} must be a usage error: {err}");
+    }
+}
+
+#[test]
+fn dir_system_without_dir_min_is_a_usage_error() {
+    // It lifts refusals that only the grouping makes, so alone it means nothing.
+    let (code, _, err) = run(
+        &["fapolicyd", "--no-conf", "rules", "--dir-system"],
+        &group_in("/app", 5),
+    );
+    assert_eq!(code, 1, "{err}");
+}
+
+#[test]
+fn the_grouping_flags_belong_to_rules_alone() {
+    for action in ["trust", "why", "check"] {
+        let (code, _, _) = run(&["fapolicyd", "--no-conf", action, "--dir-min", "2"], b"");
+        assert_eq!(code, 1, "{action} must not take --dir-min");
+    }
+}
+
 #[test]
 fn trust_stdout_is_commands_and_comments() {
     let (code, out, err) = run(&["fapolicyd", "--no-conf", "trust"], DENIAL);
