@@ -25,7 +25,28 @@ const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
 
+/// SCRATCH (#144): a derived document that is serialised at run time, so the linker
+/// cannot drop serde_json and the size measured is a real one.
+#[derive(serde::Serialize)]
+struct S1Doc {
+    schema: u32,
+    action: String,
+    hex: Option<String>,
+    diagnostics: Vec<(Option<usize>, String)>,
+}
+
 fn main() -> ExitCode {
+    if let Some(v) = std::env::var_os("RULESTEWARD_S1") {
+        let doc = S1Doc {
+            schema: 1,
+            action: v.to_string_lossy().into_owned(),
+            hex: None,
+            diagnostics: vec![(Some(1), "scratch".into())],
+        };
+        let bytes = serde_json::to_vec(&doc).unwrap_or_default();
+        let _ = std::io::stdout().write_all(&bytes);
+        return ExitCode::from(EXIT_OK);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
