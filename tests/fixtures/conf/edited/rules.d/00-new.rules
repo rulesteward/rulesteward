@@ -1,0 +1,4 @@
+# The in-place edit #158 is about: a file added to rules.d/ and not yet merged by
+# fagenrules, so compiled.rules beside it is still the ruleset the daemon loaded. It
+# allows the execute that rule 13 of that compiled.rules denied.
+allow perm=execute all : path=/tmp/gaps/trusted-ls

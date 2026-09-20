@@ -77,17 +77,26 @@ struct Tally {
 /// whenever the legacy `fapolicyd.rules` won the read, because then the merge order in
 /// `rules.d/` is not the order that produced the record's `rule=`.
 ///
-/// `proposed` is `rules.d/` with the candidates merged in, and `None` for every action
-/// but `check`: the pass is one pass, so the check runs inside the same loop rather than
-/// over a second reading of the same records.
+/// `proposal` is what `check` is checking (#158), and `None` for every action but
+/// `check`: the pass is one pass, so the check runs inside the same loop rather than over
+/// a second reading of the same records.
 pub fn analyze(
     input: &[u8],
     syslog_format: Option<&[String]>,
     rules: Option<&[rules::Rule]>,
     rules_d: &[rules_d::File],
-    proposed: Option<&[rules_d::File]>,
+    proposal: Option<check::Proposal<'_>>,
 ) -> Outcome {
     let mut out = Outcome::default();
+
+    // The two arms differ only in what rule N is placed against: candidates are placed
+    // against the `rules.d/` fagenrules generated `compiled.rules` from, while the
+    // directory itself is placed against `compiled.rules`, because an in-place edit is
+    // exactly the two disagreeing.
+    let proposed = proposal.map(|p| match p {
+        check::Proposal::Merged(files) => (Some(rules_d), files),
+        check::Proposal::OnDisk => (None, rules_d),
+    });
 
     if let Some(fields) = syslog_format {
         // `format_value`'s uid/gid branch dereferences `subj` with no NULL check on
@@ -194,13 +203,13 @@ pub fn analyze(
         // `allow`, so "nothing this tool can emit resolves it" is not "nothing resolves
         // it". The first record of a key decides for all of them; `stale_exe` is the only
         // input two records sharing a key can differ on, and it already gives `unknown`.
-        if let Some(proposed) = proposed {
+        if let Some((host, proposed)) = proposed {
             let key = check::key(&record, n);
             match checked.iter_mut().find(|(seen, _, _)| *seen == key) {
                 Some((_, count, _)) => *count += 1,
                 None => {
                     let verdict =
-                        check::verdict(&record, n, stale.as_deref(), rules, rules_d, proposed);
+                        check::verdict(&record, n, stale.as_deref(), rules, host, proposed);
                     checked.push((key, 1, verdict));
                 }
             }
@@ -955,7 +964,7 @@ mod tests {
             None,
             Some(&[rule]),
             &host,
-            Some(&proposed),
+            Some(check::Proposal::Merged(&proposed)),
         );
         let report = String::from_utf8(o.check.clone()).unwrap();
         let lines: Vec<&str> = report.lines().collect();
@@ -976,7 +985,13 @@ mod tests {
     fn check_gives_a_subject_side_denial_a_verdict_and_no_refusal() {
         let input = b"rule=5 dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : \
                       path=/usr/bin/grep trust=1\n";
-        let o = analyze(input, None, Some(&ld_so()), &[], Some(&[]));
+        let o = analyze(
+            input,
+            None,
+            Some(&ld_so()),
+            &[],
+            Some(check::Proposal::Merged(&[])),
+        );
         assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
         assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);
         assert!(o.rules.is_empty() && o.trust.is_empty());

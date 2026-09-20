@@ -541,18 +541,11 @@ fn why_counts_the_rule_an_audit_record_names_in_hex() {
     assert_eq!(rules, ["rule=13  1 denials"], "{out}");
 }
 
-/// #121: `check` takes a path, and the two ways of getting it wrong are both §9's exit 1.
-/// A missing path is clap's own usage error, remapped from its default 2; a path that
-/// cannot be read is one we raise, because a verdict against rules that were never read
-/// would be a verdict about nothing.
+/// #121: a named `PATH` that cannot be read is §9's exit 1 and not a diagnostic, because
+/// a verdict against rules that were never read would be a verdict about nothing. An
+/// absent `PATH` is a different question and not an error (#158, below).
 #[test]
 fn check_without_a_readable_path_is_a_usage_error() {
-    let (code, _, err) = run(&["fapolicyd", "check"], b"");
-    assert_eq!(
-        code, 1,
-        "a missing PATH is a usage error, not exit 2: {err}"
-    );
-
     let (code, _, err) = run(
         &["fapolicyd", "--no-conf", "check", "/nonexistent/x.rules"],
         DENIAL,
@@ -617,6 +610,94 @@ fn a_candidate_is_placed_by_its_filename() {
         assert!(line.starts_with(want), "{name}: {out}");
         std::fs::remove_file(&path).expect("remove candidate");
     }
+}
+
+/// #158: with no `PATH` the proposal is the host's own `rules.d/` beside `--conf`, and
+/// the baseline is `compiled.rules` — what the daemon actually loaded. An operator who
+/// edited `rules.d/` in place and has not run fagenrules yet is exactly that
+/// disagreement, so the edit has to read as a candidate and not as drift. The same
+/// record and the same record's `rule=` against two confs: the verdict follows the
+/// directory `--conf` names.
+#[test]
+fn the_default_path_is_the_rules_d_beside_conf() {
+    for (conf, want) in [
+        (
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/conf/default.conf"
+            ),
+            "denied ",
+        ),
+        (
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/conf/edited/fapolicyd.conf"
+            ),
+            "allowed ",
+        ),
+    ] {
+        let (code, out, err) = run(&["fapolicyd", "--conf", conf, "check"], DENIED_BY_13);
+        assert_eq!(code, 0, "{err}");
+        assert!(err.is_empty(), "{err}");
+        let line = out
+            .lines()
+            .find(|l| !l.starts_with("# "))
+            .unwrap_or_default();
+        assert!(line.starts_with(want), "{conf}: {out}");
+        assert_eq!(
+            out.contains("nothing is proposed"),
+            want == "denied ",
+            "the edited directory proposes something and the unedited one does not: {out}"
+        );
+    }
+}
+
+/// A `rules.d/` that still merges to `compiled.rules` proposes nothing at all, which is a
+/// different answer from "every candidate was checked and none matched" and is said as a
+/// diagnostic rather than left for the reader to infer from fourteen `denied` lines.
+#[test]
+fn an_unedited_rules_d_proposes_nothing() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "check"], DENIED_BY_13);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert!(
+        out.contains("# rulesteward: ") && out.contains("nothing is proposed"),
+        "the diagnostic is a comment on stdout: {out}"
+    );
+}
+
+/// The default path is read beside `--conf`, so `--no-conf` leaves it nowhere to resolve
+/// to. That is a usage error and not a run of unknowns, and it names both ways out.
+#[test]
+fn check_with_no_conf_and_no_path_is_a_usage_error() {
+    let (code, out, err) = run(&["fapolicyd", "--no-conf", "check"], DENIED_BY_13);
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("PATH") && err.contains("--no-conf"), "{err}");
+}
+
+/// A host loading a legacy `fapolicyd.rules` never reads `rules.d/`, so the default has
+/// nothing to propose and no verdict can be placed against what is in that directory. The
+/// run says which file the daemon loads rather than answering from the wrong one.
+#[test]
+fn a_legacy_rules_file_leaves_the_default_nothing_to_check() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/legacy/fapolicyd.conf"
+    );
+    let (code, out, err) = run(&["fapolicyd", "--conf", conf, "check"], DENIAL);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert!(out.contains("fapolicyd.rules"), "{out}");
+    let line = out
+        .lines()
+        .find(|l| !l.starts_with("# "))
+        .unwrap_or_default();
+    assert!(line.starts_with("unknown "), "{out}");
 }
 
 #[test]
