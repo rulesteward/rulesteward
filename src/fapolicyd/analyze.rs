@@ -3,6 +3,7 @@
 use super::audit;
 use super::check;
 use super::emit;
+use super::json;
 use super::model::{self, Artifact, Diagnostic, Record, Source, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
@@ -77,6 +78,17 @@ impl Outcome {
 
     pub fn check_text(&self) -> Vec<u8> {
         check::report(&self.check)
+    }
+
+    /// The same two reports as one JSON document (#146, DESIGN.md §9.1). The diagnostics
+    /// come from the caller because they are the caller's: `main` filters them by the
+    /// action and the host reads that produced some of them happened there too.
+    pub fn why_json(&self, diagnostics: &[Diagnostic], compact: bool) -> Vec<u8> {
+        json::why(diagnostics, &self.why, compact)
+    }
+
+    pub fn check_json(&self, diagnostics: &[Diagnostic], compact: bool) -> Vec<u8> {
+        json::check(diagnostics, check::entries(&self.check), compact)
     }
 }
 

@@ -5,7 +5,7 @@
 //! why this file stays self-contained: `clap` and `std::path` only, nothing from
 //! `fapolicyd/` and nothing from `main.rs`.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -40,9 +40,33 @@ pub enum Domain {
         #[arg(long, global = true)]
         no_conf: bool,
 
+        /// How to write the result: the report, or the JSON document DESIGN.md §9.1
+        /// describes. `json` and `json-compact` differ in whitespace and nothing else.
+        /// Only `why` and `check` accept a JSON format so far (#147).
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = Format::Text,
+            global = true,
+            value_name = "FORMAT"
+        )]
+        format: Format,
+
         #[command(subcommand)]
         action: FapolicydAction,
     },
+}
+
+/// `--format`'s three values. A domain flag like `--conf` (D9, DESIGN.md §9), so it is
+/// accepted on either side of the action and a second action inherits it.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Format {
+    /// The bare result lines plus `# rulesteward:` comments.
+    Text,
+    /// One indented JSON document.
+    Json,
+    /// The same document on one line, for a consumer reading a stream of them.
+    JsonCompact,
 }
 
 /// One result each (DESIGN.md §9). All four run the same pass over the same input; what

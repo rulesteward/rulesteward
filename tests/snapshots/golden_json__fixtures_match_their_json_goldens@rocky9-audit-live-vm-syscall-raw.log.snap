@@ -1,0 +1,58 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky9-audit-live-vm-syscall-raw.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    },
+    {
+      "line": null,
+      "msg": "16 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "rule": 5,
+      "file": null,
+      "text": null,
+      "denials": 22,
+      "subject_side": null,
+      "rules": 16,
+      "trust": 4
+    },
+    {
+      "rule": 8,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 1
+    },
+    {
+      "rule": 13,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 1
+    }
+  ]
+}
+--- stderr ---

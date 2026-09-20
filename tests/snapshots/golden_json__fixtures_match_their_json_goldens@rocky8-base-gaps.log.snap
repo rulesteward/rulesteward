@@ -1,0 +1,37 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky8-base-gaps.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "3 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "rule": 1,
+      "file": null,
+      "text": null,
+      "denials": 2,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 2
+    },
+    {
+      "rule": 2,
+      "file": null,
+      "text": null,
+      "denials": 4,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 1
+    }
+  ]
+}
+--- stderr ---

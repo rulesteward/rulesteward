@@ -1,0 +1,22 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky8-audit-live-vm-syscall-default.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "12 FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd 1.3.2 on Rocky 8 does not write one; why has nothing to count"
+    },
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---

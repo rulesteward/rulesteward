@@ -956,3 +956,364 @@ fn every_build_generates_the_man_page_and_the_bash_completion() {
     let bash = std::fs::read_to_string(out.join("rulesteward.bash")).unwrap();
     assert!(bash.contains("complete -F _rulesteward"), "{bash}");
 }
+
+// `--format json`, DESIGN.md §9.1 (#146). Every field in a document is published, so
+// every one of them is pinned here and so is every branch that decides one: the text
+// report can be reworded, a document cannot.
+
+/// The code, the parsed document and stderr. Parsing here is itself the assertion that
+/// what arrived is a document, and the newline check is §9.1's: one at the end and no
+/// other, in both formats.
+fn json_run(args: &[&str], stdin: &[u8]) -> (i32, serde_json::Value, String) {
+    let out = common::run(args, stdin);
+    let stdout = String::from_utf8(out.stdout).expect("a document is UTF-8");
+    assert!(
+        stdout.ends_with('\n') && !stdout.ends_with("\n\n"),
+        "exactly one trailing newline: {stdout:?}"
+    );
+    (
+        out.status.code().unwrap(),
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("not a document ({e}): {stdout}")),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_why_document_carries_the_row_as_data() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let input = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    ))
+    .expect("read fixture");
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--conf", conf, "why", "--format", "json"],
+        &input,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(doc["schema"], 1, "{doc}");
+    assert_eq!(doc["action"], "why", "{doc}");
+    // The whole entry, so a field added without a contract fails here: rule 5 is the
+    // shipped `pattern=ld_so` deny, which refuses the record outright (§7).
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "rule": 5,
+            "file": "30-patterns.rules",
+            "text": "deny_audit perm=any pattern=ld_so : all",
+            "denials": 22,
+            "subject_side": true,
+            "rules": 0,
+            "trust": 0,
+        }),
+        "{doc}"
+    );
+    // Rule 8 is the other side of `subject_side`, and the row that accounts for a
+    // suggestion: a rule the pass did not refuse, and a trust entry it emitted.
+    assert_eq!(
+        doc["entries"][1],
+        serde_json::json!({
+            "rule": 8,
+            "file": "41-shared-obj.rules",
+            "text": "deny_audit perm=open all : ftype=application/x-sharedlib",
+            "denials": 1,
+            "subject_side": false,
+            "rules": 0,
+            "trust": 1,
+        }),
+        "{doc}"
+    );
+    // §9.1: `why` keeps run-level notes only, exactly as the text report does.
+    for note in doc["diagnostics"].as_array().expect("an array") {
+        assert!(note["line"].is_null(), "{note}");
+        assert!(note["msg"].is_string(), "{note}");
+    }
+}
+
+/// Where the text report collapses a column the document writes `null` (§9.1), and never
+/// an empty string: with no rules file there is no filename, no rule text and no answer
+/// to whether that rule refuses the record. The counts are still counted.
+#[test]
+fn a_row_with_no_rules_file_is_null_where_the_report_is_blank() {
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "why", "--format", "json"],
+        DENIED_BY_13,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "rule": 13,
+            "file": null,
+            "text": null,
+            "denials": 1,
+            "subject_side": null,
+            "rules": 1,
+            "trust": 0,
+        }),
+        "{doc}"
+    );
+}
+
+#[test]
+fn a_check_document_carries_the_verdict_word_and_its_detail() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let input = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky9-journal-live-vm-short.log"
+    ))
+    .expect("read fixture");
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--conf",
+            conf,
+            "check",
+            candidate,
+            "--format",
+            "json",
+        ],
+        &input,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(doc["action"], "check", "{doc}");
+    // The whole entry again, including the two key fields the report line leaves out.
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "verdict": "allowed",
+            "detail": "00-cand.rules: allow perm=execute all : path=/tmp/live/probe-grep",
+            "denials": 1,
+            "perm": "execute",
+            "exe": "/usr/sbin/runuser",
+            "path": "/tmp/live/probe-grep",
+            "ftype": "application/x-executable",
+            "trust": "0",
+            "rule": 13,
+        }),
+        "{doc}"
+    );
+    let words: Vec<&str> = doc["entries"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|e| e["verdict"].as_str().expect("a verdict"))
+        .collect();
+    assert!(words.contains(&"denied"), "{doc}");
+
+    // `unknown` is the third, and the one that needs no host to reach: with no rules
+    // read there is nothing to place the candidates against.
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "check",
+            candidate,
+            "--format",
+            "json",
+        ],
+        DENIAL,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(doc["entries"][0]["verdict"], "unknown", "{doc}");
+    assert!(
+        doc["entries"][0]["detail"]
+            .as_str()
+            .expect("a detail")
+            .contains("no rules file was read"),
+        "{doc}"
+    );
+    // A record with no `ftype=` still has the key, holding null (§9.1).
+    assert!(doc["entries"][0]["ftype"].is_null(), "{doc}");
+}
+
+/// §9.1: a value that is not UTF-8 survives as hex beside the lossy text, and the sibling
+/// is absent -- not null -- for every value that did not need it. The path here is the
+/// one byte no lossy decoding can carry.
+#[test]
+fn a_path_that_is_not_utf8_carries_its_bytes_in_hex() {
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let record: &[u8] = b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 \
+exe=/usr/bin/bash : path=/tmp/\xff trust=0\n";
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "check",
+            candidate,
+            "--format",
+            "json",
+        ],
+        record,
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["path"], "/tmp/\u{fffd}", "{doc}");
+    assert_eq!(entry["path_hex"], "2f746d702fff", "{doc}");
+    assert_eq!(entry["exe"], "/usr/bin/bash", "{doc}");
+    assert!(
+        entry.get("exe_hex").is_none(),
+        "a UTF-8 exe has no hex sibling: {doc}"
+    );
+}
+
+/// §9.1: the two JSON formats are one document written two ways. Over every fixture,
+/// through both report actions, because a field that only some real capture reaches is
+/// exactly the one nobody would have written a case for.
+#[test]
+fn both_json_formats_are_the_same_document_over_every_fixture() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let mut seen = 0;
+    for entry in std::fs::read_dir(dir).expect("read the fixture directory") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+            continue;
+        }
+        let input = std::fs::read(&path).expect("read fixture");
+        let name = path.display();
+        for action in [vec!["why"], vec!["check", candidate]] {
+            let mut args = vec!["fapolicyd", "--no-conf"];
+            args.extend(&action);
+            args.extend(["--format", "json"]);
+            let (code, pretty, err) = json_run(&args, &input);
+            assert_eq!(code, 0, "{name}: {err}");
+            assert_eq!(pretty["schema"], 1, "{name}: {pretty}");
+
+            let compact_args = [&args[..args.len() - 1], &["json-compact"]].concat();
+            let out = common::run(&compact_args, &input);
+            let compact = String::from_utf8(out.stdout).expect("a document is UTF-8");
+            assert_eq!(compact.lines().count(), 1, "{name}: {compact}");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&compact).expect("a document"),
+                pretty,
+                "{name}: the two formats differ in more than whitespace"
+            );
+        }
+        seen += 1;
+    }
+    assert!(seen >= 15, "only {seen} fixtures were swept");
+}
+
+/// The `diagnostics` array is the comment block, said the way JSON can say it: the same
+/// notes the text run writes, filtered the same way, in the same order. Both shapes are
+/// in this run -- a note about the host, and a note about an input line.
+#[test]
+fn the_json_diagnostics_are_the_comments_the_text_run_writes() {
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let input = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/rocky8-base-edge-paths.log"
+    ))
+    .expect("read fixture");
+    let args = [
+        "fapolicyd",
+        "--conf",
+        "/nonexistent/fapolicyd.conf",
+        "check",
+        candidate,
+    ];
+    let (_, text, _) = run(&args, &input);
+    let mut json = args.to_vec();
+    json.extend(["--format", "json"]);
+    let (_, doc, _) = json_run(&json, &input);
+
+    let notes = doc["diagnostics"].as_array().expect("an array");
+    let rendered: Vec<String> = notes
+        .iter()
+        .map(|n| {
+            let msg = n["msg"].as_str().expect("a message");
+            match n["line"].as_u64() {
+                Some(line) => format!("# rulesteward: line {line}: {msg}"),
+                None => format!("# rulesteward: {msg}"),
+            }
+        })
+        .collect();
+    let comments: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("# rulesteward: "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(rendered, comments, "{doc}");
+    assert!(
+        notes.iter().any(|n| n["line"].is_null()) && notes.iter().any(|n| n["line"].is_u64()),
+        "both shapes belong in this run: {doc}"
+    );
+}
+
+/// §9.1: no document at all when nothing parsed, and none when the run ended before the
+/// analysis. An `entries: []` there would read as "no denials", which is a different
+/// answer and the one a log of allow records gets.
+#[test]
+fn a_json_run_that_reaches_no_answer_writes_no_document() {
+    let out = common::run(
+        &["fapolicyd", "--no-conf", "why", "--format", "json"],
+        b"not a record\nnor this\n",
+    );
+    assert_eq!(out.status.code().unwrap(), 2);
+    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+
+    let (code, out, err) = run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "check",
+            "/nonexistent/x.rules",
+            "--format",
+            "json",
+        ],
+        DENIAL,
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+}
+
+/// The two artifact actions have no JSON form until #147, and a document whose
+/// fields that issue would then change is worse than none. Exit 1, like every other
+/// usage error in §9.
+#[test]
+fn rules_and_trust_refuse_a_json_format() {
+    for action in ["rules", "trust"] {
+        for format in ["json", "json-compact"] {
+            let (code, out, err) =
+                run(&["fapolicyd", "--no-conf", action, "--format", format], b"");
+            assert_eq!(code, 1, "{action} --format {format}: {err}");
+            assert!(out.is_empty(), "{out}");
+            assert!(err.contains("--format json"), "{err}");
+        }
+    }
+}
+
+/// `--format` is a domain flag like `--conf` (§9), so it is accepted on either side of
+/// the action.
+#[test]
+fn the_format_flag_is_accepted_before_the_action() {
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "--format", "json", "why"],
+        DENIAL,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(doc["action"], "why", "{doc}");
+    assert_eq!(doc["entries"][0]["rule"], 1, "{doc}");
+}

@@ -8,7 +8,7 @@ mod cli;
 mod fapolicyd;
 
 use clap::Parser;
-use cli::{Cli, Domain, FapolicydAction};
+use cli::{Cli, Domain, FapolicydAction, Format};
 use fapolicyd::check::Proposal;
 use fapolicyd::model::{Artifact, Diagnostic};
 use std::io::{Read, Write};
@@ -43,8 +43,9 @@ fn main() -> ExitCode {
         Domain::Fapolicyd {
             conf,
             no_conf,
+            format,
             action,
-        } => run_fapolicyd(conf, no_conf, action),
+        } => run_fapolicyd(conf, no_conf, format, action),
     }
 }
 
@@ -52,8 +53,15 @@ fn main() -> ExitCode {
 /// artifact they explain, so `rulesteward fapolicyd rules > 89-rulesteward.rules` is a
 /// file the daemon reads and the notes are its header. stderr carries errors only: the
 /// flag conflict, the stdin read and the stdout write, each of which means the user
-/// has no artifact at all.
-fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) -> ExitCode {
+/// has no artifact at all. Under `--format json` the same notes are the document's
+/// `diagnostics` array instead (§9.1), because JSON has no comment to put them in;
+/// which stream carries what does not change.
+fn run_fapolicyd(
+    conf: Option<PathBuf>,
+    no_conf: bool,
+    format: Format,
+    action: FapolicydAction,
+) -> ExitCode {
     // clap's own `conflicts_with` only fires when both flags land in the same
     // subcommand's matches: `--no-conf rules --conf X` is split across two levels
     // and slips straight through it. The conflict is checked by hand instead, so all
@@ -78,6 +86,23 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
             "rulesteward: check with no PATH reads the rules.d/ beside --conf, \
              which --no-conf skips\n\
              usage: name a PATH to check, or drop --no-conf"
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
+
+    // #147 writes the JSON shape of the two artifact actions, and a document whose
+    // fields that issue would then change is worse than no document. Refused here with
+    // the other usage errors, before anything is read.
+    if format != Format::Text
+        && matches!(
+            action,
+            FapolicydAction::Rules { .. } | FapolicydAction::Trust
+        )
+    {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "rulesteward: rules and trust have no JSON form yet\n\
+             usage: --format json and --format json-compact are accepted on why and check"
         );
         return ExitCode::from(EXIT_USAGE);
     }
@@ -181,7 +206,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         _ => (None, false),
     };
 
-    let outcome = fapolicyd::analyze(
+    let mut outcome = fapolicyd::analyze(
         &input,
         syslog_format.as_deref(),
         rules.as_deref(),
@@ -193,16 +218,15 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
 
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
     // "run-level only": every diagnostic that describes the run rather than a line.
-    let (wanted, artifact) = match action {
-        FapolicydAction::Rules { .. } => (Some(Artifact::Rules), outcome.rules_text()),
-        FapolicydAction::Trust => (Some(Artifact::Trust), outcome.trust_text()),
-        FapolicydAction::Why => (None, outcome.why_text()),
+    let wanted = match action {
+        FapolicydAction::Rules { .. } => Some(Artifact::Rules),
+        FapolicydAction::Trust => Some(Artifact::Trust),
+        FapolicydAction::Why => None,
         // `Both` rather than `None`: a check line is a verdict per record, so the
         // per-line diagnostics that say a record could not be used at all belong beside
         // it, while the notes about emitting a rule or a trust entry do not.
-        FapolicydAction::Check { .. } => (Some(Artifact::Both), outcome.check_text()),
+        FapolicydAction::Check { .. } => Some(Artifact::Both),
     };
-    let mut bytes = Vec::new();
     // The conf and rules reads happen here and not in the pass, so their notes arrive
     // as strings and become comments exactly like the pass's own. Both describe the
     // host rather than a suggestion, so both are `Both`.
@@ -215,21 +239,50 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
             msg,
             artifact: Artifact::Both,
         });
-    for d in host_notes.chain(outcome.diagnostics) {
-        let keep = match wanted {
+    // Filtered once, host notes first, and then written as comments or as the
+    // document's `diagnostics` array: the two formats say the same things in the same
+    // order. `take` rather than moving the field, because the entries are still to be
+    // rendered out of the same `outcome`.
+    let diagnostics: Vec<Diagnostic> = host_notes
+        .chain(std::mem::take(&mut outcome.diagnostics))
+        .filter(|d| match wanted {
             Some(w) => d.artifact == w || d.artifact == Artifact::Both,
             None => d.line.is_none(),
-        };
-        if !keep {
-            continue;
+        })
+        .collect();
+
+    let bytes = match format {
+        Format::Text => {
+            let mut bytes = Vec::new();
+            for d in &diagnostics {
+                // Writing into a Vec cannot fail; the one write that can is below.
+                let _ = match d.line {
+                    Some(n) => writeln!(bytes, "# rulesteward: line {n}: {}", d.msg),
+                    None => writeln!(bytes, "# rulesteward: {}", d.msg),
+                };
+            }
+            bytes.extend_from_slice(&match action {
+                FapolicydAction::Rules { .. } => outcome.rules_text(),
+                FapolicydAction::Trust => outcome.trust_text(),
+                FapolicydAction::Why => outcome.why_text(),
+                FapolicydAction::Check { .. } => outcome.check_text(),
+            });
+            bytes
         }
-        // Writing into a Vec cannot fail; the one write that can is below.
-        let _ = match d.line {
-            Some(n) => writeln!(bytes, "# rulesteward: line {n}: {}", d.msg),
-            None => writeln!(bytes, "# rulesteward: {}", d.msg),
-        };
-    }
-    bytes.extend_from_slice(&artifact);
+        // Nothing parsed is nothing to report: `entries: []` would be the answer "no
+        // denials", which is what a log of allow records gets and not what this is. The
+        // exit code below is what says so, exactly as it does for the text path.
+        _ if outcome.consumed_but_unparseable => Vec::new(),
+        _ => {
+            let compact = format == Format::JsonCompact;
+            match action {
+                FapolicydAction::Check { .. } => outcome.check_json(&diagnostics, compact),
+                // `rules` and `trust` were refused a JSON format above, so every other
+                // action that reaches here is `why`.
+                _ => outcome.why_json(&diagnostics, compact),
+            }
+        }
+    };
 
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {

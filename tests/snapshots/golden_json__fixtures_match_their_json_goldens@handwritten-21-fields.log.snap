@@ -1,0 +1,23 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/handwritten-21-fields.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [],
+  "entries": [
+    {
+      "rule": 2,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 0
+    }
+  ]
+}
+--- stderr ---

@@ -1,0 +1,46 @@
+---
+source: tests/golden_json.rs
+expression: report
+input_file: tests/fixtures/rocky9-audit-live-vm-asfound-raw.log
+---
+--- why --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "why",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    }
+  ],
+  "entries": [
+    {
+      "rule": 5,
+      "file": null,
+      "text": null,
+      "denials": 22,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 0
+    },
+    {
+      "rule": 8,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 0
+    },
+    {
+      "rule": 13,
+      "file": null,
+      "text": null,
+      "denials": 1,
+      "subject_side": null,
+      "rules": 0,
+      "trust": 0
+    }
+  ]
+}
+--- stderr ---
