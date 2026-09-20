@@ -709,46 +709,6 @@ fn a_rule_naming_a_changed_set_is_evaluated_and_not_skipped() {
     assert!(line.contains("ftype=%languages"), "{out}");
 }
 
-/// The same gate on the other side of `check`: a named PATH gets no free pass on `%set`.
-/// A proposed `rules.d/` that redefines `%languages` makes the deny naming it match this
-/// record, and that deny is reached before the allow the operator wrote -- so the rules
-/// before N are not proved past, however unchanged their text is. The file form, which
-/// defines no set, still gets the skip and the same verdict it always had.
-#[test]
-fn a_candidate_redefining_a_set_is_gated_like_the_directory_is() {
-    let conf = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/conf/default.conf"
-    );
-    for (candidate, want) in [
-        (
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/check/proposed-set"
-            ),
-            "unknown ",
-        ),
-        (
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/check/00-cand.rules"
-            ),
-            "denied ",
-        ),
-    ] {
-        let (code, out, err) = run(
-            &["fapolicyd", "--conf", conf, "check", candidate],
-            DENIED_BY_13,
-        );
-        assert_eq!(code, 0, "{err}");
-        let line = out
-            .lines()
-            .find(|l| !l.starts_with("# "))
-            .unwrap_or_default();
-        assert!(line.starts_with(want), "{candidate}: {out}");
-    }
-}
-
 /// The default path is read beside `--conf`, so `--no-conf` leaves it nowhere to resolve
 /// to. That is a usage error and not a run of unknowns, and it names both ways out.
 #[test]

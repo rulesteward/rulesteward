@@ -571,16 +571,15 @@ either way, because it was always against `compiled.rules`. A host loading a
 legacy `fapolicyd.rules` reads no `rules.d/` at all, so the default has nothing
 to propose and the run names the file the daemon loads instead.
 
-**An edited `%set` suspends the D3 skip, in both modes.** A `%set` is in no
-rule's text and in no rule number, so `main` compares the `%` lines of whichever
-listing is proposed — the host's own directory, or that directory with the
-candidates merged in — against the loaded file's, in merge order and byte for
-byte, because a set holds paths (§4). When they differ, a rule naming a set is
-evaluated instead of skipped: the daemon walked past it, but not with this
-definition, and `ftype=%languages` matching is exactly what an edit to
-`%languages` can change. The matcher then answers `unknown` for it, because what
-a set holds is never expanded here. Which set changed, and so which rules are
-really affected, is #139's.
+**An edited `%set` suspends the D3 skip in that mode.** A `%set` is in no rule's
+text and in no rule number, so `main` compares the directory's `%` lines against
+the loaded file's, in merge order and byte for byte, because a set holds paths
+(§4). When they differ, a rule naming a set is evaluated instead of skipped: the
+daemon walked past it, but not with this definition, and `ftype=%languages`
+matching is exactly what an edit to `%languages` can change. The matcher then
+answers `unknown` for it, because what a set holds is never expanded here. A
+candidate given by `PATH` that redefines a set is the same hazard, is not gated,
+and is tracked on #139 along with deciding which set changed.
 
 A wrong `allowed` is worse than an `unknown`, so `unknown` is the answer for
 everything the 48-row measurement in #120 did not settle: an attribute no log

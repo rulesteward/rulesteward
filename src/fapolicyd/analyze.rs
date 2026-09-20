@@ -91,11 +91,11 @@ pub fn analyze(
 
     // The arms differ only in what rule N is placed against: candidates against the
     // `rules.d/` fagenrules generated `compiled.rules` from, the directory itself against
-    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Whether
-    // the sets in hand are the loaded ones is the caller's to answer either way, because
-    // only it read the files, and both arms are asked.
+    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Only the
+    // second is gated on its `%set` definitions still being the loaded ones -- a candidate
+    // given by `PATH` that redefines a set is the same hazard and is #139's.
     let proposed = proposal.map(|p| match p {
-        check::Proposal::Merged { files, sets_agree } => (Some(rules_d), sets_agree, files),
+        check::Proposal::Merged(files) => (Some(rules_d), true, files),
         check::Proposal::OnDisk { sets_agree } => (None, sets_agree, rules_d),
     });
 
@@ -975,10 +975,7 @@ mod tests {
             None,
             Some(&[rule]),
             &host,
-            Some(check::Proposal::Merged {
-                files: &proposed,
-                sets_agree: true,
-            }),
+            Some(check::Proposal::Merged(&proposed)),
         );
         let report = String::from_utf8(o.check.clone()).unwrap();
         let lines: Vec<&str> = report.lines().collect();
@@ -1004,10 +1001,7 @@ mod tests {
             None,
             Some(&ld_so()),
             &[],
-            Some(check::Proposal::Merged {
-                files: &[],
-                sets_agree: true,
-            }),
+            Some(check::Proposal::Merged(&[])),
         );
         assert!(o.diagnostics.is_empty(), "{:?}", o.diagnostics);
         assert!(o.check.starts_with(b"unknown "), "{:?}", o.check);
