@@ -9,6 +9,7 @@ mod fapolicyd;
 
 use clap::Parser;
 use cli::{Cli, Domain, FapolicydAction};
+use fapolicyd::check::Proposal;
 use fapolicyd::model::{Artifact, Diagnostic};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -67,6 +68,20 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         return ExitCode::from(EXIT_USAGE);
     }
 
+    // #158: with no PATH the candidates are the rules.d/ beside --conf, which --no-conf
+    // does not read. There is no useful degradation — every verdict would be unknown
+    // against a directory nothing was read from — so it is a usage error naming both ways
+    // out, like the conflict above.
+    if no_conf && matches!(action, FapolicydAction::Check { path: None }) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "rulesteward: check with no PATH reads the rules.d/ beside --conf, \
+             which --no-conf skips\n\
+             usage: name a PATH to check, or drop --no-conf"
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
+
     let mut input = Vec::new();
     if let Err(e) = std::io::stdin().lock().read_to_end(&mut input) {
         let _ = writeln!(std::io::stderr().lock(), "rulesteward: reading stdin: {e}");
@@ -75,8 +90,8 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
 
     // D1's ladder, step 1 and 2 (DESIGN.md §6). The read lives here so the libraries
     // stay pure; they receive an already-parsed field list or nothing at all.
-    let (syslog_format, conf_note, rules, rules_note, listing) = if no_conf {
-        (None, None, None, None, Vec::new())
+    let (syslog_format, conf_note, rules, rules_note, loaded_sets, listing, compiled) = if no_conf {
+        (None, None, None, None, Vec::new(), Vec::new(), false)
     } else {
         let (f, fnote) = match read_syslog_format(conf.as_deref()) {
             Ok(fields) => (Some(fields), None),
@@ -84,9 +99,9 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         };
         // Every `Err` from `read_rules` is a read that produced no rules at all, which
         // is the same thing as compiled.rules not winning.
-        let (r, rnote, compiled) = match read_rules(conf.as_deref()) {
-            Ok((rules, won)) => (Some(rules), None, won),
-            Err(note) => (None, Some(note), false),
+        let (r, rnote, loaded_sets, compiled) = match read_rules(conf.as_deref()) {
+            Ok((rules, sets, won)) => (Some(rules), None, sets, won),
+            Err(note) => (None, Some(note), Vec::new(), false),
         };
         // Only when compiled.rules won. A legacy fapolicyd.rules is what the daemon
         // enforced, so whatever rules.d/ holds is not where that rule= came from.
@@ -95,15 +110,15 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         } else {
             Vec::new()
         };
-        (f, fnote, r, rnote, d)
+        (f, fnote, r, rnote, loaded_sets, d, compiled)
     };
 
     // The candidate read (#121), before the host listing is merged, so `check` can sort
     // its file into the same listing rather than into a second merge order. Unreadable is
     // a usage error and not a note: the user named this path, and a verdict against rules
     // that were not read would be a verdict about nothing.
-    let proposed = match &action {
-        FapolicydAction::Check { path } => match read_candidates(path, &listing) {
+    let merged = match &action {
+        FapolicydAction::Check { path: Some(path) } => match read_candidates(path, &listing) {
             Ok(named) => Some(fapolicyd::rules_d::files(named)),
             Err(e) => {
                 let _ = writeln!(std::io::stderr().lock(), "rulesteward: {e}");
@@ -113,13 +128,51 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
         _ => None,
     };
     let rules_d = fapolicyd::rules_d::files(listing);
+    // The directory's `%set` definitions against the ones the daemon loaded, in merge
+    // order because fagenrules concatenates. A set is in no rule's text and in no rule
+    // number, so this is the only place an edited one is visible at all; what it holds is
+    // never expanded (#139), so the answer is a bool and the library refuses on it. Only
+    // the no-PATH proposal is gated on it: the same hazard through a candidate `PATH` is
+    // #139's too.
+    let sets_agree = rules_d.iter().flat_map(|f| &f.sets).eq(&loaded_sets);
+    // With no PATH the proposal is that same listing, read as it is on disk now (#158).
+    let proposal = match (&action, merged.as_deref()) {
+        (FapolicydAction::Check { .. }, Some(files)) => Some(Proposal::Merged(files)),
+        (FapolicydAction::Check { .. }, None) => Some(Proposal::OnDisk { sets_agree }),
+        _ => None,
+    };
+
+    // What the default PATH has to say for itself, both of them "nothing is proposed"
+    // reached two ways: a legacy fapolicyd.rules is the file the daemon enforced, so
+    // rules.d/ is not in effect at all, and a rules.d/ that still merges to
+    // compiled.rules proposes nothing either — which is not the same answer as every
+    // candidate having been checked and none matching.
+    let default_note = match (&action, rules.as_deref()) {
+        (FapolicydAction::Check { path: None }, Some(_)) if !compiled => Some(format!(
+            "{} is the file the daemon loads, so rules.d/ is not in effect and nothing \
+             is proposed",
+            conf_dir(conf.as_deref()).join("fapolicyd.rules").display()
+        )),
+        // Rule for rule AND set for set: a `rules.d/` whose only edit is a `%set`
+        // definition merges to the loaded rules and is not what the daemon loaded.
+        (FapolicydAction::Check { path: None }, Some(loaded))
+            if sets_agree && merges_to(&rules_d, loaded) =>
+        {
+            Some(format!(
+                "{} merges to the rules the daemon loaded; nothing is proposed and every \
+                 denial is denied again",
+                conf_dir(conf.as_deref()).join("rules.d").display()
+            ))
+        }
+        _ => None,
+    };
 
     let outcome = fapolicyd::analyze(
         &input,
         syslog_format.as_deref(),
         rules.as_deref(),
         &rules_d,
-        proposed.as_deref(),
+        proposal,
     );
 
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
@@ -140,6 +193,7 @@ fn run_fapolicyd(conf: Option<PathBuf>, no_conf: bool, action: FapolicydAction) 
     let host_notes = conf_note
         .into_iter()
         .chain(rules_note)
+        .chain(default_note)
         .map(|msg| Diagnostic {
             line: None,
             msg,
@@ -205,6 +259,21 @@ fn conf_dir(conf: Option<&std::path::Path>) -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Would fagenrules write exactly the rules the daemon loaded (#158)? Rule for rule and
+/// in order, which is what fagenrules concatenates; a `%set` is in neither side, because
+/// `rules::parse` drops it from both.
+fn merges_to(files: &[fapolicyd::rules_d::File], loaded: &[fapolicyd::rules::Rule]) -> bool {
+    files
+        .iter()
+        .flat_map(|f| &f.rules)
+        .map(|r| &r.text)
+        .eq(loaded.iter().map(|r| &r.text))
+}
+
+/// What the daemon loaded: its rules, the `%set` definitions beside them, and whether
+/// `compiled.rules` is the file it came from.
+type LoadedRules = (Vec<fapolicyd::rules::Rule>, Vec<Vec<u8>>, bool);
+
 /// The daemon's `open_file()`: /etc/fapolicyd/fapolicyd.rules first, compiled.rules
 /// only when that open fails (research `rule-files.md`). The daemon never opens
 /// rules.d/ either, so the bool beside the rules is "compiled.rules won", which is the
@@ -213,9 +282,11 @@ fn conf_dir(conf: Option<&std::path::Path>) -> std::path::PathBuf {
 /// Nothing here is a failure and everything is a note: the packaged /etc/fapolicyd is
 /// mode 750 root:fapolicyd, so this read failing is the ordinary case. There is also no
 /// unparsable case, because every line that is not blank, `#` or `%set` is a rule.
-fn read_rules(
-    conf: Option<&std::path::Path>,
-) -> Result<(Vec<fapolicyd::rules::Rule>, bool), String> {
+///
+/// The `%set` lines come back beside the rules, out of the same bytes: they are dropped
+/// from the numbering but they decide what the rules naming them match, so #158 compares
+/// them against the directory's own and this is the read that already has them.
+fn read_rules(conf: Option<&std::path::Path>) -> Result<LoadedRules, String> {
     let dir = conf_dir(conf);
     let legacy = dir.join("fapolicyd.rules");
     let compiled = dir.join("compiled.rules");
@@ -245,7 +316,7 @@ fn read_rules(
             which.display()
         ));
     }
-    Ok((rules, won))
+    Ok((rules, fapolicyd::rules::sets(&bytes), won))
 }
 
 /// Every `rules.d/` component file beside the conf, in whatever order the directory

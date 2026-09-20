@@ -64,13 +64,15 @@ pub enum FapolicydAction {
     #[command(after_long_help = WHY_AFTER_LONG_HELP)]
     Why,
     /// Read denial records on stdin, write one line per denial on stdout saying whether
-    /// the candidate rules at PATH would have allowed it: allowed, denied or unknown.
+    /// the candidate rules would have allowed it: allowed, denied or unknown. With no
+    /// PATH the candidates are the host's own rules.d/ as it is on disk now.
     #[command(after_long_help = CHECK_AFTER_LONG_HELP)]
     Check {
         /// A rules file to merge into the host's rules.d/, or a whole proposed rules.d/
-        /// directory to use in its place.
+        /// directory to use in its place. Omit it to check the host's own rules.d/ beside
+        /// --conf against the rules the daemon loaded.
         #[arg(value_name = "PATH")]
-        path: PathBuf,
+        path: Option<PathBuf>,
     },
 }
 
@@ -128,7 +130,15 @@ What PATH is:
   directory, used as the whole proposed rules.d/ in place of the host's.
 
   The host's own rules.d/ and compiled.rules are read beside --conf, exactly as
-  the other actions read them; --no-conf leaves every verdict unknown.";
+  the other actions read them; --no-conf leaves every verdict unknown.
+
+With no PATH:
+  the candidates are the host's own rules.d/ beside --conf, as it is on disk
+  now, and the baseline is compiled.rules -- what the daemon actually loaded.
+  That is the question an operator who edited rules.d/ in place and has not run
+  fagenrules yet is asking. A rules.d/ that still merges to compiled.rules
+  proposes nothing and says so. --no-conf gives it nowhere to read from and is
+  a usage error.";
 
 /// What the rule number in the report is, since the report is built around it.
 const WHY_AFTER_LONG_HELP: &str = "\

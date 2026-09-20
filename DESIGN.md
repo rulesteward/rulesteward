@@ -556,6 +556,31 @@ order `rules.d/` gives it, first match wins. The verdicts are `allowed` (an
 `allow*` candidate matches first), `denied` (a `deny*` candidate matches first,
 or none matches and the rule that denied denies again) and `unknown`.
 
+**With no `PATH` the candidates are the host's own `rules.d/` and the baseline is
+`compiled.rules`.** `check::Proposal` carries which of the two it is. With a
+`PATH`, rule N is located in the `rules.d/` that `compiled.rules` was generated
+from, and the two disagreeing is drift — an `unknown`, because the merged order
+in hand is not the one that produced the `rule=`. With no `PATH` that same
+disagreement is the question being asked: the operator edited `rules.d/` in
+place and has not run `fagenrules`, so the directory is the proposal and what
+the daemon loaded is the baseline. Rule N is then found in the proposal by its
+text rather than by its file, and a `rules.d/` that still merges to
+`compiled.rules` rule for rule proposes nothing, which is said as a diagnostic
+and not left to be inferred from a page of `denied`. The D3 skip is unchanged
+either way, because it was always against `compiled.rules`. A host loading a
+legacy `fapolicyd.rules` reads no `rules.d/` at all, so the default has nothing
+to propose and the run names the file the daemon loads instead.
+
+**An edited `%set` suspends the D3 skip in that mode.** A `%set` is in no rule's
+text and in no rule number, so `main` compares the directory's `%` lines against
+the loaded file's, in merge order and byte for byte, because a set holds paths
+(§4). When they differ, a rule naming a set is evaluated instead of skipped: the
+daemon walked past it, but not with this definition, and `ftype=%languages`
+matching is exactly what an edit to `%languages` can change. The matcher then
+answers `unknown` for it, because what a set holds is never expanded here. A
+candidate given by `PATH` that redefines a set is the same hazard, is not gated,
+and is tracked on #139 along with deciding which set changed.
+
 A wrong `allowed` is worse than an `unknown`, so `unknown` is the answer for
 everything the 48-row measurement in #120 did not settle: an attribute no log
 record can decide (`pattern=`, `uid=`, a `%set` reference, a `dir=` keyword,
@@ -731,7 +756,7 @@ not on an object-specific path.
 
 The command surface is `rulesteward <domain> <action> [flags]`. v1 exposes
 exactly `rulesteward fapolicyd rules`, `rulesteward fapolicyd trust`,
-`rulesteward fapolicyd why` and `rulesteward fapolicyd check <PATH>`. These are
+`rulesteward fapolicyd why` and `rulesteward fapolicyd check [PATH]`. These are
 commitments, cheap now and expensive to retrofit:
 
 - **No bare-action forms and no default domain.** `rulesteward rules` is not
@@ -740,11 +765,16 @@ commitments, cheap now and expensive to retrofit:
   0.3.0 shipped: a removed action is a usage error, never an alias.
 - **No aliases or shortenings of `fapolicyd`**, so a future domain cannot collide
   with a prefix people got used to typing.
-- **An action may take a positional argument; none takes an optional one.**
-  `check <PATH>` is required, because an action whose meaning changes when an
-  argument is omitted is two actions. An unreadable `<PATH>` is exit `1` and not
-  a diagnostic: the user named that path, and a verdict against rules that were
-  never read is a verdict about nothing.
+- **An action may take a positional argument, and `check`'s is optional.** The
+  rule this replaces — that none is optional, because an action whose meaning
+  changes when an argument is omitted is two actions — held only while an
+  omitted `PATH` had no one obvious referent. It has one: the host's own
+  `rules.d/` beside `--conf`, which is the same directory a named `PATH` is
+  merged into and the same question asked of what is already on disk (§7, #158).
+  An unreadable named `<PATH>` is exit `1` and not a diagnostic: the user named
+  that path, and a verdict against rules that were never read is a verdict about
+  nothing. `--no-conf` with no `PATH` is exit `1` too, because the default is
+  read beside `--conf` and there is nowhere else for it to resolve to.
 - **Domain-specific flags hang off the domain, not the root.** `--conf` and
   `--no-conf` (§6) belong to `fapolicyd`, declared there and accepted before or
   after the action, so a second action inherits them. v1 defines **no global

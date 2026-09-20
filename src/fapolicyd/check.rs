@@ -54,9 +54,30 @@ pub fn key(record: &Record, n: Option<usize>) -> Key {
     }
 }
 
+/// What `check` was asked to check (#158). Both arms carry the same merged listing to
+/// `verdict`; what differs is what rule `N` is placed against.
+///
+#[derive(Clone, Copy)]
+pub enum Proposal<'a> {
+    /// `check <PATH>`: the host's `rules.d/` with the candidates merged in, placed
+    /// against that same directory as fagenrules last left it.
+    Merged(&'a [rules_d::File]),
+    /// `check` with no `PATH`: the host's `rules.d/` as it is on disk now, placed against
+    /// `compiled.rules`. The two disagreeing is the edit being asked about and not drift,
+    /// so there is no host listing to locate rule `N` in.
+    ///
+    /// `sets_agree` is the caller's answer to "are the directory's `%set` definitions the
+    /// ones the daemon loaded?", decided in `main` where the files are read. A `%set` is
+    /// in no rule's text and in no rule number, so an edited one is invisible to every
+    /// comparison here and changes what the rules naming it match.
+    OnDisk { sets_agree: bool },
+}
+
 /// The verdict for one denial: `n` is its `rule=`, `stale` what §6's rewrite would scope
 /// a rule to, `compiled` the host's own rules, `host` the `rules.d/` they were generated
-/// from and `proposed` the same directory with the candidates merged in.
+/// from -- `None` in `Proposal::OnDisk`, where the proposal is that directory itself --
+/// `sets_agree` whether the `%set` definitions in hand are the ones the daemon loaded,
+/// and `proposed` the merged listing to walk.
 ///
 /// The walk is candidates-only, which is D3: the daemon reached rule N, so every rule the
 /// host already had before N is proved not to match this record and is skipped rather
@@ -67,7 +88,8 @@ pub fn verdict(
     n: Option<usize>,
     stale: Option<&[u8]>,
     compiled: Option<&[Rule]>,
-    host: &[rules_d::File],
+    host: Option<&[rules_d::File]>,
+    sets_agree: bool,
     proposed: &[rules_d::File],
 ) -> Verdict {
     // K3: #120 measured the daemon comparing a candidate's `exe=` against the value the
@@ -102,11 +124,19 @@ pub fn verdict(
     };
     // Drift: `rules.d/` no longer agrees with `compiled.rules`, so the merged order in
     // hand is not the one that produced this `rule=` and nothing can be placed against it.
-    let Some(from) = rules_d::locate(host, compiled, n).and_then(|i| host.get(i)) else {
-        return Verdict::Unknown(format!(
-            "rule={n} is not in the host rules.d/ (not read, or changed since fagenrules \
-             ran); run fagenrules, recapture, rerun"
-        ));
+    // `Proposal::OnDisk` has no host listing, because there that disagreement is the
+    // proposal itself (#158) and rule N is found by its text below.
+    let from = match host {
+        Some(host) => match rules_d::locate(host, compiled, n).and_then(|i| host.get(i)) {
+            Some(from) => Some(from),
+            None => {
+                return Verdict::Unknown(format!(
+                    "rule={n} is not in the host rules.d/ (not read, or changed since \
+                     fagenrules ran); run fagenrules, recapture, rerun"
+                ));
+            }
+        },
+        None => None,
     };
     // K1: `perm=` is not optional. `allow all : path=...` fails the reload with `'=' is
     // missing for field :` on 8, 9 and 10, the daemon discards the WHOLE ruleset and goes
@@ -120,22 +150,37 @@ pub fn verdict(
     }
     // Rule N has to still be where it was, in the file it came from. An operator who
     // moved or deleted it changed which rules precede it, and deciding that needs the
-    // full-ruleset evaluation §11 parks.
-    let Some(limit) = position(proposed, &from.name, &target.text) else {
+    // full-ruleset evaluation §11 parks. With no host listing there is no file it came
+    // from, so its text decides wherever the edit left it: a duplicate earlier in the
+    // merge only shortens the walk, which can turn an `allowed` into a `denied` and
+    // never the other way.
+    let limit = match from {
+        Some(from) => position(proposed, &from.name, &target.text),
+        None => flat(proposed).position(|(_, rule)| rule.text == target.text),
+    };
+    let Some(limit) = limit else {
         return Verdict::Unknown(format!(
             "rule={n} ({}) is no longer in {}: which rules now precede it cannot be \
              decided from this record alone",
-            target.text, from.name
+            target.text,
+            from.map_or("the rules.d/ on disk", |f| f.name.as_str())
         ));
     };
 
     for (file, rule) in flat(proposed).take(limit) {
         // D3 again: this rule is one of the host's own, from before N, and the daemon
-        // walked past it to reach N.
-        if compiled
-            .iter()
-            .take(n - 1)
-            .any(|before| before.text == rule.text)
+        // walked past it to reach N. That proof is about the rule's text and holds only
+        // while the sets its text names hold: an edited `%languages` makes an untouched
+        // `ftype=%languages` deny a different rule, reached before N and matching what it
+        // did not match when the record was written. So when the sets have changed, a
+        // rule naming one is evaluated rather than skipped, and `matches` answers `None`
+        // for it -- this tool never expands a set (#139). A value beginning with `%` is
+        // exactly what `rules::Attr::new` calls a set reference.
+        if (sets_agree || !rule.text.contains("=%"))
+            && compiled
+                .iter()
+                .take(n - 1)
+                .any(|before| before.text == rule.text)
         {
             continue;
         }
@@ -829,7 +874,8 @@ trust=0";
             n,
             None,
             Some(&compiled),
-            &host(),
+            Some(&host()),
+            true,
             &rules_d::files(listing(candidate)),
         )
     }
@@ -921,7 +967,8 @@ trust=0";
             n,
             Some(b"/tmp/live/probe-other"),
             Some(&compiled),
-            &host(),
+            Some(&host()),
+            true,
             &rules_d::files(listing(Some((
                 "00-cand.rules",
                 "allow perm=execute all : path=/tmp/live/probe-grep\n",
@@ -953,13 +1000,21 @@ trust=0";
         let (record, n) = parsed(EXEC);
         let compiled = compiled();
         let proposed = rules_d::files(listing(None));
-        let got = verdict(&record, n, None, None, &host(), &proposed);
+        let got = verdict(&record, n, None, None, Some(&host()), true, &proposed);
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
         let (short, short_n) = parsed(
             "rule=99 dec=deny_audit perm=execute auid=1000 pid=1 exe=/usr/sbin/runuser \
              : path=/tmp/live/probe-grep ftype=application/x-executable trust=0",
         );
-        let got = verdict(&short, short_n, None, Some(&compiled), &host(), &proposed);
+        let got = verdict(
+            &short,
+            short_n,
+            None,
+            Some(&compiled),
+            Some(&host()),
+            true,
+            &proposed,
+        );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
     }
 
@@ -973,7 +1028,15 @@ trust=0";
             "90-deny-execute.rules".to_string(),
             b"deny_audit perm=execute all : all\n".to_vec(),
         )]);
-        let got = verdict(&record, n, None, Some(&compiled), &drifted, &drifted);
+        let got = verdict(
+            &record,
+            n,
+            None,
+            Some(&compiled),
+            Some(&drifted),
+            true,
+            &drifted,
+        );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
         assert!(rendered(&got).1.contains("fagenrules"), "{got:?}");
     }
@@ -995,7 +1058,8 @@ trust=0";
             n,
             None,
             Some(&compiled),
-            &host(),
+            Some(&host()),
+            true,
             &rules_d::files(proposed),
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
@@ -1143,7 +1207,8 @@ trust=0";
             n,
             None,
             Some(&compiled),
-            &host(),
+            Some(&host()),
+            true,
             &replacing(
                 "41-shared-obj.rules",
                 "allow perm=open all : ftype=application/x-sharedlib trust=1\n\
