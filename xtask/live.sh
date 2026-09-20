@@ -125,6 +125,7 @@ if ssh_ 'sudo test -d /etc/fapolicyd/rules.d && ! sudo test -d /etc/fapolicyd/ru
          ! sudo find /etc/fapolicyd/rules.d -name "*-rulesteward.rules" | grep -q . &&
          ! sudo test -f /etc/fapolicyd/rules.d/99-deny-everything.rules &&
          ! sudo test -f /etc/fapolicyd/rules.d/41-live-placement.rules &&
+         ! sudo test -f /etc/fapolicyd/rules.d/40-live-check.rules &&
          ! sudo test -e /etc/systemd/system/fapolicyd.service.d/rulesteward.conf' \
    && rules_consistent && ! ssh_ 'pgrep -x fapolicyd >/dev/null' \
    && ! ssh_ 'systemctl is-active -q fapolicyd' \
