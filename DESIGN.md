@@ -571,23 +571,52 @@ either way, because it was always against `compiled.rules`. A host loading a
 legacy `fapolicyd.rules` reads no `rules.d/` at all, so the default has nothing
 to propose and the run names the file the daemon loads instead.
 
-**An edited `%set` suspends the D3 skip in that mode.** A `%set` is in no rule's
-text and in no rule number, so `main` compares the directory's `%` lines against
-the loaded file's, in merge order and byte for byte, because a set holds paths
-(§4). When they differ, a rule naming a set is evaluated instead of skipped: the
-daemon walked past it, but not with this definition, and `ftype=%languages`
-matching is exactly what an edit to `%languages` can change. The matcher then
-answers `unknown` for it, because what a set holds is never expanded here. A
-candidate given by `PATH` that redefines a set is the same hazard, is not gated,
-and is tracked on #139 along with deciding which set changed.
+**An edited `%set` suspends the D3 skip, name by name.** A `%set` is in no rule's
+text and in no rule number, so `main` compares the proposal's `%` lines against
+the loaded file's, per name and byte for byte, because a set holds paths (§4).
+A rule naming a set whose definition changed is evaluated against the proposed
+definition instead of skipped: the daemon walked past it, but not with this
+definition, and `ftype=%languages` matching is exactly what an edit to
+`%languages` can change. A rule naming only sets that did not change keeps its
+skip — one added definition is no reason to throw away every verdict D3 proves.
+Both proposals carry the gate, because a candidate `PATH` that redefines a set
+is the same hazard (#139).
+
+**A `%set` reference is resolved by membership.** On `exe=`, `path=`, `dir=`,
+`ftype=` and object `trust=`, a value naming a set matches when any member
+matches, each member compared the way that attribute compares one literal —
+`dir=` by prefix, the rest by equality. The definitions come from the merged
+listing, which is where the daemon reads them too, and a member this tool cannot
+read — a set inside a set, a member outside UTF-8 — leaves the value `unknown`
+rather than calling it a miss.
+
+**Three `%set` shapes are a ruleset the daemon will not load.** S1 (#137)
+measured on 8, 9 and 10 that a set used before its definition, a name defined
+twice, and an undefined set each fail the reload, after which the daemon
+discards the whole ruleset and goes on enforcing the one it had; `fagenrules`
+exits 0 and `--reload-rules` exits 0, so neither warns. A name defined once in
+the candidates and once in the host `rules.d/` is a duplicate and not a
+fallback. There is no "what that rule then matches" to report, so every row is
+`unknown` naming the set and the case, with one run-level diagnostic ahead of
+the report — no new verdict and no new exit code (D20). A set defined once and
+never used fails no reload and is not reported.
+
+**The `dir=` keywords stay `unknown`.** `systemdirs` and `execdirs` are compiled
+in and identical in 1.3.2 and 1.4.5, but the behaviour is not: on 1.3.2 they
+match nothing and on 1.4.5 they match the list, and a log carries no daemon
+version (D19, #137). In a mixed value such as `dir=execdirs,/opt/` the literal
+members are resolved — a literal hit is a match and a literal miss is still
+`unknown` and never a miss, because the keyword might have matched. A set whose
+members include one reads the same way.
 
 A wrong `allowed` is worse than an `unknown`, so `unknown` is the answer for
 everything the 48-row measurement in #120 did not settle: an attribute no log
-record can decide (`pattern=`, `uid=`, a `%set` reference, a `dir=` keyword,
-subject `trust=`), a record missing the field a candidate tests, a `rules.d/`
-that no longer agrees with `compiled.rules`, a rule the proposal moved or
-deleted, and a record whose `exe=` §6's rewrite fired on — there the logged
-value and the value a rule would have to name are different images (#120 K3).
+record can decide (`pattern=`, `uid=`, `sha256hash=`, a `dir=` keyword,
+`dir=untrusted`, `exe=untrusted`, subject `trust=`), a record missing the field
+a candidate tests, a `rules.d/` that no longer agrees with `compiled.rules`, a
+rule the proposal moved or deleted, and a record whose `exe=` §6's rewrite
+fired on — there the logged value and the value a rule would have to name are
+different images (#120 K3).
 Two corrections from that measurement are branches in the matcher rather than
 advice: a candidate with no `perm=` fails the reload and discards the
 **whole** ruleset, so it makes every verdict in the run `unknown` (K1), and a
@@ -901,11 +930,12 @@ the tool, so a research capture whose interesting record only appears inside a
 - the trust database beyond `--file add`
 - full-ruleset evaluation for `check`: evaluating every rule against a
   reconstructed event, instead of only the candidates D3 proves are reachable.
-  It is what would turn §7's `unknown` arms into verdicts, and it cannot be
-  done from a log record — `pattern=ld_so` is a property of the process's
-  memory map, `uid=` and `sha256hash=` are fields the record does not carry, and
-  a `%set` names media types the daemon computed. The inputs it needs are on the
-  host, not in the capture, so it belongs to a tool that runs there
+  It is what would turn §7's remaining `unknown` arms into verdicts, and it
+  cannot be done from a log record — `pattern=ld_so` is a property of the
+  process's memory map, `uid=` and `sha256hash=` are fields the record does not
+  carry, and the `dir=` keywords answer one way on 1.3.2 and another on 1.4.5
+  while no capture names the version. The inputs it needs are on the host, not
+  in the capture, so it belongs to a tool that runs there
 - trust entries as `path size sha256` output: it changes the shape of `trust`'s
   output, not where it goes, and computing the hash means opening every path the
   log names — a FIFO blocks forever and a foreign host's log hashes the wrong

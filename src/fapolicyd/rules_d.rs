@@ -15,10 +15,9 @@ pub struct File {
     pub name: String,
     pub rules: Vec<Rule>,
     /// Its `%set` definitions, which no rule number counts. Kept beside the rules so the
-    /// caller can compare the directory's sets against the loaded ones in merge order
-    /// without reading the files a second time, and as bytes because a set holds paths
-    /// (#158).
-    pub sets: Vec<Vec<u8>>,
+    /// caller can compare the directory's sets against the loaded ones without reading the
+    /// files a second time (#158), and resolve a rule's reference by membership (#139).
+    pub sets: Vec<rules::Set>,
 }
 
 /// GNU `filevercmp`, which is the order `ls -1v` gives fagenrules: a port of gnulib's
@@ -317,7 +316,7 @@ mod tests {
                 for line in f
                     .sets
                     .iter()
-                    .map(Vec::as_slice)
+                    .map(|s| s.text.as_slice())
                     .chain(f.rules.iter().map(|r| r.text.as_bytes()))
                 {
                     bytes.extend_from_slice(line);

@@ -98,13 +98,23 @@ pub fn analyze(
 
     // The arms differ only in what rule N is placed against: candidates against the
     // `rules.d/` fagenrules generated `compiled.rules` from, the directory itself against
-    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Only the
-    // second is gated on its `%set` definitions still being the loaded ones -- a candidate
-    // given by `PATH` that redefines a set is the same hazard and is #139's.
+    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Both carry
+    // the same per-set gate (#139).
     let proposed = proposal.map(|p| match p {
-        check::Proposal::Merged(files) => (Some(rules_d), true, files),
-        check::Proposal::OnDisk { sets_agree } => (None, sets_agree, rules_d),
+        check::Proposal::Merged { files, changed } => (Some(rules_d), changed, files),
+        check::Proposal::OnDisk { changed } => (None, changed, rules_d),
     });
+
+    // D20: a proposal the daemon will refuse to load gets one line for the run, ahead of
+    // the report, where every row says the same thing. Nothing about one record explains
+    // it, so it is not a per-line diagnostic.
+    if let Some(msg) = proposed.and_then(|(_, _, files)| check::refused(files)) {
+        out.diagnostics.push(Diagnostic {
+            line: None,
+            msg,
+            artifact: Artifact::Both,
+        });
+    }
 
     if let Some(fields) = syslog_format {
         // `format_value`'s uid/gid branch dereferences `subj` with no NULL check on
@@ -216,7 +226,7 @@ pub fn analyze(
         // `allow`, so "nothing this tool can emit resolves it" is not "nothing resolves
         // it". The first record of a key decides for all of them; `stale_exe` is the only
         // input two records sharing a key can differ on, and it already gives `unknown`.
-        if let Some((host, sets_agree, proposed)) = proposed {
+        if let Some((host, changed, proposed)) = proposed {
             let key = check::key(&record, n);
             match checked.iter_mut().find(|(seen, _, _)| *seen == key) {
                 Some((_, count, _)) => *count += 1,
@@ -227,7 +237,7 @@ pub fn analyze(
                         stale.as_deref(),
                         rules,
                         host,
-                        sets_agree,
+                        changed,
                         proposed,
                     );
                     checked.push((key, 1, verdict));
@@ -1353,6 +1363,54 @@ mod tests {
         );
     }
 
+    /// D20: a proposal the daemon will refuse to load is said once for the run, ahead of
+    /// the report, however many denials the log holds -- and every row of that report is
+    /// `unknown`, because there is no ruleset for a record to be placed against. No new
+    /// verdict and no new exit code (#139).
+    #[test]
+    fn a_ruleset_the_daemon_refuses_is_one_diagnostic_for_the_run() {
+        let rule = rules::Rule::new("deny_audit perm=execute all : all");
+        let host = vec![rules_d::File {
+            name: "90-deny-execute.rules".into(),
+            rules: vec![rule.clone()],
+            sets: Vec::new(),
+        }];
+        let mut proposed = rules_d::files(vec![(
+            "00-cand.rules".to_string(),
+            b"allow perm=execute all : ftype=%nosuch\n".to_vec(),
+        )]);
+        proposed.extend(host.clone());
+        let denial = "rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
+                      path=/tmp/gaps/trusted-ls trust=1\n";
+        let input = format!("{denial}{}", denial.replace("trusted-ls", "other-ls"));
+        let o = analyze(
+            input.as_bytes(),
+            None,
+            Some(&[rule]),
+            &host,
+            Some(check::Proposal::Merged {
+                files: &proposed,
+                changed: &[],
+            }),
+            None,
+            false,
+        );
+        let report = String::from_utf8(o.check.clone()).unwrap();
+        assert_eq!(
+            report.lines().filter(|l| l.starts_with("unknown ")).count(),
+            2,
+            "{report}"
+        );
+        let said: Vec<&Diagnostic> = o
+            .diagnostics
+            .iter()
+            .filter(|d| d.msg.contains("%nosuch"))
+            .collect();
+        assert_eq!(said.len(), 1, "{:?}", o.diagnostics);
+        assert_eq!(said[0].line, None, "it describes the run and not a line");
+        assert_eq!(said[0].artifact, Artifact::Both);
+    }
+
     /// D-d: one line per distinct denial, in first-seen order, with a count. A real log
     /// repeats one denial thousands of times and the verdict for all of them is the same,
     /// so repeating the line would bury the one that differs.
@@ -1381,7 +1439,10 @@ mod tests {
             None,
             Some(&[rule]),
             &host,
-            Some(check::Proposal::Merged(&proposed)),
+            Some(check::Proposal::Merged {
+                files: &proposed,
+                changed: &[],
+            }),
             None,
             false,
         );
@@ -1409,7 +1470,10 @@ mod tests {
             None,
             Some(&ld_so()),
             &[],
-            Some(check::Proposal::Merged(&[])),
+            Some(check::Proposal::Merged {
+                files: &[],
+                changed: &[],
+            }),
             None,
             false,
         );

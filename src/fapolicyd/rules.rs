@@ -41,8 +41,15 @@ pub enum Attr {
     /// keeps loading, counts the broken rule in `Loaded N rules` so it occupies its slot,
     /// and never matches anything with it.
     NeverMatches,
-    /// `pattern=`, `uid=`, `sha256hash=`, a `%set` reference, a `dir=` keyword: real
-    /// attributes whose value cannot be decided from a log record.
+    /// A value's members, with the attribute's own name beside them: a `%set` reference
+    /// for the matcher to resolve against the definitions it holds, or a `dir=` value
+    /// listing a keyword beside a literal (#139). Each member is compared the way this
+    /// attribute compares one literal, which is the matcher's business and not a token's,
+    /// so nothing is expanded here.
+    Members(String, Vec<String>),
+    /// `pattern=`, `uid=`, `sha256hash=`, a `dir=` keyword on its own, a `%set` written
+    /// beside something else: real attributes whose value cannot be decided from a log
+    /// record.
     Unevaluable,
 }
 
@@ -50,7 +57,7 @@ impl Attr {
     /// One token of a rule's subject or object side. Which side it was written on is the
     /// caller's business: `perm=` on the object side is a real attribute in the wrong
     /// place, and only the matcher knows which side it is reading.
-    fn new(token: &str) -> Attr {
+    pub(crate) fn new(token: &str) -> Attr {
         let Some((name, value)) = token.split_once('=') else {
             return if token == "all" {
                 Attr::All
@@ -58,10 +65,20 @@ impl Attr {
                 Attr::NeverMatches
             };
         };
-        // A `%set` reference names a list this tool never expands: `ftype=%languages`
-        // holds 24 media types, and comparing the record's `ftype=` against the literal
-        // `%languages` would call every one of them a mismatch.
-        if value.starts_with('%') {
+        // Two shapes hold several members: a `%set` reference, which names a list -- 24
+        // media types for `%languages` -- and a `dir=` value, where S1 (#137) measured a
+        // literal matching beside a keyword on 8, 9 and 10. A `%set` written beside
+        // anything else is a shape nothing measured, and the arms below would compare the
+        // whole value as one literal and call every member of it a mismatch, so it stays
+        // undecidable.
+        let (set, list) = (value.starts_with('%'), value.contains(','));
+        if (set && !list) || (name == "dir" && list) {
+            return Attr::Members(
+                name.to_string(),
+                value.split(',').map(str::to_string).collect(),
+            );
+        }
+        if set {
             return Attr::Unevaluable;
         }
         let v = value.to_string();
@@ -98,10 +115,28 @@ pub fn parse(file: &[u8]) -> Vec<Rule> {
     rules
 }
 
-/// The `%set` definitions of a file, in the order written. `parse` drops them because no
-/// rule number counts them, which makes an edited set invisible to every comparison of
-/// rule text -- and the rules naming it mean something different afterwards. What a set
-/// *holds* is never expanded here (#139), so these are compared as bytes and nothing more.
+/// One `%set` definition. `parse` drops the line because no rule number counts it, which
+/// makes an edited set invisible to every comparison of rule text -- and the rules naming
+/// it mean something different afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Set {
+    /// The name as a rule names it, the `%` included: `%languages`.
+    pub name: String,
+    /// The members, split on `,`. Empty for a line with no `=` at all, which defines
+    /// nothing: the caller has to answer for such a reference rather than read it as a
+    /// set that matches nothing.
+    pub members: Vec<Vec<u8>>,
+    /// The whole line as written, trimmed: what one definition is compared against
+    /// another by.
+    pub text: Vec<u8>,
+    /// How many rules of its own file precede it, which is what places the definition in
+    /// the merged order against a rule -- S1 (#137) measured that a set used before its
+    /// definition fails the reload.
+    pub rules_before: usize,
+}
+
+/// The `%set` definitions of a file, in the order written, each with the number of its
+/// file's rules that precede it.
 ///
 /// Bytes and not `String`, against the rest of this module: a set holds paths, and §4's
 /// byte rule applies to those. Through `from_utf8_lossy` two definitions differing only
@@ -111,13 +146,41 @@ pub fn parse(file: &[u8]) -> Vec<Rule> {
 /// Which lines are sets is decided by `parse`'s own test and not by a second one: its
 /// `str::trim` takes a vertical tab and U+00A0 that `trim_ascii` leaves, and a line
 /// `parse` drops as a set while this skips it would be in neither list, so an edit to it
-/// would compare as no edit. The ASCII trim is only on what is kept, so a CRLF file or a
-/// trailing space is not an edit.
-pub fn sets(file: &[u8]) -> Vec<Vec<u8>> {
-    file.split(|&b| b == b'\n')
-        .filter(|line| String::from_utf8_lossy(line).trim().starts_with('%'))
-        .map(|line| line.trim_ascii().to_vec())
-        .collect()
+/// would compare as no edit. The rule count is kept by the same walk for the same reason:
+/// two loops over one file's lines could disagree about which of them is a rule. The ASCII
+/// trim is only on what is kept, so a CRLF file or a trailing space is not an edit.
+pub fn sets(file: &[u8]) -> Vec<Set> {
+    let mut sets = Vec::new();
+    let mut rules_before = 0usize;
+    for line in file.split(|&b| b == b'\n') {
+        let trimmed = String::from_utf8_lossy(line);
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !trimmed.starts_with('%') {
+            rules_before += 1;
+            continue;
+        }
+        let line = line.trim_ascii();
+        let (name, members) = match line.iter().position(|&b| b == b'=') {
+            Some(at) => (
+                &line[..at],
+                line[at + 1..]
+                    .split(|&b| b == b',')
+                    .map(<[u8]>::to_vec)
+                    .collect(),
+            ),
+            None => (line, Vec::new()),
+        };
+        sets.push(Set {
+            name: String::from_utf8_lossy(name).into_owned(),
+            members,
+            text: line.to_vec(),
+            rules_before,
+        });
+    }
+    sets
 }
 
 impl Rule {
@@ -293,7 +356,7 @@ allow perm=open all : all
     #[test]
     fn what_a_log_record_cannot_decide_is_unevaluable_and_not_dropped() {
         let (subject, object) =
-            Rule::new("deny_audit perm=any pattern=ld_so uid=0 : ftype=%languages dir=execdirs")
+            Rule::new("deny_audit perm=any pattern=ld_so uid=0 : sha256hash=ab dir=execdirs")
                 .attrs();
         assert_eq!(
             subject,
@@ -303,7 +366,62 @@ allow perm=open all : all
                 Attr::Unevaluable
             ]
         );
-        assert_eq!(object, [Attr::Unevaluable, Attr::Unevaluable]);
+        assert_eq!(
+            object,
+            [Attr::Unevaluable, Attr::Unevaluable],
+            "a `dir=` keyword on its own is decidable only on a known daemon version (D19)"
+        );
+    }
+
+    #[test]
+    fn a_set_reference_and_a_dir_list_are_members_and_nothing_else_is() {
+        let (subject, object) = Rule::new(
+            "allow perm=any exe=%trusted : ftype=%languages dir=execdirs,/opt/ path=%a,%b",
+        )
+        .attrs();
+        assert_eq!(
+            subject,
+            [
+                Attr::Perm("any".into()),
+                Attr::Members("exe".into(), vec!["%trusted".into()]),
+            ]
+        );
+        assert_eq!(
+            object,
+            [
+                Attr::Members("ftype".into(), vec!["%languages".into()]),
+                Attr::Members("dir".into(), vec!["execdirs".into(), "/opt/".into()]),
+                // A set beside anything else on an attribute that is not `dir=`: nothing
+                // measured it, and the value is not a literal either.
+                Attr::Unevaluable,
+            ]
+        );
+        assert_eq!(
+            Rule::new("allow perm=any all : dir=/opt/").attrs().1,
+            [Attr::Dir("/opt/".into())],
+            "one literal directory is still one literal"
+        );
+    }
+
+    #[test]
+    fn a_definition_carries_its_members_and_the_rules_it_sorts_after() {
+        let sets = sets(
+            b"# a comment\n%a=/one,/two\nallow perm=any all : all\ndeny perm=any all : all\n%b=/three\n%c\n",
+        );
+        assert_eq!(sets.len(), 3, "{sets:?}");
+        assert_eq!(sets[0].name, "%a");
+        assert_eq!(sets[0].members, [b"/one".to_vec(), b"/two".to_vec()]);
+        assert_eq!(sets[0].text, b"%a=/one,/two");
+        assert_eq!(sets[0].rules_before, 0, "the comment is no rule");
+        assert_eq!(sets[1].name, "%b");
+        assert_eq!(sets[1].members, [b"/three".to_vec()]);
+        assert_eq!(sets[1].rules_before, 2, "%b sorts after both rules");
+        assert_eq!(
+            sets[2].members,
+            Vec::<Vec<u8>>::new(),
+            "a line with no `=` defines nothing"
+        );
+        assert_eq!(sets[2].rules_before, 2);
     }
 
     #[test]
