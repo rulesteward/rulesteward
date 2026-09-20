@@ -46,6 +46,12 @@ elif [ "${HARVEST_VARIANT:-base}" = "placement" ]; then
     # 41- sorts between 41-shared-obj and 42-trusted-elf, whose
     # `allow perm=execute all : trust=1` would shadow any deny placed after it.
     echo 'deny_audit perm=execute all : path=/usr/bin/sed' > /etc/fapolicyd/rules.d/41-live-placement.rules
+    # #140: the denials `rules --dir-min` groups. They have to be of TRUSTED objects,
+    # because an untrusted one is answered with a trust entry and those are never
+    # grouped, and a trusted execute is only denied by a rule that sorts before
+    # 42-trusted-elf -- which is why this lives here and not in denyall, where
+    # 2026-09-20's run denied none of the five. Second, so the sed rule keeps its number.
+    echo 'deny_audit perm=execute all : dir=/opt/live-app/' >> /etc/fapolicyd/rules.d/41-live-placement.rules
     fagenrules || fail fagenrules
 fi
 fp_manifest | sed 's/^/# /'
@@ -61,12 +67,26 @@ printf '#!/bin/bash\necho hi\n' > /tmp/live/probe.sh && chmod 755 /tmp/live/prob
 cp /usr/lib64/libz.so.1 /tmp/live/probe-lib.so && chmod 755 /tmp/live/probe-lib.so
 echo "plain data" > /tmp/live/data.txt && chmod 644 /tmp/live/data.txt
 
+# The application directory `rules --dir-min` groups under (#140). /tmp/live cannot
+# be it: #136 D14 refuses a dir= at or under /tmp/ without --dir-system. Five real
+# ELFs because a bare --dir-min means 5, and in the file trust db before the daemon
+# starts because only a trusted object is answered with a rule -- an untrusted one
+# gets a trust entry, and those are never grouped.
+mkdir -p /opt/live-app && chmod 755 /opt/live-app
+for i in 1 2 3 4 5; do
+    cp /usr/bin/grep "/opt/live-app/tool$i" && chmod 755 "/opt/live-app/tool$i"
+done
+fapolicyd-cli --file add /opt/live-app/ || fail "trust /opt/live-app"
+
 trigger() {
     as_tester /tmp/live/probe-grep -c x /etc/hostname   # untrusted execute
     as_tester /tmp/live/probe.sh                         # untrusted script (allowed)
     as_tester cat /tmp/live/probe-lib.so                 # untrusted sharedlib open
     as_tester cat /tmp/live/data.txt                     # plain data open (allowed)
     as_tester /usr/bin/grep -c x /etc/hostname           # trusted control (allowed)
+    for i in 1 2 3 4 5; do
+        as_tester "/opt/live-app/tool$i" -c x /etc/hostname  # trusted, application directory
+    done
     as_tester /usr/bin/sed -n 1p /etc/hostname           # trusted control; placement denies it by object
     # A trusted binary through the loader: the shipped ld_so pattern rule denies
     # it with the OBJECT trusted, the only trust=1 denial a default install has.
@@ -332,9 +352,12 @@ fi
 # trust commands go to different places and are applied differently below; the
 # why report is asserted on and never applied.
 for action in rules trust why; do
-    echo "== rulesteward fapolicyd $action --conf /etc/fapolicyd/fapolicyd.conf =="
+    # A bare --dir-min is 5, the number of tools in /opt/live-app (#140, #161).
+    FLAGS=()
+    [ "$action" = rules ] && [ "${HARVEST_VARIANT:-base}" = placement ] && FLAGS=(--dir-min)
+    echo "== rulesteward fapolicyd $action ${FLAGS[*]} --conf /etc/fapolicyd/fapolicyd.conf =="
     tail -n +$((MARK+1)) /tmp/deny.log \
-        | $RS fapolicyd "$action" --conf /etc/fapolicyd/fapolicyd.conf \
+        | $RS fapolicyd "$action" "${FLAGS[@]}" --conf /etc/fapolicyd/fapolicyd.conf \
             >"/tmp/rs.$action" 2>/tmp/rs.err
     RC=$?
     echo "exit=$RC"
@@ -352,9 +375,21 @@ grep -qE '^rule=[0-9]+ +30-patterns\.rules +[0-9]+ denials +subject-side, nothin
     fail "why: no subject-side line for the ld_so pattern rule"
 if [ "${HARVEST_VARIANT:-base}" = placement ]; then
     grep -qF ' : path=/usr/bin/sed' /tmp/rs.rules || fail "placement: no path rule for /usr/bin/sed"
+    [ "$(grep -c 'path=/opt/live-app/tool[1-5] .*trust=1' /tmp/denials1.txt)" -eq 5 ] ||
+        fail "dir-min: expected five trust=1 denials under /opt/live-app"
+    grep -qE '^allow perm=execute exe=[^ ]+ : dir=/opt/live-app/$' /tmp/rs.rules ||
+        fail "dir-min: no grouped dir=/opt/live-app/ rule"
+    grep -q '^allow .* : path=/opt/live-app/' /tmp/rs.rules &&
+        fail "dir-min: a path= rule survived beside the grouped one"
+    grep -qE '^# .*dir=/opt/live-app/ replaces 5 rules' /tmp/rs.rules ||
+        fail "dir-min: no comment naming what the grouped rule replaced"
+    echo "dir-min: $(grep -E '^allow .* : dir=/opt/live-app/$' /tmp/rs.rules)"
     grep -qE "^$PLACED +41-live-placement\.rules " /tmp/rs.why ||
         fail "why: no line for $PLACED in 41-live-placement.rules"
-    grep -qF "# rulesteward: new file: rules.d/40-rulesteward.rules (sorts before 41-live-placement.rules, $PLACED)" /tmp/rs.rules ||
+    # Two rules of that file denied since #140, and the note names both: the sed rule
+    # and the /opt/live-app one written after it, by the numbers the records carry.
+    GROUPED=$(grep -om1 'rule=[0-9]* dec=deny_audit perm=execute .* path=/opt/live-app/tool1 ' /tmp/denials1.txt | grep -om1 'rule=[0-9]*')
+    grep -qF "# rulesteward: new file: rules.d/40-rulesteward.rules (sorts before 41-live-placement.rules, rules ${PLACED#rule=}, ${GROUPED#rule=})" /tmp/rs.rules ||
         fail "placement: note is not the expected 40-rulesteward.rules line"
 fi
 
@@ -537,6 +572,10 @@ while IFS= read -r line; do
             eval "printf '%s\n' ${line#fapolicyd-cli --file add }" >> /tmp/suggested-paths.txt ;;
         "fapolicyd-cli --update")
             timeout 120 fapolicyd-cli --update || echo "  (--update exited $?)" ;;
+        allow*" : dir="*)
+            echo "$line" >> "$CAND"
+            grep -o "path=${line##* : dir=}[^ ]*" /tmp/denials1.txt | sort -u | sed 's/^path=//' \
+                >> /tmp/suggested-paths.txt ;;
         allow*)
             echo "$line" >> "$CAND"
             printf '%s\n' "${line##* : path=}" >> /tmp/suggested-paths.txt ;;
@@ -556,6 +595,8 @@ if [ -f "$CAND" ]; then
         run_check "$CANDDIR/99-rulesteward.rules" /tmp/rs.check-late
         grep -qE '^denied .* path=/usr/bin/sed ' /tmp/rs.check-late ||
             fail "placement: check did not say denied for /usr/bin/sed under 99-rulesteward.rules"
+        [ "$(grep -cE '^allowed .* path=/opt/live-app/tool[1-5] .* : dir=/opt/live-app/$' /tmp/rs.check)" -eq 5 ] ||
+            fail "dir-min: check did not call all five /opt/live-app denials allowed by the dir= rule"
     fi
     cat "$CAND" >> "$RULES"
 fi
