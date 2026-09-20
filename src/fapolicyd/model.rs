@@ -119,4 +119,12 @@ pub enum Suggestion {
         exe: Option<Vec<u8>>,
         path: Vec<u8>,
     },
+    /// What `--dir-min` turns a group of `Rule`s that shared a parent directory into
+    /// (DESIGN.md §8.1). `exe` is not optional here: a rule whose subject side is `all`
+    /// is already the broadest there is, so it is never grouped.
+    Dir {
+        perm: Vec<u8>,
+        exe: Vec<u8>,
+        dir: Vec<u8>,
+    },
 }
