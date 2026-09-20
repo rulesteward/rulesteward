@@ -191,6 +191,34 @@ allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US
 allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/C.utf8/LC_CTYPE
 ```
 
+`--dir-min <N>` replaces N or more rules that share `exe=`, `perm=` and parent
+directory with one `dir=` rule, and a bare `--dir-min` means 5. It is opt-in
+because a `dir=` rule allows every path under that directory, which is more
+than the log showed, and the comment ahead of the rule names what it replaced.
+The same capture with `--dir-min 2`:
+
+```
+# rulesteward: line 53: exe= is stale: pid 75414 was denied perm=execute of /usr/lib64/ld-linux-x86-64.so.2, and the daemon keeps the pre-exec image until that exec is permitted; the emitted rule is scoped to exe=/usr/lib64/ld-linux-x86-64.so.2 and not to the logged exe=/usr/sbin/runuser (x16)
+# rulesteward: dir=/usr/lib/locale/en_US.utf8/ replaces 10 rules and allows every path under that directory, which is more than this log showed: /usr/lib/locale/en_US.utf8/LC_IDENTIFICATION /usr/lib/locale/en_US.utf8/LC_MEASUREMENT /usr/lib/locale/en_US.utf8/LC_TELEPHONE /usr/lib/locale/en_US.utf8/LC_ADDRESS /usr/lib/locale/en_US.utf8/LC_NAME /usr/lib/locale/en_US.utf8/LC_PAPER /usr/lib/locale/en_US.utf8/LC_MONETARY /usr/lib/locale/en_US.utf8/LC_COLLATE /usr/lib/locale/en_US.utf8/LC_TIME /usr/lib/locale/en_US.utf8/LC_NUMERIC
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+allow perm=execute exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/bin/grep
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libpcre.so.1.2.12
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libsigsegv.so.2.0.6
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib64/libc.so.6
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : dir=/usr/lib/locale/en_US.utf8/
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/C.utf8/LC_CTYPE
+```
+
+The three `/usr/lib64` libraries stay as `path=` rules. A parent the FHS names
+(`/usr/lib64`, `/usr/bin`, `/opt`, `/home` and the rest) and anything under
+`/tmp/`, `/var/tmp/` or `/dev/shm/` is grouped only with `--dir-system` as
+well, which on this capture adds `dir=/usr/lib64/`. `dir=/` is never written,
+and neither is a `dir=` rule for a suggestion with no usable `exe=`.
+
 ## why
 
 ```
@@ -226,8 +254,12 @@ cannot allow anything.
 rule that denied it. `denied` means no candidate before that rule matches, so
 the same rule denies the access again. `unknown` means the tool did not guess:
 the candidate turns on something the record cannot decide (`pattern=`, `uid=`,
-a `%set` reference), the record carries no `rule=`, the placement cannot be
-resolved, or `exe=` is the stale pre-exec image described under rules.
+`sha256hash=`, a `dir=` keyword such as `execdirs`), the record carries no
+`rule=`, the placement cannot be resolved, or `exe=` is the stale pre-exec
+image described under rules. A `%set` reference is resolved by membership
+against its definition. A set that is undefined, defined twice, or defined
+after the rule that names it fails the daemon's reload, so every line of that
+run answers `unknown` and says why.
 
 Same capture as under rules, with `--conf` pointing at the vendored Rocky 9
 conf and `rules.d` fixture, and a candidate file that allows the denied execute
@@ -271,6 +303,40 @@ denied  perm=execute exe=/tmp/live/probe-grep rule=13 (1 denials)  no candidate 
 denied  perm=open exe=/usr/bin/cat rule=8 (1 denials)  no candidate before rule=8 matches; deny_audit perm=open all : ftype=application/x-sharedlib denies it again
 denied  perm=execute exe=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (2 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
 denied  perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 rule=5 (20 denials)  no candidate before rule=5 matches; deny_audit perm=any pattern=ld_so : all denies it again
+```
+
+With no `<PATH>`, `check` reads the `rules.d/` beside `--conf` as the proposal
+and `compiled.rules` as what the daemon loaded, which answers "would what is
+on disk now allow these denials?" after an in-place edit and before a reload.
+`--no-conf` with no `<PATH>` is a usage error. The three runs below read one
+record:
+
+```
+rule=13 dec=deny_audit perm=execute auid=1000 pid=1 exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable trust=1
+```
+
+`--conf tests/fixtures/conf/edited/fapolicyd.conf`, where `00-new.rules` was
+added to `rules.d/` and `fagenrules` has not run:
+
+```
+allowed perm=execute exe=/usr/bin/bash path=/tmp/gaps/trusted-ls rule=13 (1 denials)  00-new.rules: allow perm=execute all : path=/tmp/gaps/trusted-ls
+```
+
+`--conf tests/fixtures/conf/default.conf`, where nothing was edited:
+
+```
+# rulesteward: tests/fixtures/conf/rules.d merges to the rules the daemon loaded; nothing is proposed and every denial is denied again
+denied  perm=execute exe=/usr/bin/bash path=/tmp/gaps/trusted-ls rule=13 (1 denials)  no candidate before rule=13 matches; deny_audit perm=execute all : all denies it again
+```
+
+`--conf tests/fixtures/conf/edited-set-and-rule/fapolicyd.conf`, where the edit
+added `application/x-executable` to `%languages` and wrote an allow for the
+path after the deny that names the set. The set is resolved against the
+proposed definition, the record's `ftype=` is now a member, and the deny is
+reached first:
+
+```
+denied  perm=execute exe=/usr/bin/bash path=/tmp/gaps/trusted-ls rule=13 (1 denials)  50-shipped.rules: deny_audit perm=any all : ftype=%languages
 ```
 
 Denials left in place are still exit 0. Exit 0 says the input parsed and every

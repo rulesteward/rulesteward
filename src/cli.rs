@@ -136,9 +136,10 @@ Reading the verdicts:
   denied   the first candidate to match is a deny rule, or none matches and the
            rule that denied denies again.
   unknown  the candidates cannot be evaluated against this record. The line names
-           the reason: an attribute no log record can decide (pattern=, uid=, a
-           %set), a candidate with no perm= (which fails the reload and discards
-           the whole ruleset), a rules.d/ that no longer agrees with
+           the reason: an attribute no log record can decide (pattern=, uid=,
+           sha256hash=, a dir= keyword), a candidate with no perm= or a %set the
+           daemon will not load (either fails the reload and discards the whole
+           ruleset), a rules.d/ that no longer agrees with
            compiled.rules, or a record whose exe= this tool had to rewrite.
 
   unknown is not \"denied\". It is the one answer that is never wrong, and a
