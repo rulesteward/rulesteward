@@ -1190,7 +1190,13 @@ fn both_json_formats_are_the_same_document_over_every_fixture() {
         }
         let input = std::fs::read(&path).expect("read fixture");
         let name = path.display();
-        for action in [vec!["why"], vec!["check", candidate]] {
+        for action in [
+            vec!["why"],
+            vec!["check", candidate],
+            vec!["rules"],
+            vec!["rules", "--dir-min", "2"],
+            vec!["trust"],
+        ] {
             let mut args = vec!["fapolicyd", "--no-conf"];
             args.extend(&action);
             args.extend(["--format", "json"]);
@@ -1215,7 +1221,8 @@ fn both_json_formats_are_the_same_document_over_every_fixture() {
 
 /// The `diagnostics` array is the comment block, said the way JSON can say it: the same
 /// notes the text run writes, filtered the same way, in the same order. Both shapes are
-/// in this run -- a note about the host, and a note about an input line.
+/// in both runs -- a note about the host, and a note about an input line -- and the
+/// `rules --dir-min` run adds the third source, a note the grouping itself wrote.
 #[test]
 fn the_json_diagnostics_are_the_comments_the_text_run_writes() {
     let candidate = concat!(
@@ -1227,38 +1234,64 @@ fn the_json_diagnostics_are_the_comments_the_text_run_writes() {
         "/tests/fixtures/rocky8-base-edge-paths.log"
     ))
     .expect("read fixture");
-    let args = [
-        "fapolicyd",
-        "--conf",
-        "/nonexistent/fapolicyd.conf",
-        "check",
-        candidate,
-    ];
-    let (_, text, _) = run(&args, &input);
-    let mut json = args.to_vec();
-    json.extend(["--format", "json"]);
-    let (_, doc, _) = json_run(&json, &input);
+    for action in [
+        vec!["check", candidate],
+        vec!["rules", "--dir-min", "2", "--dir-system"],
+    ] {
+        // A conf that cannot be read is §6 step 2's ordinary case, and it is what puts
+        // the host's own notes -- the conf read and the rules read -- in both outputs.
+        let mut args = vec!["fapolicyd", "--conf", "/nonexistent/fapolicyd.conf"];
+        args.extend(&action);
+        let (_, text, _) = run(&args, &input);
+        let mut json = args.clone();
+        json.extend(["--format", "json"]);
+        let (_, doc, _) = json_run(&json, &input);
 
-    let notes = doc["diagnostics"].as_array().expect("an array");
-    let rendered: Vec<String> = notes
-        .iter()
-        .map(|n| {
-            let msg = n["msg"].as_str().expect("a message");
-            match n["line"].as_u64() {
-                Some(line) => format!("# rulesteward: line {line}: {msg}"),
-                None => format!("# rulesteward: {msg}"),
-            }
-        })
-        .collect();
-    let comments: Vec<String> = text
-        .lines()
-        .filter(|l| l.starts_with("# rulesteward: "))
-        .map(str::to_string)
-        .collect();
-    assert_eq!(rendered, comments, "{doc}");
+        let notes = doc["diagnostics"].as_array().expect("an array");
+        let rendered: Vec<String> = notes
+            .iter()
+            .map(|n| {
+                let msg = n["msg"].as_str().expect("a message");
+                match n["line"].as_u64() {
+                    Some(line) => format!("# rulesteward: line {line}: {msg}"),
+                    None => format!("# rulesteward: {msg}"),
+                }
+            })
+            .collect();
+        let comments: Vec<String> = text
+            .lines()
+            .filter(|l| l.starts_with("# rulesteward: "))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(rendered, comments, "{action:?}: {doc}");
+        assert!(
+            notes.iter().any(|n| n["line"].is_null()) && notes.iter().any(|n| n["line"].is_u64()),
+            "both shapes belong in this run: {action:?}: {doc}"
+        );
+    }
+    // The grouping note is a diagnostic and not an entry field, so it has to be in the
+    // array the loop above just compared.
+    let (_, doc, _) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "2",
+            "--format",
+            "json",
+        ],
+        &group_in("/app", 2),
+    );
     assert!(
-        notes.iter().any(|n| n["line"].is_null()) && notes.iter().any(|n| n["line"].is_u64()),
-        "both shapes belong in this run: {doc}"
+        doc["diagnostics"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .any(|n| n["msg"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("dir=/app/ replaces 2 rules"))),
+        "{doc}"
     );
 }
 
@@ -1267,12 +1300,16 @@ fn the_json_diagnostics_are_the_comments_the_text_run_writes() {
 /// answer and the one a log of allow records gets.
 #[test]
 fn a_json_run_that_reaches_no_answer_writes_no_document() {
-    let out = common::run(
-        &["fapolicyd", "--no-conf", "why", "--format", "json"],
-        b"not a record\nnor this\n",
-    );
-    assert_eq!(out.status.code().unwrap(), 2);
-    assert!(out.stdout.is_empty(), "{:?}", out.stdout);
+    // Every action that needs no argument: an artifact action writing `entries: []`
+    // here would read as "a log with nothing to suggest", which is exit 0's answer.
+    for action in ["why", "rules", "trust"] {
+        let out = common::run(
+            &["fapolicyd", "--no-conf", action, "--format", "json"],
+            b"not a record\nnor this\n",
+        );
+        assert_eq!(out.status.code().unwrap(), 2, "{action}");
+        assert!(out.stdout.is_empty(), "{action}: {:?}", out.stdout);
+    }
 
     let (code, out, err) = run(
         &[
@@ -1289,20 +1326,246 @@ fn a_json_run_that_reaches_no_answer_writes_no_document() {
     assert!(out.is_empty(), "{out}");
 }
 
-/// The two artifact actions have no JSON form until #147, and a document whose
-/// fields that issue would then change is worse than none. Exit 1, like every other
-/// usage error in §9.
+/// §9.1 (#147): a `rules` entry is the rule taken apart, and `text` is the line the same
+/// run writes into the fragment. Both subject sides are here: an `exe=` the record
+/// supplied, and the `all` an unusable one becomes, which the document spells `null`.
 #[test]
-fn rules_and_trust_refuse_a_json_format() {
-    for action in ["rules", "trust"] {
-        for format in ["json", "json-compact"] {
-            let (code, out, err) =
-                run(&["fapolicyd", "--no-conf", action, "--format", format], b"");
-            assert_eq!(code, 1, "{action} --format {format}: {err}");
-            assert!(out.is_empty(), "{out}");
-            assert!(err.contains("--format json"), "{err}");
-        }
+fn a_rules_document_carries_the_rule_as_data() {
+    let input: &[u8] = b"rule=13 dec=deny_audit perm=execute auid=1000 pid=1 \
+exe=/usr/bin/bash : path=/app/probe trust=1\n\
+rule=13 dec=deny_audit perm=open auid=1000 pid=1 exe=? : path=/app/lib.so trust=1\n";
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "rules", "--format", "json"],
+        input,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(doc["action"], "rules", "{doc}");
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "decision": "allow",
+            "perm": "execute",
+            "exe": "/usr/bin/bash",
+            "path": "/app/probe",
+            "dir": null,
+            "replaced": [],
+            "text": "allow perm=execute exe=/usr/bin/bash : path=/app/probe",
+        }),
+        "{doc}"
+    );
+    assert_eq!(
+        doc["entries"][1],
+        serde_json::json!({
+            "decision": "allow",
+            "perm": "open",
+            "exe": null,
+            "path": "/app/lib.so",
+            "dir": null,
+            "replaced": [],
+            "text": "allow perm=open all : path=/app/lib.so",
+        }),
+        "{doc}"
+    );
+    // The fragment and the document say the same thing, so the lines are the `text`
+    // fields in order: one renderer, not two.
+    let (_, fragment, _) = run(&["fapolicyd", "--no-conf", "rules"], input);
+    assert_eq!(
+        allow_lines(&fragment),
+        doc["entries"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|e| e["text"].as_str().expect("a text"))
+            .collect::<Vec<_>>(),
+        "{doc}"
+    );
+}
+
+/// §9.1: a `--dir-min` group writes `dir` where a plain rule writes `path`, and the paths
+/// it widened away are data here. The note beside it says the same thing in prose, which
+/// is all the text report can do with a list.
+#[test]
+fn a_grouped_rules_entry_names_its_dir_and_what_it_replaced() {
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "2",
+            "--format",
+            "json",
+        ],
+        &group_in("/app", 2),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "decision": "allow",
+            "perm": "execute",
+            "exe": "/usr/bin/bash",
+            "path": null,
+            "dir": "/app/",
+            "replaced": [{ "path": "/app/f0" }, { "path": "/app/f1" }],
+            "text": "allow perm=execute exe=/usr/bin/bash : dir=/app/",
+        }),
+        "{doc}"
+    );
+    assert_eq!(
+        doc["entries"].as_array().expect("an array").len(),
+        1,
+        "{doc}"
+    );
+}
+
+/// §9.1: a `trust` entry is the path and the two commands §8.3 pairs, one string each and
+/// no newlines — `--file add` alone contacts no daemon, so neither line stands by itself.
+#[test]
+fn a_trust_document_carries_the_path_and_both_commands() {
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "trust", "--format", "json"],
+        DENIAL,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(doc["action"], "trust", "{doc}");
+    assert_eq!(
+        doc["entries"][0],
+        serde_json::json!({
+            "path": "/tmp/x",
+            "commands": [
+                "fapolicyd-cli --file add '/tmp/x'",
+                "fapolicyd-cli --update",
+            ],
+        }),
+        "{doc}"
+    );
+}
+
+/// §9.1 over the two artifact actions: every one of the four hex siblings is reachable on
+/// a real attribute, and none of them is written when the value was UTF-8. A byte above
+/// 127 passes through the daemon's escaper raw (§4), so this is what a foreign-locale
+/// path does here; `policy` refuses a control byte and a space, so those never arrive.
+///
+/// And D18: `text` and `commands` are the rendered line, so they are `null` rather than
+/// lossy whenever that line is not UTF-8. A string there would name a path the artifact
+/// does not, which is worse than no string — the data fields carry the bytes instead.
+#[test]
+fn a_rules_or_trust_document_keeps_non_utf8_bytes_in_hex() {
+    // `/app` and not `/tmp`, because a world-writable directory does not group (§8.1).
+    let grouped: &[u8] = b"dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : \
+path=/app/d\xffr/x trust=1\n\
+dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : path=/app/d\xffr/y trust=1\n";
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "rules", "--format", "json"],
+        grouped,
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["exe"], "/usr/bin/b\u{fffd}sh", "{doc}");
+    assert_eq!(entry["exe_hex"], "2f7573722f62696e2f62ff7368", "{doc}");
+    assert_eq!(entry["path"], "/app/d\u{fffd}r/x", "{doc}");
+    assert_eq!(entry["path_hex"], "2f6170702f64ff722f78", "{doc}");
+    // D18: a lossy `text` would be a rule for a path nobody asked to allow, and nothing
+    // reading it could tell. `null`, and the hex siblings are the recovery path.
+    assert!(entry["text"].is_null(), "{doc}");
+
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "2",
+            "--format",
+            "json",
+        ],
+        grouped,
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["dir"], "/app/d\u{fffd}r/", "{doc}");
+    assert_eq!(entry["dir_hex"], "2f6170702f64ff722f", "{doc}");
+    assert_eq!(
+        entry["replaced"][0],
+        serde_json::json!({ "path": "/app/d\u{fffd}r/x", "path_hex": "2f6170702f64ff722f78" }),
+        "{doc}"
+    );
+    assert!(entry["text"].is_null(), "{doc}");
+
+    // The asymmetric case: the bad bytes are in the leaves and the directory the group
+    // widened to is UTF-8, so the line itself is representable and `text` is a string.
+    // The `replaced` paths are where the bytes were, and each one keeps its own hex.
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "2",
+            "--format",
+            "json",
+        ],
+        b"dec=deny_audit perm=execute exe=/usr/bin/bash : path=/app/\xffone trust=1\n\
+dec=deny_audit perm=execute exe=/usr/bin/bash : path=/app/\xfetwo trust=1\n",
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["dir"], "/app/", "{doc}");
+    assert!(entry.get("dir_hex").is_none(), "{doc}");
+    assert_eq!(
+        entry["text"], "allow perm=execute exe=/usr/bin/bash : dir=/app/",
+        "{doc}"
+    );
+    assert_eq!(
+        entry["replaced"],
+        serde_json::json!([
+            { "path": "/app/\u{fffd}one", "path_hex": "2f6170702fff6f6e65" },
+            { "path": "/app/\u{fffd}two", "path_hex": "2f6170702ffe74776f" },
+        ]),
+        "{doc}"
+    );
+
+    let (code, doc, err) = json_run(
+        &["fapolicyd", "--no-conf", "trust", "--format", "json"],
+        b"dec=deny_audit perm=open exe=/usr/bin/bash : path=/tmp/\xff trust=0\n",
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["path"], "/tmp/\u{fffd}", "{doc}");
+    assert_eq!(entry["path_hex"], "2f746d702fff", "{doc}");
+    // D18 again, and the sharper half of it: a lossy command is a shell line that trusts
+    // a different file, and whatever runs it cannot tell.
+    assert!(entry["commands"].is_null(), "{doc}");
+
+    // And a UTF-8 run loses nothing: no sibling it did not need, and both rendered fields
+    // still carry their line.
+    let (_, doc, _) = json_run(
+        &["fapolicyd", "--no-conf", "rules", "--format", "json"],
+        DENIED_BY_13,
+    );
+    let entry = doc["entries"][0].as_object().expect("an entry");
+    for key in ["exe_hex", "path_hex", "dir_hex"] {
+        assert!(!entry.contains_key(key), "{key} is not needed here: {doc}");
     }
+    assert_eq!(
+        entry["text"], "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls",
+        "{doc:?}"
+    );
+    let (_, doc, _) = json_run(
+        &["fapolicyd", "--no-conf", "trust", "--format", "json"],
+        DENIAL,
+    );
+    assert_eq!(
+        doc["entries"][0]["commands"],
+        serde_json::json!([
+            "fapolicyd-cli --file add '/tmp/x'",
+            "fapolicyd-cli --update",
+        ]),
+        "{doc}"
+    );
 }
 
 /// `--format` is a domain flag like `--conf` (§9), so it is accepted on either side of

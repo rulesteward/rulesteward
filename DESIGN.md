@@ -843,8 +843,8 @@ commitments, cheap now and expensive to retrofit:
   does: the choice is about how a result is written and not about which result,
   so every action inherits it and a second domain declares its own. It takes
   `text`, `json` or `json-compact` and defaults to `text`, which is the output
-  every version before 0.10.0 wrote, byte for byte. A JSON format on `rules` or
-  `trust` is exit `1` until #147 gives those two artifacts a document.
+  every version before 0.10.0 wrote, byte for byte. All four actions write a
+  document (§9.1, #147).
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added
@@ -895,8 +895,9 @@ field is never removed or given a new meaning without `schema` moving.
 }
 ```
 
-`schema` is `1`. `action` is `why` or `check`, so a reader that is handed a
-document knows which entries it has without inferring it from their shape.
+`schema` is `1`. `action` is `rules`, `trust`, `why` or `check`, so a reader that
+is handed a document knows which entries it has without inferring it from their
+shape.
 
 `diagnostics` carries what the text path writes as `# rulesteward:` comments
 ahead of the artifact — the same notes, filtered the same way by the action, in
@@ -934,12 +935,61 @@ key: two entries can differ only in them.
 | `exe_hex`, `path_hex` | string | **absent**, not null, unless the value was not UTF-8 |
 | `rule` | number | the record carried no `rule=` |
 
+A `rules` entry is the rule taken apart, under the names the `check` table uses.
+`text` is the line the fragment of the same run carries, without its `\n`: the
+same rendering and not a second one, so the document and the artifact can never
+disagree about what would be written.
+
+| field | type | `null` when |
+|---|---|---|
+| `decision` | string | never; `allow`, the only decision `rules` writes |
+| `perm` | string | never; `open` or `execute`, the only two §7 will scope a rule with |
+| `exe` | string | the record supplied no usable one, which the line writes as `all` |
+| `path` | string | on a `--dir-min` group, which constrains a directory instead |
+| `dir` | string | on a plain rule; always ends in `/` (§8.1) |
+| `replaced` | array | never; `[]` on a plain rule |
+| `exe_hex`, `path_hex`, `dir_hex` | string | **absent**, not null, unless the value was not UTF-8 |
+| `text` | string | the rendered line is not UTF-8 |
+
+Exactly one of `path` and `dir` is non-null, and `replaced` is non-empty exactly
+when `dir` is: it is one `{ "path", "path_hex"? }` per path the group widened
+away, the same paths the note beside the rule names in prose, which is all a
+comment can do with a list.
+
+```json
+{ "decision": "allow", "perm": "execute", "exe": "/usr/bin/bash",
+  "path": null, "dir": "/app/",
+  "replaced": [{ "path": "/app/f0" }, { "path": "/app/f1" }],
+  "text": "allow perm=execute exe=/usr/bin/bash : dir=/app/" }
+```
+
+A `trust` entry is the path and the commands §8.3 pairs, one string per shell
+line with no newline in it. The two lines come together or not at all:
+`--file add` alone writes a text file and contacts no daemon, so neither line is
+a suggestion by itself.
+
+| field | type | `null` when |
+|---|---|---|
+| `path` | string | never |
+| `path_hex` | string | **absent**, not null, unless the path was not UTF-8 |
+| `commands` | array of strings | the rendered lines are not UTF-8; otherwise `--file add <path>` and `--update`, quoted for a shell (§8.2) |
+
 A record's value reaches the document as its true bytes decoded lossily, and not
 in the octal form the text report spells control characters with: that form
 exists because §9 promises bare lines on stdout, and JSON escapes control
 characters itself. What lossy decoding destroys is a byte that is not UTF-8,
-which is what `exe_hex` and `path_hex` carry — the whole value, hex, lower case,
-no separator — for the records §4 says can hold one.
+which is what the `*_hex` fields carry — the whole value, hex, lower case, no
+separator — for the records §4 says can hold one. All four are reachable: a byte
+above 127 passes through the daemon's escaper raw, so `exe`, `path` and `dir`
+each reach a `rules` entry holding one, and `path` reaches a `trust` entry.
+
+`text` and `commands` are the rendered line and not a value, so they are `null`
+when that line is not UTF-8 rather than lossily decoded. A JSON string cannot
+hold the bytes at all, and a line that names a different path than the artifact
+writes is worse than no line: it would be a rule for a file nobody asked to
+allow, or a `--file add` that trusts the wrong one, and nothing running it could
+tell. The data fields and their `*_hex` siblings are what the true bytes are
+recovered from; the text artifact is unaffected, because it is bytes.
 
 The set of characters a document escapes is the set the text report spells:
 `\u0000`-`\u001f` from the JSON writer itself, and `\u007f`-`\u009f` — DEL and
@@ -1012,7 +1062,6 @@ the tool, so a research capture whose interesting record only appears inside a
 ## 11. Parked for v2
 
 - `--apply`
-- JSON output
 - the fapolicyd filter subsystem
 - the trust database beyond `--file add`
 - full-ruleset evaluation for `check`: evaluating every rule against a

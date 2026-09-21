@@ -11,3 +11,27 @@ input_file: tests/fixtures/handwritten-not-denials.log
   "entries": []
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [],
+  "entries": []
+}
+--- stderr ---

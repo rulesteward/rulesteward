@@ -80,9 +80,18 @@ impl Outcome {
         check::report(&self.check)
     }
 
-    /// The same two reports as one JSON document (#146, DESIGN.md §9.1). The diagnostics
-    /// come from the caller because they are the caller's: `main` filters them by the
-    /// action and the host reads that produced some of them happened there too.
+    /// The same four outputs as one JSON document (#146, #147, DESIGN.md §9.1). The
+    /// diagnostics come from the caller because they are the caller's: `main` filters
+    /// them by the action and the host reads that produced some of them happened there
+    /// too.
+    pub fn rules_json(&self, diagnostics: &[Diagnostic], compact: bool) -> Vec<u8> {
+        json::rules(diagnostics, &self.rules, compact)
+    }
+
+    pub fn trust_json(&self, diagnostics: &[Diagnostic], compact: bool) -> Vec<u8> {
+        json::trust(diagnostics, &self.trust, compact)
+    }
+
     pub fn why_json(&self, diagnostics: &[Diagnostic], compact: bool) -> Vec<u8> {
         json::why(diagnostics, &self.why, compact)
     }
@@ -657,6 +666,7 @@ fn group_dirs(
             perm: k.0.clone(),
             exe: k.1.clone(),
             dir: k.2.clone(),
+            replaced: paths,
         });
     }
     (out, notes)

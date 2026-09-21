@@ -26,3 +26,164 @@ input_file: tests/fixtures/rocky8-base-edge-paths.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 14,
+      "msg": "path contains a control byte (0x09), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 17,
+      "msg": "path contains a control byte (0x0a), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 22,
+      "msg": "record truncated at the 511-byte cap; emitting nothing, because path= is a prefix of the real path (x2)"
+    },
+    {
+      "line": 23,
+      "msg": "path= is ?? — the daemon could not encode the real path, so there is nothing to add to the trust database"
+    },
+    {
+      "line": null,
+      "msg": "11 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 14,
+      "msg": "path contains a control byte (0x09), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 17,
+      "msg": "path contains a control byte (0x0a), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 22,
+      "msg": "record truncated at the 511-byte cap; emitting nothing, because path= is a prefix of the real path (x2)"
+    },
+    {
+      "line": 23,
+      "msg": "path= is ?? — the daemon could not encode the real path, so there is nothing to add to the trust database"
+    },
+    {
+      "line": null,
+      "msg": "11 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": 14,
+      "msg": "path contains a control byte (0x09), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 17,
+      "msg": "path contains a control byte (0x0a), which cannot be written as a fapolicyd.trust record; emitting nothing"
+    },
+    {
+      "line": 22,
+      "msg": "record truncated at the 511-byte cap; emitting nothing, because path= is a prefix of the real path (x2)"
+    },
+    {
+      "line": 23,
+      "msg": "path= is ?? — the daemon could not encode the real path, so there is nothing to add to the trust database"
+    }
+  ],
+  "entries": [
+    {
+      "path": "/tmp/edge/plain",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/plain'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/with space",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/with space'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/a : b",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/a : b'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/eq=sign",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/eq=sign'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/colon:name",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/colon:name'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/back\\slash",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/back\\slash'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/uni-café-日本",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/uni-café-日本'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/quote'single",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/quote'\\''single'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/quote\"double",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/quote\"double'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/#hash",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/#hash'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/edge/percent%20enc",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/edge/percent%20enc'",
+        "fapolicyd-cli --update"
+      ]
+    }
+  ]
+}
+--- stderr ---

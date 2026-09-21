@@ -44,3 +44,54 @@ input_file: tests/fixtures/rocky9-audit-live-vm-asfound-raw.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 3,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x24)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 3,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x24)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "23 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 3,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x24)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---

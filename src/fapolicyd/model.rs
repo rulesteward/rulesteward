@@ -122,9 +122,14 @@ pub enum Suggestion {
     /// What `--dir-min` turns a group of `Rule`s that shared a parent directory into
     /// (DESIGN.md §8.1). `exe` is not optional here: a rule whose subject side is `all`
     /// is already the broadest there is, so it is never grouped.
+    ///
+    /// `replaced` is the paths the group widened away, in the order they were grouped.
+    /// They are in the note `group_dirs` writes beside the rule as prose; a document
+    /// publishes them as data (§9.1), and neither can be the only copy.
     Dir {
         perm: Vec<u8>,
         exe: Vec<u8>,
         dir: Vec<u8>,
+        replaced: Vec<Vec<u8>>,
     },
 }

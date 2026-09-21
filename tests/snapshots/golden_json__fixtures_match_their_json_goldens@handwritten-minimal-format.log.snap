@@ -11,3 +11,42 @@ input_file: tests/fixtures/handwritten-minimal-format.log
   "entries": []
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 5,
+      "msg": "cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 5,
+      "msg": "cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": 5,
+      "msg": "cannot scope a rule without a real perm=; the record carries no perm=open or perm=execute, and a rule without it would allow every access to the path (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
