@@ -43,3 +43,1147 @@ input_file: tests/fixtures/rocky10-base-syslog-framing-syslog-raw.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "12 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/grep",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/grep",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sleep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sleep"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/stat",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/stat"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sleep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/sleep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/stat",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/stat"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libacl.so.1.1.2302",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libacl.so.1.1.2302"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libattr.so.1.1.2502",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libattr.so.1.1.2502"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libcap.so.2.69",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libcap.so.2.69"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/timeout",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/timeout"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/timeout",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/timeout"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/sbin/runuser",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/coreutils : path=/usr/sbin/runuser"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/sbin/runuser",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/sbin/runuser"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/coreutils : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpam.so.0.85.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpam.so.0.85.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpam_misc.so.0.82.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpam_misc.so.0.82.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libaudit.so.1.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libaudit.so.1.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libeconf.so.0.6.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libeconf.so.0.6.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libm.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libm.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcap-ng.so.0.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap-ng.so.0.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/security/pam_rootok.so",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_rootok.so"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/security/pam_keyinit.so",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_keyinit.so"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/security/pam_limits.so",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_limits.so"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/security/pam_unix.so",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_unix.so"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcrypt.so.2.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcrypt.so.2.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/security/pam_deny.so",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/security/pam_deny.so"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libnss_systemd.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libnss_systemd.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcap.so.2.69",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap.so.2.69"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libgcc_s-14-20251022.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libgcc_s-14-20251022.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/sbin/runuser : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/tail",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/tail"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/head",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/head"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sed",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sed"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/tail",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/tail"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/head",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/head"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sed",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/sed"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libacl.so.1.1.2302",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libacl.so.1.1.2302"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libattr.so.1.1.2502",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libattr.so.1.1.2502"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    }
+  ]
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "dir=/usr/lib64/security/ replaces 5 rules and allows every path under that directory, which is more than this log showed: /usr/lib64/security/pam_rootok.so /usr/lib64/security/pam_keyinit.so /usr/lib64/security/pam_limits.so /usr/lib64/security/pam_unix.so /usr/lib64/security/pam_deny.so"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "12 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/grep",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/grep",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/grep : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sleep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sleep"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/stat",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/stat"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sleep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/sleep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/stat",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/stat"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libacl.so.1.1.2302",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libacl.so.1.1.2302"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libattr.so.1.1.2502",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libattr.so.1.1.2502"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libcap.so.2.69",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libcap.so.2.69"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/timeout",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/timeout"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/timeout",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/timeout"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/sbin/runuser",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/coreutils : path=/usr/sbin/runuser"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/sbin/runuser",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/sbin/runuser"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/coreutils : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/coreutils",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/coreutils : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpam.so.0.85.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpam.so.0.85.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpam_misc.so.0.82.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpam_misc.so.0.82.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libaudit.so.1.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libaudit.so.1.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libeconf.so.0.6.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libeconf.so.0.6.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libm.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libm.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcap-ng.so.0.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap-ng.so.0.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": null,
+      "dir": "/usr/lib64/security/",
+      "replaced": [
+        {
+          "path": "/usr/lib64/security/pam_rootok.so"
+        },
+        {
+          "path": "/usr/lib64/security/pam_keyinit.so"
+        },
+        {
+          "path": "/usr/lib64/security/pam_limits.so"
+        },
+        {
+          "path": "/usr/lib64/security/pam_unix.so"
+        },
+        {
+          "path": "/usr/lib64/security/pam_deny.so"
+        }
+      ],
+      "text": "allow perm=open exe=/usr/sbin/runuser : dir=/usr/lib64/security/"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcrypt.so.2.0.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcrypt.so.2.0.0"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libnss_systemd.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libnss_systemd.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libcap.so.2.69",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libcap.so.2.69"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/libgcc_s-14-20251022.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/libgcc_s-14-20251022.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/sbin/runuser : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/sbin/runuser",
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/sbin/runuser : path=/usr/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/tail",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/tail"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/head",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/head"
+    },
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sed",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/sed"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/tail",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/tail"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/head",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/head"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/sed",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/sed"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libacl.so.1.1.2302",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libacl.so.1.1.2302"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libselinux.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libselinux.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libattr.so.1.1.2502",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libattr.so.1.1.2502"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/sed",
+      "path": "/usr/lib64/libpcre2-8.so.0.13.0",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/sed : path=/usr/lib64/libpcre2-8.so.0.13.0"
+    }
+  ]
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "57 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "path": "/etc/ld.so.cache",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/ld.so.cache'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/var/log/all.log",
+      "commands": [
+        "fapolicyd-cli --file add '/var/log/all.log'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/authselect/nsswitch.conf",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/authselect/nsswitch.conf'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/passwd",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/passwd'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/pam.d/runuser",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/pam.d/runuser'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/pam.d/other",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/pam.d/other'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/group",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/group'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/security/limits.conf",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/security/limits.conf'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/login.defs",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/login.defs'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/usr/share/zoneinfo/Etc/UTC",
+      "commands": [
+        "fapolicyd-cli --file add '/usr/share/zoneinfo/Etc/UTC'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/probe/actor",
+      "commands": [
+        "fapolicyd-cli --file add '/probe/actor'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/probe/obj",
+      "commands": [
+        "fapolicyd-cli --file add '/probe/obj'",
+        "fapolicyd-cli --update"
+      ]
+    }
+  ]
+}
+--- stderr ---

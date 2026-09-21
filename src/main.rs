@@ -90,23 +90,6 @@ fn run_fapolicyd(
         return ExitCode::from(EXIT_USAGE);
     }
 
-    // #147 writes the JSON shape of the two artifact actions, and a document whose
-    // fields that issue would then change is worse than no document. Refused here with
-    // the other usage errors, before anything is read.
-    if format != Format::Text
-        && matches!(
-            action,
-            FapolicydAction::Rules { .. } | FapolicydAction::Trust
-        )
-    {
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "rulesteward: rules and trust have no JSON form yet\n\
-             usage: --format json and --format json-compact are accepted on why and check"
-        );
-        return ExitCode::from(EXIT_USAGE);
-    }
-
     let mut input = Vec::new();
     if let Err(e) = std::io::stdin().lock().read_to_end(&mut input) {
         let _ = writeln!(std::io::stderr().lock(), "rulesteward: reading stdin: {e}");
@@ -275,11 +258,13 @@ fn run_fapolicyd(
         _ if outcome.consumed_but_unparseable => Vec::new(),
         _ => {
             let compact = format == Format::JsonCompact;
+            // Every action by name and no `_` arm, so a fifth one is a compile error
+            // here and not a document labelled as somebody else's.
             match action {
+                FapolicydAction::Rules { .. } => outcome.rules_json(&diagnostics, compact),
+                FapolicydAction::Trust => outcome.trust_json(&diagnostics, compact),
+                FapolicydAction::Why => outcome.why_json(&diagnostics, compact),
                 FapolicydAction::Check { .. } => outcome.check_json(&diagnostics, compact),
-                // `rules` and `trust` were refused a JSON format above, so every other
-                // action that reaches here is `why`.
-                _ => outcome.why_json(&diagnostics, compact),
             }
         }
     };

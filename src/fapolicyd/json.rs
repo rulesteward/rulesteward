@@ -2,14 +2,15 @@
 //! entries in, bytes out.
 //!
 //! Every field here is published, so the structs are views over the model and never the
-//! model itself: a field added to `WhyRow` or to `check::Key` has to be added here too
-//! before anyone sees it. The two report actions share one envelope -- `schema`,
+//! model itself: a field added to `WhyRow`, to `check::Key` or to `Suggestion` has to be
+//! added here too before anyone sees it. All four actions share one envelope -- `schema`,
 //! `action`, `diagnostics`, `entries` -- so a reader can tell them apart without
 //! guessing from the entry shape.
 
 use super::analyze::WhyRow;
 use super::check;
-use super::model::Diagnostic;
+use super::emit;
+use super::model::{Diagnostic, Suggestion};
 use serde::Serialize;
 
 /// The document version, bumped when a field changes meaning or leaves. `1` is 0.10.0.
@@ -70,6 +71,145 @@ pub fn why(diagnostics: &[Diagnostic], rows: &[WhyRow], compact: bool) -> Vec<u8
 
 pub fn check(diagnostics: &[Diagnostic], entries: Vec<check::Entry>, compact: bool) -> Vec<u8> {
     document("check", diagnostics, entries, compact)
+}
+
+/// One rule as data (§9.1), flat and under the names `check` already publishes.
+/// `exe: null` is the rule's `all` — no constraint on the subject — and exactly one of
+/// `path` and `dir` is non-null, because only a `--dir-min` group writes `dir`.
+/// `decision` is a field and not an assumption: `rules` writes `allow` and nothing else,
+/// and a reader should not have to know that to read the entry.
+#[derive(Serialize)]
+struct RulesEntry {
+    decision: &'static str,
+    perm: String,
+    exe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exe_hex: Option<String>,
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_hex: Option<String>,
+    dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dir_hex: Option<String>,
+    replaced: Vec<Replaced>,
+    text: String,
+}
+
+/// One path a `--dir-min` group widened away. The note beside the rule names them in
+/// prose; here they are indexable, and a non-UTF-8 one keeps its bytes.
+#[derive(Serialize)]
+struct Replaced {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_hex: Option<String>,
+}
+
+/// One trust entry as data (§9.1): the path, and the shell lines §8.3 pairs — `--file
+/// add` alone contacts no daemon — as one string each, without their newlines.
+#[derive(Serialize)]
+struct TrustEntry {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_hex: Option<String>,
+    commands: Vec<String>,
+}
+
+/// `text` and `commands` come from `emit::render` and not from a second renderer here:
+/// a document that spelled the rule its own way could disagree with the fragment the
+/// same run writes, and the point of the field is that it is the line.
+pub fn rules(diagnostics: &[Diagnostic], suggestions: &[Suggestion], compact: bool) -> Vec<u8> {
+    let entries: Vec<RulesEntry> = suggestions
+        .iter()
+        .filter_map(|s| {
+            // A rule renders to exactly one line, so this is that line.
+            let text = rendered(s).join("\n");
+            match s {
+                Suggestion::Rule { perm, exe, path } => {
+                    let (exe, exe_hex) = match exe {
+                        Some(e) => {
+                            let (text, hex) = lossy_hex(e);
+                            (Some(text), hex)
+                        }
+                        None => (None, None),
+                    };
+                    let (path, path_hex) = lossy_hex(path);
+                    Some(RulesEntry {
+                        decision: "allow",
+                        perm: lossy_hex(perm).0,
+                        exe,
+                        exe_hex,
+                        path: Some(path),
+                        path_hex,
+                        dir: None,
+                        dir_hex: None,
+                        replaced: Vec::new(),
+                        text,
+                    })
+                }
+                Suggestion::Dir {
+                    perm,
+                    exe,
+                    dir,
+                    replaced,
+                } => {
+                    let (exe, exe_hex) = lossy_hex(exe);
+                    let (dir, dir_hex) = lossy_hex(dir);
+                    Some(RulesEntry {
+                        decision: "allow",
+                        perm: lossy_hex(perm).0,
+                        exe: Some(exe),
+                        exe_hex,
+                        path: None,
+                        path_hex: None,
+                        dir: Some(dir),
+                        dir_hex,
+                        replaced: replaced
+                            .iter()
+                            .map(|p| {
+                                let (path, path_hex) = lossy_hex(p);
+                                Replaced { path, path_hex }
+                            })
+                            .collect(),
+                        text,
+                    })
+                }
+                // `analyze` sorts the suggestions into `rules` and `trust` already, so
+                // this is unreachable; skipping rather than rendering a trust command as
+                // a rule is what keeps it unreachable if that ever changes.
+                Suggestion::TrustFile { .. } => None,
+            }
+        })
+        .collect();
+    document("rules", diagnostics, entries, compact)
+}
+
+pub fn trust(diagnostics: &[Diagnostic], suggestions: &[Suggestion], compact: bool) -> Vec<u8> {
+    let entries: Vec<TrustEntry> = suggestions
+        .iter()
+        .filter_map(|s| match s {
+            Suggestion::TrustFile { path } => {
+                let (path, path_hex) = lossy_hex(path);
+                Some(TrustEntry {
+                    path,
+                    path_hex,
+                    commands: rendered(s),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    document("trust", diagnostics, entries, compact)
+}
+
+/// What `emit::render` writes, lossily decoded and split into lines: one for a rule,
+/// two for a trust entry. `lines` drops the trailing newline every rendering ends in
+/// and yields no empty element for it.
+fn rendered(s: &Suggestion) -> Vec<String> {
+    lossy_hex(&emit::render(s))
+        .0
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// A record's value as a document carries it (§9.1): the true bytes lossily decoded, and

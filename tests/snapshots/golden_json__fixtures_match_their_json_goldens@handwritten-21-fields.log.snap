@@ -21,3 +21,42 @@ input_file: tests/fixtures/handwritten-21-fields.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 12,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 12,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": 12,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---

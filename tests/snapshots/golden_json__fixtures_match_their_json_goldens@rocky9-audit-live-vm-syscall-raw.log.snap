@@ -56,3 +56,355 @@ input_file: tests/fixtures/rocky9-audit-live-vm-syscall-raw.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 15,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libpcre.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libpcre.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libsigsegv.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libsigsegv.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_MEASUREMENT",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MEASUREMENT"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_TELEPHONE",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TELEPHONE"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_ADDRESS",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_ADDRESS"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_NAME",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_NAME"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_PAPER",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_PAPER"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_MONETARY",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MONETARY"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_COLLATE",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_COLLATE"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_TIME",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_TIME"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_NUMERIC",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_NUMERIC"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_CTYPE",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_CTYPE"
+    }
+  ]
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 15,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    },
+    {
+      "line": null,
+      "msg": "dir=/usr/lib/locale/en_US.utf8/ replaces 11 rules and allows every path under that directory, which is more than this log showed: /usr/lib/locale/en_US.utf8/LC_IDENTIFICATION /usr/lib/locale/en_US.utf8/LC_MEASUREMENT /usr/lib/locale/en_US.utf8/LC_TELEPHONE /usr/lib/locale/en_US.utf8/LC_ADDRESS /usr/lib/locale/en_US.utf8/LC_NAME /usr/lib/locale/en_US.utf8/LC_PAPER /usr/lib/locale/en_US.utf8/LC_MONETARY /usr/lib/locale/en_US.utf8/LC_COLLATE /usr/lib/locale/en_US.utf8/LC_TIME /usr/lib/locale/en_US.utf8/LC_NUMERIC /usr/lib/locale/en_US.utf8/LC_CTYPE"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "6 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/bin/grep",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/bin/grep"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libpcre.so.1",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libpcre.so.1"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libsigsegv.so.2",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libsigsegv.so.2"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/lib64/libc.so.6",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/lib64/libc.so.6"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": null,
+      "dir": "/usr/lib/locale/en_US.utf8/",
+      "replaced": [
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_MEASUREMENT"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_TELEPHONE"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_ADDRESS"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_NAME"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_PAPER"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_MONETARY"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_COLLATE"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_TIME"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_NUMERIC"
+        },
+        {
+          "path": "/usr/lib/locale/en_US.utf8/LC_CTYPE"
+        }
+      ],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : dir=/usr/lib/locale/en_US.utf8/"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/lib64/ld-linux-x86-64.so.2",
+      "path": "/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/lib64/ld-linux-x86-64.so.2 : path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES"
+    }
+  ]
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 15,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    },
+    {
+      "line": null,
+      "msg": "16 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "path": "/tmp/live/probe-grep",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/live/probe-grep'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/tmp/live/probe-lib.so",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/live/probe-lib.so'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/ld.so.cache",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/ld.so.cache'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/usr/share/locale/locale.alias",
+      "commands": [
+        "fapolicyd-cli --file add '/usr/share/locale/locale.alias'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/usr/lib64/gconv/gconv-modules.cache",
+      "commands": [
+        "fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'",
+        "fapolicyd-cli --update"
+      ]
+    },
+    {
+      "path": "/etc/hostname",
+      "commands": [
+        "fapolicyd-cli --file add '/etc/hostname'",
+        "fapolicyd-cli --update"
+      ]
+    }
+  ]
+}
+--- stderr ---

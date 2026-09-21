@@ -20,3 +20,78 @@ input_file: tests/fixtures/rocky8-audit-live-vm-syscall-default.log
   "entries": []
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "12 FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd 1.3.2 on Rocky 8 does not write one; why has nothing to count"
+    },
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 11,
+      "msg": "trust attribute unavailable (trust=2); emitting nothing, because the file's trust state is unknown rather than untrusted (x10)"
+    },
+    {
+      "line": 26,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "12 FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd 1.3.2 on Rocky 8 does not write one; why has nothing to count"
+    },
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 11,
+      "msg": "trust attribute unavailable (trust=2); emitting nothing, because the file's trust state is unknown rather than untrusted (x10)"
+    },
+    {
+      "line": 26,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "12 FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd 1.3.2 on Rocky 8 does not write one; why has nothing to count"
+    },
+    {
+      "line": null,
+      "msg": "1 audit event(s) carry no PATH record for the object, so nothing to act on: load an exit rule with `auditctl -a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use the journal route"
+    },
+    {
+      "line": 11,
+      "msg": "trust attribute unavailable (trust=2); emitting nothing, because the file's trust state is unknown rather than untrusted (x10)"
+    },
+    {
+      "line": 26,
+      "msg": "record carries no path=; nothing to act on (this is a syslog_format configuration, not a malformed record) (x2)"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---

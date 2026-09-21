@@ -43,3 +43,150 @@ input_file: tests/fixtures/handwritten-trusted-denial.log
   ]
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 19,
+      "msg": "no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default"
+    },
+    {
+      "line": 21,
+      "msg": "path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit"
+    },
+    {
+      "line": 22,
+      "msg": "trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/tmp/absent",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/tmp/absent"
+    }
+  ]
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 19,
+      "msg": "no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default"
+    },
+    {
+      "line": 21,
+      "msg": "path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit"
+    },
+    {
+      "line": 22,
+      "msg": "trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/tmp/absent",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/tmp/absent"
+    }
+  ]
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": 20,
+      "msg": "no trust= in this record and the path cannot be written in a rule (space or colon), so a trust entry is the only representable suggestion"
+    },
+    {
+      "line": 21,
+      "msg": "path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit"
+    },
+    {
+      "line": 22,
+      "msg": "trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted"
+    },
+    {
+      "line": null,
+      "msg": "3 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "path": "/tmp/with space",
+      "commands": [
+        "fapolicyd-cli --file add '/tmp/with space'",
+        "fapolicyd-cli --update"
+      ]
+    }
+  ]
+}
+--- stderr ---

@@ -16,3 +16,42 @@ input_file: tests/fixtures/rocky8-base-reload-probe-empty-ruleset-daemon.log
   "entries": []
 }
 --- stderr ---
+--- rules --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- rules --dir-min 2 --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---
+--- trust --format json exit 0 ---
+{
+  "schema": 1,
+  "action": "trust",
+  "diagnostics": [
+    {
+      "line": null,
+      "msg": "250 records have unreadable field names: the daemon failed a rules reload and is now running with NO rules, allowing everything. Restart it. Nothing below can be trusted as a denial record"
+    }
+  ],
+  "entries": []
+}
+--- stderr ---

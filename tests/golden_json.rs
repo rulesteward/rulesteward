@@ -55,25 +55,38 @@ fn check_matches_its_json_golden() {
     insta::assert_snapshot!(report);
 }
 
-/// The `why` document over every fixture, the corrupted captures included: a document is
-/// pinned per capture exactly as the report is, so a field that only one real log reaches
-/// is a snapshot diff and not a surprise in someone's pipeline.
+/// The `why`, `rules` and `trust` documents over every fixture, the corrupted captures
+/// included: a document is pinned per capture exactly as the report is, so a field that
+/// only one real log reaches is a snapshot diff and not a surprise in someone's pipeline.
+///
+/// One `glob!` and one snapshot per fixture, for the reason in the header: the four runs
+/// are appended to the same report rather than given a `glob!` each. `rules --dir-min 2`
+/// is in because grouping is the only thing that writes `dir` and `replaced`.
 #[test]
 fn fixtures_match_their_json_goldens() {
     insta::glob!("fixtures/*.log", |fixture| {
         let input = std::fs::read(fixture).expect("read fixture");
-        let out = common::run(
-            &["fapolicyd", "why", "--no-conf", "--format", "json"],
-            &input,
-        );
-        let report = format!(
-            "--- why --format json exit {} ---\n{}--- stderr ---\n{}",
-            out.status.code().unwrap(),
-            String::from_utf8(out.stdout).expect(
-                "a document is UTF-8 by construction; use assert_binary_snapshot! if that changes",
-            ),
-            String::from_utf8(out.stderr).expect("UTF-8 stderr"),
-        );
+        let mut report = String::new();
+        for action in [
+            vec!["why"],
+            vec!["rules"],
+            vec!["rules", "--dir-min", "2"],
+            vec!["trust"],
+        ] {
+            let mut args = vec!["fapolicyd", "--no-conf"];
+            args.extend(&action);
+            args.extend(["--format", "json"]);
+            let out = common::run(&args, &input);
+            report.push_str(&format!(
+                "--- {} --format json exit {} ---\n{}--- stderr ---\n{}",
+                action.join(" "),
+                out.status.code().unwrap(),
+                String::from_utf8(out.stdout).expect(
+                    "a document is UTF-8 by construction; use assert_binary_snapshot! if that changes",
+                ),
+                String::from_utf8(out.stderr).expect("UTF-8 stderr"),
+            ));
+        }
         insta::assert_snapshot!(report);
     });
 }

@@ -44,7 +44,9 @@ pub fn render(s: &Suggestion) -> Vec<u8> {
         // put there is what keeps `dir=/tmp/live` off `/tmp/live2/x`. Unquoted for the
         // same reason a path is: `policy` refused every path a rule cannot spell, and a
         // parent of one of those holds no space, colon or control byte either.
-        Suggestion::Dir { perm, exe, dir } => [
+        // `replaced` is what the group widened away; it is the note's and the document's
+        // business (§9.1), and a rule line says nothing about it.
+        Suggestion::Dir { perm, exe, dir, .. } => [
             b"allow perm=",
             perm.as_slice(),
             b" exe=",
@@ -160,10 +162,12 @@ mod tests {
 
     #[test]
     fn a_dir_rule_is_a_rule_with_the_object_side_widened() {
+        // With `replaced` populated, because the line must not gain a word from it.
         let out = render(&Suggestion::Dir {
             perm: b"execute".to_vec(),
             exe: b"/usr/bin/bash".to_vec(),
             dir: b"/app/".to_vec(),
+            replaced: vec![b"/app/one".to_vec(), b"/app/two".to_vec()],
         });
         assert_eq!(
             String::from_utf8(out).unwrap(),

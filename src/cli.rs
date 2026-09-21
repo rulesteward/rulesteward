@@ -42,7 +42,7 @@ pub enum Domain {
 
         /// How to write the result: the report, or the JSON document DESIGN.md §9.1
         /// describes. `json` and `json-compact` differ in whitespace and nothing else.
-        /// Only `why` and `check` accept a JSON format so far (#147).
+        /// Every action writes one.
         #[arg(
             long,
             value_enum,
