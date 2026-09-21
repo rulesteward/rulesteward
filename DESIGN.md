@@ -949,7 +949,7 @@ disagree about what would be written.
 | `dir` | string | on a plain rule; always ends in `/` (§8.1) |
 | `replaced` | array | never; `[]` on a plain rule |
 | `exe_hex`, `path_hex`, `dir_hex` | string | **absent**, not null, unless the value was not UTF-8 |
-| `text` | string | never |
+| `text` | string | the rendered line is not UTF-8 |
 
 Exactly one of `path` and `dir` is non-null, and `replaced` is non-empty exactly
 when `dir` is: it is one `{ "path", "path_hex"? }` per path the group widened
@@ -964,14 +964,15 @@ comment can do with a list.
 ```
 
 A `trust` entry is the path and the commands §8.3 pairs, one string per shell
-line with no newline in it. Both are always there: `--file add` alone writes a
-text file and contacts no daemon, so neither line is a suggestion by itself.
+line with no newline in it. The two lines come together or not at all:
+`--file add` alone writes a text file and contacts no daemon, so neither line is
+a suggestion by itself.
 
 | field | type | `null` when |
 |---|---|---|
 | `path` | string | never |
 | `path_hex` | string | **absent**, not null, unless the path was not UTF-8 |
-| `commands` | array of strings | never; `--file add <path>` and `--update`, quoted for a shell (§8.2) |
+| `commands` | array of strings | the rendered lines are not UTF-8; otherwise `--file add <path>` and `--update`, quoted for a shell (§8.2) |
 
 A record's value reaches the document as its true bytes decoded lossily, and not
 in the octal form the text report spells control characters with: that form
@@ -981,8 +982,14 @@ which is what the `*_hex` fields carry — the whole value, hex, lower case, no
 separator — for the records §4 says can hold one. All four are reachable: a byte
 above 127 passes through the daemon's escaper raw, so `exe`, `path` and `dir`
 each reach a `rules` entry holding one, and `path` reaches a `trust` entry.
-`text` and `commands` are rendered from the same bytes and carry the same lossy
-decoding; they have no hex sibling, because the fields they are built from do.
+
+`text` and `commands` are the rendered line and not a value, so they are `null`
+when that line is not UTF-8 rather than lossily decoded. A JSON string cannot
+hold the bytes at all, and a line that names a different path than the artifact
+writes is worse than no line: it would be a rule for a file nobody asked to
+allow, or a `--file add` that trusts the wrong one, and nothing running it could
+tell. The data fields and their `*_hex` siblings are what the true bytes are
+recovered from; the text artifact is unaffected, because it is bytes.
 
 The set of characters a document escapes is the set the text report spells:
 `\u0000`-`\u001f` from the JSON writer itself, and `\u007f`-`\u009f` — DEL and

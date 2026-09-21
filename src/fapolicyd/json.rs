@@ -77,7 +77,8 @@ pub fn check(diagnostics: &[Diagnostic], entries: Vec<check::Entry>, compact: bo
 /// `exe: null` is the rule's `all` — no constraint on the subject — and exactly one of
 /// `path` and `dir` is non-null, because only a `--dir-min` group writes `dir`.
 /// `decision` is a field and not an assumption: `rules` writes `allow` and nothing else,
-/// and a reader should not have to know that to read the entry.
+/// and a reader should not have to know that to read the entry. `text` is `null` when the
+/// rendered line is not UTF-8; see `rendered`.
 #[derive(Serialize)]
 struct RulesEntry {
     decision: &'static str,
@@ -92,7 +93,7 @@ struct RulesEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     dir_hex: Option<String>,
     replaced: Vec<Replaced>,
-    text: String,
+    text: Option<String>,
 }
 
 /// One path a `--dir-min` group widened away. The note beside the rule names them in
@@ -105,13 +106,14 @@ struct Replaced {
 }
 
 /// One trust entry as data (§9.1): the path, and the shell lines §8.3 pairs — `--file
-/// add` alone contacts no daemon — as one string each, without their newlines.
+/// add` alone contacts no daemon — as one string each, without their newlines. `null`
+/// when those lines are not UTF-8; see `rendered`.
 #[derive(Serialize)]
 struct TrustEntry {
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     path_hex: Option<String>,
-    commands: Vec<String>,
+    commands: Option<Vec<String>>,
 }
 
 /// `text` and `commands` come from `emit::render` and not from a second renderer here:
@@ -121,8 +123,9 @@ pub fn rules(diagnostics: &[Diagnostic], suggestions: &[Suggestion], compact: bo
     let entries: Vec<RulesEntry> = suggestions
         .iter()
         .filter_map(|s| {
-            // A rule renders to exactly one line, so this is that line.
-            let text = rendered(s).join("\n");
+            // A rule renders to exactly one line, so this is that line, or `null` when
+            // the rendering was not UTF-8 (D18).
+            let text = rendered(s).map(|lines| lines.join("\n"));
             match s {
                 Suggestion::Rule { perm, exe, path } => {
                     let (exe, exe_hex) = match exe {
@@ -201,15 +204,25 @@ pub fn trust(diagnostics: &[Diagnostic], suggestions: &[Suggestion], compact: bo
     document("trust", diagnostics, entries, compact)
 }
 
-/// What `emit::render` writes, lossily decoded and split into lines: one for a rule,
-/// two for a trust entry. `lines` drops the trailing newline every rendering ends in
-/// and yields no empty element for it.
-fn rendered(s: &Suggestion) -> Vec<String> {
-    lossy_hex(&emit::render(s))
-        .0
-        .lines()
-        .map(str::to_string)
-        .collect()
+/// What `emit::render` writes, split into lines: one for a rule, two for a trust entry.
+/// `None` when those bytes are not UTF-8 (D18), which is the whole reason this is not a
+/// lossy decode like the data fields are.
+///
+/// A lossy `text` is a rule for a path nobody asked to allow and a lossy `commands` is a
+/// shell line that trusts a different file, both of them indistinguishable from the real
+/// thing to whatever runs them; a JSON string cannot hold the bytes at all, so `null` and
+/// the `*_hex` siblings are the honest answer. The text artifact is unaffected: it is
+/// bytes, and `emit` writes the true ones.
+///
+/// `lines` drops the trailing newline every rendering ends in and yields no empty element
+/// for it. It would also strip a trailing `\r` and split on an interior `\n`, which is
+/// safe only because `policy::decide` refuses a path holding any byte below 0x20 and
+/// filters an `exe` holding one to `None`: a suggestion kind that could render a control
+/// byte would lose it here while the fragment kept it.
+fn rendered(s: &Suggestion) -> Option<Vec<String>> {
+    let bytes = emit::render(s);
+    let text = std::str::from_utf8(&bytes).ok()?;
+    Some(text.lines().map(str::to_string).collect())
 }
 
 /// A record's value as a document carries it (§9.1): the true bytes lossily decoded, and

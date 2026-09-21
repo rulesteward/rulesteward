@@ -1448,6 +1448,10 @@ fn a_trust_document_carries_the_path_and_both_commands() {
 /// a real attribute, and none of them is written when the value was UTF-8. A byte above
 /// 127 passes through the daemon's escaper raw (§4), so this is what a foreign-locale
 /// path does here; `policy` refuses a control byte and a space, so those never arrive.
+///
+/// And D18: `text` and `commands` are the rendered line, so they are `null` rather than
+/// lossy whenever that line is not UTF-8. A string there would name a path the artifact
+/// does not, which is worse than no string — the data fields carry the bytes instead.
 #[test]
 fn a_rules_or_trust_document_keeps_non_utf8_bytes_in_hex() {
     // `/app` and not `/tmp`, because a world-writable directory does not group (§8.1).
@@ -1464,12 +1468,9 @@ dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : path=/app/d\xffr/y trust=1\n"
     assert_eq!(entry["exe_hex"], "2f7573722f62696e2f62ff7368", "{doc}");
     assert_eq!(entry["path"], "/app/d\u{fffd}r/x", "{doc}");
     assert_eq!(entry["path_hex"], "2f6170702f64ff722f78", "{doc}");
-    // The lossy decoding reaches `text` too, and the hex beside it is the only place the
-    // true bytes survive.
-    assert_eq!(
-        entry["text"], "allow perm=execute exe=/usr/bin/b\u{fffd}sh : path=/app/d\u{fffd}r/x",
-        "{doc}"
-    );
+    // D18: a lossy `text` would be a rule for a path nobody asked to allow, and nothing
+    // reading it could tell. `null`, and the hex siblings are the recovery path.
+    assert!(entry["text"].is_null(), "{doc}");
 
     let (code, doc, err) = json_run(
         &[
@@ -1492,6 +1493,40 @@ dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : path=/app/d\xffr/y trust=1\n"
         serde_json::json!({ "path": "/app/d\u{fffd}r/x", "path_hex": "2f6170702f64ff722f78" }),
         "{doc}"
     );
+    assert!(entry["text"].is_null(), "{doc}");
+
+    // The asymmetric case: the bad bytes are in the leaves and the directory the group
+    // widened to is UTF-8, so the line itself is representable and `text` is a string.
+    // The `replaced` paths are where the bytes were, and each one keeps its own hex.
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "2",
+            "--format",
+            "json",
+        ],
+        b"dec=deny_audit perm=execute exe=/usr/bin/bash : path=/app/\xffone trust=1\n\
+dec=deny_audit perm=execute exe=/usr/bin/bash : path=/app/\xfetwo trust=1\n",
+    );
+    assert_eq!(code, 0, "{err}");
+    let entry = &doc["entries"][0];
+    assert_eq!(entry["dir"], "/app/", "{doc}");
+    assert!(entry.get("dir_hex").is_none(), "{doc}");
+    assert_eq!(
+        entry["text"], "allow perm=execute exe=/usr/bin/bash : dir=/app/",
+        "{doc}"
+    );
+    assert_eq!(
+        entry["replaced"],
+        serde_json::json!([
+            { "path": "/app/\u{fffd}one", "path_hex": "2f6170702fff6f6e65" },
+            { "path": "/app/\u{fffd}two", "path_hex": "2f6170702ffe74776f" },
+        ]),
+        "{doc}"
+    );
 
     let (code, doc, err) = json_run(
         &["fapolicyd", "--no-conf", "trust", "--format", "json"],
@@ -1501,12 +1536,12 @@ dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : path=/app/d\xffr/y trust=1\n"
     let entry = &doc["entries"][0];
     assert_eq!(entry["path"], "/tmp/\u{fffd}", "{doc}");
     assert_eq!(entry["path_hex"], "2f746d702fff", "{doc}");
-    assert_eq!(
-        entry["commands"][0], "fapolicyd-cli --file add '/tmp/\u{fffd}'",
-        "{doc}"
-    );
+    // D18 again, and the sharper half of it: a lossy command is a shell line that trusts
+    // a different file, and whatever runs it cannot tell.
+    assert!(entry["commands"].is_null(), "{doc}");
 
-    // And nothing gains a sibling it did not need: a UTF-8 run writes none of the four.
+    // And a UTF-8 run loses nothing: no sibling it did not need, and both rendered fields
+    // still carry their line.
     let (_, doc, _) = json_run(
         &["fapolicyd", "--no-conf", "rules", "--format", "json"],
         DENIED_BY_13,
@@ -1515,6 +1550,22 @@ dec=deny_audit perm=execute exe=/usr/bin/b\xffsh : path=/app/d\xffr/y trust=1\n"
     for key in ["exe_hex", "path_hex", "dir_hex"] {
         assert!(!entry.contains_key(key), "{key} is not needed here: {doc}");
     }
+    assert_eq!(
+        entry["text"], "allow perm=execute exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls",
+        "{doc:?}"
+    );
+    let (_, doc, _) = json_run(
+        &["fapolicyd", "--no-conf", "trust", "--format", "json"],
+        DENIAL,
+    );
+    assert_eq!(
+        doc["entries"][0]["commands"],
+        serde_json::json!([
+            "fapolicyd-cli --file add '/tmp/x'",
+            "fapolicyd-cli --update",
+        ]),
+        "{doc}"
+    );
 }
 
 /// `--format` is a domain flag like `--conf` (§9), so it is accepted on either side of
