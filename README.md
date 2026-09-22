@@ -367,6 +367,109 @@ fapolicyd-cli --file add '/etc/hostname'
 fapolicyd-cli --update
 ```
 
+## JSON
+
+`--format json` writes one JSON document on stdout instead of the text, on any
+of the four actions, and `json-compact` is the same document on one line.
+`schema` is the integer that moves when a field is removed or changes meaning.
+DESIGN.md section 9.1 has the field list. The one-record `check` run above,
+under `--conf tests/fixtures/conf/edited/fapolicyd.conf`:
+
+```
+rulesteward fapolicyd check --conf tests/fixtures/conf/edited/fapolicyd.conf --format json < denials.log
+```
+
+```
+{
+  "schema": 1,
+  "action": "check",
+  "diagnostics": [],
+  "entries": [
+    {
+      "verdict": "allowed",
+      "detail": "00-new.rules: allow perm=execute all : path=/tmp/gaps/trusted-ls",
+      "denials": 1,
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/tmp/gaps/trusted-ls",
+      "ftype": "application/x-executable",
+      "trust": "1",
+      "rule": 13
+    }
+  ]
+}
+```
+
+`diagnostics` carries what the text path writes as `# rulesteward:` comments,
+because a JSON document has no comments to hold them. The vendored
+`tests/fixtures/handwritten-trusted-denial.log` is the smallest fixture whose
+`rules` document carries both entries and diagnostics:
+
+```
+rulesteward fapolicyd rules --no-conf --format json < denials.log
+```
+
+```
+{
+  "schema": 1,
+  "action": "rules",
+  "diagnostics": [
+    {
+      "line": 19,
+      "msg": "no trust= in this record, so the trust-vs-rule decision has no input; a scoped rule never widens global trust, so a rule is the safe default"
+    },
+    {
+      "line": 21,
+      "msg": "path is unrepresentable in a rule (space or colon; the rule parser has no quoting and a colon flips the format), and the file is already trusted, so there is nothing safe to emit"
+    },
+    {
+      "line": 22,
+      "msg": "trust attribute unavailable (trust=?); emitting nothing, because the file's trust state is unknown rather than untrusted"
+    },
+    {
+      "line": null,
+      "msg": "new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)"
+    },
+    {
+      "line": null,
+      "msg": "1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input"
+    }
+  ],
+  "entries": [
+    {
+      "decision": "allow",
+      "perm": "execute",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=execute exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/usr/bin/coreutils",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/usr/bin/coreutils"
+    },
+    {
+      "decision": "allow",
+      "perm": "open",
+      "exe": "/usr/bin/bash",
+      "path": "/tmp/absent",
+      "dir": null,
+      "replaced": [],
+      "text": "allow perm=open exe=/usr/bin/bash : path=/tmp/absent"
+    }
+  ]
+}
+```
+
+Exit 0 with nothing to suggest is a document with empty `entries`. Exit 1 and
+exit 2 write no document.
+
 ## Exit codes
 
 - `0`: the input parsed. That includes a log with nothing to suggest.
