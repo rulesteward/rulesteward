@@ -4,7 +4,7 @@ use super::audit;
 use super::check;
 use super::emit;
 use super::json;
-use super::model::{self, Artifact, Diagnostic, Record, Source, Suggestion};
+use super::model::{self, Artifact, Diagnostic, Record, Suggestion};
 use super::parse::{self, MAX_PAYLOAD};
 use super::policy::{self, Decision};
 use super::rules;
@@ -114,8 +114,8 @@ struct Tally {
 
 /// One pass over the input, over the records of whichever source wrote it.
 ///
-/// Two sources reach the same pipeline: `daemon_records` below, one record per line,
-/// and `audit::records`, which assembles one per FANOTIFY record out of an `ausearch`
+/// Two sources reach the same pipeline: `daemon_record` below, one record per line,
+/// and `audit::Assembler`, which assembles one per FANOTIFY record out of an `ausearch`
 /// event. Steps 1 to 5 are what "this line is a record" means and belong to the source;
 /// everything from step 6 down is the pass and runs over both, once.
 ///
@@ -147,6 +147,11 @@ struct Tally {
 /// `check`: the pass is one pass, so the check runs inside the same loop rather than over
 /// a second reading of the same records.
 ///
+/// It is `Analyzer` fed every line and then finished, so batch and a fed run are one code
+/// path. The diagnostics keep the order they had before there was a fed run: the audit
+/// route's two totals sit ahead of every per-record note although only the end can
+/// count them.
+///
 /// `dir_min` is `--dir-min` and `dir_system` is `--dir-system` (#138, DESIGN.md §8.1),
 /// both `rules`-only. `None` is every other action and every `rules` run without the
 /// flag, where the rules artifact is one `path=` rule per denial exactly as 0.8.0 wrote
@@ -160,117 +165,414 @@ pub fn analyze(
     dir_min: Option<usize>,
     dir_system: bool,
 ) -> Outcome {
-    let mut out = Outcome::default();
-
-    // The arms differ only in what rule N is placed against: candidates against the
-    // `rules.d/` fagenrules generated `compiled.rules` from, the directory itself against
-    // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Both carry
-    // the same per-set gate (#139).
-    let proposed = proposal.map(|p| match p {
-        check::Proposal::Merged { files, changed } => (Some(rules_d), changed, files),
-        check::Proposal::OnDisk { changed } => (None, changed, rules_d),
-    });
-
-    // D20: a proposal the daemon will refuse to load gets one line for the run, ahead of
-    // the report, where every row says the same thing. Nothing about one record explains
-    // it, so it is not a per-line diagnostic.
-    if let Some(msg) = proposed.and_then(|(_, _, files)| check::refused(files)) {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            msg,
-            artifact: Artifact::Both,
-        });
+    let (mut analyzer, mut diagnostics) = Analyzer::new(
+        syslog_format,
+        rules,
+        rules_d,
+        proposal,
+        dir_min,
+        dir_system,
+        None,
+    );
+    let mut per_line = Vec::new();
+    for line in input.split(|&b| b == b'\n') {
+        per_line.extend(analyzer.feed(line).diagnostics);
     }
-
-    if let Some(fields) = syslog_format {
-        // `format_value`'s uid/gid branch dereferences `subj` with no NULL check on
-        // Rocky 9/10, which is a SIGSEGV; on Rocky 8 an empty gid set leaves the buffer
-        // unterminated, so the field carries heap bytes that can include a space and
-        // break field splitting. Either way the host is misconfigured and we say so.
-        for f in fields
-            .iter()
-            .filter(|f| matches!(f.as_str(), "uid" | "gid"))
-        {
-            out.diagnostics.push(Diagnostic {
-                line: None,
-                // A misconfigured host makes every record suspect, whichever artifact
-                // the user asked for.
-                artifact: Artifact::Both,
-                msg: format!(
-                    "syslog_format names {f}=; the daemon's uid/gid formatter can segfault \
-                     on Rocky 9/10 and emits unterminated heap bytes on Rocky 8 (research \
-                     syslog-format.md:66-96); remove it from the host config"
-                ),
-            });
-        }
+    let finish = analyzer.finish();
+    diagnostics.extend(finish.source_notes);
+    diagnostics.extend(per_line);
+    diagnostics.extend(finish.flushed.diagnostics);
+    diagnostics.extend(finish.run_notes);
+    Outcome {
+        rules: finish.rules,
+        trust: finish.trust,
+        why: finish.why,
+        check: finish.check,
+        diagnostics: collapse(diagnostics),
+        consumed_but_unparseable: finish.consumed_but_unparseable,
     }
+}
 
-    // The audit route is decided on the input's first real line and changes two things
-    // only: where the records come from, and that no truncation test applies to them.
-    let audit = audit::is_audit(input);
-    let source = if audit {
-        audit::records(input, rules)
-    } else {
-        daemon_records(input)
-    };
-    out.diagnostics.extend(source.diagnostics);
-    // `syslog_format` describes the daemon's own line. An audit record was assembled
-    // from whole audit fields, so neither §6 test has anything to measure on it.
-    let syslog_format = if audit { None } else { syslog_format };
-    let mut corrupt = 0usize;
+/// What one fed line decided: the suggestions it accepted for the first time, the check
+/// keys it saw first with their verdicts, and its per-line diagnostics, each in the order
+/// the pass reached them. Handed back and never kept, so a run's memory grows with its
+/// distinct suggestions, keys and rule numbers and not with its lines -- except for the
+/// `----` and `time->` lines ahead of the first real one, held until the route is known.
+#[derive(Debug, Default)]
+pub struct Step {
+    pub suggestions: Vec<Suggestion>,
+    pub checked: Vec<(check::Key, check::Verdict)>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// What only the end of the input decides.
+pub struct Finish {
+    /// The audit route's `no_rule`/`no_path` totals.
+    pub source_notes: Vec<Diagnostic>,
+    /// The records only the end released: the audit events still open, or on an input of
+    /// nothing but framing, that framing read as daemon lines.
+    pub flushed: Step,
+    /// In order: the `--dir-min` notes, corruption, the rules-file mismatch, placement,
+    /// and the two counts naming the other artifact.
+    pub run_notes: Vec<Diagnostic>,
+    pub rules: Vec<Suggestion>,
+    pub trust: Vec<Suggestion>,
+    pub why: Vec<WhyRow>,
+    pub check: Vec<(check::Key, usize, check::Verdict)>,
+    pub consumed_but_unparseable: bool,
+}
+
+/// Which reader the input belongs to, decided on its first line that is not framing.
+enum Route<'a> {
+    /// Framing only so far. The `----` and `time->` lines are held with their line numbers:
+    /// the daemon route reads them as content and the audit route skips them, so nothing
+    /// can be done with them until the route is known. Blank and `#` lines are neither
+    /// route's input and are not held.
+    Undecided(Vec<(usize, Vec<u8>)>),
+    Daemon,
+    Audit(audit::Assembler<'a>),
+}
+
+/// What `check` places a record against: the listing rule N is located in (none for
+/// `Proposal::OnDisk`), the `%set` names that changed, and the proposed listing.
+type Proposed<'a> = (
+    Option<&'a [rules_d::File]>,
+    &'a [String],
+    &'a [rules_d::File],
+);
+
+/// `analyze`'s pass, fed one line at a time. It holds what outlives a line: the pid map,
+/// the suggestions seen, the `why` and `check` tallies and the run's counts.
+pub struct Analyzer<'a> {
+    syslog_format: Option<&'a [String]>,
+    rules: Option<&'a [rules::Rule]>,
+    rules_d: &'a [rules_d::File],
+    proposed: Option<Proposed<'a>>,
+    dir_min: Option<usize>,
+    dir_system: bool,
+    close_after: Option<usize>,
+    route: Route<'a>,
+    line: usize,
+    /// §9's exit 2: the lines that looked like input, and the ones that yielded a field.
+    content: usize,
+    parsed: usize,
     // Deduplication is on the whole suggestion (D12). `TrustFile` equality is path
     // equality, because one user action emits both a perm=execute and a perm=open
     // record and one trust entry covers both perms. `Rule` equality is
     // `(perm, exe, path)`, because those same two records need two rules: they can
     // match different rules and the emitted rule depends on the perm.
-    let mut seen: Vec<Suggestion> = Vec::new();
+    seen: Vec<Suggestion>,
     // Counted and not flagged: each artifact's output names how many suggestions the
     // other one holds, so a user who ran one action learns the other half exists.
-    let mut rules_emitted = 0usize;
-    let mut trust_emitted = 0usize;
+    rules_emitted: usize,
+    trust_emitted: usize,
     // `why`'s whole input, ascending by rule number because a BTreeMap iterates in key
     // order and the report is one line per denying rule in that order.
-    let mut tally: BTreeMap<usize, Tally> = BTreeMap::new();
+    tally: BTreeMap<usize, Tally>,
     // Records naming a rule the file does not have, or one that is an allow: either
     // says the rules file is not this log's, and both are reported once for the run.
-    let mut unmatched = 0usize;
+    unmatched: usize,
+    corrupt: usize,
     // §6's stale `exe=`, keyed by the pid bytes as logged. One run is one capture, so
-    // it is never reset, and it dies with the loop.
-    let mut execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)> = HashMap::new();
+    // it is never reset, and it dies with the analyzer.
+    execs: HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>,
     // `check`'s rows, in first-seen order, which is the order the report is written in.
-    let mut checked: Vec<(check::Key, usize, check::Verdict)> = Vec::new();
-    // The rules artifact, still as suggestions: `--dir-min` cannot tell which of them
-    // share a parent directory until the last record has been read, so the rendering is
-    // the one thing that waits for the end of the loop. The trust artifact has no
-    // grouping and is written as it goes.
-    let mut accepted: Vec<Suggestion> = Vec::new();
+    checked: Vec<(check::Key, usize, check::Verdict)>,
+}
 
-    for (line, record, payload_len) in source.records {
+impl<'a> Analyzer<'a> {
+    /// The arguments are `analyze`'s, plus `close_after`, which is how many lines an
+    /// audit event may go without a record before it is closed (`audit::Assembler`).
+    /// The diagnostics are the run's own, due before line 1.
+    pub fn new(
+        syslog_format: Option<&'a [String]>,
+        rules: Option<&'a [rules::Rule]>,
+        rules_d: &'a [rules_d::File],
+        proposal: Option<check::Proposal<'a>>,
+        dir_min: Option<usize>,
+        dir_system: bool,
+        close_after: Option<usize>,
+    ) -> (Self, Vec<Diagnostic>) {
+        let mut notes = Vec::new();
+
+        // The arms differ only in what rule N is placed against: candidates against the
+        // `rules.d/` fagenrules generated `compiled.rules` from, the directory itself against
+        // `compiled.rules`, because an in-place edit is exactly the two disagreeing. Both carry
+        // the same per-set gate (#139).
+        let proposed = proposal.map(|p| match p {
+            check::Proposal::Merged { files, changed } => (Some(rules_d), changed, files),
+            check::Proposal::OnDisk { changed } => (None, changed, rules_d),
+        });
+
+        // D20: a proposal the daemon will refuse to load gets one line for the run, ahead of
+        // the report, where every row says the same thing. Nothing about one record explains
+        // it, so it is not a per-line diagnostic.
+        if let Some(msg) = proposed.and_then(|(_, _, files)| check::refused(files)) {
+            notes.push(Diagnostic {
+                line: None,
+                msg,
+                artifact: Artifact::Both,
+            });
+        }
+
+        if let Some(fields) = syslog_format {
+            // `format_value`'s uid/gid branch dereferences `subj` with no NULL check on
+            // Rocky 9/10, which is a SIGSEGV; on Rocky 8 an empty gid set leaves the buffer
+            // unterminated, so the field carries heap bytes that can include a space and
+            // break field splitting. Either way the host is misconfigured and we say so.
+            for f in fields
+                .iter()
+                .filter(|f| matches!(f.as_str(), "uid" | "gid"))
+            {
+                notes.push(Diagnostic {
+                    line: None,
+                    // A misconfigured host makes every record suspect, whichever artifact
+                    // the user asked for.
+                    artifact: Artifact::Both,
+                    msg: format!(
+                        "syslog_format names {f}=; the daemon's uid/gid formatter can segfault \
+                         on Rocky 9/10 and emits unterminated heap bytes on Rocky 8 (research \
+                         syslog-format.md:66-96); remove it from the host config"
+                    ),
+                });
+            }
+        }
+
+        let analyzer = Analyzer {
+            syslog_format,
+            rules,
+            rules_d,
+            proposed,
+            dir_min,
+            dir_system,
+            close_after,
+            route: Route::Undecided(Vec::new()),
+            line: 0,
+            content: 0,
+            parsed: 0,
+            seen: Vec::new(),
+            rules_emitted: 0,
+            trust_emitted: 0,
+            tally: BTreeMap::new(),
+            unmatched: 0,
+            corrupt: 0,
+            execs: HashMap::new(),
+            checked: Vec::new(),
+        };
+        (analyzer, notes)
+    }
+
+    /// The next line of the input, without its `\n`.
+    pub fn feed(&mut self, line: &[u8]) -> Step {
+        self.line += 1;
+        let mut step = Step::default();
+        if let Route::Undecided(held) = &mut self.route {
+            match audit::route(line) {
+                None => {
+                    let trimmed = line.trim_ascii_start();
+                    if !(trimmed.is_empty() || trimmed.starts_with(b"#")) {
+                        held.push((self.line, line.to_vec()));
+                    }
+                    return step;
+                }
+                // The audit route skips framing, so what was held is dropped.
+                Some(true) => {
+                    self.route = Route::Audit(audit::Assembler::new(self.rules, self.close_after));
+                    // `syslog_format` describes the daemon's own line. An audit record was
+                    // assembled from whole audit fields, so neither §6 test has anything to
+                    // measure on it.
+                    self.syslog_format = None;
+                }
+                Some(false) => {
+                    let held = std::mem::take(held);
+                    self.route = Route::Daemon;
+                    for (n, raw) in held {
+                        self.daemon(n, &raw, &mut step);
+                    }
+                }
+            }
+        }
+        let records = match &mut self.route {
+            Route::Audit(assembler) => assembler.feed(self.line, line),
+            Route::Daemon | Route::Undecided(_) => {
+                self.daemon(self.line, line, &mut step);
+                return step;
+            }
+        };
+        for (n, record, payload_len) in records {
+            self.record(n, record, payload_len, &mut step);
+        }
+        step
+    }
+
+    /// The end of the input.
+    pub fn finish(mut self) -> Finish {
+        let mut flushed = Step::default();
+        let mut source_notes = Vec::new();
+        match std::mem::replace(&mut self.route, Route::Daemon) {
+            // Framing alone decides no route, and the daemon route reads it as content, so
+            // an input of nothing but `----` is still §9's exit 2.
+            Route::Undecided(held) => {
+                for (n, raw) in held {
+                    self.daemon(n, &raw, &mut flushed);
+                }
+            }
+            Route::Daemon => {}
+            Route::Audit(assembler) => {
+                let (records, notes) = assembler.finish();
+                for (n, record, payload_len) in records {
+                    self.record(n, record, payload_len, &mut flushed);
+                }
+                source_notes = notes;
+            }
+        }
+
+        let (corrupt, unmatched, rules_emitted, trust_emitted) = (
+            self.corrupt,
+            self.unmatched,
+            self.rules_emitted,
+            self.trust_emitted,
+        );
+        let mut run_notes = Vec::new();
+        // `seen` is both artifacts in first-seen order, which is each one's order.
+        let (trust, accepted): (Vec<_>, Vec<_>) = self
+            .seen
+            .into_iter()
+            .partition(|s| matches!(s, Suggestion::TrustFile { .. }));
+        // After deduplication, because two records for the same path are one member of a
+        // group and not two, and at the end, because the last record can still join one.
+        let rules = match self.dir_min {
+            Some(min) => {
+                let (grouped, notes) = group_dirs(accepted, min, self.dir_system);
+                run_notes.extend(notes);
+                grouped
+            }
+            None => accepted,
+        };
+
+        if corrupt > 0 {
+            run_notes.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Both,
+                msg: format!(
+                    "{corrupt} records have unreadable field names: the daemon failed a rules \
+                     reload and is now running with NO rules, allowing everything. Restart it. \
+                     Nothing below can be trusted as a denial record"
+                ),
+            });
+        }
+
+        if unmatched > 0 {
+            run_notes.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Both,
+                msg: format!(
+                    "the rules file does not match this log: {unmatched} record(s) name a rule= the \
+                     file does not contain, or one that is an allow rule; those records were \
+                     analysed without it"
+                ),
+            });
+        }
+
+        // D12: this note belongs to the run, not to a line. The two standing advisories
+        // that used to sit beside it are input-independent and live in `rules --help`.
+        if rules_emitted > 0 {
+            // The `rule=` of every record that produced a rule, deduplicated: the placement
+            // note has to name the file those rules have to be merged ahead of. That is the
+            // tally's own `rules` count, incremented at the same place as the emission, so a
+            // rule whose records all became trust entries is not one of them.
+            let denied: BTreeSet<usize> = self
+                .tally
+                .iter()
+                .filter(|(_, t)| t.rules != 0)
+                .map(|(&n, _)| n)
+                .collect();
+            run_notes.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Rules,
+                msg: placement_note(self.rules_d, self.rules, &denied),
+            });
+        }
+
+        // Each artifact names the other one's contents, because a user who ran one action
+        // has no other way to learn that the input also needed the other.
+        if trust_emitted > 0 {
+            run_notes.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Rules,
+                msg: format!(
+                    "{trust_emitted} untrusted path(s) need a trust entry, not a rule: run \
+                     rulesteward fapolicyd trust on the same input"
+                ),
+            });
+        }
+        if rules_emitted > 0 {
+            run_notes.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Trust,
+                msg: format!(
+                    "{rules_emitted} denial(s) need a rule, not a trust entry: run \
+                     rulesteward fapolicyd rules on the same input"
+                ),
+            });
+        }
+
+        Finish {
+            source_notes,
+            flushed,
+            run_notes,
+            rules,
+            trust,
+            why: why_rows(&self.tally, self.rules, self.rules_d),
+            check: self.checked,
+            // §9's exit 2 is "input consumed but unparseable" — not "no denials found". A
+            // log full of allow records is a successful run with nothing to suggest.
+            consumed_but_unparseable: self.content > 0 && self.parsed == 0,
+        }
+    }
+
+    /// The daemon source, steps 1 to 5 of the ladder. A line that yields no field at all
+    /// counts as content and not as parsed, which is the whole of §9's exit 2: the daemon
+    /// interleaves prose with records and prose is not a parse failure.
+    fn daemon(&mut self, line: usize, raw: &[u8], step: &mut Step) {
+        let Some((record, payload_len)) = daemon_record(raw) else {
+            return;
+        };
+        self.content += 1;
+        if names(&record).is_empty() {
+            return;
+        }
+        self.parsed += 1;
+        self.record(line, record, payload_len, step);
+    }
+
+    /// Steps 6 to 10 for one record of either source.
+    fn record(&mut self, line: usize, record: Record, payload_len: usize, step: &mut Step) {
         if names(&record)
             .iter()
             .any(|n| parse::is_corrupt_field_name(n))
         {
-            corrupt += 1;
-            continue;
+            self.corrupt += 1;
+            return;
         }
 
         if !parse::is_denial(&record) {
-            continue;
+            return;
         }
 
-        if let Some(msg) = truncated(&record, syslog_format, payload_len) {
+        if let Some(msg) = truncated(&record, self.syslog_format, payload_len) {
             // Nothing was emitted, so neither artifact can be read as complete.
-            out.diagnostics.push(Diagnostic {
+            step.diagnostics.push(Diagnostic {
                 line: Some(line),
                 msg,
                 artifact: Artifact::Both,
             });
-            continue;
+            return;
         }
 
         // Unconditionally and first, so the pid map is maintained even for records the
         // rule lookup below goes on to refuse.
-        let stale = stale_exe(&mut execs, &record);
+        let stale = stale_exe(&mut self.execs, &record);
 
         // rule=0 is "no rule matched" and is never an index (§5). Parsed here rather
         // than inside the lookup below because the placement note needs the number
@@ -284,7 +586,7 @@ pub fn analyze(
         // so a truncated record counts nowhere and a subject-side rule's count equals
         // the number of refusal comments the other two actions carry.
         if let Some(n) = n {
-            tally.entry(n).or_default().denials += 1;
+            self.tally.entry(n).or_default().denials += 1;
         }
 
         // Before the refusal below, because a subject-side `rule=N` is exactly where a
@@ -292,33 +594,34 @@ pub fn analyze(
         // `allow`, so "nothing this tool can emit resolves it" is not "nothing resolves
         // it". The first record of a key decides for all of them; `stale_exe` is the only
         // input two records sharing a key can differ on, and it already gives `unknown`.
-        if let Some((host, changed, proposed)) = proposed {
+        if let Some((host, changed, proposed)) = self.proposed {
             let key = check::key(&record, n);
-            match checked.iter_mut().find(|(seen, _, _)| *seen == key) {
+            match self.checked.iter_mut().find(|(seen, _, _)| *seen == key) {
                 Some((_, count, _)) => *count += 1,
                 None => {
                     let verdict = check::verdict(
                         &record,
                         n,
                         stale.as_deref(),
-                        rules,
+                        self.rules,
                         host,
                         changed,
                         proposed,
                     );
-                    checked.push((key, 1, verdict));
+                    step.checked.push((key.clone(), verdict.clone()));
+                    self.checked.push((key, 1, verdict));
                 }
             }
         }
 
-        if let Some(rules) = rules {
+        if let Some(rules) = self.rules {
             match n.map(|n| (n, n.checked_sub(1).and_then(|i| rules.get(i)))) {
                 // Not under `check`: its verdict line above already answers for this
                 // record, and "no path rule can resolve this" is what #120's
                 // `subjectside-before-N` row measured to be false for a candidate.
-                Some((_, Some(r))) if r.refuses() && proposed.is_some() => continue,
+                Some((_, Some(r))) if r.refuses() && self.proposed.is_some() => return,
                 Some((n, Some(r))) if r.refuses() => {
-                    out.diagnostics.push(Diagnostic {
+                    step.diagnostics.push(Diagnostic {
                         line: Some(line),
                         // The refusal names both answers as impossible, so it belongs
                         // in whichever one the user is holding.
@@ -330,10 +633,10 @@ pub fn analyze(
                             r.text
                         ),
                     });
-                    continue;
+                    return;
                 }
-                Some((_, Some(r))) if !r.decision.starts_with("deny") => unmatched += 1,
-                Some((_, None)) => unmatched += 1,
+                Some((_, Some(r))) if !r.decision.starts_with("deny") => self.unmatched += 1,
+                Some((_, None)) => self.unmatched += 1,
                 // A deny rule that does not refuse, or a record with no `rule=` field at
                 // all. The second is not a mismatch: the compiled default syslog_format
                 // does name `rule`, but a host conf that drops it would otherwise make
@@ -347,13 +650,13 @@ pub fn analyze(
                 // The note explains the suggestion, so it follows it into that
                 // artifact and nowhere else.
                 let artifact = match suggestion {
-                    // `policy` proposes no `Dir`: grouping happens after the loop, on
-                    // the rules this one accepted.
+                    // `policy` proposes no `Dir`: grouping happens in `finish`, on the
+                    // rules the pass accepted.
                     Suggestion::Rule { .. } | Suggestion::Dir { .. } => Artifact::Rules,
                     Suggestion::TrustFile { .. } => Artifact::Trust,
                 };
                 if let Some(msg) = note {
-                    out.diagnostics.push(Diagnostic {
+                    step.diagnostics.push(Diagnostic {
                         line: Some(line),
                         msg,
                         artifact,
@@ -361,7 +664,7 @@ pub fn analyze(
                 }
                 // A `TrustFile` carries no exe, so the note would be noise there.
                 if let (Some(execed), Suggestion::Rule { .. }) = (&stale, &suggestion) {
-                    out.diagnostics.push(Diagnostic {
+                    step.diagnostics.push(Diagnostic {
                         line: Some(line),
                         // It describes how the rule was scoped; a trust entry has no exe.
                         artifact: Artifact::Rules,
@@ -380,124 +683,34 @@ pub fn analyze(
                         ),
                     });
                 }
-                if seen.contains(&suggestion) {
-                    continue;
+                if self.seen.contains(&suggestion) {
+                    return;
                 }
                 let is_rule = matches!(suggestion, Suggestion::Rule { .. });
                 if is_rule {
-                    rules_emitted += 1;
+                    self.rules_emitted += 1;
                 } else {
-                    trust_emitted += 1;
+                    self.trust_emitted += 1;
                 }
                 // The same count, per rule, for `why`'s verdict column.
-                if let Some(t) = n.and_then(|n| tally.get_mut(&n)) {
+                if let Some(t) = n.and_then(|n| self.tally.get_mut(&n)) {
                     if is_rule {
                         t.rules += 1;
                     } else {
                         t.trust += 1;
                     }
                 }
-                match artifact {
-                    Artifact::Rules => accepted.push(suggestion.clone()),
-                    _ => out.trust.push(suggestion.clone()),
-                }
-                seen.push(suggestion);
+                step.suggestions.push(suggestion.clone());
+                self.seen.push(suggestion);
             }
             // Nothing was emitted into either artifact, so both have to say why.
-            Decision::Explain(msg) => out.diagnostics.push(Diagnostic {
+            Decision::Explain(msg) => step.diagnostics.push(Diagnostic {
                 line: Some(line),
                 msg,
                 artifact: Artifact::Both,
             }),
         }
     }
-
-    // After deduplication, because two records for the same path are one member of a
-    // group and not two, and after the loop, because the last record can still join one.
-    out.rules = match dir_min {
-        Some(min) => {
-            let (grouped, notes) = group_dirs(accepted, min, dir_system);
-            out.diagnostics.extend(notes);
-            grouped
-        }
-        None => accepted,
-    };
-
-    if corrupt > 0 {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Both,
-            msg: format!(
-                "{corrupt} records have unreadable field names: the daemon failed a rules \
-                 reload and is now running with NO rules, allowing everything. Restart it. \
-                 Nothing below can be trusted as a denial record"
-            ),
-        });
-    }
-
-    if unmatched > 0 {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Both,
-            msg: format!(
-                "the rules file does not match this log: {unmatched} record(s) name a rule= the \
-                 file does not contain, or one that is an allow rule; those records were \
-                 analysed without it"
-            ),
-        });
-    }
-
-    // D12: this note belongs to the run, not to a line. The two standing advisories
-    // that used to sit beside it are input-independent and live in `rules --help`.
-    if rules_emitted > 0 {
-        // The `rule=` of every record that produced a rule, deduplicated: the placement
-        // note has to name the file those rules have to be merged ahead of. That is the
-        // tally's own `rules` count, incremented at the same place as the emission, so a
-        // rule whose records all became trust entries is not one of them.
-        let denied: BTreeSet<usize> = tally
-            .iter()
-            .filter(|(_, t)| t.rules != 0)
-            .map(|(&n, _)| n)
-            .collect();
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Rules,
-            msg: placement_note(rules_d, rules, &denied),
-        });
-    }
-
-    // Each artifact names the other one's contents, because a user who ran one action
-    // has no other way to learn that the input also needed the other.
-    if trust_emitted > 0 {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Rules,
-            msg: format!(
-                "{trust_emitted} untrusted path(s) need a trust entry, not a rule: run \
-                 rulesteward fapolicyd trust on the same input"
-            ),
-        });
-    }
-    if rules_emitted > 0 {
-        out.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Trust,
-            msg: format!(
-                "{rules_emitted} denial(s) need a rule, not a trust entry: run \
-                 rulesteward fapolicyd rules on the same input"
-            ),
-        });
-    }
-
-    out.why = why_rows(&tally, rules, rules_d);
-    out.check = checked;
-
-    out.diagnostics = collapse(out.diagnostics);
-
-    // §9's exit 2 is "input consumed but unparseable" — not "no denials found". A log
-    // full of allow records is a successful run with nothing to suggest.
-    out.consumed_but_unparseable = source.content > 0 && source.parsed == 0;
-    out
 }
 
 /// The directories the system itself shares, where a `dir=` rule allows every path any
@@ -672,33 +885,20 @@ fn group_dirs(
     (out, notes)
 }
 
-/// The daemon source: one record per line, steps 1 to 5 of the pass's ladder.
-///
-/// A line that yields no field at all counts as content and not as parsed, which is the
-/// whole of §9's exit 2: the daemon interleaves prose with records and prose is not a
-/// parse failure.
-fn daemon_records(input: &[u8]) -> Source {
-    let mut source = Source::default();
-    for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
-        // Leading whitespace and all: the research captures indent their commented-out
-        // example records, and an indented comment is still a comment.
-        let trimmed = raw.trim_ascii_start();
-        if trimmed.is_empty() || trimmed.starts_with(b"#") {
-            continue;
-        }
-        let payload = parse::strip_prefix(raw);
-        if parse::is_noise(payload) {
-            continue;
-        }
-        source.content += 1;
-        let record = parse::parse(payload);
-        if names(&record).is_empty() {
-            continue;
-        }
-        source.parsed += 1;
-        source.records.push((i + 1, record, payload.len()));
+/// One daemon line, steps 1 to 5 of the pass's ladder: `None` when it is not input at
+/// all, otherwise the parsed record, fields or none, and its payload length.
+fn daemon_record(raw: &[u8]) -> Option<(Record, usize)> {
+    // Leading whitespace and all: the research captures indent their commented-out
+    // example records, and an indented comment is still a comment.
+    let trimmed = raw.trim_ascii_start();
+    if trimmed.is_empty() || trimmed.starts_with(b"#") {
+        return None;
     }
-    source
+    let payload = parse::strip_prefix(raw);
+    if parse::is_noise(payload) {
+        return None;
+    }
+    Some((parse::parse(payload), payload.len()))
 }
 
 /// Every field name in the record, both sides. The corruption test reads all of them
@@ -1122,6 +1322,21 @@ mod tests {
         );
         assert!(o.diagnostics.is_empty(), "{}", notes(&o));
         assert!(!o.consumed_but_unparseable, "a comment is not content");
+    }
+
+    #[test]
+    fn a_commented_out_record_after_the_route_is_decided_is_not_input() {
+        // Ahead of the first real line a comment is never held; after it, the daemon
+        // route's own step 1 is what keeps the comment out.
+        let input = b"rule=1 dec=allow perm=open exe=/usr/bin/cat : path=/tmp/x trust=1\n\
+                      # record: 09/06/26 00:00:00 [ DEBUG ]: rule=2 dec=deny_audit perm=open \
+                      exe=/usr/bin/bash : path=/etc/login.defs trust=0\n";
+        let o = analyze(input, None, None, &[], None, None, false);
+        assert!(
+            o.rules.is_empty() && o.trust.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&o.trust_text())
+        );
     }
 
     /// A `trust=1` denial, short enough that step 4 never fires.
@@ -1751,5 +1966,226 @@ mod tests {
             lines[1].len() > lines[0].len() + 40,
             "the long text must lengthen only its own line: {why}"
         );
+    }
+
+    /// Every fixture under `tests/fixtures/`, compiled in so the test reads no file.
+    const FIXTURES: &[(&str, &[u8])] = &[
+        (
+            "handwritten-21-fields.log",
+            include_bytes!("../../tests/fixtures/handwritten-21-fields.log"),
+        ),
+        (
+            "handwritten-minimal-format.log",
+            include_bytes!("../../tests/fixtures/handwritten-minimal-format.log"),
+        ),
+        (
+            "handwritten-not-denials.log",
+            include_bytes!("../../tests/fixtures/handwritten-not-denials.log"),
+        ),
+        (
+            "handwritten-trusted-denial.log",
+            include_bytes!("../../tests/fixtures/handwritten-trusted-denial.log"),
+        ),
+        (
+            "rocky10-base-gaps.log",
+            include_bytes!("../../tests/fixtures/rocky10-base-gaps.log"),
+        ),
+        (
+            "rocky10-base-syslog-format.log",
+            include_bytes!("../../tests/fixtures/rocky10-base-syslog-format.log"),
+        ),
+        (
+            "rocky10-base-syslog-framing-syslog-raw.log",
+            include_bytes!("../../tests/fixtures/rocky10-base-syslog-framing-syslog-raw.log"),
+        ),
+        (
+            "rocky8-audit-live-vm-syscall-default.log",
+            include_bytes!("../../tests/fixtures/rocky8-audit-live-vm-syscall-default.log"),
+        ),
+        (
+            "rocky8-base-edge-paths.log",
+            include_bytes!("../../tests/fixtures/rocky8-base-edge-paths.log"),
+        ),
+        (
+            "rocky8-base-gaps.log",
+            include_bytes!("../../tests/fixtures/rocky8-base-gaps.log"),
+        ),
+        (
+            "rocky8-base-reload-probe-empty-ruleset-daemon.log",
+            include_bytes!(
+                "../../tests/fixtures/rocky8-base-reload-probe-empty-ruleset-daemon.log"
+            ),
+        ),
+        (
+            "rocky9-audit-live-vm-asfound-raw.log",
+            include_bytes!("../../tests/fixtures/rocky9-audit-live-vm-asfound-raw.log"),
+        ),
+        (
+            "rocky9-audit-live-vm-syscall-raw.log",
+            include_bytes!("../../tests/fixtures/rocky9-audit-live-vm-syscall-raw.log"),
+        ),
+        (
+            "rocky9-base-gaps.log",
+            include_bytes!("../../tests/fixtures/rocky9-base-gaps.log"),
+        ),
+        (
+            "rocky9-journal-live-vm-short.log",
+            include_bytes!("../../tests/fixtures/rocky9-journal-live-vm-short.log"),
+        ),
+    ];
+
+    /// A fed run's concatenated steps, the finished run, how many entries of any kind the
+    /// steps returned before `finish`, and how many of their diagnostics name a line other
+    /// than the one just fed.
+    fn fed(input: &[u8], close_after: Option<usize>) -> (Step, Finish, usize, usize) {
+        let (mut a, _) = Analyzer::new(
+            None,
+            None,
+            &[],
+            Some(check::Proposal::OnDisk { changed: &[] }),
+            None,
+            false,
+            close_after,
+        );
+        let mut all = Step::default();
+        let mut lagged = 0;
+        for (i, line) in input.split(|&b| b == b'\n').enumerate() {
+            let s = a.feed(line);
+            lagged += s
+                .diagnostics
+                .iter()
+                .filter(|d| d.line != Some(i + 1))
+                .count();
+            all.suggestions.extend(s.suggestions);
+            all.checked.extend(s.checked);
+            all.diagnostics.extend(s.diagnostics);
+        }
+        let early = all.suggestions.len() + all.checked.len() + all.diagnostics.len();
+        let mut f = a.finish();
+        let flushed = std::mem::take(&mut f.flushed);
+        all.suggestions.extend(flushed.suggestions);
+        all.checked.extend(flushed.checked);
+        all.diagnostics.extend(flushed.diagnostics);
+        (all, f, early, lagged)
+    }
+
+    #[test]
+    fn every_fixture_fed_line_by_line_is_the_batch_result() {
+        for (name, input) in FIXTURES {
+            let o = analyze(
+                input,
+                None,
+                None,
+                &[],
+                Some(check::Proposal::OnDisk { changed: &[] }),
+                None,
+                false,
+            );
+            let (steps, f, early, lagged) = fed(input, None);
+            let (trust, rules): (Vec<_>, Vec<_>) = steps
+                .suggestions
+                .iter()
+                .cloned()
+                .partition(|s| matches!(s, Suggestion::TrustFile { .. }));
+            assert_eq!((&rules, &trust), (&o.rules, &o.trust), "{name}");
+            let checked: Vec<_> = o
+                .check
+                .iter()
+                .map(|(k, _, v)| (k.clone(), v.clone()))
+                .collect();
+            assert_eq!(steps.checked, checked, "{name}");
+            assert_eq!(
+                f.consumed_but_unparseable, o.consumed_but_unparseable,
+                "{name}"
+            );
+
+            // S1 measured every event in the audit fixtures contiguous, the longest six
+            // lines, so closing after twelve changes nothing but when a record arrives.
+            if input.split(|&b| b == b'\n').find_map(audit::route) != Some(true) {
+                // The daemon route decides each line as it is fed: nothing waits for the
+                // end, and a note names the line that produced it.
+                let total = steps.suggestions.len() + steps.checked.len() + steps.diagnostics.len();
+                assert_eq!(early, total, "{name}: the daemon route waited for finish");
+                assert_eq!(
+                    lagged, 0,
+                    "{name}: a note named a line other than the one fed"
+                );
+            } else {
+                let (early, g, n, _) = fed(input, Some(12));
+                assert_eq!(format!("{early:?}"), format!("{steps:?}"), "{name}");
+                assert_eq!(
+                    format!(
+                        "{:?}",
+                        (
+                            g.source_notes,
+                            g.run_notes,
+                            g.rules,
+                            g.trust,
+                            g.why,
+                            g.check
+                        )
+                    ),
+                    format!(
+                        "{:?}",
+                        (
+                            f.source_notes,
+                            f.run_notes,
+                            f.rules,
+                            f.trust,
+                            f.why,
+                            f.check
+                        )
+                    ),
+                    "{name}"
+                );
+                assert!(n > 0, "{name}: nothing arrived before finish");
+            }
+        }
+    }
+
+    #[test]
+    fn framing_ahead_of_the_first_daemon_line_is_read_as_daemon_input() {
+        // The route waits for the first line that is not framing; once it is the daemon,
+        // the lines it waited over are daemon lines, and `----` is content there.
+        let record = |p: &str| {
+            format!(
+                "rule=1 dec=deny_audit perm=open auid=0 pid=1 exe=/usr/bin/cat : path={p} trust=1"
+            )
+        };
+        let paths = |o: &Outcome| -> Vec<Vec<u8>> {
+            o.rules
+                .iter()
+                .filter_map(|s| match s {
+                    Suggestion::Rule { path, .. } => Some(path.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let run = |input: String| analyze(input.as_bytes(), None, None, &[], None, None, false);
+
+        let o = run("----\ntime->Thu Sep 17 20:56:59 2026\n".into());
+        assert!(o.consumed_but_unparseable, "framing alone is §9's exit 2");
+
+        let o = run(format!("----{}\n{}\n", record("/tmp/a"), record("/tmp/b")));
+        assert_eq!(paths(&o), [b"/tmp/a".to_vec(), b"/tmp/b".to_vec()]);
+
+        // Nothing but framing: the route is decided at the end, the same way.
+        let o = run(format!("----{}\n", record("/tmp/a")));
+        assert_eq!(paths(&o), [b"/tmp/a".to_vec()], "{}", notes(&o));
+        assert!(!o.consumed_but_unparseable);
+    }
+
+    #[test]
+    fn only_dashes_and_time_lines_are_held_while_the_route_is_undecided() {
+        // Blank and `#` lines are nobody's input, so holding them would only grow a run
+        // that has not yet seen a real line.
+        let (mut a, _) = Analyzer::new(None, None, &[], None, None, false, None);
+        for line in [&b""[..], b"# c", b"  # c", b"----", b"time->x"] {
+            a.feed(line);
+        }
+        let Route::Undecided(held) = &a.route else {
+            panic!("framing decided the route");
+        };
+        assert_eq!(held, &[(4, b"----".to_vec()), (5, b"time->x".to_vec())]);
     }
 }

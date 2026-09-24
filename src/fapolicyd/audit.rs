@@ -1,9 +1,9 @@
 //! The `ausearch` reader: audit records in, the same `Record`s the daemon route
 //! produces out. DESIGN.md §5 "Audit route". Pure, like every sibling here.
 
-use super::model::{Artifact, Diagnostic, Record, Side, Source};
+use super::model::{Artifact, Diagnostic, Record, Side};
 use super::rules;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Fields of one audit record, as they were written: keys and values borrowed from the
 /// input, decoded only where a caller asks for a string.
@@ -11,11 +11,17 @@ type Fields<'a> = Vec<(&'a [u8], &'a [u8])>;
 
 /// The records of one event, keyed by `msg=audit(ts:serial)`. FANOTIFY is a list
 /// because an exec through the loader carries two of them, one per rule decision.
+///
+/// A record is held as its line, cut at the ENRICHED separator, and split into fields
+/// again when the event closes: the line fed to `Assembler::feed` does not outlive the
+/// call. `last` is the line of the event's latest record, which is what closing reads.
 #[derive(Default)]
-struct Event<'a> {
-    fanotify: Vec<(usize, Fields<'a>)>,
-    syscall: Option<Fields<'a>>,
-    paths: Vec<Fields<'a>>,
+struct Event {
+    key: Vec<u8>,
+    last: usize,
+    fanotify: Vec<(usize, Vec<u8>)>,
+    syscall: Option<Vec<u8>>,
+    paths: Vec<Vec<u8>>,
 }
 
 /// `ausearch` framing that carries no record: the default mode's event separator and
@@ -27,7 +33,9 @@ fn framing(line: &[u8]) -> bool {
         || line.starts_with(b"time->")
 }
 
-/// Which reader the input belongs to, decided on its first real line.
+/// Which reader one line belongs to: `None` for framing, which decides nothing, and
+/// otherwise whether it is an audit record. The input's route is the answer for its
+/// first real line.
 ///
 /// `--raw` and default mode both write `type=NAME msg=audit(...)` records and differ
 /// only in framing, so one test covers both (research `log-format.md`, "auditd", Q3).
@@ -36,15 +44,13 @@ fn framing(line: &[u8]) -> bool {
 /// is NOT a supported dialect -- it rewrites `fan_info` to decimal, `resp` to a word and
 /// the timestamp to a date -- so it lands here and produces nonsense rather than an
 /// error. Section 5 says to pipe `--raw`.
-pub fn is_audit(input: &[u8]) -> bool {
-    input
-        .split(|&b| b == b'\n')
-        .map(|l| l.trim_ascii_start())
-        .find(|l| !framing(l))
-        .is_some_and(|l| l.starts_with(b"type="))
+pub fn route(line: &[u8]) -> Option<bool> {
+    let line = line.trim_ascii_start();
+    (!framing(line)).then(|| line.starts_with(b"type="))
 }
 
-/// One `Record` per FANOTIFY record, grouped into events by `msg=audit(ts:serial)`.
+/// One `Record` per FANOTIFY record, grouped into events by `msg=audit(ts:serial)`, fed
+/// one line at a time.
 ///
 /// Not one per event: a single exec through the loader carries two FANOTIFY records,
 /// one per rule decision (#87 Q2), and each is a denial in its own right. Grouping and
@@ -53,68 +59,141 @@ pub fn is_audit(input: &[u8]) -> bool {
 ///
 /// `rules` is the compiled rules file when there is one. It decides nothing about the
 /// object and everything about `dec=`: see `decision`.
-pub fn records(input: &[u8], rules: Option<&[rules::Rule]>) -> Source {
-    let mut source = Source::default();
-    let mut events: Vec<Event> = Vec::new();
-    // First-seen order is the report's order, so the index is kept beside the map
-    // rather than iterating the map itself.
-    let mut at: HashMap<&[u8], usize> = HashMap::new();
+///
+/// `close_after` is how many lines an event may go without a record before it is
+/// closed and its records returned. `None` never closes one before `finish`, which is
+/// the whole input grouped at once. A key seen again after its event closed opens a new
+/// event.
+pub struct Assembler<'r> {
+    rules: Option<&'r [rules::Rule]>,
+    close_after: Option<usize>,
+    /// The open events, keyed by the line that opened them, so iteration is first-seen
+    /// order and that is the report's order.
+    events: BTreeMap<usize, Event>,
+    /// The audit key to the `events` entry holding it.
+    at: HashMap<Vec<u8>, usize>,
+    no_rule: usize,
+    no_path: usize,
+}
 
-    for (i, raw) in input.split(|&b| b == b'\n').enumerate() {
-        let line = raw.trim_ascii_start();
-        if framing(line) || !line.starts_with(b"type=") {
-            continue;
-        }
-        source.content += 1;
-        let fields = fields(enriched(line));
-        // The `type=` that made the line content is itself a field, so everything
-        // counted above is parsed and §9's exit 2 cannot fire on audit input.
-        source.parsed += 1;
-        // A `msg=audit(...)` key is what makes the record usable: without one there is
-        // no event to put it in.
-        let (Some(kind), Some(key)) = (value(&fields, b"type"), key(&fields)) else {
-            continue;
-        };
-        let e = *at.entry(key).or_insert_with(|| {
-            events.push(Event::default());
-            events.len() - 1
-        });
-        match kind {
-            b"FANOTIFY" => events[e].fanotify.push((i + 1, fields)),
-            b"SYSCALL" => events[e].syscall = Some(fields),
-            b"PATH" => events[e].paths.push(fields),
-            // EXECVE, CWD, PROCTITLE and everything else carry nothing the record model
-            // has a place for. Never `proctitle=` or `cwd=`: a path is the file the
-            // kernel named, not one reconstructed from a command line.
-            _ => {}
+impl<'r> Assembler<'r> {
+    pub fn new(rules: Option<&'r [rules::Rule]>, close_after: Option<usize>) -> Self {
+        Assembler {
+            rules,
+            close_after,
+            events: BTreeMap::new(),
+            at: HashMap::new(),
+            no_rule: 0,
+            no_path: 0,
         }
     }
 
-    let mut no_rule = 0usize;
-    let mut no_path = 0usize;
-    for event in &events {
+    /// Line `line_no` of the input, and the records of every event it closed.
+    pub fn feed(&mut self, line_no: usize, raw: &[u8]) -> Vec<(usize, Record, usize)> {
+        if route(raw) == Some(true) {
+            let line = enriched(raw.trim_ascii_start());
+            let fields = fields(line);
+            // A `msg=audit(...)` key is what makes the record usable: without one there is
+            // no event to put it in.
+            if let (Some(kind), Some(key)) = (value(&fields, b"type"), key(&fields)) {
+                let id = *self.at.entry(key.to_vec()).or_insert(line_no);
+                let event = self.events.entry(id).or_insert_with(|| Event {
+                    key: key.to_vec(),
+                    ..Event::default()
+                });
+                event.last = line_no;
+                match kind {
+                    b"FANOTIFY" => event.fanotify.push((line_no, line.to_vec())),
+                    b"SYSCALL" => event.syscall = Some(line.to_vec()),
+                    b"PATH" => event.paths.push(line.to_vec()),
+                    // EXECVE, CWD, PROCTITLE and everything else carry nothing the record
+                    // model has a place for. Never `proctitle=` or `cwd=`: a path is the
+                    // file the kernel named, not one reconstructed from a command line.
+                    _ => {}
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        if let Some(n) = self.close_after {
+            let done: Vec<usize> = self
+                .events
+                .iter()
+                .filter(|(_, e)| line_no.saturating_sub(e.last) > n)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in done {
+                if let Some(event) = self.events.remove(&id) {
+                    self.at.remove(&event.key);
+                    out.extend(self.close(&event));
+                }
+            }
+        }
+        out
+    }
+
+    /// The records of every event still open, in first-seen order, and the two
+    /// diagnostics that are totals over the whole input.
+    pub fn finish(mut self) -> (Vec<(usize, Record, usize)>, Vec<Diagnostic>) {
+        let mut out = Vec::new();
+        for event in std::mem::take(&mut self.events).into_values() {
+            out.extend(self.close(&event));
+        }
+
+        let mut diagnostics = Vec::new();
+        let (no_rule, no_path) = (self.no_rule, self.no_path);
+        if no_rule > 0 {
+            diagnostics.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Both,
+                msg: format!(
+                    "{no_rule} FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd \
+                     1.3.2 on Rocky 8 does not write one; why has nothing to count"
+                ),
+            });
+        }
+        if no_path > 0 {
+            diagnostics.push(Diagnostic {
+                line: None,
+                artifact: Artifact::Both,
+                msg: format!(
+                    "{no_path} audit event(s) carry no PATH record for the object, so nothing to act on: load \
+                     an exit rule with `auditctl -a always,exit -F arch=b64 -S \
+                     creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use \
+                     the journal route"
+                ),
+            });
+        }
+        (out, diagnostics)
+    }
+
+    /// One closed event's records, one per FANOTIFY record in the order they arrived.
+    fn close(&mut self, event: &Event) -> Vec<(usize, Record, usize)> {
+        let mut out = Vec::new();
         // A property of the event and not of the FANOTIFY record, so it is resolved
         // once and counted once however many decisions the event carried.
         let path = object_path(event);
         if path.is_none() && !event.fanotify.is_empty() {
-            no_path += 1;
+            self.no_path += 1;
         }
+        let syscall = event.syscall.as_deref().map(fields);
         for (line, fan) in &event.fanotify {
-            let rule = value(fan, b"fan_info")
+            let fan = fields(fan);
+            let rule = value(&fan, b"fan_info")
                 .and_then(|v| usize::from_str_radix(std::str::from_utf8(v).ok()?, 16).ok())
                 .unwrap_or(0);
             if rule == 0 {
-                no_rule += 1;
+                self.no_rule += 1;
             }
             let mut subject: Side = vec![
                 (b"rule".to_vec(), rule.to_string().into_bytes()),
                 (
                     b"dec".to_vec(),
-                    decision(value(fan, b"resp"), rule, rules).into_bytes(),
+                    decision(value(&fan, b"resp"), rule, self.rules).into_bytes(),
                 ),
                 (b"perm".to_vec(), perm(event).to_vec()),
             ];
-            if let Some(sys) = &event.syscall {
+            if let Some(sys) = &syscall {
                 if let Some(exe) = value(sys, b"exe") {
                     subject.push((b"exe".to_vec(), decode(exe)));
                 }
@@ -132,40 +211,17 @@ pub fn records(input: &[u8], rules: Option<&[rules::Rule]>) -> Source {
                 // Object trust is the FANOTIFY record's, not the PATH record's: it is
                 // fapolicyd's own view of the file and the same value the daemon writes
                 // as `trust=`. Rocky 8's `2` reaches `Trust::Unavailable` untouched.
-                if let Some(t) = value(fan, b"obj_trust") {
+                if let Some(t) = value(&fan, b"obj_trust") {
                     side.push((b"trust".to_vec(), t.to_vec()));
                 }
                 side
             });
             // The payload length is the 511-byte truncation test's input and there is
             // no daemon payload here, so it is 0 and that test never fires.
-            source.records.push((*line, Record { subject, object }, 0));
+            out.push((*line, Record { subject, object }, 0));
         }
+        out
     }
-
-    if no_rule > 0 {
-        source.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Both,
-            msg: format!(
-                "{no_rule} FANOTIFY record(s) carry no rule number (fan_info=0): fapolicyd \
-                 1.3.2 on Rocky 8 does not write one; why has nothing to count"
-            ),
-        });
-    }
-    if no_path > 0 {
-        source.diagnostics.push(Diagnostic {
-            line: None,
-            artifact: Artifact::Both,
-            msg: format!(
-                "{no_path} audit event(s) carry no PATH record for the object, so nothing to act on: load \
-                 an exit rule with `auditctl -a always,exit -F arch=b64 -S \
-                 creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM` or use \
-                 the journal route"
-            ),
-        });
-    }
-    source
 }
 
 /// The decision, which the record does not carry.
@@ -191,7 +247,11 @@ fn decision(resp: Option<&[u8]>, rule: usize, rules: Option<&[rules::Rule]>) -> 
 /// `open`, which is §8.1's fail-open direction: the wrong perm on a rule is a narrower
 /// mistake than none at all, and `policy::decide` refuses a record with neither.
 fn perm(event: &Event) -> &'static [u8] {
-    match event.syscall.as_ref().and_then(|s| value(s, b"syscall")) {
+    match event
+        .syscall
+        .as_deref()
+        .and_then(|s| value(&fields(s), b"syscall"))
+    {
         Some(b"59") | Some(b"322") => b"execute",
         _ => b"open",
     }
@@ -205,20 +265,21 @@ fn perm(event: &Event) -> &'static [u8] {
 /// the LOADER (#87 Q4), so taking `item=0` unconditionally would emit a rule for
 /// /lib64/ld-linux-x86-64.so.2 in place of the file that was actually denied.
 fn object_path(event: &Event) -> Option<Vec<u8>> {
-    let syscall = event.syscall.as_ref()?;
+    let syscall = fields(event.syscall.as_deref()?);
     let items = if perm(event) == b"execute" {
         b"2"
     } else {
         b"1"
     };
-    if value(syscall, b"items") != Some(items) {
+    if value(&syscall, b"items") != Some(items) {
         return None;
     }
     let path = event
         .paths
         .iter()
+        .map(|p| fields(p))
         .find(|p| value(p, b"item") == Some(b"0"))?;
-    let name = decode(value(path, b"name")?);
+    let name = decode(value(&path, b"name")?);
     (name != b"(null)").then_some(name)
 }
 
@@ -296,6 +357,43 @@ fn decode(value: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// What the whole input yields at once: the records in the order the assembler
+    /// returned them, the lines that counted as content, and the run's diagnostics.
+    #[derive(Default)]
+    struct Source {
+        records: Vec<(usize, Record, usize)>,
+        content: usize,
+        parsed: usize,
+        diagnostics: Vec<Diagnostic>,
+    }
+
+    /// The batch reading: every line fed with no close, then `finish`. A `type=` line
+    /// is content and, being a field itself, parsed, which is how the analyzer's route
+    /// counts it.
+    fn records(input: &[u8], rules: Option<&[rules::Rule]>) -> Source {
+        let mut assembler = Assembler::new(rules, None);
+        let mut source = Source::default();
+        for (i, line) in input.split(|&b| b == b'\n').enumerate() {
+            if route(line) == Some(true) {
+                source.content += 1;
+                source.parsed += 1;
+            }
+            source.records.extend(assembler.feed(i + 1, line));
+        }
+        let (rest, diagnostics) = assembler.finish();
+        source.records.extend(rest);
+        source.diagnostics = diagnostics;
+        source
+    }
+
+    /// The route of the whole input: the answer for its first line that is not framing.
+    fn is_audit(input: &[u8]) -> bool {
+        input
+            .split(|&b| b == b'\n')
+            .find_map(route)
+            .is_some_and(|audit| audit)
+    }
 
     /// The three records of one denied `execve`, `--raw`, trimmed of the fields no
     /// reader here looks at. Lifted from
@@ -586,6 +684,74 @@ type=PATH msg=audit(1789678619.794:7470): item=0 name=\"/tmp/live/probe-lib.so\"
         assert_eq!(source.content, 5, "five type= lines in EXEC_EVENT");
         assert_eq!(source.parsed, 5);
         assert_eq!(source.records.len(), 1);
+    }
+
+    #[test]
+    fn an_event_closes_once_more_than_close_after_lines_pass_without_a_record_for_it() {
+        // `finish` flushes every open event, so a whole-input comparison cannot see an
+        // event that never closes, or one that closes a line early or late.
+        let mut a = Assembler::new(None, Some(4));
+        let mut fed = 0;
+        for line in OPEN_EVENT.split(|&b| b == b'\n').take(3) {
+            fed += 1;
+            assert!(a.feed(fed, line).is_empty(), "line {fed} closed the event");
+        }
+        for _ in 0..4 {
+            fed += 1;
+            assert!(a.feed(fed, b"").is_empty(), "line {fed} is only 4 past it");
+        }
+        let closed = a.feed(fed + 1, b"");
+        assert_eq!(closed.len(), 1, "5 lines past its last record");
+        assert_eq!(closed[0].0, 1);
+        assert_eq!(
+            closed[0].1.object_get(b"path"),
+            Some(b"/tmp/live/probe-lib.so".to_vec())
+        );
+        let (rest, notes) = a.finish();
+        assert!(rest.is_empty() && notes.is_empty());
+
+        // The record is added before the close test, so one arriving on the last line the
+        // event is still open for joins it rather than finding it closed.
+        let lines: Vec<&[u8]> = OPEN_EVENT.split(|&b| b == b'\n').collect();
+        let mut a = Assembler::new(None, Some(4));
+        let fed = [
+            (1, lines[0]),
+            (2, b""),
+            (3, b""),
+            (4, b""),
+            (5, b""),
+            (6, lines[1]),
+            (7, lines[2]),
+        ];
+        for (n, line) in fed {
+            assert!(a.feed(n, line).is_empty(), "line {n} closed the event");
+        }
+        let (rest, notes) = a.finish();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(
+            rest[0].1.object_get(b"path"),
+            Some(b"/tmp/live/probe-lib.so".to_vec())
+        );
+        assert!(notes.is_empty(), "{:?}", notes);
+    }
+
+    #[test]
+    fn a_key_seen_after_its_event_closed_opens_a_new_one() {
+        // The closed event's key leaves the index, so its next record opens an event
+        // in its own first-seen place, after one opened in between. A stale index
+        // entry would file it under the closed event's place, ahead of that one.
+        let first = |e: &'static [u8]| e.split(|&b| b == b'\n').next().unwrap();
+        let (k, j) = (first(OPEN_EVENT), first(EXEC_EVENT));
+        let mut a = Assembler::new(None, Some(1));
+        assert!(a.feed(1, k).is_empty());
+        assert!(a.feed(2, b"").is_empty());
+        let closed = a.feed(3, b"");
+        assert!(a.feed(4, j).is_empty());
+        assert!(a.feed(5, k).is_empty());
+        let (rest, _) = a.finish();
+        let lines = |r: &[(usize, Record, usize)]| r.iter().map(|(n, _, _)| *n).collect::<Vec<_>>();
+        assert_eq!(lines(&closed), [1]);
+        assert_eq!(lines(&rest), [4, 5]);
     }
 
     /// Byte-substitution, so a test can state one field's change instead of restating
