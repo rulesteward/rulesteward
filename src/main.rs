@@ -272,7 +272,7 @@ fn run_fapolicyd(
     // SCRATCH (#151): a SIGINT handler the linker cannot drop, to measure its build cost.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
-    let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+    let _ = signal_hook::flag::register(signal_hook::consts::SIGINT, flag);
 
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
