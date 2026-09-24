@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+ctrlc = "3.5.2"
 # `--format json` (#146, DESIGN.md §9). Hand-rolling the escaping was measured against
 # this in #144 and rejected: the pair costs 11,424 bytes on the stripped musl binary,
 # and a JSON writer that gets one escape wrong ships a document nothing can parse.

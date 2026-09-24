@@ -269,6 +269,11 @@ fn run_fapolicyd(
         }
     };
 
+    // SCRATCH (#151): a SIGINT handler the linker cannot drop, to measure its build cost.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
         // A closed pipe or a full disk means the suggestions never reached anyone.
@@ -277,7 +282,7 @@ fn run_fapolicyd(
         return ExitCode::from(EXIT_USAGE);
     }
 
-    ExitCode::from(if outcome.consumed_but_unparseable {
+    ExitCode::from(if outcome.consumed_but_unparseable || stop.load(std::sync::atomic::Ordering::SeqCst) {
         EXIT_UNPARSEABLE
     } else {
         EXIT_OK
