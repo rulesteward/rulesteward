@@ -52,6 +52,13 @@ pub enum Domain {
         )]
         format: Format,
 
+        /// Read stdin a line at a time and write each result as its line arrives, for
+        /// `journalctl -f`; the end-of-run summary is written when stdin closes. Not with
+        /// --format json or json-compact, which write one document for the whole log, and
+        /// not with --dir-min, which can group a directory only once the whole log is read.
+        #[arg(long, global = true)]
+        follow: bool,
+
         #[command(subcommand)]
         action: FapolicydAction,
     },

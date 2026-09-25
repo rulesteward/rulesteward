@@ -1637,3 +1637,354 @@ exe=/usr/bin/bash : path=/tmp/a\x7fb\xc2\x9bc\xc2\x9fd~\xc2\xa0e trust=0\n";
         );
     }
 }
+
+// `--follow` (#153, DESIGN.md §9): the same pass, written a line at a time.
+
+/// The next stdout line of a `--follow` run, or `None` once its stdout closed. A line
+/// that does not arrive kills the child and fails the test instead of hanging the suite.
+fn next_line(
+    rx: &std::sync::mpsc::Receiver<String>,
+    child: &mut std::process::Child,
+) -> Option<String> {
+    use std::sync::mpsc::RecvTimeoutError;
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(line) => Some(line),
+        Err(RecvTimeoutError::Disconnected) => None,
+        Err(RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            panic!("no stdout line within 10 s");
+        }
+    }
+}
+
+/// The Done-when test: stdin stays open after one denial, and its result has to arrive
+/// anyway, which is also what guards the missing per-line flush (S1 F6). A per-line note
+/// is a result too: the `trust=?` record's arrives with its line and not at EOF.
+#[test]
+fn a_follow_run_writes_the_result_before_stdin_closes() {
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+    let candidate = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/check/00-cand.rules"
+    );
+    let (row, detail) = (
+        "unknown perm=open exe=/usr/bin/bash path=/tmp/x rule=1",
+        "no rules file was read (--no-conf, a legacy fapolicyd.rules, or unreadable): rule= \
+         resolves to nothing and the candidates cannot be placed",
+    );
+    let (check_live, check_end) = (
+        format!("{row}  {detail}"),
+        format!("{row} (1 denials)  {detail}"),
+    );
+    let unavailable = b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : \
+                        path=/tmp/x trust=?\n";
+    for (action, input, live, end) in [
+        (
+            &["trust"][..],
+            DENIAL,
+            &[
+                "fapolicyd-cli --file add '/tmp/x'",
+                "fapolicyd-cli --update",
+            ][..],
+            &[][..],
+        ),
+        (
+            &["why"][..],
+            DENIAL,
+            &["rule=1"][..],
+            &[
+                "# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run \
+                 rulesteward fapolicyd trust on the same input",
+                "rule=1  1 denials",
+            ][..],
+        ),
+        // The live row drops the count column that only the end can fill in.
+        (
+            &["check", candidate][..],
+            DENIAL,
+            &[check_live.as_str()][..],
+            &[check_end.as_str()][..],
+        ),
+        (
+            &["trust"][..],
+            unavailable,
+            &[
+                "# rulesteward: line 1: trust attribute unavailable (trust=?); emitting \
+                 nothing, because the file's trust state is unknown rather than untrusted",
+            ][..],
+            &[][..],
+        ),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
+            .args(["fapolicyd", "--no-conf", "--follow"])
+            .args(action)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                if tx.send(line.expect("a UTF-8 line")).is_err() {
+                    break;
+                }
+            }
+        });
+
+        stdin.write_all(input).expect("write");
+        for want in live {
+            assert_eq!(
+                next_line(&rx, &mut child).as_deref(),
+                Some(*want),
+                "{action:?}"
+            );
+        }
+
+        drop(stdin);
+        let mut rest = Vec::new();
+        while let Some(line) = next_line(&rx, &mut child) {
+            rest.push(line);
+        }
+        assert_eq!(rest, end, "{action:?}: the end of the run");
+        assert_eq!(child.wait().expect("wait").code(), Some(0), "{action:?}");
+    }
+}
+
+#[test]
+fn follow_with_a_json_format_is_a_usage_error() {
+    for format in ["json", "json-compact"] {
+        let (code, out, err) = run(
+            &[
+                "fapolicyd",
+                "--no-conf",
+                "--follow",
+                "why",
+                "--format",
+                format,
+            ],
+            b"",
+        );
+        assert_eq!(code, 1, "{format}: {err}");
+        assert!(out.is_empty(), "{format}: {out}");
+        assert!(
+            err.contains("one document for the whole log"),
+            "{format}: {err}"
+        );
+    }
+}
+
+#[test]
+fn follow_with_dir_min_is_a_usage_error() {
+    let (code, out, err) = run(
+        &[
+            "fapolicyd",
+            "--no-conf",
+            "rules",
+            "--dir-min",
+            "3",
+            "--follow",
+        ],
+        b"",
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("only once the whole log is read"), "{err}");
+}
+
+#[test]
+fn a_follow_run_decides_exit_2_at_eof() {
+    let (code, out, _) = run(
+        &["fapolicyd", "rules", "--no-conf", "--follow"],
+        b"not a record\nnor this\n",
+    );
+    assert_eq!(code, 2);
+    assert!(out.is_empty(), "{out}");
+}
+
+/// The suggestions are the batch run's, in the batch run's order: only the notes move.
+/// The framing fixture is here because neither live capture yields a `rules` line.
+#[test]
+fn a_follow_run_suggests_what_the_batch_run_does() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let mut seen = [0, 0];
+    for fixture in [
+        "rocky9-journal-live-vm-short.log",
+        "rocky9-audit-live-vm-syscall-raw.log",
+        "rocky10-base-syslog-framing-syslog-raw.log",
+    ] {
+        let input = std::fs::read(format!(
+            "{}/tests/fixtures/{fixture}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("read fixture");
+        for (i, action) in ["rules", "trust"].into_iter().enumerate() {
+            let suggested = |follow: &[&str]| {
+                let mut args = vec!["fapolicyd", action, "--conf", conf];
+                args.extend(follow);
+                let (code, out, err) = run(&args, &input);
+                assert_eq!(code, 0, "{fixture} {action}: {err}");
+                out.lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            let batch = suggested(&[]);
+            assert_eq!(suggested(&["--follow"]), batch, "{fixture} {action}");
+            seen[i] += batch.len();
+        }
+    }
+    assert!(
+        seen.iter().all(|&n| n > 0),
+        "an action suggested nothing: {seen:?}"
+    );
+}
+
+/// A follow run's `#` lines with every live note folded into its `(xN)` total, which is
+/// the line batch's collapse writes for it. Sorted, because the order legitimately
+/// differs: the audit route's totals come after the live notes in follow and ahead of
+/// them in batch.
+fn folded(out: &str) -> Vec<String> {
+    let notes: Vec<&str> = out.lines().filter(|l| l.starts_with('#')).collect();
+    // A per-line note's text without its line number, which is what collapse keys on.
+    let msg = |l: &'_ str| -> String {
+        l.strip_prefix("# rulesteward: line ")
+            .and_then(|r| r.split_once(": "))
+            .map_or(l, |(_, m)| m)
+            .to_string()
+    };
+    let totals: Vec<(String, usize)> = notes
+        .iter()
+        .filter_map(|l| {
+            let (base, n) = l.strip_suffix(')')?.rsplit_once(" (x")?;
+            Some((msg(base), n.parse().ok()?))
+        })
+        .collect();
+    // A total's own text still ends in `(xN)`, so it is kept; the live notes it counts
+    // are dropped, and there have to be exactly N of them.
+    let mut live = vec![0; totals.len()];
+    let mut kept: Vec<String> = Vec::new();
+    for l in notes {
+        match totals.iter().position(|(m, _)| *m == msg(l)) {
+            Some(i) => live[i] += 1,
+            None => kept.push(l.to_string()),
+        }
+    }
+    for ((m, n), seen) in totals.iter().zip(live) {
+        assert_eq!(seen, *n, "live notes against the total for {m}: {out}");
+    }
+    kept.sort();
+    kept
+}
+
+/// The `#` lines are the batch run's once the live notes are folded into the totals at
+/// the end (D5): a total that is missing, or that counts fewer notes than batch does,
+/// fails here and nowhere else, because T4 drops every `#` line. The notes that name no
+/// line keep batch's order too, which is what puts the audit totals ahead of the run's.
+#[test]
+fn a_follow_run_writes_the_notes_the_batch_run_does() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let mut totals = 0;
+    for fixture in [
+        "rocky9-journal-live-vm-short.log",
+        "rocky9-audit-live-vm-syscall-raw.log",
+        "rocky10-base-syslog-framing-syslog-raw.log",
+    ] {
+        let input = std::fs::read(format!(
+            "{}/tests/fixtures/{fixture}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("read fixture");
+        for action in ["rules", "trust"] {
+            let (_, batch, _) = run(&["fapolicyd", action, "--conf", conf], &input);
+            let (code, follow, err) =
+                run(&["fapolicyd", action, "--conf", conf, "--follow"], &input);
+            assert_eq!(code, 0, "{fixture} {action}: {err}");
+            // D4, in order, for the notes that name no line: the host's, the audit
+            // route's totals, then the run's, exactly as batch writes them.
+            let run_level = |out: &str| -> Vec<String> {
+                out.lines()
+                    .filter(|l| {
+                        l.starts_with("# rulesteward: ") && !l.starts_with("# rulesteward: line ")
+                    })
+                    .map(str::to_string)
+                    .collect()
+            };
+            assert_eq!(run_level(&follow), run_level(&batch), "{fixture} {action}");
+            let mut batch: Vec<&str> = batch.lines().filter(|l| l.starts_with('#')).collect();
+            batch.sort();
+            assert_eq!(folded(&follow), batch, "{fixture} {action}");
+            totals += batch
+                .iter()
+                .filter(|l| l.ends_with(')') && l.contains(" (x"))
+                .count();
+        }
+    }
+    assert!(
+        totals > 0,
+        "no fixture repeated a note, so no total was checked"
+    );
+}
+
+/// D4: after the last live line come the run's notes, then the repeat totals, then the
+/// report with its counts, which is batch's report line for line.
+#[test]
+fn a_follow_run_ends_with_the_run_notes_the_totals_and_the_report() {
+    let conf = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/conf/default.conf"
+    );
+    let input = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/handwritten-trusted-denial.log"
+    ))
+    .expect("read fixture");
+    let (_, batch, _) = run(&["fapolicyd", "check", "--conf", conf], &input);
+    let report: Vec<&str> = batch.lines().filter(|l| !l.starts_with('#')).collect();
+    let (code, follow, err) = run(&["fapolicyd", "check", "--conf", conf, "--follow"], &input);
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = follow.lines().collect();
+    assert!(
+        !report.is_empty() && lines.len() > report.len() + 2,
+        "{follow}"
+    );
+    let end = &lines[lines.len() - report.len() - 2..];
+    assert!(
+        end[0].starts_with("# rulesteward: the rules file does not match this log"),
+        "the run note: {follow}"
+    );
+    assert!(
+        end[1].starts_with("# rulesteward: line 19: record truncated") && end[1].ends_with(" (x2)"),
+        "the total: {follow}"
+    );
+    assert_eq!(&end[2..], &report[..], "the report: {follow}");
+}
+
+/// `common::run` writes stdin from its own thread: a follow run writes as it reads, so
+/// output past one pipe buffer would otherwise deadlock the test against the child.
+#[test]
+fn a_follow_run_with_more_output_than_a_pipe_holds_finishes() {
+    let input: String = (0..5000)
+        .map(|i| {
+            format!(
+                "rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : \
+                 path=/tmp/x{i} trust=0\n"
+            )
+        })
+        .collect();
+    let (code, out, err) = run(
+        &["fapolicyd", "trust", "--no-conf", "--follow"],
+        input.as_bytes(),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.lines().count(), 10_000);
+}

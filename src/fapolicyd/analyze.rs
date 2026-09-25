@@ -194,15 +194,58 @@ pub fn analyze(
 }
 
 /// What one fed line decided: the suggestions it accepted for the first time, the check
-/// keys it saw first with their verdicts, and its per-line diagnostics, each in the order
-/// the pass reached them. Handed back and never kept, so a run's memory grows with its
-/// distinct suggestions, keys and rule numbers and not with its lines -- except for the
-/// `----` and `time->` lines ahead of the first real one, held until the route is known.
+/// keys it saw first with their verdicts, the rule numbers denying for the first time,
+/// and its per-line diagnostics, each in the order the pass reached them. Handed back and
+/// never kept, so a run's memory grows with its distinct suggestions, keys and rule
+/// numbers and not with its lines -- except for the `----` and `time->` lines ahead of
+/// the first real one, held until the route is known.
 #[derive(Debug, Default)]
 pub struct Step {
     pub suggestions: Vec<Suggestion>,
     pub checked: Vec<(check::Key, check::Verdict)>,
+    /// `why`'s rows as first seen, counted at one denial: the end of the run has the counts.
+    pub why: Vec<WhyRow>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// `Outcome`'s four renderings, for what one line decided (`--follow`, DESIGN.md §9).
+impl Step {
+    pub fn rules_text(&self) -> Vec<u8> {
+        self.suggestions
+            .iter()
+            .filter(|s| !matches!(s, Suggestion::TrustFile { .. }))
+            .flat_map(emit::render)
+            .collect()
+    }
+
+    pub fn trust_text(&self) -> Vec<u8> {
+        self.suggestions
+            .iter()
+            .filter(|s| matches!(s, Suggestion::TrustFile { .. }))
+            .flat_map(emit::render)
+            .collect()
+    }
+
+    /// `rule=N  <file>  <text>`, unaligned because no later row is known yet, with the
+    /// empty cells dropped. The count and the verdict wait for the end of the run.
+    pub fn why_text(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for row in &self.why {
+            let rule = format!("rule={}", row.rule);
+            let text = row.matched.as_ref().map_or("", |r| r.text.as_str());
+            let cells: Vec<&str> = [rule.as_str(), row.file.as_str(), text]
+                .into_iter()
+                .filter(|c| !c.is_empty())
+                .collect();
+            // Writing into a Vec cannot fail.
+            let _ = writeln!(out, "{}", cells.join("  "));
+        }
+        out
+    }
+
+    pub fn check_text(&self) -> Vec<u8> {
+        check::live(&self.checked)
+    }
 }
 
 /// What only the end of the input decides.
@@ -586,7 +629,11 @@ impl<'a> Analyzer<'a> {
         // so a truncated record counts nowhere and a subject-side rule's count equals
         // the number of refusal comments the other two actions carry.
         if let Some(n) = n {
-            self.tally.entry(n).or_default().denials += 1;
+            let t = self.tally.entry(n).or_default();
+            t.denials += 1;
+            if t.denials == 1 {
+                step.why.push(why_row(n, t, self.rules, self.rules_d));
+            }
         }
 
         // Before the refusal below, because a subject-side `rule=N` is exactly where a
@@ -922,23 +969,33 @@ fn why_rows(
 ) -> Vec<WhyRow> {
     tally
         .iter()
-        .map(|(&n, t)| WhyRow {
-            rule: n,
-            file: rules
-                .and_then(|compiled| rules_d::locate(rules_d, compiled, n))
-                .map(|i| rules_d[i].name.clone())
-                .unwrap_or_default(),
-            denials: t.denials,
-            rules: t.rules,
-            trust: t.trust,
-            matched: rules
-                .and_then(|compiled| n.checked_sub(1).and_then(|i| compiled.get(i)))
-                .map(|r| WhyRule {
-                    refuses: r.refuses(),
-                    text: r.text.clone(),
-                }),
-        })
+        .map(|(&n, t)| why_row(n, t, rules, rules_d))
         .collect()
+}
+
+/// One of `why_rows`, also built live the first time rule `n` denies.
+fn why_row(
+    n: usize,
+    t: &Tally,
+    rules: Option<&[rules::Rule]>,
+    rules_d: &[rules_d::File],
+) -> WhyRow {
+    WhyRow {
+        rule: n,
+        file: rules
+            .and_then(|compiled| rules_d::locate(rules_d, compiled, n))
+            .map(|i| rules_d[i].name.clone())
+            .unwrap_or_default(),
+        denials: t.denials,
+        rules: t.rules,
+        trust: t.trust,
+        matched: rules
+            .and_then(|compiled| n.checked_sub(1).and_then(|i| compiled.get(i)))
+            .map(|r| WhyRule {
+                refuses: r.refuses(),
+                text: r.text.clone(),
+            }),
+    }
 }
 
 /// The `why` artifact: one line per denying rule, ascending, in aligned columns.
@@ -949,7 +1006,7 @@ fn why_rows(
 /// field, so it goes last and pads nothing and one long `pattern=` shifts no column. A
 /// column that is empty for every row (no rules file, so no file, verdict or text)
 /// collapses along with its separator, and trailing spaces are trimmed per line.
-fn why_report(rows: &[WhyRow]) -> Vec<u8> {
+pub fn why_report(rows: &[WhyRow]) -> Vec<u8> {
     let rows: Vec<[String; 5]> = rows
         .iter()
         .map(|row| {
@@ -1160,24 +1217,31 @@ fn truncated(
 /// The artifact is part of the key: the same sentence written into two different files
 /// is two lines, each counting only what its own reader will see.
 fn collapse(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    let mut out: Vec<(Diagnostic, usize)> = Vec::new();
+    let mut out = Vec::new();
     for d in diagnostics {
-        match out
-            .iter_mut()
-            .find(|(kept, _)| kept.msg == d.msg && kept.artifact == d.artifact)
-        {
-            Some((_, n)) => *n += 1,
-            None => out.push((d, 1)),
-        }
+        count(&mut out, d);
     }
-    out.into_iter()
-        .map(|(mut d, n)| {
-            if n > 1 {
-                d.msg = format!("{} (x{n})", d.msg);
-            }
-            d
-        })
-        .collect()
+    out.into_iter().map(|(d, n)| counted(d, n)).collect()
+}
+
+/// `collapse`'s key and count, one diagnostic at a time: `--follow` writes every note as
+/// it arrives and keeps only these totals for the end of the run.
+pub fn count(seen: &mut Vec<(Diagnostic, usize)>, d: Diagnostic) {
+    match seen
+        .iter_mut()
+        .find(|(kept, _)| kept.msg == d.msg && kept.artifact == d.artifact)
+    {
+        Some((_, n)) => *n += 1,
+        None => seen.push((d, 1)),
+    }
+}
+
+/// The first occurrence, with `(xN)` when there were more.
+pub fn counted(mut d: Diagnostic, n: usize) -> Diagnostic {
+    if n > 1 {
+        d.msg = format!("{} (x{n})", d.msg);
+    }
+    d
 }
 
 #[cfg(test)]
@@ -2187,5 +2251,28 @@ mod tests {
             panic!("framing decided the route");
         };
         assert_eq!(held, &[(4, b"----".to_vec()), (5, b"time->x".to_vec())]);
+    }
+
+    #[test]
+    fn a_why_row_is_written_the_first_time_its_rule_denies_and_never_again() {
+        let rules =
+            rules::parse(b"deny_audit perm=open all : all\ndeny_audit perm=any all : all\n");
+        let (mut a, _) = Analyzer::new(None, Some(&rules), &[], None, None, false, None);
+        let record = |n: usize, p: &str| {
+            format!("rule={n} dec=deny_audit perm=open pid=1 exe=/usr/bin/bash : path={p} trust=1")
+        };
+        let lines: Vec<String> = [(1, "/tmp/a"), (2, "/tmp/b"), (1, "/tmp/c"), (2, "/tmp/b")]
+            .iter()
+            .map(|&(n, p)| String::from_utf8(a.feed(record(n, p).as_bytes()).why_text()).unwrap())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "rule=1  deny_audit perm=open all : all\n",
+                "rule=2  deny_audit perm=any all : all\n",
+                "",
+                ""
+            ]
+        );
     }
 }

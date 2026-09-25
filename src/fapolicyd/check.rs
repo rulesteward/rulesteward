@@ -340,20 +340,37 @@ pub fn verdict(
 pub fn report(rows: &[(Key, usize, Verdict)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (k, count, verdict) in rows {
-        let (word, detail) = rendered(verdict);
-        let mut fields = String::new();
-        for (name, value) in [("perm", &k.perm), ("exe", &k.exe), ("path", &k.path)] {
-            if let Some(v) = value {
-                fields.push_str(&format!("{name}={} ", shown(v)));
-            }
-        }
-        if let Some(n) = k.rule {
-            fields.push_str(&format!("rule={n} "));
-        }
-        // Writing into a Vec cannot fail; the one write that can is in main.rs.
-        let _ = writeln!(out, "{word:<7} {fields}({count} denials)  {detail}");
+        line(&mut out, k, Some(*count), verdict);
     }
     out
+}
+
+/// `report`'s lines as `--follow` writes them, one per key when it is first seen: the
+/// count is not known yet, so its column is dropped and the end of the run has it.
+pub fn live(rows: &[(Key, Verdict)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (k, verdict) in rows {
+        line(&mut out, k, None, verdict);
+    }
+    out
+}
+
+fn line(out: &mut Vec<u8>, k: &Key, count: Option<usize>, verdict: &Verdict) {
+    let (word, detail) = rendered(verdict);
+    let mut fields = String::new();
+    for (name, value) in [("perm", &k.perm), ("exe", &k.exe), ("path", &k.path)] {
+        if let Some(v) = value {
+            fields.push_str(&format!("{name}={} ", shown(v)));
+        }
+    }
+    if let Some(n) = k.rule {
+        fields.push_str(&format!("rule={n} "));
+    }
+    // Writing into a Vec cannot fail; the one write that can is in main.rs.
+    let _ = match count {
+        Some(count) => writeln!(out, "{word:<7} {fields}({count} denials)  {detail}"),
+        None => writeln!(out, "{word:<7} {fields} {detail}"),
+    };
 }
 
 /// One report line as a document carries it (#146, DESIGN.md §9.1). Built here rather than in
@@ -1456,6 +1473,24 @@ trust=0";
             "unknown perm=execute exe=/usr/sbin/runuser path=/tmp/live/probe-grep (1 denials)  no rule="
         );
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn a_live_line_is_the_report_line_without_its_count() {
+        let (exec, n) = parsed(EXEC);
+        let rows = [
+            (
+                key(&exec, n),
+                Verdict::Allowed("00-cand.rules: allow perm=execute all : path=x".into()),
+            ),
+            (key(&exec, None), Verdict::Unknown("no rule=".into())),
+        ];
+        let out = String::from_utf8(live(&rows)).unwrap();
+        assert_eq!(
+            out,
+            "allowed perm=execute exe=/usr/sbin/runuser path=/tmp/live/probe-grep rule=13  00-cand.rules: allow perm=execute all : path=x\n\
+             unknown perm=execute exe=/usr/sbin/runuser path=/tmp/live/probe-grep  no rule=\n"
+        );
     }
 
     /// The proposed `rules.d/` with one file's contents replaced: a candidate written

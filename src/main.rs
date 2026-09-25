@@ -9,9 +9,10 @@ mod fapolicyd;
 
 use clap::Parser;
 use cli::{Cli, Domain, FapolicydAction, Format};
+use fapolicyd::analyze::Analyzer;
 use fapolicyd::check::Proposal;
 use fapolicyd::model::{Artifact, Diagnostic};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -24,6 +25,10 @@ use std::process::ExitCode;
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
+
+/// `--follow`'s `close_after`: how many lines an audit event may go without a record
+/// before it is closed. S1 R2 (#151): twice the longest event span measured, six lines.
+const FOLLOW_CLOSE_AFTER: usize = 12;
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -44,8 +49,9 @@ fn main() -> ExitCode {
             conf,
             no_conf,
             format,
+            follow,
             action,
-        } => run_fapolicyd(conf, no_conf, format, action),
+        } => run_fapolicyd(conf, no_conf, format, follow, action),
     }
 }
 
@@ -60,6 +66,7 @@ fn run_fapolicyd(
     conf: Option<PathBuf>,
     no_conf: bool,
     format: Format,
+    follow: bool,
     action: FapolicydAction,
 ) -> ExitCode {
     // clap's own `conflicts_with` only fires when both flags land in the same
@@ -90,8 +97,40 @@ fn run_fapolicyd(
         return ExitCode::from(EXIT_USAGE);
     }
 
+    // `--follow` writes each line's result as it is decided, and both of these decide
+    // only once the whole log has been read. Checked by hand for the reason above: the
+    // flags sit at two levels.
+    if follow && format != Format::Text {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "rulesteward: --follow cannot be used with --format json or json-compact, \
+             which write one document for the whole log\n\
+             usage: drop --follow, or --format text"
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
+    if follow
+        && matches!(
+            action,
+            FapolicydAction::Rules {
+                dir_min: Some(_),
+                ..
+            }
+        )
+    {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "rulesteward: --follow cannot be used with --dir-min, \
+             which can group a directory only once the whole log is read\n\
+             usage: drop --follow, or drop --dir-min"
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
+
+    // Batch reads the whole of stdin here, ahead of the host reads, as it always has;
+    // `--follow` reads it a line at a time once everything else is in hand.
     let mut input = Vec::new();
-    if let Err(e) = std::io::stdin().lock().read_to_end(&mut input) {
+    if !follow && let Err(e) = std::io::stdin().lock().read_to_end(&mut input) {
         let _ = writeln!(std::io::stderr().lock(), "rulesteward: reading stdin: {e}");
         return ExitCode::from(EXIT_USAGE);
     }
@@ -189,19 +228,9 @@ fn run_fapolicyd(
         _ => (None, false),
     };
 
-    let mut outcome = fapolicyd::analyze(
-        &input,
-        syslog_format.as_deref(),
-        rules.as_deref(),
-        &rules_d,
-        proposal,
-        dir_min,
-        dir_system,
-    );
-
     // `why` has no artifact of its own to keep diagnostics for, so `None` means
     // "run-level only": every diagnostic that describes the run rather than a line.
-    let wanted = match action {
+    let wanted = match &action {
         FapolicydAction::Rules { .. } => Some(Artifact::Rules),
         FapolicydAction::Trust => Some(Artifact::Trust),
         FapolicydAction::Why => None,
@@ -222,16 +251,44 @@ fn run_fapolicyd(
             msg,
             artifact: Artifact::Both,
         });
+
+    if follow {
+        let (analyzer, early) = Analyzer::new(
+            syslog_format.as_deref(),
+            rules.as_deref(),
+            &rules_d,
+            proposal,
+            dir_min,
+            dir_system,
+            Some(FOLLOW_CLOSE_AFTER),
+        );
+        return match run_follow(analyzer, host_notes.chain(early), wanted, &action) {
+            Ok(true) => ExitCode::from(EXIT_UNPARSEABLE),
+            Ok(false) => ExitCode::from(EXIT_OK),
+            Err(e) => {
+                let _ = writeln!(std::io::stderr().lock(), "rulesteward: {e}");
+                ExitCode::from(EXIT_USAGE)
+            }
+        };
+    }
+
+    let mut outcome = fapolicyd::analyze(
+        &input,
+        syslog_format.as_deref(),
+        rules.as_deref(),
+        &rules_d,
+        proposal,
+        dir_min,
+        dir_system,
+    );
+
     // Filtered once, host notes first, and then written as comments or as the
     // document's `diagnostics` array: the two formats say the same things in the same
     // order. `take` rather than moving the field, because the entries are still to be
     // rendered out of the same `outcome`.
     let diagnostics: Vec<Diagnostic> = host_notes
         .chain(std::mem::take(&mut outcome.diagnostics))
-        .filter(|d| match wanted {
-            Some(w) => d.artifact == w || d.artifact == Artifact::Both,
-            None => d.line.is_none(),
-        })
+        .filter(|d| kept(d, wanted))
         .collect();
 
     let bytes = match format {
@@ -239,10 +296,7 @@ fn run_fapolicyd(
             let mut bytes = Vec::new();
             for d in &diagnostics {
                 // Writing into a Vec cannot fail; the one write that can is below.
-                let _ = match d.line {
-                    Some(n) => writeln!(bytes, "# rulesteward: line {n}: {}", d.msg),
-                    None => writeln!(bytes, "# rulesteward: {}", d.msg),
-                };
+                let _ = comment(&mut bytes, d);
             }
             bytes.extend_from_slice(&match action {
                 FapolicydAction::Rules { .. } => outcome.rules_text(),
@@ -282,6 +336,104 @@ fn run_fapolicyd(
     } else {
         EXIT_OK
     })
+}
+
+/// `--follow` (DESIGN.md §9): the notes due before line 1, then each line's notes and
+/// result as the line is decided, then the end of the run in batch's order -- the audit
+/// totals, what only the end released, the run's notes, the repeat totals of the notes
+/// already written, and `why`'s or `check`'s report with its counts. `Ok` is §9's
+/// "consumed but unparseable", decided at EOF; `Err` is the stderr message.
+fn run_follow(
+    mut analyzer: Analyzer<'_>,
+    notes: impl Iterator<Item = Diagnostic>,
+    wanted: Option<Artifact>,
+    action: &FapolicydAction,
+) -> Result<bool, String> {
+    let written = |e: std::io::Error| format!("writing stdout: {e}");
+    // No flush per line: S1 F6 measured stdout line-buffered even into a pipe.
+    let mut out = std::io::stdout().lock();
+    for d in notes.filter(|d| kept(d, wanted)) {
+        comment(&mut out, &d).map_err(written)?;
+    }
+
+    // Every note is written as it arrives and never collapsed, so what `collapse` would
+    // have counted is kept here and written once the count is final (D11).
+    let mut totals = Vec::new();
+    let mut stdin = std::io::stdin().lock();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let n = stdin
+            .read_until(b'\n', &mut line)
+            .map_err(|e| format!("reading stdin: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        let step = analyzer.feed(line.strip_suffix(b"\n").unwrap_or(&line));
+        write_step(&mut out, step, wanted, action, &mut totals).map_err(written)?;
+    }
+
+    let mut finish = analyzer.finish();
+    let flushed = std::mem::take(&mut finish.flushed);
+    for d in finish.source_notes.iter().filter(|d| kept(d, wanted)) {
+        comment(&mut out, d).map_err(written)?;
+    }
+    write_step(&mut out, flushed, wanted, action, &mut totals).map_err(written)?;
+    for d in finish.run_notes.iter().filter(|d| kept(d, wanted)) {
+        comment(&mut out, d).map_err(written)?;
+    }
+    for (d, n) in totals.into_iter().filter(|(_, n)| *n > 1) {
+        comment(&mut out, &fapolicyd::analyze::counted(d, n)).map_err(written)?;
+    }
+    // `rules` and `trust` wrote every suggestion as it was accepted; the two reports
+    // have counts only the end knows.
+    let report = match action {
+        FapolicydAction::Rules { .. } | FapolicydAction::Trust => Vec::new(),
+        FapolicydAction::Why => fapolicyd::analyze::why_report(&finish.why),
+        FapolicydAction::Check { .. } => fapolicyd::check::report(&finish.check),
+    };
+    out.write_all(&report)
+        .and_then(|()| out.flush())
+        .map_err(written)?;
+    Ok(finish.consumed_but_unparseable)
+}
+
+/// One step of a `--follow` run: its kept notes, counted for the end of the run, then
+/// the action's lines.
+fn write_step(
+    out: &mut impl Write,
+    step: fapolicyd::analyze::Step,
+    wanted: Option<Artifact>,
+    action: &FapolicydAction,
+    totals: &mut Vec<(Diagnostic, usize)>,
+) -> std::io::Result<()> {
+    for d in step.diagnostics.iter().filter(|d| kept(d, wanted)) {
+        comment(out, d)?;
+        fapolicyd::analyze::count(totals, d.clone());
+    }
+    out.write_all(&match action {
+        FapolicydAction::Rules { .. } => step.rules_text(),
+        FapolicydAction::Trust => step.trust_text(),
+        FapolicydAction::Why => step.why_text(),
+        FapolicydAction::Check { .. } => step.check_text(),
+    })
+}
+
+/// Whether the action's reader sees `d`: its own artifact's notes and both-artifact
+/// ones, or for `why` (`None`) the run-level notes only.
+fn kept(d: &Diagnostic, wanted: Option<Artifact>) -> bool {
+    match wanted {
+        Some(w) => d.artifact == w || d.artifact == Artifact::Both,
+        None => d.line.is_none(),
+    }
+}
+
+/// A diagnostic as the `# rulesteward:` comment it is written as.
+fn comment(out: &mut impl Write, d: &Diagnostic) -> std::io::Result<()> {
+    match d.line {
+        Some(n) => writeln!(out, "# rulesteward: line {n}: {}", d.msg),
+        None => writeln!(out, "# rulesteward: {}", d.msg),
+    }
 }
 
 /// Returns the parsed `syslog_format` field list, or a note when the read failed.
