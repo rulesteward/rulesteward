@@ -13,6 +13,9 @@ use std::process::{Command, Output, Stdio};
 /// streams piped. The raw `Output` is what comes back because the three callers want the
 /// exit code, the stdout and the stderr in three different shapes -- lossy strings, raw
 /// bytes, and a code that may be absent when a signal killed the run.
+///
+/// stdin is written from its own thread while stdout is read: a `--follow` run writes
+/// as it reads, so writing all of stdin first deadlocks once its output fills the pipe.
 pub fn run(args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
         .args(args)
@@ -21,11 +24,12 @@ pub fn run(args: &[&str], stdin: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin)
-        .expect("write");
-    child.wait_with_output().expect("wait")
+    let mut pipe = child.stdin.take().expect("stdin");
+    std::thread::scope(|s| {
+        // The pipe is dropped when the write returns, which is the child's EOF.
+        let writer = s.spawn(move || pipe.write_all(stdin).expect("write"));
+        let out = child.wait_with_output().expect("wait");
+        writer.join().expect("the stdin writer panicked");
+        out
+    })
 }

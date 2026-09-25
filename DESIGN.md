@@ -362,6 +362,21 @@ rsyslog's `imjournal` copying the journal back out, escapes rendered as `#033`,
 so the route to those records is the journal above and not the syslog bit.
 Recorded here so the discovery is not made twice.
 
+**Follow mode reads a line at a time and finishes on EOF** (`--follow`, §9,
+#153). Batch reads the whole of stdin before the pass starts; follow feeds the
+same pass one line as it arrives, so `journalctl -u fapolicyd -o cat -f` is
+input like any capture. The daemon route decides each record on its own line.
+The audit route groups an event over the whole input in batch and closes it only
+at the end, which a live stream does not reach, so under follow an event is
+closed once 12 lines have passed without a record of its own: twice the longest
+event span measured (#151). The close is counted in lines and not in time, so on
+a quiet stream the last event waits for a 13th line with no record of its own or
+for EOF, and an event whose records are more than 12 lines apart is split into
+two under follow while batch keeps it whole. A close on a timer belongs with
+#154's `recv_timeout` loop, which is the first reader that can wake without a
+line. The end of the input still finishes the run: the events still open, the
+run's notes and the counts are all decided there.
+
 ---
 
 ## 6. Truncation and confidence
@@ -845,6 +860,20 @@ commitments, cheap now and expensive to retrofit:
   `text`, `json` or `json-compact` and defaults to `text`, which is the output
   every version before 0.10.0 wrote, byte for byte. All four actions write a
   document (§9.1, #147).
+- **`--follow` hangs off the domain too** (#153): it changes when a result is
+  written and not which one. Each line's `# rulesteward:` notes and results are
+  written as the line is decided: `rules` and `trust` write each new suggestion
+  once, `why` writes `rule=N  <file>  <text>` the first time a rule denies, and
+  `check` writes a row per new key (perm, exe, path, ftype, trust and rule)
+  without its `(N denials)` column. EOF writes the end of the run in batch's
+  order: the audit route's totals, what only the end released, the run's notes,
+  then every note written more than once again as `line <first>: <msg> (xN)`,
+  the line batch collapses it to, and last the full `why` or `check` report with
+  its counts. `rules` and `trust` have no end artifact, since every suggestion
+  was already written. Exit `2` is decided at EOF like batch's. `--follow` with
+  `--format json` or `json-compact` is a usage error, because a document is one
+  answer about the whole log, and so is `--follow` with `--dir-min`, because a
+  directory can be grouped only once the whole log is read. Both are exit `1`.
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added
