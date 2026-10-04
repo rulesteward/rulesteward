@@ -122,7 +122,7 @@ for recipes and CI spells out as `./.tools/bin/just <recipe>`.
 
 ## `.claude/` holds two settings files with opposite tracking status
 
-`.claude/settings.json` is committed: the three hooks and `permissions.deny`,
+`.claude/settings.json` is committed: the hooks and `permissions.deny`,
 reviewable like every other gate here. `.claude/settings.local.json` is the
 machine-local `allow` list and is **not** tracked, so a clean `git status` is not
 evidence that it is unmodified -- `git check-ignore -v` is. A deny matcher is a
