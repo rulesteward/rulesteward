@@ -1659,7 +1659,9 @@ fn next_line(
 
 /// The Done-when test: stdin stays open after one denial, and its result has to arrive
 /// anyway, which is also what guards the missing per-line flush (S1 F6). A per-line note
-/// is a result too: the `trust=?` record's arrives with its line and not at EOF.
+/// is a result too: the `trust=?` record's arrives with its line and not at EOF. So does
+/// the corruption warning, the one run note written live (#181): it is read back after
+/// the first corrupt record and before `more` writes two others, and comes only once.
 #[test]
 fn a_follow_run_writes_the_result_before_stdin_closes() {
     use std::io::{BufRead, Write};
@@ -1679,7 +1681,20 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
     );
     let unavailable = b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : \
                         path=/tmp/x trust=?\n";
-    for (action, input, live, end) in [
+    // One corrupt record, then two `more` (#181): the warning arrives with the first and
+    // only once, and the end still writes the count of all three.
+    let corrupt = b"rule=1 dec\x07=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : \
+                    path=/tmp/x trust=0\n";
+    let more = corrupt.repeat(2);
+    let no_rules = "unreadable field names: the daemon failed a rules reload and is now running \
+                    with NO rules, allowing everything. Restart it. Nothing below can be trusted \
+                    as a denial record";
+    let (warning, count) = (
+        format!("# rulesteward: a record has {no_rules}"),
+        format!("# rulesteward: 3 records have {no_rules}"),
+    );
+    let (warning, count) = (&[warning.as_str()][..], &[count.as_str()][..]);
+    for (action, input, live, end, more) in [
         (
             &["trust"][..],
             DENIAL,
@@ -1687,6 +1702,7 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
                 "fapolicyd-cli --file add '/tmp/x'",
                 "fapolicyd-cli --update",
             ][..],
+            &[][..],
             &[][..],
         ),
         (
@@ -1698,6 +1714,7 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
                  rulesteward fapolicyd trust on the same input",
                 "rule=1  1 denials",
             ][..],
+            &[][..],
         ),
         // The live row drops the count column that only the end can fill in.
         (
@@ -1705,6 +1722,7 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
             DENIAL,
             &[check_live.as_str()][..],
             &[check_end.as_str()][..],
+            &[][..],
         ),
         (
             &["trust"][..],
@@ -1714,6 +1732,17 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
                  nothing, because the file's trust state is unknown rather than untrusted",
             ][..],
             &[][..],
+            &[][..],
+        ),
+        (&["rules"][..], corrupt, warning, count, &more[..]),
+        (&["trust"][..], corrupt, warning, count, &more[..]),
+        (&["why"][..], corrupt, warning, count, &more[..]),
+        (
+            &["check", candidate][..],
+            corrupt,
+            warning,
+            count,
+            &more[..],
         ),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
@@ -1744,6 +1773,7 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
             );
         }
 
+        stdin.write_all(more).expect("write");
         drop(stdin);
         let mut rest = Vec::new();
         while let Some(line) = next_line(&rx, &mut child) {

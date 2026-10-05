@@ -16,6 +16,12 @@ use std::io::Write;
 /// the cap are never compared against anything (DESIGN.md §4).
 const MAX_SYSLOG_FIELDS: usize = 21;
 
+/// What a record with unreadable field names means, shared by `--follow`'s live warning
+/// and the run note with the count so that the two cannot drift.
+const NO_RULES: &str = "the daemon failed a rules reload and is now running with NO rules, \
+                        allowing everything. Restart it. Nothing below can be trusted as a \
+                        denial record";
+
 /// Three results, never one stream. `rules` is a rules.d fragment, `trust` is a list of
 /// `fapolicyd-cli` commands and `why` is the per-rule report; they go to different
 /// places and one run of the pass produces all three, so the caller writes whichever
@@ -206,6 +212,9 @@ pub struct Step {
     /// `why`'s rows as first seen, counted at one denial: the end of the run has the counts.
     pub why: Vec<WhyRow>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The warning on the run's first record with unreadable field names (#181). Written
+    /// by `--follow` only: batch has the count among the run notes.
+    pub corrupt: Option<Diagnostic>,
 }
 
 /// `Outcome`'s four renderings, for what one line decided (`--follow`, DESIGN.md §9).
@@ -497,11 +506,7 @@ impl<'a> Analyzer<'a> {
             run_notes.push(Diagnostic {
                 line: None,
                 artifact: Artifact::Both,
-                msg: format!(
-                    "{corrupt} records have unreadable field names: the daemon failed a rules \
-                     reload and is now running with NO rules, allowing everything. Restart it. \
-                     Nothing below can be trusted as a denial record"
-                ),
+                msg: format!("{corrupt} records have unreadable field names: {NO_RULES}"),
             });
         }
 
@@ -596,6 +601,14 @@ impl<'a> Analyzer<'a> {
             .any(|n| parse::is_corrupt_field_name(n))
         {
             self.corrupt += 1;
+            // The count is the end's, but the fact is decided here.
+            if self.corrupt == 1 {
+                step.corrupt = Some(Diagnostic {
+                    line: None,
+                    artifact: Artifact::Both,
+                    msg: format!("a record has unreadable field names: {NO_RULES}"),
+                });
+            }
             return;
         }
 
