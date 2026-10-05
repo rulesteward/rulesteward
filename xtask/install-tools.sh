@@ -13,9 +13,20 @@
 # and nothing here reads a CI platform's variables -- which is what keeps
 # .github/ deletable. Callers spell the path: CI runs `./.tools/bin/just`, and
 # the justfile prepends the directory to PATH for the recipes.
+#
+# **One shared cache of verified downloads, reflinked into each worktree.** Every
+# spawned worktree used to download all four tarballs again. The cache is
+# content-addressed: an entry is named by the sha256 of its own bytes, and a
+# name that does not match its content is a miss, never a tool. A tarball enters
+# only after matching its row's digest, and the binary unpacked from it enters
+# under its own digest. `cp --reflink=auto` then gives the worktree its own file,
+# sharing the cache's blocks on xfs and btrfs and a plain copy elsewhere, so
+# deleting the cache breaks no worktree.
 
 # shellcheck source=xtask/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+CACHE="" # set by open_cache
 
 # One row per tool: name, version, sha256 of the tarball, tarball URL. Bumping a
 # tool is one row. Each project spells its own tag and target triple, so the URL
@@ -38,9 +49,22 @@ TOOLS=(
     "typos         1.50.1 edf0545109aee6a22751d04ddecb97c45be47d3aa0409564fb895eeeace91b1e https://github.com/crate-ci/typos/releases/download/v1.50.1/typos-v1.50.1-x86_64-unknown-linux-musl.tar.gz" # self-computed
 )
 
-# Verified download into the scratch dir. The check is `sha256sum -c -` rather
-# than a string compare, so a truncated download fails here instead of unpacking
-# into something surprising.
+# True when file $2 has sha256 $1. The check is `sha256sum -c -` rather than a
+# string compare, so a truncated file fails here instead of unpacking into
+# something surprising.
+matches() { echo "$1  $2" | sha256sum -c - >/dev/null 2>&1; }
+
+# Called on the first tool that needs installing, so a box that already carries
+# all four needs neither a HOME nor a writable cache.
+open_cache() {
+    CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/rulesteward-tools"
+    mkdir -p "$CACHE"
+    # Inside the cache, so moving a verified file into it is a rename on one
+    # filesystem: a concurrent install never sees half an entry.
+    TMP="$(mktemp -d "$CACHE/.tmp.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+}
+
+# Verified download into the cache, under the digest it was checked against.
 fetch() {
     local want="$1" src="$2" dest="$3" file
     # Here rather than in main(): a box that already carries all four tools never
@@ -49,26 +73,40 @@ fetch() {
     file="$dest/$(basename "$src")"
     curl -fsSL --retry 3 -o "$file" "$src"
     echo "${want}  ${file}" | sha256sum -c - >/dev/null
-    printf '%s\n' "$file"
+    mv -f "$file" "$CACHE/$want"
 }
 
 install_one() {
-    local tool="$1" version="$2" want="$3" src="$4" tmp file
+    local tool="$1" version="$2" want="$3" src="$4" tmp file sha part
     [ -x "$TOOLS_BIN/$tool" ] && { log "  $tool: already in .tools/bin"; return; }
+    [ -n "$CACHE" ] || open_cache
     tmp="$TMP/$tool"; mkdir -p "$tmp"
-    log "  $tool $version: downloading"
-    file="$(fetch "$want" "$src" "$tmp")"
-    tar -xzf "$file" -C "$tmp"
+    if matches "$want" "$CACHE/$want"; then
+        log "  $tool $version: cached"
+    else
+        log "  $tool $version: downloading"
+        fetch "$want" "$src" "$tmp"
+    fi
+    tar -xzf "$CACHE/$want" -C "$tmp"
     # cargo-mutants unpacks a bare binary, typos and just unpack flat under ./,
     # cargo-deny nests under a versioned directory. `find -type f -name` covers
     # all three without hardcoding any of them.
-    find "$tmp" -type f -name "$tool" -perm -u+x -exec mv {} "$TOOLS_BIN/$tool" \;
-    [ -x "$TOOLS_BIN/$tool" ] || die "$tool: archive did not contain an executable named $tool"
+    file="$(find "$tmp" -type f -name "$tool" -perm -u+x -print -quit)"
+    [ -n "$file" ] || die "$tool: archive did not contain an executable named $tool"
+    sha="$(sha256sum "$file")"; sha="${sha%% *}"
+    # The unpacked file's digest is $sha, so `cmp` against it checks a name
+    # against its content without hashing again: sha256 is the slow step here.
+    cmp -s "$file" "$CACHE/$sha" || ln -f "$file" "$CACHE/$sha"
+    # Copied under a temp name and checked before the rename, so .tools/bin never
+    # holds a half-copied tool that the -x test above would then skip forever.
+    part="$TOOLS_BIN/.$tool.part"
+    cp --reflink=auto "$CACHE/$sha" "$part"
+    cmp -s "$file" "$part" || die "$tool: cache entry $sha changed during the copy"
+    mv -f "$part" "$TOOLS_BIN/$tool"
 }
 
 main() {
     mkdir -p "$TOOLS_BIN"
-    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
     local row
     log "installing tools into .tools/bin"
     for row in "${TOOLS[@]}"; do
