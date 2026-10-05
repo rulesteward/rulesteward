@@ -865,15 +865,18 @@ commitments, cheap now and expensive to retrofit:
   written as the line is decided: `rules` and `trust` write each new suggestion
   once, `why` writes `rule=N  <file>  <text>` the first time a rule denies, and
   `check` writes a row per new key (perm, exe, path, ftype, trust and rule)
-  without its `(N denials)` column. EOF writes the end of the run in batch's
-  order: the audit route's totals, what only the end released, the run's notes,
-  then every note written more than once again as `line <first>: <msg> (xN)`,
-  the line batch collapses it to, and last the full `why` or `check` report with
-  its counts. `rules` and `trust` have no end artifact, since every suggestion
-  was already written. Exit `2` is decided at EOF like batch's. `--follow` with
-  `--format json` or `json-compact` is a usage error, because a document is one
-  answer about the whole log, and so is `--follow` with `--dir-min`, because a
-  directory can be grouped only once the whole log is read. Both are exit `1`.
+  without its `(N denials)` column. The corruption warning is the one run note
+  written live: the first record with unreadable field names writes it at once
+  (#181), and EOF still writes the note with the count. EOF writes the end of
+  the run in batch's order: the audit route's totals, what only the end
+  released, the run's notes, then every note written more than once again as
+  `line <first>: <msg> (xN)`, the line batch collapses it to, and last the full
+  `why` or `check` report with its counts. `rules` and `trust` have no end
+  artifact, since every suggestion was already written. Exit `2` is decided at
+  EOF like batch's. `--follow` with `--format json` or `json-compact` is a usage
+  error, because a document is one answer about the whole log, and so is
+  `--follow` with `--dir-min`, because a directory can be grouped only once the
+  whole log is read. Both are exit `1`.
 - `rulesteward` with no arguments lists the domains it knows and exits 1.
 
 What the **root** promises, and must keep promising for every domain added

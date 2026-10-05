@@ -339,10 +339,11 @@ fn run_fapolicyd(
 }
 
 /// `--follow` (DESIGN.md §9): the notes due before line 1, then each line's notes and
-/// result as the line is decided, then the end of the run in batch's order -- the audit
-/// totals, what only the end released, the run's notes, the repeat totals of the notes
-/// already written, and `why`'s or `check`'s report with its counts. `Ok` is §9's
-/// "consumed but unparseable", decided at EOF; `Err` is the stderr message.
+/// result as the line is decided, the first corrupt record's warning among them, then
+/// the end of the run in batch's order -- the audit totals, what only the end released,
+/// the run's notes, the repeat totals of the notes already written, and `why`'s or
+/// `check`'s report with its counts. `Ok` is §9's "consumed but unparseable", decided at
+/// EOF; `Err` is the stderr message.
 fn run_follow(
     mut analyzer: Analyzer<'_>,
     notes: impl Iterator<Item = Diagnostic>,
@@ -398,8 +399,9 @@ fn run_follow(
     Ok(finish.consumed_but_unparseable)
 }
 
-/// One step of a `--follow` run: its kept notes, counted for the end of the run, then
-/// the action's lines.
+/// One step of a `--follow` run: the corruption warning, never counted because the end
+/// writes the count, then its kept notes, counted for the end of the run, then the
+/// action's lines.
 fn write_step(
     out: &mut impl Write,
     step: fapolicyd::analyze::Step,
@@ -407,6 +409,9 @@ fn write_step(
     action: &FapolicydAction,
     totals: &mut Vec<(Diagnostic, usize)>,
 ) -> std::io::Result<()> {
+    for d in step.corrupt.iter().filter(|d| kept(d, wanted)) {
+        comment(out, d)?;
+    }
     for d in step.diagnostics.iter().filter(|d| kept(d, wanted)) {
         comment(out, d)?;
         fapolicyd::analyze::count(totals, d.clone());
