@@ -1784,6 +1784,79 @@ fn a_follow_run_writes_the_result_before_stdin_closes() {
     }
 }
 
+/// #154: Ctrl+C on a run whose stdin is still open and idle ends it through the same end
+/// of the run EOF writes, with exit 0. A death by the signal reads `None` and fails.
+#[test]
+fn a_follow_run_ended_by_sigint_writes_the_summary_and_exits_0() {
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
+        .args(["fapolicyd", "why", "--no-conf", "--follow"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if tx.send(line.expect("a UTF-8 line")).is_err() {
+                break;
+            }
+        }
+    });
+
+    stdin.write_all(DENIAL).expect("write");
+    assert_eq!(next_line(&rx, &mut child).as_deref(), Some("rule=1"));
+    let kill = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(kill.success());
+    let mut rest = Vec::new();
+    while let Some(line) = next_line(&rx, &mut child) {
+        rest.push(line);
+    }
+    assert_eq!(
+        rest,
+        [
+            "# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run \
+             rulesteward fapolicyd trust on the same input",
+            "rule=1  1 denials",
+        ]
+    );
+    assert_eq!(child.wait().expect("wait").code(), Some(0));
+    drop(stdin);
+}
+
+/// #154: a reader that goes away ends the run with exit 0 and nothing on stderr, where
+/// batch says so and exits 1. `trust` hits the closed pipe on its live line and `rules`
+/// on the note at the end of the run. The child cannot write before it has read, so the
+/// pipe is closed by then.
+#[test]
+fn a_follow_run_whose_stdout_closes_exits_0_quietly() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    for action in ["trust", "rules"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rulesteward"))
+            .args(["fapolicyd", action, "--no-conf", "--follow"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        drop(child.stdout.take());
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(DENIAL).expect("write");
+        drop(stdin);
+        let out = child.wait_with_output().expect("wait");
+        assert_eq!(out.status.code(), Some(0), "{action}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{action}");
+    }
+}
+
 #[test]
 fn follow_with_a_json_format_is_a_usage_error() {
     for format in ["json", "json-compact"] {
