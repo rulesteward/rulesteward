@@ -109,19 +109,19 @@ answer.
 ## Getting denials
 
 The daemon writes denial records to stderr under `--debug-deny`, and
-`rulesteward` reads stdin to end of file before it writes anything. With the
-systemd unit stopped:
+`rulesteward`, without `--follow`, reads stdin to end of file before it writes
+anything. With the systemd unit stopped:
 
 ```
 timeout 60 fapolicyd --debug-deny --permissive 2>&1 | rulesteward fapolicyd rules
 ```
 
 `--permissive` still logs every denial and only changes the kernel's answer.
-`timeout` ends the daemon so the pipe reaches end of file, whereas Ctrl-C on the
-pipeline kills both sides with nothing written. To keep the capture, pipe through
-`tee denials.log` instead and run both verbs against the file. When the daemon
-runs under systemd with a `--debug-deny` drop-in, the journal carries the same
-bytes:
+`timeout` ends the daemon so the pipe reaches end of file. For a run that is
+meant to be watched and ended by Ctrl-C, see `--follow` below. To keep the
+capture, pipe through `tee denials.log` instead and run both verbs against the
+file. When the daemon runs under systemd with a `--debug-deny` drop-in, the
+journal carries the same bytes:
 
 ```
 journalctl -u fapolicyd -o cat | rulesteward fapolicyd rules
@@ -365,6 +365,87 @@ fapolicyd-cli --file add '/usr/lib64/gconv/gconv-modules.cache'
 fapolicyd-cli --update
 fapolicyd-cli --file add '/etc/hostname'
 fapolicyd-cli --update
+```
+
+## --follow
+
+`--follow` reads one line at a time and writes each result as soon as its line
+is decided, so the tool can sit at the end of a live source. Ctrl-C or end of
+file writes the end of the run, the same notes and report a run without
+`--follow` writes, and exits 0. It is opt-in in this release: without it every
+action still reads to end of file first.
+
+```
+journalctl -u fapolicyd -o cat -f | rulesteward fapolicyd why --follow
+```
+
+<!-- S5-JOURNAL-SAMPLE -->
+
+```
+tail -f denials.log | rulesteward fapolicyd rules --follow --no-conf
+```
+
+A real run against the capture under rules, ended by SIGINT (what Ctrl-C
+sends) to `rulesteward` after the lines had appeared, then `echo $?`. `tail -f`
+starts at the last ten lines of the file, so this is fewer denials than under
+rules. The nine `allow` lines were written before the SIGINT and the two notes
+after it:
+
+```
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_ADDRESS
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_NAME
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_PAPER
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_MONETARY
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_COLLATE
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_TIME
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/en_US.utf8/LC_NUMERIC
+allow perm=open exe=/usr/sbin/runuser : path=/usr/lib/locale/C.utf8/LC_CTYPE
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+0
+```
+
+The same for `why`. `rule=5` was written on the first denial, and the notes and
+the report with its count after the SIGINT:
+
+```
+tail -f denials.log | rulesteward fapolicyd why --follow --no-conf
+```
+
+```
+rule=5
+# rulesteward: new file: none recommended (rules.d/ not read: --no-conf, legacy fapolicyd.rules, or unreadable)
+# rulesteward: 1 untrusted path(s) need a trust entry, not a rule: run rulesteward fapolicyd trust on the same input
+# rulesteward: 9 denial(s) need a rule, not a trust entry: run rulesteward fapolicyd rules on the same input
+rule=5  10 denials
+0
+```
+
+A closed stdout, as under `| head`, ends a `--follow` run with exit 0 and
+nothing on stderr. `--follow` refuses `--format json` and `json-compact`,
+because a document is one answer about the whole log, and `--dir-min`, because
+a directory can be grouped only once the whole log is read. Both are usage
+errors, exit 1:
+
+```
+rulesteward fapolicyd rules --follow --format json < /dev/null; echo $?
+```
+
+```
+rulesteward: --follow cannot be used with --format json or json-compact, which write one document for the whole log
+usage: drop --follow, or --format text
+1
+```
+
+```
+rulesteward fapolicyd rules --follow --dir-min < /dev/null; echo $?
+```
+
+```
+rulesteward: --follow cannot be used with --dir-min, which can group a directory only once the whole log is read
+usage: drop --follow, or drop --dir-min
+1
 ```
 
 ## JSON
