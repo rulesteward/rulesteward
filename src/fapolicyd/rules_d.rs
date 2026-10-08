@@ -271,11 +271,11 @@ mod tests {
     }
 
     fn compiled() -> Vec<Rule> {
-        let merged: String = shipped()
+        let merged: Vec<u8> = shipped()
             .iter()
-            .flat_map(|f| f.rules.iter().map(|r| format!("{}\n", r.text)))
+            .flat_map(|f| f.rules.iter().flat_map(|r| [&r.text[..], b"\n"].concat()))
             .collect();
-        rules::parse(merged.as_bytes())
+        rules::parse(&merged)
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
                     .sets
                     .iter()
                     .map(|s| s.text.as_slice())
-                    .chain(f.rules.iter().map(|r| r.text.as_bytes()))
+                    .chain(f.rules.iter().map(|r| r.text.as_slice()))
                 {
                     bytes.extend_from_slice(line);
                     bytes.push(b'\n');
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn different_text_at_the_same_position_is_drift() {
         let mut compiled = compiled();
-        compiled[12].text = "deny_audit perm=execute all : ftype=application/x-bad-elf".into();
+        compiled[12].text = b"deny_audit perm=execute all : ftype=application/x-bad-elf".to_vec();
         assert_eq!(
             locate(&shipped(), &compiled, 13),
             None,

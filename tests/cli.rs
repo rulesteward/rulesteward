@@ -1172,6 +1172,112 @@ exe=/usr/bin/bash : path=/tmp/\xff trust=0\n";
     );
 }
 
+/// A conf directory named `name` under the temp dir, holding `rules` as both
+/// `compiled.rules` and `rules.d/10-host.rules`, so the two agree and every rule locates.
+/// No fixture holds a byte outside UTF-8 (#144), so a rule carrying one is written here.
+fn conf_with(name: &str, rules: &[u8]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(dir.join("rules.d")).expect("create the conf");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/conf/default.conf"
+        ),
+        dir.join("fapolicyd.conf"),
+    )
+    .expect("copy the conf");
+    std::fs::write(dir.join("compiled.rules"), rules).expect("write compiled.rules");
+    std::fs::write(dir.join("rules.d/10-host.rules"), rules).expect("write rules.d/");
+    dir
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// §9.1 for a rule's text (#174): it takes a record value's form, lossy text plus a
+/// `text_hex` sibling only when the rule was not UTF-8.
+#[test]
+fn a_why_rule_that_is_not_utf8_carries_its_text_in_hex() {
+    let rule: &[u8] = b"deny_audit perm=open all : path=/app/d\xffr";
+    let dir = conf_with(
+        "rulesteward-why-rule-hex",
+        &[rule, b"\ndeny_audit perm=open all : all\n"].concat(),
+    );
+    let conf = dir.join("fapolicyd.conf");
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--conf",
+            conf.to_str().unwrap(),
+            "why",
+            "--format",
+            "json",
+        ],
+        b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/app/d\xffr ftype=text/plain trust=0\n\
+          rule=2 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/app/ok ftype=text/plain trust=0\n",
+    );
+    std::fs::remove_dir_all(&dir).expect("remove the conf");
+    assert_eq!(code, 0, "{err}");
+    let (first, second) = (&doc["entries"][0], &doc["entries"][1]);
+    assert_eq!(
+        first["text"], "deny_audit perm=open all : path=/app/d\u{fffd}r",
+        "{doc}"
+    );
+    assert_eq!(first["text_hex"], hex(rule), "{doc}");
+    assert_eq!(second["text"], "deny_audit perm=open all : all", "{doc}");
+    assert!(
+        second.get("text_hex").is_none(),
+        "a UTF-8 rule has no hex sibling: {doc}"
+    );
+}
+
+/// The same for `check`'s `detail`, which quotes the candidate that decided (#174 F1 and
+/// F2): a candidate path outside UTF-8 is matched by its bytes, so the record carrying the
+/// same bytes is `allowed`, and the detail naming it carries the hex.
+#[test]
+fn a_check_detail_quoting_a_rule_that_is_not_utf8_carries_it_in_hex() {
+    let dir = conf_with(
+        "rulesteward-check-detail-hex",
+        b"deny_audit perm=open all : all\n",
+    );
+    let conf = dir.join("fapolicyd.conf");
+    let candidate = dir.join("00-cand.rules");
+    let rule: &[u8] = b"allow perm=open exe=/usr/bin/bash : path=/app/d\xffr";
+    std::fs::write(&candidate, [rule, b"\n"].concat()).expect("write the candidate");
+    let (code, doc, err) = json_run(
+        &[
+            "fapolicyd",
+            "--conf",
+            conf.to_str().unwrap(),
+            "check",
+            candidate.to_str().unwrap(),
+            "--format",
+            "json",
+        ],
+        b"rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/app/d\xffr ftype=text/plain trust=0\n\
+          rule=1 dec=deny_audit perm=open auid=1000 pid=1 exe=/usr/bin/bash : path=/app/ok ftype=text/plain trust=0\n",
+    );
+    std::fs::remove_dir_all(&dir).expect("remove the conf");
+    assert_eq!(code, 0, "{err}");
+    let (first, second) = (&doc["entries"][0], &doc["entries"][1]);
+    assert_eq!(first["verdict"], "allowed", "{doc}");
+    assert_eq!(
+        first["detail"], "00-cand.rules: allow perm=open exe=/usr/bin/bash : path=/app/d\u{fffd}r",
+        "{doc}"
+    );
+    assert_eq!(
+        first["detail_hex"],
+        hex(&[&b"00-cand.rules: "[..], rule].concat()),
+        "{doc}"
+    );
+    assert_eq!(second["verdict"], "denied", "{doc}");
+    assert!(
+        second.get("detail_hex").is_none(),
+        "a UTF-8 detail has no hex sibling: {doc}"
+    );
+}
+
 /// §9.1: the two JSON formats are one document written two ways. Over every fixture,
 /// through both report actions, because a field that only some real capture reaches is
 /// exactly the one nobody would have written a case for.

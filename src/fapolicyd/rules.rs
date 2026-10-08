@@ -1,25 +1,35 @@
 //! The rules file, parsed far enough to answer "what is rule N, and can anything we
 //! emit resolve a denial by it?". Pure: the caller does the `fs::read`.
 //!
-//! Rule text is `String` and not `Vec<u8>`, against §4's byte rule, deliberately: the
-//! text is never emitted, only quoted into a `Diagnostic.msg`, which is already a
-//! `String`. Lines are converted with `String::from_utf8_lossy`, so a non-UTF-8 rule
-//! shows replacement characters in a diagnostic and nothing else changes. Do not
-//! "fix" this to bytes; there is nothing downstream that would use them.
+//! Rule text and every token are bytes, §4's byte rule: a rule's text is compared --
+//! against the host's own rules in `check`, `rules_d` and `main` -- and its paths against
+//! a record's raw bytes, and it reaches the `why` and `check` documents. Through
+//! `from_utf8_lossy` two rules differing only outside UTF-8 would compare equal and a
+//! path the daemon matches would not (#162, #174). It is decoded lossily only where it is
+//! shown. Two document fields carry a `*_hex` sibling for it: `why`'s `text`, and `check`'s
+//! `detail` when that quotes a rule (DESIGN.md §9.1). A reason string that quotes one --
+//! `check::refused`'s, or the subject-side diagnostic -- is lossy text with no sibling.
+//!
+//! A rule's tokens are separated by ASCII whitespace. The daemon's `next_rule_token`
+//! (upstream `src/library/rules.c`) breaks a token on the space byte only, so a vertical
+//! tab, U+00A0 or U+3000 inside a value stays in the token here as it does there. A tab,
+//! a form feed or a carriage return separates here and not in the daemon: that difference
+//! predates byte tokens and is kept
+//! because vendored fixtures carry tabs.
 
 /// One rule of the compiled set. Its position in the slice is the daemon's own
 /// numbering: the `rule=` a record carries is 1-based, so rule `n` is index `n - 1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// The line as written, trimmed. Only ever quoted in a diagnostic.
-    pub text: String,
+    /// The line as written, trimmed.
+    pub text: Vec<u8>,
     /// The first token: `allow`, `deny`, `deny_audit`, `deny_syslog`, `deny_log`.
-    pub decision: String,
+    pub decision: Vec<u8>,
     /// The tokens after the decision and before the bare `:`.
-    pub subject: Vec<String>,
+    pub subject: Vec<Vec<u8>>,
     /// `None` when the line is ORIGINAL format, which has no object side at all and
     /// therefore can never satisfy the "object side is exactly `all`" test.
-    pub object: Option<Vec<String>>,
+    pub object: Option<Vec<Vec<u8>>>,
 }
 
 /// One token of a rule, as far as `check` can evaluate it (DESIGN.md §7, #120's D4 set).
@@ -30,12 +40,12 @@ pub struct Rule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attr {
     All,
-    Perm(String),
-    Exe(String),
-    Path(String),
-    Dir(String),
-    Ftype(String),
-    Trust(String),
+    Perm(Vec<u8>),
+    Exe(Vec<u8>),
+    Path(Vec<u8>),
+    Dir(Vec<u8>),
+    Ftype(Vec<u8>),
+    Trust(Vec<u8>),
     /// A token with no `=` that is not `all`: the tail of a value containing a space,
     /// which is #120's K2. The daemon logs `'=' is missing for field ace/probe-grep`,
     /// keeps loading, counts the broken rule in `Loaded N rules` so it occupies its slot,
@@ -46,7 +56,7 @@ pub enum Attr {
     /// listing a keyword beside a literal (#139). Each member is compared the way this
     /// attribute compares one literal, which is the matcher's business and not a token's,
     /// so nothing is expanded here.
-    Members(String, Vec<String>),
+    Members(Vec<u8>, Vec<Vec<u8>>),
     /// `pattern=`, `uid=`, `sha256hash=`, a `dir=` keyword on its own, a `%set` written
     /// beside something else: real attributes whose value cannot be decided from a log
     /// record.
@@ -57,9 +67,9 @@ impl Attr {
     /// One token of a rule's subject or object side. Which side it was written on is the
     /// caller's business: `perm=` on the object side is a real attribute in the wrong
     /// place, and only the matcher knows which side it is reading.
-    pub(crate) fn new(token: &str) -> Attr {
-        let Some((name, value)) = token.split_once('=') else {
-            return if token == "all" {
+    pub(crate) fn new(token: &[u8]) -> Attr {
+        let Some(at) = token.iter().position(|&b| b == b'=') else {
+            return if token == b"all" {
                 Attr::All
             } else {
                 Attr::NeverMatches
@@ -71,26 +81,27 @@ impl Attr {
         // anything else is a shape nothing measured, and the arms below would compare the
         // whole value as one literal and call every member of it a mismatch, so it stays
         // undecidable.
-        let (set, list) = (value.starts_with('%'), value.contains(','));
-        if (set && !list) || (name == "dir" && list) {
+        let (name, value) = (&token[..at], &token[at + 1..]);
+        let (set, list) = (value.starts_with(b"%"), value.contains(&b','));
+        if (set && !list) || (name == b"dir" && list) {
             return Attr::Members(
-                name.to_string(),
-                value.split(',').map(str::to_string).collect(),
+                name.to_vec(),
+                value.split(|&b| b == b',').map(<[u8]>::to_vec).collect(),
             );
         }
         if set {
             return Attr::Unevaluable;
         }
-        let v = value.to_string();
+        let v = value.to_vec();
         match name {
-            "perm" => Attr::Perm(v),
-            "exe" => Attr::Exe(v),
-            "path" => Attr::Path(v),
+            b"perm" => Attr::Perm(v),
+            b"exe" => Attr::Exe(v),
+            b"path" => Attr::Path(v),
             // `dir=` also takes the keywords `execdirs`, `systemdirs` and `untrusted`,
             // each naming a set of directories this tool cannot enumerate from a record.
-            "dir" if value.starts_with('/') => Attr::Dir(v),
-            "ftype" => Attr::Ftype(v),
-            "trust" => Attr::Trust(v),
+            b"dir" if value.starts_with(b"/") => Attr::Dir(v),
+            b"ftype" => Attr::Ftype(v),
+            b"trust" => Attr::Trust(v),
             _ => Attr::Unevaluable,
         }
     }
@@ -102,12 +113,15 @@ impl Attr {
 /// A skipped line consumes no rule number. fagenrules keeps a whitespace-only line in
 /// `compiled.rules` -- its `length($0) < 1` tests emptiness, not blankness -- while the
 /// daemon and `--list` skip it, so the counter must skip it too.
+///
+/// Which lines are rules is decided by the lossy `str::trim` view, the same test `sets`
+/// makes, so the two cannot disagree about a line; what is kept is the line's own bytes.
 pub fn parse(file: &[u8]) -> Vec<Rule> {
     let mut rules = Vec::new();
     for line in file.split(|&b| b == b'\n') {
-        let line = String::from_utf8_lossy(line);
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('%') {
+        let trimmed = String::from_utf8_lossy(line);
+        let trimmed = trimmed.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('%') {
             continue;
         }
         rules.push(Rule::new(line));
@@ -138,10 +152,16 @@ pub struct Set {
 /// The `%set` definitions of a file, in the order written, each with the number of its
 /// file's rules that precede it.
 ///
-/// Bytes and not `String`, against the rest of this module: a set holds paths, and §4's
-/// byte rule applies to those. Through `from_utf8_lossy` two definitions differing only
-/// outside UTF-8 collapse into one U+FFFD and would report agreement that is not there,
-/// which is the one direction the caller must never be told (#158).
+/// Bytes, like a rule: a set holds paths, and §4's byte rule applies to those. Through
+/// `from_utf8_lossy` two definitions differing only outside UTF-8 collapse into one U+FFFD
+/// and would report agreement that is not there, which is the one direction the caller
+/// must never be told (#158).
+///
+/// The members end at the first space byte. The daemon's `parse_set_line` receives only
+/// the line's first space-delimited token, because `strtok` has already cut the line there
+/// (research reference, rocky8/9/10, "Attribute sets"), so `%s=/a,/b c` loads `{/a, /b}`
+/// and `/b c` is in no set. `text` stays the whole line, because it is what an edit to the
+/// definition is detected by.
 ///
 /// Which lines are sets is decided by `parse`'s own test and not by a second one: its
 /// `str::trim` takes a vertical tab and U+00A0 that `trim_ascii` leaves, and a line
@@ -167,6 +187,9 @@ pub fn sets(file: &[u8]) -> Vec<Set> {
             Some(at) => (
                 &line[..at],
                 line[at + 1..]
+                    .split(|&b| b == b' ')
+                    .next()
+                    .unwrap_or_default()
                     .split(|&b| b == b',')
                     .map(<[u8]>::to_vec)
                     .collect(),
@@ -186,17 +209,20 @@ pub fn sets(file: &[u8]) -> Vec<Set> {
 impl Rule {
     /// No unescaping anywhere: the rule language has no escape mechanism and no
     /// quoting, so `%set` references and `pattern=` values are stored literally.
-    pub(crate) fn new(line: &str) -> Rule {
-        let line = line.trim();
-        let mut tokens = line.split_whitespace().map(str::to_string);
+    pub(crate) fn new(line: &[u8]) -> Rule {
+        let line = line.trim_ascii();
+        let mut tokens = line
+            .split(u8::is_ascii_whitespace)
+            .filter(|t| !t.is_empty())
+            .map(<[u8]>::to_vec);
         let decision = tokens.next().unwrap_or_default();
-        let rest: Vec<String> = tokens.collect();
-        let (subject, object) = match rest.iter().position(|t| t == ":") {
+        let rest: Vec<Vec<u8>> = tokens.collect();
+        let (subject, object) = match rest.iter().position(|t| t == b":") {
             Some(i) => (rest[..i].to_vec(), Some(rest[i + 1..].to_vec())),
             None => (rest, None),
         };
         Rule {
-            text: line.to_string(),
+            text: line.to_vec(),
             decision,
             subject,
             object,
@@ -211,7 +237,7 @@ impl Rule {
     /// grammar is a different one, no capture has a rule in it, and a rule that places no
     /// object constraint would otherwise read as matching every file.
     pub fn attrs(&self) -> (Vec<Attr>, Vec<Attr>) {
-        fn side(tokens: &[String]) -> Vec<Attr> {
+        fn side(tokens: &[Vec<u8>]) -> Vec<Attr> {
             tokens.iter().map(|t| Attr::new(t)).collect()
         }
         (
@@ -232,12 +258,12 @@ impl Rule {
     /// "names anything beyond `perm=` and `all`" -- which is what keeps the
     /// denyall-shaped `deny_audit perm=execute all : all` out.
     pub fn refuses(&self) -> bool {
-        self.decision.starts_with("deny")
-            && self.object.as_deref().is_some_and(|o| o == ["all"])
+        self.decision.starts_with(b"deny")
+            && self.object.as_deref().is_some_and(|o| o == [b"all"])
             && self
                 .subject
                 .iter()
-                .any(|t| t != "all" && !t.starts_with("perm="))
+                .any(|t| t != b"all" && !t.starts_with(b"perm="))
     }
 }
 
@@ -271,7 +297,7 @@ allow perm=open all : all
         let r = parse(ROCKY9);
         assert_eq!(r.len(), 14, "the daemon logged `Loaded 14 rules`");
         assert_eq!(
-            r[0].text, "allow perm=any uid=0 : dir=/var/tmp/",
+            r[0].text, b"allow perm=any uid=0 : dir=/var/tmp/",
             "the comment and the %set consume no position"
         );
     }
@@ -279,24 +305,24 @@ allow perm=open all : all
     #[test]
     fn the_ld_so_deny_is_rule_five_not_six() {
         let r = parse(ROCKY9);
-        assert_eq!(r[4].text, "deny_audit perm=any pattern=ld_so : all");
+        assert_eq!(r[4].text, b"deny_audit perm=any pattern=ld_so : all");
         assert_eq!(
             r[7].text,
-            "deny_audit perm=open all : ftype=application/x-sharedlib"
+            b"deny_audit perm=open all : ftype=application/x-sharedlib"
         );
-        assert_eq!(r[12].text, "deny_audit perm=execute all : all");
+        assert_eq!(r[12].text, b"deny_audit perm=execute all : all");
     }
 
     #[test]
     fn only_the_subject_side_rule_refuses() {
         for (i, r) in parse(ROCKY9).iter().enumerate() {
-            assert_eq!(r.refuses(), i == 4, "rule {}: {}", i + 1, r.text);
+            assert_eq!(r.refuses(), i == 4, "rule {}: {:?}", i + 1, r.text);
         }
     }
 
     #[test]
     fn an_original_format_rule_never_refuses() {
-        let r = Rule::new("deny_audit perm=any pattern=ld_so");
+        let r = Rule::new(b"deny_audit perm=any pattern=ld_so");
         assert_eq!(r.object, None);
         assert!(
             !r.refuses(),
@@ -306,18 +332,18 @@ allow perm=open all : all
 
     #[test]
     fn an_allow_rule_never_refuses() {
-        assert!(!Rule::new("allow perm=open exe=/usr/bin/rpm : all").refuses());
+        assert!(!Rule::new(b"allow perm=open exe=/usr/bin/rpm : all").refuses());
     }
 
     #[test]
     fn an_exe_only_deny_refuses() {
-        assert!(Rule::new("deny perm=execute exe=/usr/bin/foo : all").refuses());
+        assert!(Rule::new(b"deny perm=execute exe=/usr/bin/foo : all").refuses());
     }
 
     #[test]
     fn every_d4_attribute_keeps_its_value_and_its_side() {
         let (subject, object) = Rule::new(
-            "allow perm=open exe=/usr/bin/cat dir=/usr/bin : path=/tmp/x dir=/tmp/ \
+            b"allow perm=open exe=/usr/bin/cat dir=/usr/bin : path=/tmp/x dir=/tmp/ \
              ftype=text/plain trust=1",
         )
         .attrs();
@@ -344,7 +370,7 @@ allow perm=open all : all
     fn all_is_an_attribute_and_any_other_bare_token_never_matches() {
         // K2: `path=/tmp/sp ace/x` splits into a `path=` and a bare `ace/x`, which is
         // the token the daemon reports `'=' is missing for field` about.
-        let (subject, object) = Rule::new("allow perm=any all : path=/tmp/sp ace/x").attrs();
+        let (subject, object) = Rule::new(b"allow perm=any all : path=/tmp/sp ace/x").attrs();
         assert_eq!(subject, [Attr::Perm("any".into()), Attr::All]);
         assert_eq!(
             object,
@@ -356,7 +382,7 @@ allow perm=open all : all
     #[test]
     fn what_a_log_record_cannot_decide_is_unevaluable_and_not_dropped() {
         let (subject, object) =
-            Rule::new("deny_audit perm=any pattern=ld_so uid=0 : sha256hash=ab dir=execdirs")
+            Rule::new(b"deny_audit perm=any pattern=ld_so uid=0 : sha256hash=ab dir=execdirs")
                 .attrs();
         assert_eq!(
             subject,
@@ -376,7 +402,7 @@ allow perm=open all : all
     #[test]
     fn a_set_reference_and_a_dir_list_are_members_and_nothing_else_is() {
         let (subject, object) = Rule::new(
-            "allow perm=any exe=%trusted : ftype=%languages dir=execdirs,/opt/ path=%a,%b",
+            b"allow perm=any exe=%trusted : ftype=%languages dir=execdirs,/opt/ path=%a,%b",
         )
         .attrs();
         assert_eq!(
@@ -397,7 +423,7 @@ allow perm=open all : all
             ]
         );
         assert_eq!(
-            Rule::new("allow perm=any all : dir=/opt/").attrs().1,
+            Rule::new(b"allow perm=any all : dir=/opt/").attrs().1,
             [Attr::Dir("/opt/".into())],
             "one literal directory is still one literal"
         );
@@ -436,6 +462,41 @@ allow perm=open all : all
     }
 
     #[test]
+    fn a_vertical_tab_or_a_no_break_space_inside_a_value_stays_in_its_token() {
+        // `next_rule_token` breaks on the space byte only, so the daemon keeps these inside
+        // the value; `split_whitespace` cut both of them.
+        for path in [&b"path=/app/x\x0by"[..], "path=/app/x\u{a0}y".as_bytes()] {
+            let rule = Rule::new(&[&b"allow perm=open all : "[..], path].concat());
+            assert_eq!(rule.object, Some(vec![path.to_vec()]), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn a_set_member_ends_at_the_first_space() {
+        let s = sets(b"%s=/app/q,/app/\xff y");
+        assert_eq!(s[0].members, [b"/app/q".to_vec(), b"/app/\xff".to_vec()]);
+        assert_eq!(
+            s[0].text, b"%s=/app/q,/app/\xff y",
+            "the edit is still detected"
+        );
+    }
+
+    #[test]
+    fn two_rules_differing_only_outside_utf8_are_not_equal() {
+        // The same hazard for a rule: the D3 skip compares rule text, and two texts that
+        // both decode to U+FFFD would skip a candidate the daemon never walked past (#162).
+        assert_ne!(
+            parse(b"allow perm=open all : path=/opt/\xff"),
+            parse(b"allow perm=open all : path=/opt/\xfe")
+        );
+        assert_eq!(
+            parse(b"allow perm=open all : path=/opt/\xff")[0].object,
+            Some(vec![b"path=/opt/\xff".to_vec()]),
+            "the token keeps the byte"
+        );
+    }
+
+    #[test]
     fn every_line_parse_drops_as_a_set_is_a_line_sets_keeps() {
         // `parse` trims with `str::trim`, which takes a vertical tab and U+00A0 that
         // `trim_ascii` leaves. A line led by either is dropped from the rules as a set, so
@@ -453,7 +514,7 @@ allow perm=open all : all
 
     #[test]
     fn an_original_format_rule_has_no_object_side_to_evaluate() {
-        let (subject, object) = Rule::new("deny_audit perm=any pattern=ld_so").attrs();
+        let (subject, object) = Rule::new(b"deny_audit perm=any pattern=ld_so").attrs();
         assert_eq!(subject, [Attr::Perm("any".into()), Attr::Unevaluable]);
         assert_eq!(
             object,

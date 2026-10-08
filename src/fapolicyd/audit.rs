@@ -237,7 +237,10 @@ fn decision(resp: Option<&[u8]>, rule: usize, rules: Option<&[rules::Rule]>) -> 
     }
     rules
         .and_then(|r| rule.checked_sub(1).and_then(|i| r.get(i)))
-        .map_or_else(|| "deny_audit".into(), |r| r.decision.clone())
+        .map_or_else(
+            || "deny_audit".into(),
+            |r| String::from_utf8_lossy(&r.decision).into_owned(),
+        )
 }
 
 /// `execute` for the two exec syscalls, `open` for everything else.

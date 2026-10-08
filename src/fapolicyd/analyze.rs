@@ -66,7 +66,7 @@ pub struct WhyRow {
 #[derive(Debug)]
 pub struct WhyRule {
     pub refuses: bool,
-    pub text: String,
+    pub text: Vec<u8>,
 }
 
 impl Outcome {
@@ -241,8 +241,10 @@ impl Step {
         let mut out = Vec::new();
         for row in &self.why {
             let rule = format!("rule={}", row.rule);
-            let text = row.matched.as_ref().map_or("", |r| r.text.as_str());
-            let cells: Vec<&str> = [rule.as_str(), row.file.as_str(), text]
+            let text = row.matched.as_ref().map_or_else(String::new, |r| {
+                String::from_utf8_lossy(&r.text).into_owned()
+            });
+            let cells: Vec<&str> = [rule.as_str(), row.file.as_str(), text.as_str()]
                 .into_iter()
                 .filter(|c| !c.is_empty())
                 .collect();
@@ -690,12 +692,12 @@ impl<'a> Analyzer<'a> {
                             "rule={n} is subject-side ({}): it constrains the process, not the \
                              file, so no path rule and no trust entry can resolve this denial; \
                              emitting nothing",
-                            r.text
+                            String::from_utf8_lossy(&r.text)
                         ),
                     });
                     return;
                 }
-                Some((_, Some(r))) if !r.decision.starts_with("deny") => self.unmatched += 1,
+                Some((_, Some(r))) if !r.decision.starts_with(b"deny") => self.unmatched += 1,
                 Some((_, None)) => self.unmatched += 1,
                 // A deny rule that does not refuse, or a record with no `rule=` field at
                 // all. The second is not a mismatch: the compiled default syslog_format
@@ -1026,9 +1028,10 @@ pub fn why_report(rows: &[WhyRow]) -> Vec<u8> {
             // No rules file, or a number it does not have: nothing to quote and no
             // verdict to reach, so both cells stay empty.
             let (verdict, text) = match &row.matched {
-                Some(r) if r.refuses => {
-                    ("subject-side, nothing to emit".to_string(), r.text.clone())
-                }
+                Some(r) if r.refuses => (
+                    "subject-side, nothing to emit".to_string(),
+                    String::from_utf8_lossy(&r.text).into_owned(),
+                ),
                 Some(r) => {
                     let counts: Vec<String> = [("rules", row.rules), ("trust", row.trust)]
                         .iter()
@@ -1041,7 +1044,7 @@ pub fn why_report(rows: &[WhyRow]) -> Vec<u8> {
                     } else {
                         counts.join(", ")
                     };
-                    (verdict, r.text.clone())
+                    (verdict, String::from_utf8_lossy(&r.text).into_owned())
                 }
                 None => (String::new(), String::new()),
             };
@@ -1708,7 +1711,7 @@ mod tests {
     fn a_resolved_rule_with_no_rules_d_keeps_the_generic_placement_note() {
         // A legacy host, or an unreadable rules.d/: compiled.rules resolved rule=1, but
         // no merge order was read, so the note may name neither a file nor a drift.
-        let rules = vec![rules::Rule::new("deny_audit perm=execute all : all")];
+        let rules = vec![rules::Rule::new(b"deny_audit perm=execute all : all")];
         let input = b"rule=1 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : \
                       path=/tmp/gaps/trusted-ls trust=1\n";
         let o = analyze(input, None, Some(&rules), &[], None, None, false);
@@ -1721,7 +1724,7 @@ mod tests {
     #[test]
     fn an_unprefixed_file_is_named_a_filename_not_declined() {
         // `local.rules` sorts last of all, so any numbered name sorts before it.
-        let rule = rules::Rule::new("deny_audit perm=execute all : all");
+        let rule = rules::Rule::new(b"deny_audit perm=execute all : all");
         let rules_d = vec![rules_d::File {
             name: "local.rules".into(),
             rules: vec![rule.clone()],
@@ -1745,7 +1748,7 @@ mod tests {
     /// verdict and no new exit code (#139).
     #[test]
     fn a_ruleset_the_daemon_refuses_is_one_diagnostic_for_the_run() {
-        let rule = rules::Rule::new("deny_audit perm=execute all : all");
+        let rule = rules::Rule::new(b"deny_audit perm=execute all : all");
         let host = vec![rules_d::File {
             name: "90-deny-execute.rules".into(),
             rules: vec![rule.clone()],
@@ -1792,7 +1795,7 @@ mod tests {
     /// so repeating the line would bury the one that differs.
     #[test]
     fn the_check_report_is_one_line_per_denial_with_the_repeats_counted() {
-        let rule = rules::Rule::new("deny_audit perm=execute all : all");
+        let rule = rules::Rule::new(b"deny_audit perm=execute all : all");
         let host = vec![rules_d::File {
             name: "90-deny-execute.rules".into(),
             rules: vec![rule.clone()],
@@ -1801,7 +1804,7 @@ mod tests {
         let mut proposed = vec![rules_d::File {
             name: "00-cand.rules".into(),
             rules: vec![rules::Rule::new(
-                "allow perm=execute all : path=/tmp/gaps/trusted-ls",
+                b"allow perm=execute all : path=/tmp/gaps/trusted-ls",
             )],
             sets: Vec::new(),
         }];

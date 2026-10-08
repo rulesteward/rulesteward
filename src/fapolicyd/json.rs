@@ -39,12 +39,16 @@ struct Note<'a> {
 /// One `why` row as data (§9.1): no verdict string, so the report's wording stays the
 /// report's. `text` and `subject_side` are `null` together, when there was no rules file
 /// or it did not have that number; `file` is `null` whenever no `rules.d/` component was
-/// found to hold the rule, which includes every run that read no rules at all.
+/// found to hold the rule, which includes every run that read no rules at all. `text` is
+/// a rule's bytes, so it takes a record value's form: lossy, with a `text_hex` sibling
+/// only when it was not UTF-8.
 #[derive(Serialize)]
 struct WhyEntry<'a> {
     rule: usize,
     file: Option<&'a str>,
-    text: Option<&'a str>,
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_hex: Option<String>,
     denials: usize,
     subject_side: Option<bool>,
     rules: usize,
@@ -54,16 +58,23 @@ struct WhyEntry<'a> {
 pub fn why(diagnostics: &[Diagnostic], rows: &[WhyRow], compact: bool) -> Vec<u8> {
     let entries: Vec<WhyEntry> = rows
         .iter()
-        .map(|row| WhyEntry {
-            rule: row.rule,
-            // `WhyRow.file` is the empty string when the row was not located, which is
-            // an absence and not a filename.
-            file: Some(row.file.as_str()).filter(|f| !f.is_empty()),
-            text: row.matched.as_ref().map(|r| r.text.as_str()),
-            denials: row.denials,
-            subject_side: row.matched.as_ref().map(|r| r.refuses),
-            rules: row.rules,
-            trust: row.trust,
+        .map(|row| {
+            let (text, text_hex) = row.matched.as_ref().map_or((None, None), |r| {
+                let (text, hex) = lossy_hex(&r.text);
+                (Some(text), hex)
+            });
+            WhyEntry {
+                rule: row.rule,
+                // `WhyRow.file` is the empty string when the row was not located, which is
+                // an absence and not a filename.
+                file: Some(row.file.as_str()).filter(|f| !f.is_empty()),
+                text,
+                text_hex,
+                denials: row.denials,
+                subject_side: row.matched.as_ref().map(|r| r.refuses),
+                rules: row.rules,
+                trust: row.trust,
+            }
         })
         .collect();
     document("why", diagnostics, entries, compact)
