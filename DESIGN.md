@@ -957,6 +957,7 @@ verdict column's wording is the report's and is deliberately not a field here.
 | `rule` | number | never |
 | `file` | string | no `rules.d/` component was found to hold that rule |
 | `text` | string | there was no rules file, or it has no rule of that number |
+| `text_hex` | string | **absent**, not null, unless the rule text was not UTF-8 |
 | `denials` | number | never |
 | `subject_side` | bool | with `text`; `true` when the rule refuses the record outright (§7) |
 | `rules` | number | never |
@@ -970,6 +971,7 @@ key: two entries can differ only in them.
 |---|---|---|
 | `verdict` | string | never; `allowed`, `denied` or `unknown` |
 | `detail` | string | never; the candidate as `file: rule text`, or the reason there is no verdict |
+| `detail_hex` | string | **absent**, not null, unless the detail was not UTF-8, which only a quoted rule text makes it |
 | `denials` | number | never |
 | `perm`, `exe`, `path`, `ftype`, `trust` | string | the record did not carry that field |
 | `exe_hex`, `path_hex` | string | **absent**, not null, unless the value was not UTF-8 |
@@ -1030,6 +1032,14 @@ writes is worse than no line: it would be a rule for a file nobody asked to
 allow, or a `--file add` that trusts the wrong one, and nothing running it could
 tell. The data fields and their `*_hex` siblings are what the true bytes are
 recovered from; the text artifact is unaffected, because it is bytes.
+
+A rule's text takes the record-value form and not the rendered-line form: it
+names a rule that already exists and suggests nothing, so it is decoded lossily
+with a hex sibling rather than `null` (#174). Two fields carry one: `why`'s
+`text_hex`, and `check`'s `detail_hex` when the detail quotes a rule, which
+every detail naming a candidate or rule N does. The one exception is the reason
+for a ruleset the daemon refuses (D20): lossy text with no sibling, like every
+diagnostic `msg`.
 
 The set of characters a document escapes is the set the text report spells:
 `\u0000`-`\u001f` from the JSON writer itself, and `\u007f`-`\u009f` — DEL and

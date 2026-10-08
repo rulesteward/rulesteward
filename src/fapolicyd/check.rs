@@ -24,11 +24,12 @@ use std::io::Write;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// An `allow*` candidate matches before the rule that denied.
-    Allowed(String),
+    Allowed(Vec<u8>),
     /// A `deny*` candidate matches first, or nothing the operator added matches and the
     /// rule that denied denies again.
-    Denied(String),
-    Unknown(String),
+    Denied(Vec<u8>),
+    /// Bytes like the other two, because a reason can quote a rule's text (`rules.rs`).
+    Unknown(Vec<u8>),
 }
 
 /// The denial a report line is about (D-d). Two records agreeing on these six values are
@@ -148,11 +149,14 @@ pub fn refused(files: &[rules_d::File]) -> Option<String> {
     }
     for (at, (file, rule)) in flat(files).enumerate() {
         for name in references(rule) {
-            let Some((_, defines, position)) = defined.iter().find(|(d, _, _)| d.name == name)
+            let Some((_, defines, position)) =
+                defined.iter().find(|(d, _, _)| d.name.as_bytes() == name)
             else {
                 return Some(format!(
-                    "{}: {} names {name}, which no file defines{refuses}",
-                    file.name, rule.text
+                    "{}: {} names {}, which no file defines{refuses}",
+                    file.name,
+                    String::from_utf8_lossy(&rule.text),
+                    String::from_utf8_lossy(name)
                 ));
             };
             // The definition has to sort before the rule: `position` counts the rules
@@ -160,8 +164,10 @@ pub fn refused(files: &[rules_d::File]) -> Option<String> {
             // written immediately above the rule that uses it.
             if *position > at {
                 return Some(format!(
-                    "{}: {} names {name} before its definition in {defines}{refuses}",
-                    file.name, rule.text
+                    "{}: {} names {} before its definition in {defines}{refuses}",
+                    file.name,
+                    String::from_utf8_lossy(&rule.text),
+                    String::from_utf8_lossy(name)
                 ));
             }
         }
@@ -172,13 +178,16 @@ pub fn refused(files: &[rules_d::File]) -> Option<String> {
 /// Every `%set` a rule names, on either side and whatever the attribute. Over the tokens
 /// and not over `attrs()`, which keeps only the shapes the matcher can use: the daemon
 /// resolves a reference wherever it is written, so `uid=%who` is a use too.
-fn references(rule: &Rule) -> impl Iterator<Item = &str> {
+fn references(rule: &Rule) -> impl Iterator<Item = &[u8]> {
     rule.subject
         .iter()
         .chain(rule.object.iter().flatten())
-        .filter_map(|token| token.split_once('='))
-        .flat_map(|(_, value)| value.split(','))
-        .filter(|member| member.starts_with('%'))
+        .filter_map(|token| {
+            let at = token.iter().position(|&b| b == b'=')?;
+            Some(&token[at + 1..])
+        })
+        .flat_map(|value| value.split(|&b| b == b','))
+        .filter(|member| member.starts_with(b"%"))
 }
 
 /// The verdict for one denial: `n` is its `rule=`, `stale` what §6's rewrite would scope
@@ -204,18 +213,21 @@ pub fn verdict(
     // daemon refuses to load is not one any record can be placed against, and the merge
     // those arms reason about never happens. `analyze` says the same thing once for the run.
     if let Some(why) = refused(proposed) {
-        return Verdict::Unknown(why);
+        return Verdict::Unknown(why.into());
     }
     // K3: #120 measured the daemon comparing a candidate's `exe=` against the value the
     // record logs, verbatim, on all three releases -- so the one case the comparison
     // cannot be trusted is where this tool's own §6 rewrite fires, because there the
     // logged value and the value a rule would have to name are different images.
     if let Some(execed) = stale {
-        return Verdict::Unknown(format!(
-            "exe= is stale (§6): a rule for this record has to name {}, not the logged \
-             exe=, and no candidate can be matched against a value the log does not carry",
-            shown(execed)
-        ));
+        return Verdict::Unknown(
+            format!(
+                "exe= is stale (§6): a rule for this record has to name {}, not the logged \
+                 exe=, and no candidate can be matched against a value the log does not carry",
+                shown(execed)
+            )
+            .into(),
+        );
     }
     let Some(n) = n else {
         return Verdict::Unknown(
@@ -232,9 +244,9 @@ pub fn verdict(
         );
     };
     let Some(target) = n.checked_sub(1).and_then(|i| compiled.get(i)) else {
-        return Verdict::Unknown(format!(
-            "rule={n} is past the end of the rules file: it is not this log's"
-        ));
+        return Verdict::Unknown(
+            format!("rule={n} is past the end of the rules file: it is not this log's").into(),
+        );
     };
     // Drift: `rules.d/` no longer agrees with `compiled.rules`, so the merged order in
     // hand is not the one that produced this `rule=` and nothing can be placed against it.
@@ -244,10 +256,13 @@ pub fn verdict(
         Some(host) => match rules_d::locate(host, compiled, n).and_then(|i| host.get(i)) {
             Some(from) => Some(from),
             None => {
-                return Verdict::Unknown(format!(
-                    "rule={n} is not in the host rules.d/ (not read, or changed since \
-                     fagenrules ran); run fagenrules, recapture, rerun"
-                ));
+                return Verdict::Unknown(
+                    format!(
+                        "rule={n} is not in the host rules.d/ (not read, or changed since \
+                         fagenrules ran); run fagenrules, recapture, rerun"
+                    )
+                    .into(),
+                );
             }
         },
         None => None,
@@ -257,9 +272,11 @@ pub fn verdict(
     // on answering `rule=0 dec=no-opinion`, so one such rule decides every denial in the
     // run and not just the ones it was written for.
     if let Some((file, text)) = missing_perm(proposed, compiled) {
-        return Verdict::Unknown(format!(
-            "{file}: {text} has no perm=, which fails the reload and discards the whole \
-             ruleset (#120 K1); nothing can be checked against these candidates"
+        return Verdict::Unknown(quote(
+            &format!("{file}: "),
+            text,
+            " has no perm=, which fails the reload and discards the whole ruleset (#120 K1); \
+             nothing can be checked against these candidates",
         ));
     }
     // Rule N has to still be where it was, in the file it came from. An operator who
@@ -273,11 +290,14 @@ pub fn verdict(
         None => flat(proposed).position(|(_, rule)| rule.text == target.text),
     };
     let Some(limit) = limit else {
-        return Verdict::Unknown(format!(
-            "rule={n} ({}) is no longer in {}: which rules now precede it cannot be \
-             decided from this record alone",
-            target.text,
-            from.map_or("the rules.d/ on disk", |f| f.name.as_str())
+        return Verdict::Unknown(quote(
+            &format!("rule={n} ("),
+            &target.text,
+            &format!(
+                ") is no longer in {}: which rules now precede it cannot be decided from \
+                 this record alone",
+                from.map_or("the rules.d/ on disk", |f| f.name.as_str())
+            ),
         ));
     };
 
@@ -298,21 +318,24 @@ pub fn verdict(
         {
             continue;
         }
-        let named = format!("{}: {}", file.name, rule.text);
+        let named = quote(&format!("{}: ", file.name), &rule.text, "");
         match matches(rule, record, &defined) {
             Some(false) => {}
             // Whatever a later candidate would say, the daemon might never reach it.
             None => {
-                return Verdict::Unknown(format!(
-                    "{named} cannot be decided from this record, and it is reached before \
-                     rule={n}"
+                return Verdict::Unknown(quote(
+                    "",
+                    &named,
+                    &format!(
+                        " cannot be decided from this record, and it is reached before rule={n}"
+                    ),
                 ));
             }
-            Some(true) if rule.decision.starts_with("allow") => return Verdict::Allowed(named),
-            Some(true) if rule.decision.starts_with("deny") => return Verdict::Denied(named),
+            Some(true) if rule.decision.starts_with(b"allow") => return Verdict::Allowed(named),
+            Some(true) if rule.decision.starts_with(b"deny") => return Verdict::Denied(named),
             // Neither word: fagenrules would merge it and the daemon would refuse it.
             Some(true) => {
-                return Verdict::Unknown(format!("{named} is neither an allow nor a deny"));
+                return Verdict::Unknown(quote("", &named, " is neither an allow nor a deny"));
             }
         }
     }
@@ -321,17 +344,24 @@ pub fn verdict(
     // above, so an N naming a changed set is asked again against the proposed definition.
     // When it no longer matches, the walk would go on past N, which is §11's parked work.
     if names_changed_set(target, changed) && matches(target, record, &defined) != Some(true) {
-        return Verdict::Unknown(format!(
-            "rule={n} ({}) names a %set whose definition changed and is no longer known to \
-             match this record: what the rules after it decide cannot be said from this \
-             record alone",
-            target.text
+        return Verdict::Unknown(quote(
+            &format!("rule={n} ("),
+            &target.text,
+            ") names a %set whose definition changed and is no longer known to match this \
+             record: what the rules after it decide cannot be said from this record alone",
         ));
     }
-    Verdict::Denied(format!(
-        "no candidate before rule={n} matches; {} denies it again",
-        target.text
+    Verdict::Denied(quote(
+        &format!("no candidate before rule={n} matches; "),
+        &target.text,
+        " denies it again",
     ))
+}
+
+/// A verdict's detail around a rule's text, which stays bytes so a document can carry it
+/// with its `detail_hex` (§9.1) and the report decodes it once, at the edge.
+fn quote(before: &str, text: &[u8], after: &str) -> Vec<u8> {
+    [before.as_bytes(), text, after.as_bytes()].concat()
 }
 
 /// D-d's report, in first-seen order: one line per denial, the verdict first so the file
@@ -357,6 +387,7 @@ pub fn live(rows: &[(Key, Verdict)]) -> Vec<u8> {
 
 fn line(out: &mut Vec<u8>, k: &Key, count: Option<usize>, verdict: &Verdict) {
     let (word, detail) = rendered(verdict);
+    let detail = lossy(detail);
     let mut fields = String::new();
     for (name, value) in [("perm", &k.perm), ("exe", &k.exe), ("path", &k.path)] {
         if let Some(v) = value {
@@ -385,6 +416,8 @@ fn line(out: &mut Vec<u8>, k: &Key, count: Option<usize>, verdict: &Verdict) {
 pub struct Entry {
     verdict: &'static str,
     detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail_hex: Option<String>,
     denials: usize,
     perm: Option<String>,
     exe: Option<String>,
@@ -403,11 +436,14 @@ pub fn entries(rows: &[(Key, usize, Verdict)]) -> Vec<Entry> {
     rows.iter()
         .map(|(k, count, verdict)| {
             let (word, detail) = rendered(verdict);
+            // The detail can quote a rule's text, which is bytes like a record's value.
+            let (detail, detail_hex) = json::lossy_hex(detail);
             let (exe, exe_hex) = with_hex(&k.exe);
             let (path, path_hex) = with_hex(&k.path);
             Entry {
                 verdict: word,
-                detail: detail.to_string(),
+                detail,
+                detail_hex,
                 denials: *count,
                 // `perm` and `trust` are the daemon's own vocabulary and `ftype` is a
                 // MIME type. A byte that is not UTF-8 in one of them is corruption and
@@ -461,7 +497,7 @@ fn shown(value: &[u8]) -> String {
 }
 
 /// The verdict word and its detail. One place, so the report and the tests cannot drift.
-fn rendered(verdict: &Verdict) -> (&'static str, &str) {
+fn rendered(verdict: &Verdict) -> (&'static str, &[u8]) {
     match verdict {
         Verdict::Allowed(d) => ("allowed", d),
         Verdict::Denied(d) => ("denied", d),
@@ -478,7 +514,7 @@ fn flat(files: &[rules_d::File]) -> impl Iterator<Item = (&rules_d::File, &Rule)
 }
 
 /// The merged index of the rule whose text is `text` in the file called `name`.
-fn position(files: &[rules_d::File], name: &str, text: &str) -> Option<usize> {
+fn position(files: &[rules_d::File], name: &str, text: &[u8]) -> Option<usize> {
     let mut merged = 0usize;
     for file in files {
         if file.name == name {
@@ -497,17 +533,17 @@ fn position(files: &[rules_d::File], name: &str, text: &str) -> Option<usize> {
 fn missing_perm<'a>(
     proposed: &'a [rules_d::File],
     compiled: &[Rule],
-) -> Option<(&'a str, &'a str)> {
+) -> Option<(&'a str, &'a [u8])> {
     flat(proposed)
         .filter(|(_, r)| !compiled.iter().any(|host| host.text == r.text))
         .find(|(_, r)| !r.attrs().0.iter().any(|a| matches!(a, Attr::Perm(_))))
-        .map(|(f, r)| (f.name.as_str(), r.text.as_str()))
+        .map(|(f, r)| (f.name.as_str(), r.text.as_slice()))
 }
 
 /// Does this rule name a `%set` whose proposed definition is not the one the daemon loaded?
 /// Then D3's proof -- the daemon walked past this rule -- was about a different definition.
 fn names_changed_set(rule: &Rule, changed: &[String]) -> bool {
-    references(rule).any(|name| changed.iter().any(|c| c == name))
+    references(rule).any(|name| changed.iter().any(|c| c.as_bytes() == name))
 }
 
 /// Does this rule fire on this record? `Some(true)` yes, `Some(false)` no, `None` no
@@ -540,7 +576,7 @@ fn subject_matches(attr: &Attr, record: &Record, defined: &[&Set]) -> Option<boo
         Attr::All => Some(true),
         Attr::Perm(p) => perm_matches(p, record),
         // K3: verbatim against the value the record logs.
-        Attr::Exe(e) => Some(exe()? == e.as_bytes()),
+        Attr::Exe(e) => Some(exe()? == *e),
         // #120 Q4: a plain byte prefix with no slash logic, `strncmp` and nothing more --
         // subject `dir=/usr/sbi` matched `exe=/usr/sbin/runuser`.
         Attr::Dir(d) => prefix(exe()?, d),
@@ -558,13 +594,13 @@ fn object_matches(attr: &Attr, record: &Record, defined: &[&Set]) -> Option<bool
     let get = |name: &[u8]| field(record.object_get(name));
     match attr {
         Attr::All => Some(true),
-        Attr::Path(p) => Some(get(b"path")? == p.as_bytes()),
+        Attr::Path(p) => Some(get(b"path")? == *p),
         // #120 Q4 again: `dir=/tmp/live` allowed `/tmp/live2/probe-grep`.
         Attr::Dir(d) => prefix(get(b"path")?, d),
-        Attr::Ftype(f) => Some(get(b"ftype")? == f.as_bytes()),
+        Attr::Ftype(f) => Some(get(b"ftype")? == *f),
         // #120 Q5: object `trust=` compares against the logged value. Subject trust takes
         // a different path with no sentinel (DESIGN.md §7) and is never evaluated.
-        Attr::Trust(t) => Some(get(b"trust")? == t.as_bytes()),
+        Attr::Trust(t) => Some(get(b"trust")? == *t),
         Attr::Members(field, members) => {
             any_member(field, members, record, defined, object_matches)
         }
@@ -585,8 +621,8 @@ fn object_matches(attr: &Attr, record: &Record, defined: &[&Set]) -> Option<bool
 /// `unknown`. A member that is itself a set reference is a nesting nothing measured, and
 /// re-reading it here would be the second expansion this function does not do.
 fn any_member(
-    field: &str,
-    members: &[String],
+    field: &[u8],
+    members: &[Vec<u8>],
     record: &Record,
     defined: &[&Set],
     eval: fn(&Attr, &Record, &[&Set]) -> Option<bool>,
@@ -594,7 +630,7 @@ fn any_member(
     let mut undecided = false;
     for member in members.iter().flat_map(|m| expand(m, defined)) {
         let decided = member.and_then(|m| {
-            let attr = Attr::new(&format!("{field}={m}"));
+            let attr = Attr::new(&[field, &b"="[..], &m].concat());
             (!matches!(attr, Attr::Members(..))).then(|| eval(&attr, record, defined))?
         });
         match decided {
@@ -609,36 +645,32 @@ fn any_member(
 /// One member of a value, with a `%set` reference replaced by the definition's own members.
 ///
 /// `None` is a member this tool cannot compare at all: a definition that is a bare `%name`
-/// with no `=`, which defines nothing, and a member the rule language could not have
-/// spelled as UTF-8 -- a set holds paths and those are bytes (§4), so comparing one through
-/// a U+FFFD that matches nothing would be a miss this tool has not earned. An unresolved
+/// with no `=`, which defines nothing. A member is bytes like the rest of a rule (§4), so
+/// one outside UTF-8 is compared with the record's bytes like any other. An unresolved
 /// name cannot arrive here behind `refused`, which answers for the whole run first.
-fn expand(member: &str, defined: &[&Set]) -> Vec<Option<String>> {
-    if !member.starts_with('%') {
-        return vec![Some(member.to_string())];
+fn expand(member: &[u8], defined: &[&Set]) -> Vec<Option<Vec<u8>>> {
+    if !member.starts_with(b"%") {
+        return vec![Some(member.to_vec())];
     }
-    let Some(set) = defined.iter().find(|s| s.name == member) else {
+    let Some(set) = defined.iter().find(|s| s.name.as_bytes() == member) else {
         return vec![None];
     };
     if set.members.is_empty() {
         return vec![None];
     }
-    set.members
-        .iter()
-        .map(|m| std::str::from_utf8(m).ok().map(str::to_string))
-        .collect()
+    set.members.iter().cloned().map(Some).collect()
 }
 
 /// #120 Q2. `any` matches both perms and `open`/`execute` match the equal value; any
 /// other value on either side is outside the measured set.
-fn perm_matches(rule_perm: &str, record: &Record) -> Option<bool> {
+fn perm_matches(rule_perm: &[u8], record: &Record) -> Option<bool> {
     let logged = field(record.subject_get(b"perm"))?;
     if !matches!(logged.as_slice(), b"open" | b"execute") {
         return None;
     }
     match rule_perm {
-        "any" => Some(true),
-        "open" | "execute" => Some(logged == rule_perm.as_bytes()),
+        b"any" => Some(true),
+        b"open" | b"execute" => Some(logged == rule_perm),
         _ => None,
     }
 }
@@ -651,11 +683,11 @@ fn perm_matches(rule_perm: &str, record: &Record) -> Option<bool> {
 /// prefix. `sh_set` plus the control bytes is the escaper's whole table
 /// (`parse::unescape`), and `<= b' '` is `sh_set`'s own space plus every one of those
 /// control bytes -- which is why the literal below does not repeat the space.
-fn prefix(value: Vec<u8>, dir: &str) -> Option<bool> {
+fn prefix(value: Vec<u8>, dir: &[u8]) -> Option<bool> {
     let escaped = value
         .iter()
         .any(|b| *b <= b' ' || b"\"'`$\\!()|".contains(b));
-    (!escaped).then(|| value.starts_with(dir.as_bytes()))
+    (!escaped).then(|| value.starts_with(dir))
 }
 
 /// The record's value for a field, or `None` when it carries nothing a rule can be
@@ -1135,8 +1167,8 @@ trust=0";
     }
 
     /// One record and its `rule=`, read exactly as `analyze` reads them.
-    fn parsed(line: &str) -> (Record, Option<usize>) {
-        let record = parse::parse(line.as_bytes());
+    fn parsed(line: impl AsRef<[u8]>) -> (Record, Option<usize>) {
+        let record = parse::parse(line.as_ref());
         let n = record
             .subject_get(b"rule")
             .and_then(|v| std::str::from_utf8(&v).ok()?.parse::<usize>().ok())
@@ -1153,6 +1185,11 @@ trust=0";
                 .collect::<String>()
                 .as_bytes(),
         )
+    }
+
+    /// A verdict's detail as the report writes it.
+    fn detail(verdict: &Verdict) -> String {
+        lossy(rendered(verdict).1)
     }
 
     /// The verdict for one row: no stale window, the shipped host, the candidate merged.
@@ -1175,13 +1212,13 @@ trust=0";
     fn the_host_ruleset_is_the_shipped_fourteen_rules() {
         let compiled = compiled();
         assert_eq!(compiled.len(), 14, "the daemon logged `Loaded 14 rules`");
-        assert_eq!(compiled[4].text, "deny_audit perm=any pattern=ld_so : all");
+        assert_eq!(compiled[4].text, b"deny_audit perm=any pattern=ld_so : all");
         assert_eq!(
             compiled[10].text,
-            "deny_audit perm=any all : ftype=%languages"
+            b"deny_audit perm=any all : ftype=%languages"
         );
-        assert_eq!(compiled[12].text, "deny_audit perm=execute all : all");
-        assert_eq!(compiled[13].text, "allow perm=open all : all");
+        assert_eq!(compiled[12].text, b"deny_audit perm=execute all : all");
+        assert_eq!(compiled[13].text, b"allow perm=open all : all");
         // Every host rule has to `locate`, or the walk below would stop at a drift that
         // is really a typo in the constant above.
         for n in 1..=14 {
@@ -1214,7 +1251,7 @@ trust=0";
         let mut wrong = Vec::new();
         for (case, candidate, line, want) in TABLE {
             let got = check(*candidate, line);
-            let (word, detail) = rendered(&got);
+            let (word, detail) = (rendered(&got).0, detail(&got));
             if word != *want {
                 wrong.push(format!("{case}: measured {want}, got {word} ({detail})"));
             }
@@ -1240,9 +1277,9 @@ trust=0";
              : path=/tmp/live/probe-grep ftype=application/x-executable trust=0",
         );
         let names_logged =
-            Rule::new("deny_audit perm=open exe=/usr/sbin/runuser : path=/tmp/live/probe-grep");
+            Rule::new(b"deny_audit perm=open exe=/usr/sbin/runuser : path=/tmp/live/probe-grep");
         let names_executed =
-            Rule::new("deny_audit perm=open exe=/tmp/live/probe-grep : path=/tmp/live/probe-grep");
+            Rule::new(b"deny_audit perm=open exe=/tmp/live/probe-grep : path=/tmp/live/probe-grep");
         assert_eq!(matches(&names_logged, &open, &[]), Some(true));
         assert_eq!(matches(&names_executed, &open, &[]), Some(false));
     }
@@ -1266,7 +1303,7 @@ trust=0";
             )))),
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
-        assert!(rendered(&got).1.contains("probe-other"), "{got:?}");
+        assert!(detail(&got).contains("probe-other"), "{got:?}");
     }
 
     #[test]
@@ -1329,7 +1366,7 @@ trust=0";
             &drifted,
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
-        assert!(rendered(&got).1.contains("fagenrules"), "{got:?}");
+        assert!(detail(&got).contains("fagenrules"), "{got:?}");
     }
 
     #[test]
@@ -1354,7 +1391,7 @@ trust=0";
             &rules_d::files(proposed),
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
-        assert!(rendered(&got).1.contains("no longer in"), "{got:?}");
+        assert!(detail(&got).contains("no longer in"), "{got:?}");
     }
 
     #[test]
@@ -1370,7 +1407,7 @@ trust=0";
             EXEC,
         );
         assert_eq!(rendered(&got).0, "unknown", "{got:?}");
-        assert!(rendered(&got).1.contains("uid=0"), "{got:?}");
+        assert!(detail(&got).contains("uid=0"), "{got:?}");
     }
 
     #[test]
@@ -1408,7 +1445,7 @@ trust=0";
         );
         assert_eq!(
             matches(
-                &Rule::new("allow perm=execute exe=/usr/sbin/runuser : path=/tmp/live/probe-grep"),
+                &Rule::new(b"allow perm=execute exe=/usr/sbin/runuser : path=/tmp/live/probe-grep"),
                 &record,
                 &[]
             ),
@@ -1442,12 +1479,12 @@ trust=0";
     #[test]
     fn a_perm_outside_the_measured_pair_is_unknown_on_either_side() {
         let (record, _) = parsed(EXEC);
-        assert_eq!(perm_matches("any", &record), Some(true));
-        assert_eq!(perm_matches("execute", &record), Some(true));
-        assert_eq!(perm_matches("open", &record), Some(false));
-        assert_eq!(perm_matches("all", &record), None, "not a perm value");
+        assert_eq!(perm_matches(b"any", &record), Some(true));
+        assert_eq!(perm_matches(b"execute", &record), Some(true));
+        assert_eq!(perm_matches(b"open", &record), Some(false));
+        assert_eq!(perm_matches(b"all", &record), None, "not a perm value");
         let (odd, _) = parsed("rule=1 dec=deny_audit perm=whatever : path=/tmp/x");
-        assert_eq!(perm_matches("any", &odd), None, "not a logged perm value");
+        assert_eq!(perm_matches(b"any", &odd), None, "not a logged perm value");
     }
 
     #[test]
@@ -1527,7 +1564,7 @@ trust=0";
             ),
         );
         assert_eq!(rendered(&got).0, "allowed", "{got:?}");
-        assert!(rendered(&got).1.contains("41-shared-obj.rules"), "{got:?}");
+        assert!(detail(&got).contains("41-shared-obj.rules"), "{got:?}");
     }
 
     #[test]
@@ -1540,7 +1577,7 @@ trust=0";
         );
         assert_eq!(rendered(&got).0, "denied", "{got:?}");
         assert!(
-            rendered(&got).1.starts_with("00-cand.rules:"),
+            detail(&got).starts_with("00-cand.rules:"),
             "the candidate decides, not the shipped rule 13: {got:?}"
         );
     }
@@ -1708,8 +1745,8 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
         ] {
             let got = check(Some(("00-cand.rules", body)), EXEC);
             assert_eq!(rendered(&got).0, "unknown", "{case}: {got:?}");
-            assert!(rendered(&got).1.contains(reason), "{case}: {got:?}");
-            assert!(rendered(&got).1.contains("reload"), "{case}: {got:?}");
+            assert!(detail(&got).contains(reason), "{case}: {got:?}");
+            assert!(detail(&got).contains("reload"), "{case}: {got:?}");
         }
     }
 
@@ -1779,15 +1816,12 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
         );
     }
 
-    /// A set inside a set, and a member no rule could have spelled: neither is measured and
-    /// neither is a miss. §4 makes a set's members bytes, so a member outside UTF-8 is
-    /// undecided rather than compared through a U+FFFD that matches nothing, and a bare
-    /// `%name` line defines no members at all.
+    /// A set inside a set, and a bare `%name` line, which defines no members at all:
+    /// neither is measured and neither is a miss.
     #[test]
     fn a_member_this_tool_cannot_read_is_undecided_and_never_a_miss() {
         for body in [
             &b"%d=%other\n%other=/tmp/live/\nallow perm=execute all : dir=%d\n"[..],
-            b"%d=/tmp/live/\xff\nallow perm=execute all : dir=%d\n",
             b"%d\nallow perm=execute all : dir=%d\n",
         ] {
             let mut named = listing(None);
@@ -1806,6 +1840,180 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
             );
             assert_eq!(rendered(&got).0, "unknown", "{body:?}: {got:?}");
         }
+    }
+
+    /// The candidate file `00-cand.rules`, holding bytes no `&str` can, merged into the
+    /// shipped host and checked against one record.
+    fn check_bytes(candidate: &[u8], line: &[u8]) -> Verdict {
+        let mut named = listing(None);
+        named.push(("00-cand.rules".to_string(), candidate.to_vec()));
+        let proposed = rules_d::files(named);
+        let (record, n) = parsed(line);
+        let compiled = compiled();
+        verdict(
+            &record,
+            n,
+            None,
+            Some(&compiled),
+            Some(&host()),
+            &changed_sets(&proposed, &loaded_sets()),
+            &proposed,
+        )
+    }
+
+    /// D9 (#174): a set's members are bytes like the rest of a rule, so a member outside
+    /// UTF-8 is compared with the record's bytes, and the same bytes match.
+    #[test]
+    fn a_member_outside_utf8_matches_a_record_carrying_the_same_bytes() {
+        let set = b"%d=/tmp/live/\xff\nallow perm=execute all : dir=%d\n";
+        let got = check_bytes(
+            set,
+            b"rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+              : path=/tmp/live/\xff/x ftype=application/x-executable trust=0",
+        );
+        assert_eq!(rendered(&got).0, "allowed", "{got:?}");
+        let got = check_bytes(
+            set,
+            b"rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+              : path=/tmp/live/\xfe/x ftype=application/x-executable trust=0",
+        );
+        assert_eq!(
+            rendered(&got).0,
+            "denied",
+            "one byte apart is a miss: {got:?}"
+        );
+    }
+
+    /// The daemon loads a set's members only up to the first space (`rules::sets`), so a
+    /// member written `/app/\xff y` is `/app/\xff`, and the record holding `/app/\xff y`
+    /// is in no set: the rule does not match and rule 13 denies again. Without the space
+    /// the same member matches.
+    #[test]
+    fn a_set_member_past_the_first_space_is_not_in_the_set() {
+        let got = check_bytes(
+            b"%s=/app/q,/app/\xff y\nallow perm=execute all : path=%s\n",
+            b"rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+              : path=/app/\xff\\ y ftype=application/x-executable trust=0",
+        );
+        assert_eq!(rendered(&got).0, "denied", "{got:?}");
+        let got = check_bytes(
+            b"%s=/app/q,/app/\xff\nallow perm=execute all : path=%s\n",
+            b"rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+              : path=/app/\xff ftype=application/x-executable trust=0",
+        );
+        assert_eq!(rendered(&got).0, "allowed", "{got:?}");
+    }
+
+    /// A vertical tab or U+00A0 inside a candidate's value is part of the value, as it is
+    /// for the daemon (`rules.rs`), so the record carrying the same bytes is allowed. The
+    /// daemon logs the tab as `\013`.
+    #[test]
+    fn a_vertical_tab_or_a_no_break_space_in_a_candidate_value_still_matches() {
+        for (candidate, path) in [
+            (
+                &b"allow perm=execute all : path=/app/x\x0by"[..],
+                &b"/app/x\\013y"[..],
+            ),
+            (
+                "allow perm=execute all : path=/app/x\u{a0}y".as_bytes(),
+                "/app/x\u{a0}y".as_bytes(),
+            ),
+        ] {
+            let line = [
+                &b"rule=13 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash : path="[..],
+                path,
+                b" ftype=application/x-executable trust=0",
+            ]
+            .concat();
+            let got = check_bytes(candidate, &line);
+            assert_eq!(rendered(&got).0, "allowed", "{got:?}");
+        }
+    }
+
+    /// #174 F1: a candidate's `path=`, `exe=` and `dir=` are compared with the record's raw
+    /// bytes. Through `from_utf8_lossy` the rule held `ef bf bd` where the record held
+    /// `ff`, and a file the daemon allows read `denied`. The UTF-8 twin of each is the
+    /// control: it allowed before and still does.
+    #[test]
+    fn a_candidate_outside_utf8_matches_a_record_carrying_the_same_bytes() {
+        for (candidate, exe, path) in [
+            (
+                &b"allow perm=execute exe=/usr/bin/bash : path=/app/d\xffr"[..],
+                &b"/usr/bin/bash"[..],
+                &b"/app/d\xffr"[..],
+            ),
+            (
+                b"allow perm=execute exe=/usr/bin/bash : path=/app/ok",
+                b"/usr/bin/bash",
+                b"/app/ok",
+            ),
+            (
+                b"allow perm=execute exe=/opt/b\xffsh : all",
+                b"/opt/b\xffsh",
+                b"/app/ok",
+            ),
+            (
+                b"allow perm=execute exe=/opt/bash : all",
+                b"/opt/bash",
+                b"/app/ok",
+            ),
+            (
+                b"allow perm=execute all : dir=/app/d\xff/",
+                b"/usr/bin/bash",
+                b"/app/d\xff/x",
+            ),
+            (
+                b"allow perm=execute all : dir=/app/d/",
+                b"/usr/bin/bash",
+                b"/app/d/x",
+            ),
+        ] {
+            let line = [
+                &b"rule=13 dec=deny_audit perm=execute pid=1 exe="[..],
+                exe,
+                b" : path=",
+                path,
+                b" ftype=application/x-executable trust=0",
+            ]
+            .concat();
+            let got = check_bytes(candidate, &line);
+            assert_eq!(
+                rendered(&got),
+                ("allowed", &[b"00-cand.rules: ", candidate].concat()[..]),
+                "{:?}",
+                String::from_utf8_lossy(&line)
+            );
+        }
+    }
+
+    /// #162: the D3 skip compares rule text. A candidate differing from the host's own rule
+    /// before N only in one byte outside UTF-8 is a rule the daemon never walked past, so it
+    /// is evaluated -- and here it allows. Through `from_utf8_lossy` both texts were one
+    /// U+FFFD, the candidate was skipped as the host's rule and N denied again.
+    #[test]
+    fn a_candidate_differing_from_a_host_rule_only_outside_utf8_is_not_skipped() {
+        let deny = b"deny_audit perm=execute all : all\n";
+        let host_body = [&b"allow perm=execute all : path=/app/d\xfer\n"[..], deny].concat();
+        let host = rules_d::files(vec![("10-host.rules".to_string(), host_body.clone())]);
+        let compiled = rules::parse(&host_body);
+        let proposed = rules_d::files(vec![(
+            "10-host.rules".to_string(),
+            [&b"allow perm=execute all : path=/app/d\xffr\n"[..], deny].concat(),
+        )]);
+        let (record, n) = parsed(
+            &b"rule=2 dec=deny_audit perm=execute pid=1 exe=/usr/bin/bash \
+               : path=/app/d\xffr ftype=application/x-executable trust=0"[..],
+        );
+        let got = verdict(
+            &record,
+            n,
+            None,
+            Some(&compiled),
+            Some(&host),
+            &[],
+            &proposed,
+        );
+        assert_eq!(rendered(&got).0, "allowed", "{got:?}");
     }
 
     /// The reproduction from the #139 comment, which answered `allowed` before
@@ -1849,9 +2057,7 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
         );
         assert_eq!(rendered(&got).0, "denied", "{got:?}");
         assert!(
-            rendered(&got)
-                .1
-                .ends_with("deny_audit perm=any all : ftype=%languages"),
+            detail(&got).ends_with("deny_audit perm=any all : ftype=%languages"),
             "{got:?}"
         );
     }
@@ -1898,7 +2104,7 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
         assert_eq!(answer(HOST[0].1), ("denied", 0));
         // Unchanged sets keep the proof even where the record cannot re-answer it: this one
         // carries no `ftype=`, and the daemon matched rule 11 all the same.
-        let (bare, bare_n) = parsed(&PY.replace(" ftype=text/x-python", ""));
+        let (bare, bare_n) = parsed(PY.replace(" ftype=text/x-python", ""));
         let proposed = rules_d::files(listing(None));
         let got = verdict(&bare, bare_n, None, Some(&compiled), None, &[], &proposed);
         assert_eq!(rendered(&got).0, "denied", "{got:?}");
@@ -1963,21 +2169,21 @@ exe=/usr/bin/bash : path=/tmp/gaps/trusted-ls ftype=application/x-executable tru
 
     #[test]
     fn only_a_rule_naming_a_changed_set_loses_its_skip() {
-        let deny = Rule::new("deny_audit perm=any all : ftype=%languages");
+        let deny = Rule::new(b"deny_audit perm=any all : ftype=%languages");
         assert!(names_changed_set(&deny, &["%languages".to_string()]));
         assert!(!names_changed_set(&deny, &["%other".to_string()]));
         assert!(!names_changed_set(
-            &Rule::new("deny_audit perm=execute all : all"),
+            &Rule::new(b"deny_audit perm=execute all : all"),
             &["%languages".to_string()]
         ));
         // Wherever it is written and whatever the attribute: the daemon resolves a
         // reference on `uid=` and one beside a literal too.
         assert!(names_changed_set(
-            &Rule::new("allow perm=open uid=%who : all"),
+            &Rule::new(b"allow perm=open uid=%who : all"),
             &["%who".to_string()]
         ));
         assert!(names_changed_set(
-            &Rule::new("allow perm=open all : dir=execdirs,%d"),
+            &Rule::new(b"allow perm=open all : dir=execdirs,%d"),
             &["%d".to_string()]
         ));
     }
