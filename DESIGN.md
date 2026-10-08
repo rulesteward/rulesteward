@@ -372,9 +372,10 @@ closed once 12 lines have passed without a record of its own: twice the longest
 event span measured (#151). The close is counted in lines and not in time, so on
 a quiet stream the last event waits for a 13th line with no record of its own or
 for EOF, and an event whose records are more than 12 lines apart is split into
-two under follow while batch keeps it whole. A close on a timer belongs with
-#154's `recv_timeout` loop, which is the first reader that can wake without a
-line. The end of the input still finishes the run: the events still open, the
+two under follow while batch keeps it whole. #154's `recv_timeout` loop wakes
+every 100 ms without a line, so the reader a close on a timer needs now exists,
+but the timed close is still not built. The end of the input, or Ctrl+C (§9),
+still finishes the run: the events still open, the
 run's notes and the counts are all decided there.
 
 ---
@@ -873,7 +874,14 @@ commitments, cheap now and expensive to retrofit:
   `line <first>: <msg> (xN)`, the line batch collapses it to, and last the full
   `why` or `check` report with its counts. `rules` and `trust` have no end
   artifact, since every suggestion was already written. Exit `2` is decided at
-  EOF like batch's. `--follow` with `--format json` or `json-compact` is a usage
+  EOF like batch's. SIGINT (Ctrl+C) stops reading, drops the lines still
+  queued, writes the end of the run as EOF does, flushes and exits `0`, and a
+  second SIGINT during the end only asks again, so no line is cut short (#154).
+  Exit `2` is still decided at the end of a SIGINT run. A closed stdout ends the
+  run with exit `0`, nothing on stderr and the rest unwritten, and exit `2` is
+  not decided on that path. Neither is a fourth exit code. Batch keeps the
+  default SIGINT and still reports a closed stdout on stderr with exit `1`.
+  `--follow` with `--format json` or `json-compact` is a usage
   error, because a document is one answer about the whole log, and so is
   `--follow` with `--dir-min`, because a directory can be grouped only once the
   whole log is read. Both are exit `1`.

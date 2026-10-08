@@ -15,13 +15,18 @@ use fapolicyd::model::{Artifact, Diagnostic};
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 /// DESIGN.md §9. `0` success, `1` usage or I/O error, `2` input consumed but
 /// unparseable. Note that clap's own default for a usage error is `2`, which §9
 /// reserves for unparseable input — hence `try_parse` and the explicit mapping in
 /// `main`, rather than letting clap exit on our behalf. All four actions map the same
 /// way: an empty artifact is still exit `0`, and `check`'s unreadable `<PATH>` is `1`
-/// because no candidate was read at all.
+/// because no candidate was read at all. A `--follow` run ended by SIGINT or by a closed
+/// stdout is exit `0` too, and neither is a fourth code (#154).
 const EXIT_OK: u8 = 0;
 const EXIT_USAGE: u8 = 1;
 const EXIT_UNPARSEABLE: u8 = 2;
@@ -265,7 +270,8 @@ fn run_fapolicyd(
         return match run_follow(analyzer, host_notes.chain(early), wanted, &action) {
             Ok(true) => ExitCode::from(EXIT_UNPARSEABLE),
             Ok(false) => ExitCode::from(EXIT_OK),
-            Err(e) => {
+            Err(Fail::Pipe) => ExitCode::from(EXIT_OK),
+            Err(Fail::Io(e)) => {
                 let _ = writeln!(std::io::stderr().lock(), "rulesteward: {e}");
                 ExitCode::from(EXIT_USAGE)
             }
@@ -338,19 +344,39 @@ fn run_fapolicyd(
     })
 }
 
+/// How a `--follow` run ends early. `Pipe` is a closed stdout: the reader is gone, so the
+/// run ends with exit 0, nothing on stderr and the rest unwritten (#154). `Io` is the
+/// stderr message and exit 1.
+enum Fail {
+    Pipe,
+    Io(String),
+}
+
 /// `--follow` (DESIGN.md §9): the notes due before line 1, then each line's notes and
 /// result as the line is decided, the first corrupt record's warning among them, then
 /// the end of the run in batch's order -- the audit totals, what only the end released,
 /// the run's notes, the repeat totals of the notes already written, and `why`'s or
-/// `check`'s report with its counts. `Ok` is §9's "consumed but unparseable", decided at
-/// EOF; `Err` is the stderr message.
+/// `check`'s report with its counts. SIGINT ends the reading as EOF does, dropping the
+/// lines still queued, and the end of the run is written either way (#154). `Ok` is §9's
+/// "consumed but unparseable", decided at the end.
 fn run_follow(
     mut analyzer: Analyzer<'_>,
     notes: impl Iterator<Item = Diagnostic>,
     wanted: Option<Artifact>,
     action: &FapolicydAction,
-) -> Result<bool, String> {
-    let written = |e: std::io::Error| format!("writing stdout: {e}");
+) -> Result<bool, Fail> {
+    // `flag::register` and not `register_conditional_default`: a second SIGINT during
+    // the end of the run only sets the flag again, so no line is left half written.
+    let stop = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&stop))
+        .map_err(|e| Fail::Io(format!("registering SIGINT: {e}")))?;
+    let written = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            Fail::Pipe
+        } else {
+            Fail::Io(format!("writing stdout: {e}"))
+        }
+    };
     // No flush per line: S1 F6 measured stdout line-buffered even into a pipe.
     let mut out = std::io::stdout().lock();
     for d in notes.filter(|d| kept(d, wanted)) {
@@ -360,18 +386,39 @@ fn run_follow(
     // Every note is written as it arrives and never collapsed, so what `collapse` would
     // have counted is kept here and written once the count is final (D11).
     let mut totals = Vec::new();
-    let mut stdin = std::io::stdin().lock();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let n = stdin
-            .read_until(b'\n', &mut line)
-            .map_err(|e| format!("reading stdin: {e}"))?;
-        if n == 0 {
-            break;
+    // A blocked `read_until` cannot see the flag, so a thread reads and this loop wakes
+    // every 100 ms to look (S1, #151). The thread is left blocked on stdin when the run
+    // ends, and returning from `main` ends the process. Bounded, so a producer faster
+    // than the analyzer waits instead of queueing the whole input in memory.
+    let (tx, rx) = mpsc::sync_channel(64);
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        loop {
+            let mut line = Vec::new();
+            let n = match stdin.read_until(b'\n', &mut line) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            if n == 0 || tx.send(Ok(line)).is_err() {
+                return;
+            }
         }
-        let step = analyzer.feed(line.strip_suffix(b"\n").unwrap_or(&line));
-        write_step(&mut out, step, wanted, action, &mut totals).map_err(written)?;
+    });
+    // The flag is looked at before every line and not only on a timeout, so a stream
+    // that never pauses cannot hold Ctrl+C off.
+    while !stop.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(line)) => {
+                let step = analyzer.feed(line.strip_suffix(b"\n").unwrap_or(&line));
+                write_step(&mut out, step, wanted, action, &mut totals).map_err(written)?;
+            }
+            Ok(Err(e)) => return Err(Fail::Io(format!("reading stdin: {e}"))),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
     }
 
     let mut finish = analyzer.finish();

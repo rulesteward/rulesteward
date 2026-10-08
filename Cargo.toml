@@ -13,6 +13,11 @@ clap = { version = "4", features = ["derive"] }
 # and a JSON writer that gets one escape wrong ships a document nothing can parse.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Ctrl+C ends a `--follow` run through its summary and exit 0 (#154, DESIGN.md §9).
+# S1 measured it in #151 F4: default features off, `flag::register` into an
+# `AtomicBool`, +12,352 bytes on the musl binary, and `cargo deny` clean. The handler
+# comes from the crate so `unsafe_code = "forbid"` stays.
+signal-hook = { version = "0.4", default-features = false }
 
 [build-dependencies]
 # build.rs renders the man page and the bash completion from src/cli.rs (#79).
