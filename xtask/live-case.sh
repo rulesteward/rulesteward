@@ -24,6 +24,16 @@
 # same denials through every journalctl output mode, to settle how the tool
 # reads a journal capture rather than a redirected stderr log.
 #
+# Every variant but `audit` also runs the follow probe (#155): the daemon log
+# followed into an action's --follow, one denial triggered, its line asserted on
+# stdout while the source is still open, then SIGINT and exit 0. The source is
+# `tail -f /tmp/deny.log` where fp_start writes the daemon's stderr, and
+# `journalctl -f` in `journal`, the one variant under systemd. `trust` carries
+# the live assertion in base and denyall because an untrusted execute is answered
+# with a trust entry and `rules` has only an end-of-run note to write; `rules`
+# gets its own probe in `placement`, where the sed denial is a path rule. `why`
+# runs everywhere, its rule line live and its counted table after SIGINT.
+#
 # The `audit` variant is VM-only too, and starts the shipped unit with NO
 # drop-in: the route under test is the ordinary non-debug daemon, which logs
 # deny_audit nowhere but auditd. It captures every ausearch mode in two passes,
@@ -94,6 +104,68 @@ trigger() {
     command sleep 4
 }
 
+# follow_probe <action> <source...>: <source> followed into `<action> --follow`
+# (#155). One trigger, its line asserted on stdout while the source is still
+# open, then SIGINT, exit 0 and an empty stderr. `exec` in the substitution makes
+# $! the source itself, so the kill reaches it and not a subshell around it.
+follow_probe() {
+    local action="$1" live rc t0 hit=0 top table
+    shift
+    exec {FD}< <(exec "$@")
+    SRC=$!
+    trap 'kill "$SRC" 2>/dev/null' EXIT
+    $RS fapolicyd "$action" --follow --conf /etc/fapolicyd/fapolicyd.conf \
+        <&$FD >"/tmp/rs.follow-$action" 2>/tmp/rs.ferr &
+    RSPID=$!
+    # ponytail: a fixed second for the source to open its end (-n 0 drops anything
+    # written before); a slower source would need a readiness check instead.
+    command sleep 1
+    t0=$(date +%s.%N)
+    case "$action" in
+        trust) live="^fapolicyd-cli --file add '/tmp/live/probe-grep'\$"
+               as_tester /tmp/live/probe-grep -c x /etc/hostname ;;
+        why)   live='^rule=[0-9]+ +30-patterns\.rules +deny_audit perm=any pattern=ld_so : all$'
+               as_tester /lib64/ld-linux-x86-64.so.2 /usr/bin/grep -c x /etc/hostname ;;
+        rules) live='^allow perm=execute [^ ]+ : path=/usr/bin/sed$'
+               as_tester /usr/bin/sed -n 1p /etc/hostname ;;
+    esac
+    for _ in $(seq 1 300); do
+        grep -qE "$live" "/tmp/rs.follow-$action" && { hit=1; break; }
+        command sleep 0.1
+    done
+    [ "$hit" = 1 ] && awk -v a="$action" -v t0="$t0" -v t1="$(date +%s.%N)" \
+        'BEGIN { printf "follow %s: line after %.2f s\n", a, t1 - t0 }'
+    kill -INT "$RSPID"
+    # Bounded: a binary that ignores SIGINT would otherwise hang the run in wait
+    # instead of failing it (live.sh starts podman with no timeout).
+    for _ in $(seq 1 100); do
+        kill -0 "$RSPID" 2>/dev/null || break
+        command sleep 0.1
+    done
+    kill -9 "$RSPID" 2>/dev/null
+    wait "$RSPID"
+    rc=$?
+    echo "== rulesteward fapolicyd $action --follow --conf /etc/fapolicyd/fapolicyd.conf < <($*) =="
+    echo "exit=$rc"
+    echo "-- stdout --"; cat "/tmp/rs.follow-$action"
+    echo "-- stderr --"; cat /tmp/rs.ferr
+    [ "$hit" = 1 ] || fail "follow $action: no live line within 30 s"
+    [ "$rc" -eq 0 ] || fail "follow $action: exited $rc after SIGINT"
+    [ -s /tmp/rs.ferr ] && fail "follow $action wrote to stderr"
+    if [ "$action" = why ]; then
+        # The live line on the first denial, the aligned table with its count
+        # after SIGINT, and in that order.
+        top=$(grep -nE -m1 "$live" /tmp/rs.follow-why | cut -d: -f1)
+        table=$(grep -nE -m1 '^rule=[0-9]+ +30-patterns\.rules +[0-9]+ denials +subject-side, nothing to emit +deny_audit perm=any pattern=ld_so : all$' \
+            /tmp/rs.follow-why | cut -d: -f1)
+        [ -n "$table" ] || fail "follow why: no table line after SIGINT"
+        [ "$top" -lt "$table" ] || fail "follow why: the table line is not below the live line"
+    fi
+    kill "$SRC" 2>/dev/null
+    exec {FD}<&-
+    trap - EXIT
+}
+
 if [ "${HARVEST_VARIANT:-base}" = "journal" ]; then
     [ "${VM_RUN:-}" = 1 ] || fail "journal variant needs systemd: VM only"
     # An enforcing daemon started through systemd locks the host, and unlike
@@ -150,6 +222,9 @@ if [ "${HARVEST_VARIANT:-base}" = "journal" ]; then
         done
     done
     echo "== denials in journal.cat-a =="; grep -c 'dec=deny' "$J.cat-a"
+
+    follow_probe trust journalctl -u fapolicyd -o cat -n 0 -f
+    follow_probe why journalctl -u fapolicyd -o cat -n 0 -f
 
     systemctl stop fapolicyd
     for f in "$J.short" "$J.short-a" "$J.cat" "$J.cat-a" "$J.json"; do
@@ -392,6 +467,10 @@ if [ "${HARVEST_VARIANT:-base}" = placement ]; then
     grep -qF "# rulesteward: new file: rules.d/40-rulesteward.rules (sorts before 41-live-placement.rules, rules ${PLACED#rule=}, ${GROUPED#rule=})" /tmp/rs.rules ||
         fail "placement: note is not the expected 40-rulesteward.rules line"
 fi
+
+follow_probe trust tail -n 0 -f /tmp/deny.log
+follow_probe why tail -n 0 -f /tmp/deny.log
+[ "${HARVEST_VARIANT:-base}" = placement ] && follow_probe rules tail -n 0 -f /tmp/deny.log
 
 # reload_rules <label> -- fagenrules, reload, and assert the daemon loaded it.
 #
